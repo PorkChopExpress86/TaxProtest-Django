@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+
+{% block title %}
+    Home Values - Enter Your Address
+{% endblock %}
+
+{% block content %}
+<div class="container mt-5">
+    <h2>Enter Your Address</h2>
+    <form method="post">
+        {% csrf_token %}
+        <div class="mb-3">
+            <label for="address_number" class="form-label">Address Number</label>
+            <input type="text" class="form-control" id="address_number" name="address_number" required>
+        </div>
+        <div class="mb-3">
+            <label for="street_name" class="form-label">Street Name</label>
+            <input type="text" class="form-control" id="street_name" name="street_name" required>
+        </div>
+        <div class="mb-3">
+            <label for="zip_code" class="form-label">Zip Code</label>
+            <input type="text" class="form-control" id="zip_code" name="zip_code" required>
+        </div>
+        <button type="submit" class="btn btn-primary">Submit</button>
+    </form>
+{% endblock %}
