@@ -1,0 +1,97 @@
+HCAD Data Documentation
+
+=== GIS ReadMe ===
+Harris County Appraisal District
+
+The HCAD GIS files are in ESRI shapefile format and can be used with ArcGIS products, including ArcGIS Earth.
+Coordinate system: State Plane Texas South Central (Zone 4204), Datum NAD 1983.
+
+Parcels Shapefile:
+- Contains polygons for every parcel in the county.
+- Key field: HCAD_NUM (13-digit account number, used to join with real data files).
+- BLK_NUM, LOT_NUM, CONDO_FLAG (1 = stacked for condos/undivided interest).
+
+Annotations:
+- Block number, easement names, lot numbers (pre-2020 in “Lot anno”, post-2020 in “Lot” polygon).
+- Right-of-way annotation for Harris County.
+
+=== Import Instructions ===
+Harris Central Appraisal District Import Instructions
+
+Data files are distributed as self-extracting ZIPs:
+- Real_acct_owner.zip
+- Real_building_land.zip
+- Real_jur_exempt.zip
+- Real_acct_ownership_history (current year only)
+- PP_files.zip (Personal Business property)
+- Hearings_files.zip (Hearings for Real & Personal property)
+- Code_description_real.zip
+- Code_description_pp.zip
+
+Steps to Import into SQL Server:
+1. Use Object Explorer -> Database -> Tasks -> Import Flat File.
+2. Select file and preview data.
+3. Modify columns (data types, sizes, primary keys) using pdataCodebook.pdf as reference.
+4. Review summary and finish.
+5. Imported table will appear under database -> Tables (e.g., dbo.arb_hearings_pp).
+
+=== PDATA Codebook ===
+Harris Central Appraisal District PDATA Codebook
+
+Main Zip Archives:
+- Hearings_files.zip: arb_hearings_pp.txt, arb_hearings_real.txt, arb_protest_pp.txt, arb_protest_real.txt
+- Real_acct_owner.zip: deeds.txt, owners.txt, parcel_tieback.txt, permits.txt, real_acct.txt, real_mnrl.txt (2024+), real_neighborhood_code.txt
+- Real_acct_ownership_history.zip: ownership_history.txt (current year only)
+- Real_building_land.zip: building_other.txt, building_res.txt, exterior.txt, extra_features.txt, extra_features_detail1.txt, extra_features_detail2.txt, fixtures.txt, land.txt, land_ag.txt, structural_elem1.txt, structural_elem2.txt
+- Real_jur_exempt.zip: jur_exempt.txt, jur_exempt_cd.txt, jur_exemption_dscr.txt, jur_tax_dist_exempt_value_rate.txt, jur_value.txt
+- PP_files.zip: t_business_acct.txt, t_business_detail.txt, t_jur_exempt.txt, t_jur_tax_dist_exempt_value.txt, t_jur_value.txt, t_pp_c.txt, t_pp_e.txt (→ real_mnrl from 2024), t_pp_l.txt
+
+Code Descriptions:
+- desc_r_* for Real Property (state class, building type, style, quality, land use, permits, school districts, neighborhoods, etc.)
+- desc_t_* for Personal Property (state class, schedule code, SIC codes, jurisdictions, etc.)
+
+Each TXT file has schema info (columns, data types, descriptions). Examples:
+- real_acct.txt: owner name, mailing/site address, legal description, land/building/extra feature values, appraised/market values, neighborhood, school district, jurisdiction, market area, acreage, prior year values, construction values, etc.
+- building_res.txt: residential improvements (type, style, class, quality, year built, remodel year, sqft areas).
+- land.txt: land use, influence factors, unit pricing, condition, adjustments, land value.
+- fixtures.txt: details like stories, bathrooms, fireplaces, office ratio for warehouses.
+
+=== Definitions & FAQs ===
+HCAD Data Definition Help & FAQs
+
+General:
+- Data stored in RDBMS, normalized. Requires SQL joins.
+- Text files have headers; import using SQL Server (“Import Instructions”).
+
+Real Property Account Numbers:
+- Remain static unless split/combined.
+- If entire lot sold, account number stays. If split, seller retains original, buyers get new ones.
+- No separate PID anymore (GIS replaces it).
+
+Personal Property:
+- Mobile homes moved to Real Property (account starts with 600000).
+- Freeport value under exemptions.
+
+Land Use Codes:
+- land.txt and land_ag.txt store records; 1000 = Res Vacant, 1001 = Res Improved, 2001 = hard-coded override.
+- Condos: land valued at 19% of total market value.
+
+Buildings:
+- Type (IMPRV_TYPE) and Style (BUILDING_STYLE_CODE).
+- Residential (A1–A4) in building_res.txt, others in building_other.txt.
+- Areas: Heat Area = living area, Base Area = commercial area, Actual/Gross/Effective Area definitions provided.
+- Year built = date_erected, Stories = fixtures file (STY = houses, STC = commercial stories).
+
+Neighborhoods:
+- Defined groups of comparable properties by school district; maintained/updated over time.
+
+Economic Areas:
+- Used for valuation models (income/cost approach).
+
+Other Notes:
+- Extra Features (pools, garages) in extra_features.txt.
+- Exterior data in exterior.txt.
+- Structural elements in structural_elem files.
+- Hearings and protests in hearings files.
+- Permits contain issue/inspection year and status.
+- Parcel Tieback shows related parcels (sales, UDI, abatements, etc.).
