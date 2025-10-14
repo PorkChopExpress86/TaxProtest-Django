@@ -11,9 +11,16 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
 from pathlib import Path
+import os
+from urllib.parse import urlparse
+from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Load .env from project root when present (development convenience)
+env_path = os.path.join(BASE_DIR, '.env')
+load_dotenv(env_path)
 
 
 # Quick-start development settings - unsuitable for production
@@ -25,7 +32,7 @@ SECRET_KEY = "django-insecure-r%yzofg&-adsvp8$$-s1b(*-7yrm3%tzn$z)*!cov&_nvr)w^q
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "").split(",") if os.environ.get("ALLOWED_HOSTS") else []
 
 
 # Application definition
@@ -37,6 +44,10 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    # contrib extras
+    "django.contrib.humanize",  # for intcomma, naturaltime, etc. used in templates
+    # local apps
+    "data",
 ]
 
 MIDDLEWARE = [
@@ -120,3 +131,23 @@ STATIC_URL = "static/"
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+# Optional: read database URL and broker from environment for Docker/dev setups
+DATABASE_URL = os.environ.get("DATABASE_URL")
+if DATABASE_URL:
+    # simple Postgres settings support when DATABASE_URL is provided
+    url = urlparse(DATABASE_URL)
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.postgresql",
+            "NAME": url.path.lstrip('/'),
+            "USER": url.username,
+            "PASSWORD": url.password,
+            "HOST": url.hostname,
+            "PORT": url.port or '',
+        }
+    }
+
+# Celery settings (dev-friendly; override via env)
+CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://redis:6379/0")
+CELERY_RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND", CELERY_BROKER_URL)

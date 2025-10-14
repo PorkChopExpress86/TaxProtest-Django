@@ -1,26 +1,278 @@
 {% extends "base.html" %}
+{% load humanize %}
 
 {% block title %}
     Home Values - Enter Your Address
 {% endblock %}
 
 {% block content %}
-<div class="container mt-5">
-    <h2>Enter Your Address</h2>
-    <form method="post">
-        {% csrf_token %}
-        <div class="mb-3">
-            <label for="address_number" class="form-label">Address Number</label>
-            <input type="text" class="form-control" id="address_number" name="address_number" required>
+<div class="min-h-screen py-8 lg:py-12">
+    <!-- Hero Section -->
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="text-center mb-8 lg:mb-12">
+            <h1 class="text-3xl md:text-4xl lg:text-5xl font-bold text-gray-900 mb-4">
+                Discover Your 
+                <span class="text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-indigo-600">
+                    Home's Value
+                </span>
+            </h1>
+            <p class="text-lg lg:text-xl text-gray-600 max-w-3xl mx-auto">
+                Get accurate property valuations, tax assessments, and market insights for your home. 
+                Enter your address below to get started.
+            </p>
         </div>
-        <div class="mb-3">
-            <label for="street_name" class="form-label">Street Name</label>
-            <input type="text" class="form-control" id="street_name" name="street_name" required>
+
+        <!-- Form Card -->
+        <div class="max-w-5xl mx-auto">
+            <div class="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden">
+                <!-- Card Header -->
+                <div class="bg-gradient-to-r from-blue-500 to-indigo-600 px-8 py-6">
+                    <h2 class="text-2xl font-bold text-white flex items-center">
+                        <svg class="w-6 h-6 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"></path>
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                        </svg>
+                        Enter Your Property Address
+                    </h2>
+                    <p class="text-blue-100 mt-1">We'll find detailed information about your property</p>
+                </div>
+
+                <!-- Form Body -->
+                <div class="px-6 lg:px-8 py-6 lg:py-8">
+                    <form method="post" class="space-y-6">
+                        {% csrf_token %}
+                        
+                        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 lg:gap-6">
+                            <!-- First Name -->
+                            <div>
+                                <label for="first_name" class="block text-xs lg:text-sm font-semibold text-gray-700 mb-1 lg:mb-2">
+                                    First Name
+                                </label>
+                                <div class="relative">
+                                    <input 
+                                        type="text" 
+                                        id="first_name" 
+                                        name="first_name" 
+                                        class="w-full px-3 lg:px-4 py-2 lg:py-3 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors placeholder-gray-400"
+                                        placeholder="John"
+                                        value="{{ request.POST.first_name|default:'' }}"
+                                    >
+                                </div>
+                            </div>
+
+                            <!-- Last Name -->
+                            <div>
+                                <label for="last_name" class="block text-xs lg:text-sm font-semibold text-gray-700 mb-1 lg:mb-2">
+                                    Last Name
+                                </label>
+                                <div class="relative">
+                                    <input 
+                                        type="text" 
+                                        id="last_name" 
+                                        name="last_name" 
+                                        class="w-full px-3 lg:px-4 py-2 lg:py-3 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors placeholder-gray-400"
+                                        placeholder="Smith"
+                                        value="{{ request.POST.last_name|default:'' }}"
+                                    >
+                                </div>
+                            </div>
+
+                            <!-- Address -->
+                            <div>
+                                <label for="address" class="block text-xs lg:text-sm font-semibold text-gray-700 mb-1 lg:mb-2">
+                                    Address
+                                </label>
+                                <div class="relative">
+                                    <input 
+                                        type="text" 
+                                        id="address" 
+                                        name="address" 
+                                        class="w-full px-3 lg:px-4 py-2 lg:py-3 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors placeholder-gray-400"
+                                        placeholder="123"
+                                        value="{{ request.POST.address|default:'' }}"
+                                    >
+                                </div>
+                            </div>
+
+                            <!-- Street Name -->
+                            <div>
+                                <label for="street_name" class="block text-xs lg:text-sm font-semibold text-gray-700 mb-1 lg:mb-2">
+                                    Street Name
+                                </label>
+                                <div class="relative">
+                                    <input 
+                                        type="text" 
+                                        id="street_name" 
+                                        name="street_name" 
+                                        class="w-full px-3 lg:px-4 py-2 lg:py-3 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors placeholder-gray-400"
+                                        placeholder="Main Street"
+                                        value="{{ request.POST.street_name|default:'' }}"
+                                    >
+                                </div>
+                            </div>
+
+                            <!-- Zip Code -->
+                            <div>
+                                <label for="zip_code" class="block text-xs lg:text-sm font-semibold text-gray-700 mb-1 lg:mb-2">
+                                    Zip Code
+                                </label>
+                                <div class="relative">
+                                    <input 
+                                        type="text" 
+                                        id="zip_code" 
+                                        name="zip_code" 
+                                        class="w-full px-3 lg:px-4 py-2 lg:py-3 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors placeholder-gray-400"
+                                        placeholder="77001"
+                                        maxlength="5"
+                                        pattern="[0-9]{5}"
+                                        value="{{ request.POST.zip_code|default:'' }}"
+                                    >
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Info Message -->
+                        <div class="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                            <div class="flex">
+                                <div class="flex-shrink-0">
+                                    <svg class="h-5 w-5 text-blue-400" viewBox="0 0 20 20" fill="currentColor">
+                                        <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd"></path>
+                                    </svg>
+                                </div>
+                                <div class="ml-3">
+                                    <p class="text-sm text-blue-700">
+                                        <strong>Search tip:</strong> Fill in at least one field to search for property information. You can search by owner name, address details, or zip code.
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Submit Button -->
+                        <div class="pt-4">
+                            <button 
+                                type="submit" 
+                                class="w-full bg-gradient-to-r from-blue-500 to-indigo-600 text-white font-semibold py-4 px-6 rounded-lg hover:from-blue-600 hover:to-indigo-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transform transition-all duration-200 hover:scale-105 shadow-lg"
+                            >
+                                <span class="flex items-center justify-center">
+                                    <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                                    </svg>
+                                    Search Properties
+                                </span>
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+
+            <!-- Search Results Table -->
+            {% if results %}
+            <div class="mt-8 lg:mt-12">
+                <div class="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden">
+                    <!-- Results Header -->
+                    <div class="bg-gradient-to-r from-green-500 to-emerald-600 px-4 lg:px-8 py-4 lg:py-6">
+                        <h3 class="text-xl lg:text-2xl font-bold text-white flex items-center">
+                            <svg class="w-5 lg:w-6 h-5 lg:h-6 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                            </svg>
+                            Search Results
+                        </h3>
+                        <p class="text-green-100 mt-1">Found {{ results|length }} matching propert{{ results|length|pluralize:"y,ies" }}</p>
+                    </div>
+
+                    <!-- Results Table -->
+                    <div class="overflow-x-auto">
+                        <table class="min-w-full divide-y divide-gray-200 text-xs lg:text-sm">
+                            <thead class="bg-gray-50">
+                                <tr>
+                                    <th class="px-2 lg:px-4 py-2 lg:py-3 text-left text-xs font-medium text-gray-600 uppercase tracking-wider">Acct #</th>
+                                    <th class="px-2 lg:px-4 py-2 lg:py-3 text-left text-xs font-medium text-gray-600 uppercase tracking-wider">Owner</th>
+                                    <th class="px-2 lg:px-4 py-2 lg:py-3 text-left text-xs font-medium text-gray-600 uppercase tracking-wider">Street #</th>
+                                    <th class="px-2 lg:px-4 py-2 lg:py-3 text-left text-xs font-medium text-gray-600 uppercase tracking-wider">Street Name</th>
+                                    <th class="px-2 lg:px-4 py-2 lg:py-3 text-left text-xs font-medium text-gray-600 uppercase tracking-wider">Zip</th>
+                                    <th class="px-2 lg:px-4 py-2 lg:py-3 text-right text-xs font-medium text-gray-600 uppercase tracking-wider">Assessed Value</th>
+                                    <th class="px-2 lg:px-4 py-2 lg:py-3 text-right text-xs font-medium text-gray-600 uppercase tracking-wider">Bldg Area</th>
+                                    <th class="px-2 lg:px-4 py-2 lg:py-3 text-right text-xs font-medium text-gray-600 uppercase tracking-wider">Land Area</th>
+                                    <th class="px-2 lg:px-4 py-2 lg:py-3 text-right text-xs font-medium text-gray-600 uppercase tracking-wider">$/SF</th>
+                                </tr>
+                            </thead>
+                            <tbody class="bg-white divide-y divide-gray-100">
+                                {% for r in results %}
+                                {% with av=r.assessed_value ba=r.building_area la=r.land_area ppsf=r.ppsf %}
+                                <tr class="hover:bg-blue-50/50">
+                                    <td class="px-2 lg:px-4 py-2 lg:py-3 font-mono text-gray-800 text-xs lg:text-sm">{{ r.account_number }}</td>
+                                    <td class="px-2 lg:px-4 py-2 lg:py-3 max-w-xs truncate text-xs lg:text-sm" title="{{ r.owner_name }}">{{ r.owner_name }}</td>
+                                    <td class="px-2 lg:px-4 py-2 lg:py-3 text-xs lg:text-sm">{{ r.address }}</td>
+                                    <td class="px-2 lg:px-4 py-2 lg:py-3 text-xs lg:text-sm">{{ r.street_name }}</td>
+                                    <td class="px-2 lg:px-4 py-2 lg:py-3 text-xs lg:text-sm">{{ r.zip_code }}</td>
+                                    <td class="px-2 lg:px-4 py-2 lg:py-3 text-right text-blue-700 font-semibold text-xs lg:text-sm">
+                                        {% if av %}${{ av|floatformat:0|intcomma }}{% else %}<span class="text-gray-400">N/A</span>{% endif %}
+                                    </td>
+                                    <td class="px-2 lg:px-4 py-2 lg:py-3 text-right text-xs lg:text-sm">
+                                        {% if ba %}{{ ba|floatformat:0|intcomma }}{% else %}<span class="text-gray-400">-</span>{% endif %}
+                                    </td>
+                                    <td class="px-2 lg:px-4 py-2 lg:py-3 text-right text-xs lg:text-sm">
+                                        {% if la %}{{ la|floatformat:0|intcomma }}{% else %}<span class="text-gray-400">-</span>{% endif %}
+                                    </td>
+                                    <td class="px-2 lg:px-4 py-2 lg:py-3 text-right text-xs lg:text-sm">
+                                        {% if ppsf %}${{ ppsf|floatformat:2 }}{% else %}<span class="text-gray-400">-</span>{% endif %}
+                                    </td>
+                                </tr>
+                                {% endwith %}
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+            {% elif request.method == 'POST' %}
+            <!-- No Results Message -->
+            <div class="mt-8 lg:mt-12">
+                <div class="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden">
+                    <div class="px-4 lg:px-8 py-8 lg:py-12 text-center">
+                        <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.172 16.172a4 4 0 015.656 0M9 12h6m-6-4h6m2 5.291A7.962 7.962 0 0112 15c-2.137 0-4.146.832-5.614 2.178M15 13a3 3 0 11-6 0 3 3 0 016 0zm6 0a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                        </svg>
+                        <h3 class="mt-4 text-lg font-medium text-gray-900">No properties found</h3>
+                        <p class="mt-2 text-gray-500">Try adjusting your search criteria or check your spelling.</p>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+
+            <!-- Features Section -->
+            <div class="mt-12 lg:mt-16 grid grid-cols-1 md:grid-cols-3 gap-6 lg:gap-8">
+                <div class="text-center">
+                    <div class="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center mx-auto mb-4">
+                        <svg class="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path>
+                        </svg>
+                    </div>
+                    <h3 class="text-lg font-semibold text-gray-900 mb-2">Accurate Valuations</h3>
+                    <p class="text-gray-600">Get precise property values based on current market data and assessments.</p>
+                </div>
+
+                <div class="text-center">
+                    <div class="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center mx-auto mb-4">
+                        <svg class="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1"></path>
+                        </svg>
+                    </div>
+                    <h3 class="text-lg font-semibold text-gray-900 mb-2">Tax Information</h3>
+                    <p class="text-gray-600">Access detailed tax assessment data and historical information.</p>
+                </div>
+
+                <div class="text-center">
+                    <div class="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center mx-auto mb-4">
+                        <svg class="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"></path>
+                        </svg>
+                    </div>
+                    <h3 class="text-lg font-semibold text-gray-900 mb-2">Market Insights</h3>
+                    <p class="text-gray-600">Understand market trends and comparable property values in your area.</p>
+                </div>
+            </div>
         </div>
-        <div class="mb-3">
-            <label for="zip_code" class="form-label">Zip Code</label>
-            <input type="text" class="form-control" id="zip_code" name="zip_code" required>
-        </div>
-        <button type="submit" class="btn btn-primary">Submit</button>
-    </form>
+    </div>
+</div>
 {% endblock %}
