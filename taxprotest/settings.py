@@ -27,7 +27,11 @@ load_dotenv(env_path)
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = "django-insecure-r%yzofg&-adsvp8$$-s1b(*-7yrm3%tzn$z)*!cov&_nvr)w^q"
+# Pull from environment. Fail fast if missing (except during certain mgmt commands like collectstatic in CI).
+SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY")
+if not SECRET_KEY:
+    # Provide a very explicit error to prevent accidental deployment without a proper key.
+    raise RuntimeError("DJANGO_SECRET_KEY environment variable is required but not set.")
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
