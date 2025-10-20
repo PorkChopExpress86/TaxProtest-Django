@@ -1,0 +1,297 @@
+"""
+Similarity search algorithm for finding comparable properties.
+Uses location (lat/long), size, age, and features to find similar properties.
+"""
+from math import radians, cos, sin, asin, sqrt
+from typing import List, Dict, Optional
+from django.db.models import Q, F, Count
+from .models import PropertyRecord, BuildingDetail, ExtraFeature
+
+
+def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """
+    Calculate the great circle distance between two points on the earth in miles.
+    
+    Args:
+        lat1, lon1: Latitude and longitude of first point
+        lat2, lon2: Latitude and longitude of second point
+        
+    Returns:
+        Distance in miles
+    """
+    # Convert decimal degrees to radians
+    lon1, lat1, lon2, lat2 = map(radians, [lon1, lat1, lon2, lat2])
+    
+    # Haversine formula
+    dlon = lon2 - lon1
+    dlat = lat2 - lat1
+    a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+    c = 2 * asin(sqrt(a))
+    
+    # Radius of earth in miles
+    miles = 3959 * c
+    return miles
+
+
+def calculate_similarity_score(
+    target_prop: PropertyRecord,
+    candidate_prop: PropertyRecord,
+    target_building: Optional[BuildingDetail] = None,
+    candidate_building: Optional[BuildingDetail] = None,
+    target_features: Optional[List[ExtraFeature]] = None,
+    candidate_features: Optional[List[ExtraFeature]] = None,
+    distance: float = 0.0
+) -> float:
+    """
+    Calculate a similarity score between two properties (0-100).
+    
+    Higher score = more similar
+    
+    Scoring weights:
+    - Distance: 30 points (closer is better, max 5 miles)
+    - Size match: 25 points (±20% tolerance)
+    - Age match: 15 points (±5 years tolerance)
+    - Feature match: 20 points (matching amenities)
+    - Bedroom match: 5 points
+    - Bathroom match: 5 points
+    """
+    score = 0.0
+    
+    # Distance scoring (30 points max)
+    # Within 1 mile: 30 pts, 2 miles: 20 pts, 3 miles: 10 pts, 5+ miles: 0 pts
+    if distance <= 1:
+        score += 30
+    elif distance <= 2:
+        score += 20
+    elif distance <= 3:
+        score += 10
+    elif distance <= 5:
+        score += 5
+    
+    if target_building and candidate_building:
+        # Size matching (25 points max)
+        if target_building.heat_area and candidate_building.heat_area:
+            target_area = float(target_building.heat_area)
+            candidate_area = float(candidate_building.heat_area)
+            
+            # Calculate percentage difference
+            diff_pct = abs(target_area - candidate_area) / target_area
+            
+            if diff_pct <= 0.1:  # Within 10%
+                score += 25
+            elif diff_pct <= 0.2:  # Within 20%
+                score += 20
+            elif diff_pct <= 0.3:  # Within 30%
+                score += 10
+            elif diff_pct <= 0.5:  # Within 50%
+                score += 5
+        
+        # Age matching (15 points max)
+        if target_building.year_built and candidate_building.year_built:
+            year_diff = abs(target_building.year_built - candidate_building.year_built)
+            
+            if year_diff <= 2:
+                score += 15
+            elif year_diff <= 5:
+                score += 12
+            elif year_diff <= 10:
+                score += 8
+            elif year_diff <= 15:
+                score += 4
+        
+        # Bedroom matching (5 points)
+        if target_building.bedrooms and candidate_building.bedrooms:
+            if target_building.bedrooms == candidate_building.bedrooms:
+                score += 5
+            elif abs(target_building.bedrooms - candidate_building.bedrooms) == 1:
+                score += 3
+        
+        # Bathroom matching (5 points)
+        if target_building.bathrooms and candidate_building.bathrooms:
+            bath_diff = abs(float(target_building.bathrooms) - float(candidate_building.bathrooms))
+            if bath_diff <= 0.5:
+                score += 5
+            elif bath_diff <= 1.0:
+                score += 3
+    
+    # Feature matching (20 points max)
+    if target_features and candidate_features:
+        target_codes = set(f.feature_code for f in target_features)
+        candidate_codes = set(f.feature_code for f in candidate_features)
+        
+        if target_codes and candidate_codes:
+            # Calculate Jaccard similarity for features
+            intersection = len(target_codes & candidate_codes)
+            union = len(target_codes | candidate_codes)
+            
+            if union > 0:
+                feature_similarity = intersection / union
+                score += feature_similarity * 20
+    
+    return round(score, 1)
+
+
+def find_similar_properties(
+    account_number: str,
+    max_distance_miles: float = 5.0,
+    max_results: int = 50,
+    min_score: float = 30.0
+) -> List[Dict]:
+    """
+    Find properties similar to the given account number.
+    
+    Args:
+        account_number: The account number to find matches for
+        max_distance_miles: Maximum distance in miles (default: 5)
+        max_results: Maximum number of results to return (default: 50)
+        min_score: Minimum similarity score (0-100) to include (default: 30)
+        
+    Returns:
+        List of dictionaries with property details and similarity info:
+        {
+            'property': PropertyRecord,
+            'building': BuildingDetail,
+            'features': List[ExtraFeature],
+            'distance': float (miles),
+            'similarity_score': float (0-100),
+        }
+    """
+    # Get the target property
+    try:
+        target = PropertyRecord.objects.get(account_number=account_number)
+    except PropertyRecord.DoesNotExist:
+        return []
+    
+    # Check if target has coordinates
+    if not target.latitude or not target.longitude:
+        return []
+    
+    target_lat = float(target.latitude)
+    target_lon = float(target.longitude)
+    
+    # Get target building and features (only active records)
+    target_building = target.buildings.filter(is_active=True).first()
+    target_features = list(target.extra_features.filter(is_active=True))
+    
+    # Calculate rough bounding box for filtering
+    # 1 degree of latitude ≈ 69 miles
+    # 1 degree of longitude ≈ 69 * cos(latitude) miles
+    lat_range = max_distance_miles / 69.0
+    lon_range = max_distance_miles / (69.0 * cos(radians(target_lat)))
+    
+    # Query for nearby properties with coordinates
+    candidates = PropertyRecord.objects.filter(
+        latitude__gte=target_lat - lat_range,
+        latitude__lte=target_lat + lat_range,
+        longitude__gte=target_lon - lon_range,
+        longitude__lte=target_lon + lon_range,
+        latitude__isnull=False,
+        longitude__isnull=False
+    ).exclude(
+        account_number=account_number  # Exclude the target property itself
+    ).select_related().prefetch_related('buildings', 'extra_features')
+    
+    # Optional: Filter by size if we have target building data
+    if target_building and target_building.heat_area:
+        min_area = float(target_building.heat_area) * 0.5  # 50% smaller
+        max_area = float(target_building.heat_area) * 1.5  # 50% larger
+        candidates = candidates.filter(
+            buildings__is_active=True,
+            buildings__heat_area__gte=min_area,
+            buildings__heat_area__lte=max_area
+        )
+    
+    # Calculate distances and similarity scores
+    results = []
+    for candidate in candidates[:500]:  # Limit candidates to process
+        candidate_lat = float(candidate.latitude)
+        candidate_lon = float(candidate.longitude)
+        
+        # Calculate distance
+        distance = haversine_distance(target_lat, target_lon, candidate_lat, candidate_lon)
+        
+        # Skip if too far
+        if distance > max_distance_miles:
+            continue
+        
+        # Get candidate building and features (only active records)
+        candidate_building = candidate.buildings.filter(is_active=True).first()
+        candidate_features = list(candidate.extra_features.filter(is_active=True))
+        
+        # Calculate similarity score
+        score = calculate_similarity_score(
+            target,
+            candidate,
+            target_building,
+            candidate_building,
+            target_features,
+            candidate_features,
+            distance
+        )
+        
+        # Skip if score is too low
+        if score < min_score:
+            continue
+        
+        results.append({
+            'property': candidate,
+            'building': candidate_building,
+            'features': candidate_features,
+            'distance': round(distance, 2),
+            'similarity_score': score,
+        })
+    
+    # Sort by similarity score (highest first)
+    results.sort(key=lambda x: x['similarity_score'], reverse=True)
+    
+    # Return top N results
+    return results[:max_results]
+
+
+def get_feature_summary(features: List[ExtraFeature]) -> Dict[str, int]:
+    """
+    Get a summary of features by category.
+    
+    Returns:
+        Dictionary with feature counts: {'POOL': 1, 'DETGAR': 2, ...}
+    """
+    summary = {}
+    for feature in features:
+        code = feature.feature_code
+        if code:
+            summary[code] = summary.get(code, 0) + 1
+    return summary
+
+
+def format_feature_list(features: List[ExtraFeature], max_features: int = 10) -> str:
+    """
+    Format a list of features into a readable string.
+    
+    Returns:
+        Comma-separated list like "Pool, Spa, Detached Garage (2)"
+    """
+    summary = get_feature_summary(features)
+    
+    # Map common codes to readable names
+    name_map = {
+        'POOL': 'Pool',
+        'POOLHTR': 'Pool Heater',
+        'SPA': 'Spa',
+        'DETGAR': 'Detached Garage',
+        'CARPORT': 'Carport',
+        'PATIO': 'Covered Patio',
+        'SPRNK': 'Sprinkler',
+        'FENCE': 'Fence',
+        'GAZEBO': 'Gazebo',
+        'TENNCT': 'Tennis Court',
+    }
+    
+    items = []
+    for code, count in sorted(summary.items())[:max_features]:
+        name = name_map.get(code, code)
+        if count > 1:
+            items.append(f"{name} ({count})")
+        else:
+            items.append(name)
+    
+    return ', '.join(items) if items else 'None'
