@@ -3,9 +3,9 @@ services:
     image: postgres:15
     restart: unless-stopped
     environment:
-      POSTGRES_USER: taxprotest
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: taxprotest
+      POSTGRES_USER: ${POSTGRES_USER:-taxprotest}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+      POSTGRES_DB: ${POSTGRES_DB:-taxprotest}
     ports:
       - "6385:5432"
     volumes:
@@ -28,10 +28,12 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql://taxprotest:password@db:5432/taxprotest
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-taxprotest}:${POSTGRES_PASSWORD:-change-me}@db:5432/${POSTGRES_DB:-taxprotest}
       - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - DEBUG=1
       - ALLOWED_HOSTS=localhost,127.0.0.1,0.0.0.0
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
     depends_on:
       db:
         condition: service_healthy
@@ -43,14 +45,45 @@ services:
       sh -c "python manage.py migrate &&
              python manage.py runserver 0.0.0.0:8000"
 
-  # Example worker service (optional). Uncomment and adjust if you want to run celery workers
-  # worker:
-  #   build: .
-  #   command: celery -A taxprotest worker --loglevel=info
-  #   depends_on:
-  #     - redis
-  #     - db
+  # Celery worker for processing background tasks
+  worker:
+    build: .
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-taxprotest}:${POSTGRES_PASSWORD:-change-me}@db:5432/${POSTGRES_DB:-taxprotest}
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - DEBUG=1
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    volumes:
+      - .:/app
+    command: celery -A taxprotest worker --loglevel=info
+
+  # Celery beat for scheduled tasks (runs monthly imports)
+  beat:
+    build: .
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-taxprotest}:${POSTGRES_PASSWORD:-change-me}@db:5432/${POSTGRES_DB:-taxprotest}
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - DEBUG=1
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    volumes:
+      - .:/app
+    command: celery -A taxprotest beat --loglevel=info
 
 volumes:
   pgdata:
     driver: local
+
