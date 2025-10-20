@@ -10,10 +10,12 @@ from .models import DownloadRecord
 HCAD_URLS = [
     'https://download.hcad.org/data/CAMA/2025/Real_acct_owner.zip',
     'https://download.hcad.org/data/CAMA/2025/Real_acct_ownership_history.zip',
+    'https://download.hcad.org/data/CAMA/2025/Real_building_land.zip',
     'https://download.hcad.org/data/CAMA/2025/Code_description_real.zip',
     'https://download.hcad.org/data/CAMA/2025/PP_files.zip',
     'https://download.hcad.org/data/CAMA/2025/Code_description_pp.zip',
     'https://download.hcad.org/data/CAMA/2025/Hearing_files.zip',
+    'https://download.hcad.org/data/GIS/Parcels.zip',
 ]
 
 
@@ -64,10 +66,12 @@ import csv
 import io
 import requests
 from celery import shared_task
+from datetime import datetime
 
 from django.conf import settings
 
-from .models import PropertyRecord
+from .models import PropertyRecord, BuildingDetail, ExtraFeature
+from .etl import load_building_details, load_extra_features, load_gis_parcels, link_orphaned_records, mark_old_records_inactive
 
 
 @shared_task(bind=True)
@@ -107,3 +111,226 @@ def download_extract_reload(self, source_url):
 
     PropertyRecord.objects.bulk_create(objs)
     return {"loaded": len(objs)}
+
+
+@shared_task(bind=True)
+def download_and_import_building_data(self):
+    """
+    Monthly scheduled task to download and import building details and extra features.
+    
+    This task:
+    1. Downloads Real_building_land.zip from HCAD
+    2. Extracts the ZIP file
+    3. Imports building_res.txt (building details)
+    4. Imports extra_features.txt (pools, garages, etc.)
+    5. Cleans up old records before importing new data
+    
+    Scheduled to run on the 2nd Tuesday of each month.
+    """
+    download_dir = ensure_download_dir()
+    
+    # Use current year for the URL
+    current_year = datetime.now().year
+    url = f'https://download.hcad.org/data/CAMA/{current_year}/Real_building_land.zip'
+    
+    self.update_state(state='DOWNLOADING', meta={'step': 'Downloading ZIP file'})
+    
+    # Download the ZIP file
+    local_name = 'Real_building_land.zip'
+    local_path = os.path.join(download_dir, local_name)
+    
+    print(f"Downloading {url}...")
+    try:
+        with requests.get(url, stream=True, timeout=300) as r:
+            r.raise_for_status()
+            with open(local_path, 'wb') as f:
+                shutil.copyfileobj(r.raw, f)
+        print(f"Downloaded to {local_path}")
+    except Exception as e:
+        print(f"Error downloading: {e}")
+        raise
+    
+    # Create download record
+    rec = DownloadRecord.objects.create(url=url, filename=local_name)
+    
+    self.update_state(state='EXTRACTING', meta={'step': 'Extracting ZIP file'})
+    
+    # Extract the ZIP
+    extract_dir = os.path.join(download_dir, 'Real_building_land')
+    os.makedirs(extract_dir, exist_ok=True)
+    
+    try:
+        with zipfile.ZipFile(local_path, 'r') as z:
+            z.extractall(extract_dir)
+        rec.extracted = True
+        rec.save()
+        print(f"Extracted to {extract_dir}")
+    except Exception as e:
+        print(f"Error extracting: {e}")
+        raise
+    
+    # Find the building and features files
+    building_file = os.path.join(extract_dir, 'building_res.txt')
+    features_file = os.path.join(extract_dir, 'extra_features.txt')
+    
+    results = {
+        'download_url': url,
+        'extracted_to': extract_dir,
+        'buildings_imported': 0,
+        'buildings_invalid': 0,
+        'features_imported': 0,
+        'features_invalid': 0,
+        'buildings_deactivated': 0,
+        'features_deactivated': 0,
+        'buildings_linked': 0,
+        'features_linked': 0,
+    }
+    
+    # Generate batch ID for this import
+    batch_id = datetime.now().strftime('%Y%m%d_%H%M%S')
+    
+    # Mark old building details and extra features as inactive (soft delete)
+    self.update_state(state='DEACTIVATING', meta={'step': 'Deactivating old building data'})
+    print(f"Marking old records as inactive (batch_id: {batch_id})...")
+    deactivate_results = mark_old_records_inactive()
+    results['buildings_deactivated'] = deactivate_results['buildings_deactivated']
+    results['features_deactivated'] = deactivate_results['features_deactivated']
+    
+    # Import building details
+    if os.path.exists(building_file):
+        self.update_state(state='IMPORTING', meta={'step': 'Importing building details'})
+        print(f"Importing building details from {building_file}")
+        try:
+            building_results = load_building_details(building_file, chunk_size=5000, import_batch_id=batch_id)
+            results['buildings_imported'] = building_results['imported']
+            results['buildings_invalid'] = building_results['invalid']
+            print(f"Successfully imported {building_results['imported']} building records")
+            print(f"Invalid: {building_results['invalid']}, Skipped: {building_results['skipped']}")
+        except Exception as e:
+            print(f"Error importing building details: {e}")
+            results['building_error'] = str(e)
+    else:
+        print(f"Warning: Building file not found at {building_file}")
+        results['building_error'] = 'File not found'
+    
+    # Import extra features
+    if os.path.exists(features_file):
+        self.update_state(state='IMPORTING', meta={'step': 'Importing extra features'})
+        print(f"Importing extra features from {features_file}")
+        try:
+            feature_results = load_extra_features(features_file, chunk_size=5000, import_batch_id=batch_id)
+            results['features_imported'] = feature_results['imported']
+            results['features_invalid'] = feature_results['invalid']
+            print(f"Successfully imported {feature_results['imported']} feature records")
+            print(f"Invalid: {feature_results['invalid']}, Skipped: {feature_results['skipped']}")
+        except Exception as e:
+            print(f"Error importing extra features: {e}")
+            results['features_error'] = str(e)
+    else:
+        print(f"Warning: Features file not found at {features_file}")
+        results['features_error'] = 'File not found'
+    
+    # Link orphaned records (where property=None but account_number exists)
+    self.update_state(state='LINKING', meta={'step': 'Linking orphaned records to properties'})
+    print("Linking orphaned records to their properties...")
+    try:
+        link_results = link_orphaned_records(chunk_size=5000)
+        results['buildings_linked'] = link_results['buildings_linked']
+        results['features_linked'] = link_results['features_linked']
+        print(f"Linked {link_results['buildings_linked']} buildings and {link_results['features_linked']} features")
+    except Exception as e:
+        print(f"Error linking orphaned records: {e}")
+        results['linking_error'] = str(e)
+    
+    self.update_state(state='SUCCESS', meta={'step': 'Import completed'})
+    
+    return results
+
+
+@shared_task(bind=True)
+def download_and_import_gis_data(self):
+    """
+    Annual scheduled task to download and import GIS parcel location data.
+    
+    This task:
+    1. Downloads Parcels.zip from HCAD (GIS data)
+    2. Extracts the ZIP file
+    3. Imports shapefile data to update latitude/longitude for all properties
+    
+    This runs once per year since property locations rarely change.
+    Can also be triggered manually via Django admin or management command.
+    
+    Scheduled to run annually on January 15th at 3 AM.
+    """
+    download_dir = ensure_download_dir()
+    
+    # Use current year for the URL
+    current_year = datetime.now().year
+    url = f'https://download.hcad.org/data/GIS/Parcels.zip'
+    
+    self.update_state(state='DOWNLOADING', meta={'step': 'Downloading GIS Parcels ZIP'})
+    
+    # Download the ZIP file
+    local_name = 'Parcels.zip'
+    local_path = os.path.join(download_dir, local_name)
+    
+    print(f"Downloading {url}...")
+    try:
+        with requests.get(url, stream=True, timeout=600) as r:
+            r.raise_for_status()
+            with open(local_path, 'wb') as f:
+                shutil.copyfileobj(r.raw, f)
+        print(f"Downloaded to {local_path}")
+    except Exception as e:
+        print(f"Error downloading: {e}")
+        raise
+    
+    # Create download record
+    rec = DownloadRecord.objects.create(url=url, filename=local_name)
+    
+    self.update_state(state='EXTRACTING', meta={'step': 'Extracting GIS ZIP file'})
+    
+    # Extract the ZIP
+    extract_dir = os.path.join(download_dir, 'Parcels')
+    os.makedirs(extract_dir, exist_ok=True)
+    
+    try:
+        with zipfile.ZipFile(local_path, 'r') as z:
+            z.extractall(extract_dir)
+        rec.extracted = True
+        rec.save()
+        print(f"Extracted to {extract_dir}")
+    except Exception as e:
+        print(f"Error extracting: {e}")
+        raise
+    
+    # Find the shapefile
+    shapefile_path = os.path.join(extract_dir, 'Gis', 'pdata', 'ParcelsCity', 'ParcelsCity.shp')
+    
+    results = {
+        'download_url': url,
+        'extracted_to': extract_dir,
+        'properties_updated': 0,
+    }
+    
+    # Import GIS data
+    if os.path.exists(shapefile_path):
+        self.update_state(state='IMPORTING', meta={'step': 'Importing GIS location data'})
+        print(f"Importing GIS data from {shapefile_path}")
+        try:
+            updated_count = load_gis_parcels(shapefile_path, chunk_size=5000)
+            results['properties_updated'] = updated_count
+            print(f"Successfully updated {updated_count} properties with location data")
+        except Exception as e:
+            print(f"Error importing GIS data: {e}")
+            results['gis_error'] = str(e)
+            raise
+    else:
+        error_msg = f'Shapefile not found at {shapefile_path}'
+        print(f"Error: {error_msg}")
+        results['gis_error'] = error_msg
+        raise FileNotFoundError(error_msg)
+    
+    self.update_state(state='SUCCESS', meta={'step': 'GIS import completed'})
+    
+    return results

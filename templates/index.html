@@ -39,8 +39,7 @@
 
                 <!-- Form Body -->
                 <div class="px-6 lg:px-8 py-6 lg:py-8">
-                    <form method="post" class="space-y-6">
-                        {% csrf_token %}
+                    <form method="get" class="space-y-6">
                         
                         <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 lg:gap-6">
                             <!-- First Name -->
@@ -55,7 +54,7 @@
                                         name="first_name" 
                                         class="w-full px-3 lg:px-4 py-2 lg:py-3 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors placeholder-gray-400"
                                         placeholder="John"
-                                        value="{{ request.POST.first_name|default:'' }}"
+                                        value="{{ form_values.first_name }}"
                                     >
                                 </div>
                             </div>
@@ -72,7 +71,7 @@
                                         name="last_name" 
                                         class="w-full px-3 lg:px-4 py-2 lg:py-3 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors placeholder-gray-400"
                                         placeholder="Smith"
-                                        value="{{ request.POST.last_name|default:'' }}"
+                                        value="{{ form_values.last_name }}"
                                     >
                                 </div>
                             </div>
@@ -89,7 +88,7 @@
                                         name="address" 
                                         class="w-full px-3 lg:px-4 py-2 lg:py-3 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors placeholder-gray-400"
                                         placeholder="123"
-                                        value="{{ request.POST.address|default:'' }}"
+                                        value="{{ form_values.address }}"
                                     >
                                 </div>
                             </div>
@@ -106,7 +105,7 @@
                                         name="street_name" 
                                         class="w-full px-3 lg:px-4 py-2 lg:py-3 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors placeholder-gray-400"
                                         placeholder="Main Street"
-                                        value="{{ request.POST.street_name|default:'' }}"
+                                        value="{{ form_values.street_name }}"
                                     >
                                 </div>
                             </div>
@@ -125,7 +124,7 @@
                                         placeholder="77001"
                                         maxlength="5"
                                         pattern="[0-9]{5}"
-                                        value="{{ request.POST.zip_code|default:'' }}"
+                                        value="{{ form_values.zip_code }}"
                                     >
                                 </div>
                             </div>
@@ -177,45 +176,77 @@
                             </svg>
                             Search Results
                         </h3>
-                        <p class="text-green-100 mt-1">Found {{ results|length }} matching propert{{ results|length|pluralize:"y,ies" }}</p>
+                        {% if page_obj %}
+                        <p class="text-green-100 mt-1">Found {{ page_obj.paginator.count }} matching propert{{ page_obj.paginator.count|pluralize:"y,ies" }}</p>
+                        {% endif %}
                     </div>
 
                     <!-- Results Table -->
                     <div class="overflow-x-auto">
-                        <table class="min-w-full divide-y divide-gray-200 text-xs lg:text-sm">
+                        <table class="w-full divide-y divide-gray-200 text-xs lg:text-sm table-auto">
                             <thead class="bg-gray-50">
                                 <tr>
-                                    <th class="px-2 lg:px-4 py-2 lg:py-3 text-left text-xs font-medium text-gray-600 uppercase tracking-wider">Acct #</th>
-                                    <th class="px-2 lg:px-4 py-2 lg:py-3 text-left text-xs font-medium text-gray-600 uppercase tracking-wider">Owner</th>
-                                    <th class="px-2 lg:px-4 py-2 lg:py-3 text-left text-xs font-medium text-gray-600 uppercase tracking-wider">Street #</th>
-                                    <th class="px-2 lg:px-4 py-2 lg:py-3 text-left text-xs font-medium text-gray-600 uppercase tracking-wider">Street Name</th>
-                                    <th class="px-2 lg:px-4 py-2 lg:py-3 text-left text-xs font-medium text-gray-600 uppercase tracking-wider">Zip</th>
-                                    <th class="px-2 lg:px-4 py-2 lg:py-3 text-right text-xs font-medium text-gray-600 uppercase tracking-wider">Assessed Value</th>
-                                    <th class="px-2 lg:px-4 py-2 lg:py-3 text-right text-xs font-medium text-gray-600 uppercase tracking-wider">Bldg Area</th>
-                                    <th class="px-2 lg:px-4 py-2 lg:py-3 text-right text-xs font-medium text-gray-600 uppercase tracking-wider">Land Area</th>
-                                    <th class="px-2 lg:px-4 py-2 lg:py-3 text-right text-xs font-medium text-gray-600 uppercase tracking-wider">$/SF</th>
+                                    <th class="px-2 lg:px-4 py-2 lg:py-3 text-left text-xs font-medium text-gray-600 uppercase tracking-wider whitespace-nowrap">Acct #</th>
+                                    <th class="px-2 lg:px-4 py-2 lg:py-3 text-left text-xs font-medium text-gray-600 uppercase tracking-wider whitespace-nowrap">Owner</th>
+                                    <th class="px-2 lg:px-4 py-2 lg:py-3 text-left text-xs font-medium text-gray-600 uppercase tracking-wider whitespace-nowrap">Street #</th>
+                                    <th class="px-2 lg:px-4 py-2 lg:py-3 text-left text-xs font-medium text-gray-600 uppercase tracking-wider whitespace-nowrap">Street Name</th>
+                                    <th class="px-2 lg:px-4 py-2 lg:py-3 text-left text-xs font-medium text-gray-600 uppercase tracking-wider whitespace-nowrap">Zip</th>
+                                    <th class="px-2 lg:px-4 py-2 lg:py-3 text-right text-xs font-medium text-gray-600 uppercase tracking-wider whitespace-nowrap">Assessed Value</th>
+                                    <th class="px-2 lg:px-4 py-2 lg:py-3 text-right text-xs font-medium text-gray-600 uppercase tracking-wider whitespace-nowrap">Bldg Area</th>
+                                    <th class="px-2 lg:px-4 py-2 lg:py-3 text-right text-xs font-medium text-gray-600 uppercase tracking-wider whitespace-nowrap">Bed/Bath</th>
+                                    <th class="px-2 lg:px-4 py-2 lg:py-3 text-left text-xs font-medium text-gray-600 uppercase tracking-wider whitespace-nowrap">Features</th>
+                                    <th class="px-2 lg:px-4 py-2 lg:py-3 text-right text-xs font-medium text-gray-600 uppercase tracking-wider whitespace-nowrap">$/SF</th>
+                                    <th class="px-2 lg:px-4 py-2 lg:py-3 text-center text-xs font-medium text-gray-600 uppercase tracking-wider whitespace-nowrap sticky right-0 bg-gray-50 shadow-[-2px_0_4px_rgba(0,0,0,0.05)]">Actions</th>
                                 </tr>
                             </thead>
                             <tbody class="bg-white divide-y divide-gray-100">
                                 {% for r in results %}
                                 {% with av=r.assessed_value ba=r.building_area la=r.land_area ppsf=r.ppsf %}
                                 <tr class="hover:bg-blue-50/50">
-                                    <td class="px-2 lg:px-4 py-2 lg:py-3 font-mono text-gray-800 text-xs lg:text-sm">{{ r.account_number }}</td>
-                                    <td class="px-2 lg:px-4 py-2 lg:py-3 max-w-xs truncate text-xs lg:text-sm" title="{{ r.owner_name }}">{{ r.owner_name }}</td>
-                                    <td class="px-2 lg:px-4 py-2 lg:py-3 text-xs lg:text-sm">{{ r.address }}</td>
-                                    <td class="px-2 lg:px-4 py-2 lg:py-3 text-xs lg:text-sm">{{ r.street_name }}</td>
-                                    <td class="px-2 lg:px-4 py-2 lg:py-3 text-xs lg:text-sm">{{ r.zip_code }}</td>
-                                    <td class="px-2 lg:px-4 py-2 lg:py-3 text-right text-blue-700 font-semibold text-xs lg:text-sm">
+                                    <td class="px-2 lg:px-4 py-2 lg:py-3 font-mono text-gray-800 text-xs lg:text-sm whitespace-nowrap">{{ r.account_number }}</td>
+                                    <td class="px-2 lg:px-4 py-2 lg:py-3 text-xs lg:text-sm" title="{{ r.owner_name }}">
+                                        <div class="max-w-[200px] truncate">{{ r.owner_name }}</div>
+                                    </td>
+                                    <td class="px-2 lg:px-4 py-2 lg:py-3 text-xs lg:text-sm whitespace-nowrap">{{ r.address }}</td>
+                                    <td class="px-2 lg:px-4 py-2 lg:py-3 text-xs lg:text-sm">
+                                        <div class="max-w-[200px] truncate">{{ r.street_name }}</div>
+                                    </td>
+                                    <td class="px-2 lg:px-4 py-2 lg:py-3 text-xs lg:text-sm whitespace-nowrap">{{ r.zip_code }}</td>
+                                    <td class="px-2 lg:px-4 py-2 lg:py-3 text-right text-blue-700 font-semibold text-xs lg:text-sm whitespace-nowrap">
                                         {% if av %}${{ av|floatformat:0|intcomma }}{% else %}<span class="text-gray-400">N/A</span>{% endif %}
                                     </td>
-                                    <td class="px-2 lg:px-4 py-2 lg:py-3 text-right text-xs lg:text-sm">
+                                    <td class="px-2 lg:px-4 py-2 lg:py-3 text-right text-xs lg:text-sm whitespace-nowrap">
                                         {% if ba %}{{ ba|floatformat:0|intcomma }}{% else %}<span class="text-gray-400">-</span>{% endif %}
                                     </td>
-                                    <td class="px-2 lg:px-4 py-2 lg:py-3 text-right text-xs lg:text-sm">
-                                        {% if la %}{{ la|floatformat:0|intcomma }}{% else %}<span class="text-gray-400">-</span>{% endif %}
+                                    <td class="px-2 lg:px-4 py-2 lg:py-3 text-right text-xs lg:text-sm whitespace-nowrap">
+                                        {% if r.bedrooms or r.bathrooms %}
+                                            <span class="text-gray-700">{{ r.bedrooms|default:"-" }}</span>
+                                            <span class="text-gray-400">/</span>
+                                            <span class="text-gray-700">{{ r.bathrooms|floatformat:1|default:"-" }}</span>
+                                        {% else %}
+                                            <span class="text-gray-400">-</span>
+                                        {% endif %}
                                     </td>
-                                    <td class="px-2 lg:px-4 py-2 lg:py-3 text-right text-xs lg:text-sm">
+                                    <td class="px-2 lg:px-4 py-2 lg:py-3 text-xs lg:text-sm" title="{{ r.features }}">
+                                        {% if r.features %}
+                                            <div class="max-w-[200px] truncate text-gray-700">{{ r.features }}</div>
+                                        {% else %}
+                                            <span class="text-gray-400">-</span>
+                                        {% endif %}
+                                    </td>
+                                    <td class="px-2 lg:px-4 py-2 lg:py-3 text-right text-xs lg:text-sm whitespace-nowrap">
                                         {% if ppsf %}${{ ppsf|floatformat:2 }}{% else %}<span class="text-gray-400">-</span>{% endif %}
+                                    </td>
+                                    <td class="px-2 lg:px-4 py-2 lg:py-3 text-center whitespace-nowrap sticky right-0 bg-white shadow-[-2px_0_4px_rgba(0,0,0,0.05)]">
+                                        <a href="{% url 'similar_properties' r.account_number %}" 
+                                           class="inline-flex items-center px-3 py-1.5 rounded-lg border border-indigo-600 bg-indigo-600 text-white text-xs font-medium hover:bg-indigo-700 transition-colors whitespace-nowrap"
+                                           title="Find similar properties">
+                                            <svg class="w-4 h-4 mr-1 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                                            </svg>
+                                            <span class="hidden sm:inline">Similar</span>
+                                            <span class="sm:hidden">Find</span>
+                                        </a>
                                     </td>
                                 </tr>
                                 {% endwith %}
@@ -223,9 +254,46 @@
                             </tbody>
                         </table>
                     </div>
+                    {% if page_obj %}
+                    <div class="px-4 lg:px-8 py-4 flex flex-col gap-3 border-t border-gray-100 bg-gray-50/50">
+                        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+                            <div class="text-sm text-gray-600">
+                                Showing page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }} ({{ page_obj.paginator.count }} total results)
+                            </div>
+                            <a href="{% url 'export_csv' %}?{{ base_query }}" 
+                               class="inline-flex items-center px-4 py-2 rounded-lg border border-green-600 bg-green-600 text-white text-sm font-medium hover:bg-green-700 transition-colors">
+                                <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                                </svg>
+                                Export All Results to CSV
+                            </a>
+                        </div>
+                        <div class="flex flex-wrap items-center gap-2">
+                            {% if page_obj.has_previous %}
+                            <a href="?{% if base_query %}{{ base_query }}&{% endif %}page={{ page_obj.previous_page_number }}" class="inline-flex items-center px-4 py-2 rounded-lg border border-gray-300 bg-white text-sm font-medium text-gray-700 hover:bg-gray-100">
+                                Previous
+                            </a>
+                            {% else %}
+                            <span class="inline-flex items-center px-4 py-2 rounded-lg border border-gray-200 bg-gray-100 text-sm font-medium text-gray-400 cursor-not-allowed">
+                                Previous
+                            </span>
+                            {% endif %}
+
+                            {% if page_obj.has_next %}
+                            <a href="?{% if base_query %}{{ base_query }}&{% endif %}page={{ page_obj.next_page_number }}" class="inline-flex items-center px-4 py-2 rounded-lg border border-gray-300 bg-white text-sm font-medium text-gray-700 hover:bg-gray-100">
+                                Next
+                            </a>
+                            {% else %}
+                            <span class="inline-flex items-center px-4 py-2 rounded-lg border border-gray-200 bg-gray-100 text-sm font-medium text-gray-400 cursor-not-allowed">
+                                Next
+                            </span>
+                            {% endif %}
+                        </div>
+                    </div>
+                    {% endif %}
                 </div>
             </div>
-            {% elif request.method == 'POST' %}
+            {% elif filters_applied %}
             <!-- No Results Message -->
             <div class="mt-8 lg:mt-12">
                 <div class="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden">
