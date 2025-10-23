@@ -28,6 +28,39 @@
             }
         }
     </script>
+    <style>
+        /* Custom scrollbar styling for better UX */
+        .overflow-x-auto::-webkit-scrollbar,
+        .overflow-y-auto::-webkit-scrollbar {
+            height: 8px;
+            width: 8px;
+        }
+        .overflow-x-auto::-webkit-scrollbar-track,
+        .overflow-y-auto::-webkit-scrollbar-track {
+            background: #f1f5f9;
+            border-radius: 10px;
+        }
+        .overflow-x-auto::-webkit-scrollbar-thumb,
+        .overflow-y-auto::-webkit-scrollbar-thumb {
+            background: #94a3b8;
+            border-radius: 10px;
+        }
+        .overflow-x-auto::-webkit-scrollbar-thumb:hover,
+        .overflow-y-auto::-webkit-scrollbar-thumb:hover {
+            background: #64748b;
+        }
+        
+        /* Ensure table container shows scrollbar immediately */
+        .overflow-x-auto {
+            overflow-x: auto;
+            overflow-y: hidden;
+        }
+        
+        /* Sticky column shadow enhancement */
+        .sticky-col-shadow {
+            box-shadow: -2px 0 8px rgba(0, 0, 0, 0.1);
+        }
+    </style>
 </head>
 <body class="bg-gradient-to-br from-blue-50 to-indigo-100 min-h-screen">
     <!-- Navigation -->

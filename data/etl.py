@@ -518,20 +518,33 @@ def load_extra_features(
             def get_str(field, maxlen=10):
                 return (row.get(field) or "").strip()[:maxlen]
 
+            # Map actual column names from extra_features.txt
+            # Columns: acct, bld_num, count, grade, cd, s_dscr, l_dscr, cat, dscr, note, uts
+            feature_code = get_str("cd", maxlen=10)  # Feature code (e.g., CPA1, CCP6)
+            long_desc = (
+                row.get("l_dscr") or ""
+            ).strip()  # Long description (preferred)
+            short_desc = (
+                row.get("s_dscr") or ""
+            ).strip()  # Short description (fallback)
+            feature_description = (
+                long_desc or short_desc
+            )  # Use long description, fallback to short
+
             feature = ExtraFeature(
                 property=prop,
                 account_number=acct,
-                feature_number=get_int("seq_no") or get_int("feature_num"),
-                feature_code=get_str("extr_ftr_cd"),
-                feature_description=(row.get("extr_ftr_dscr") or "").strip()[:255],
-                quantity=get_decimal("qty"),
+                feature_number=get_int("bld_num"),  # Building number from file
+                feature_code=feature_code,
+                feature_description=feature_description[:255],
+                quantity=get_decimal("count"),  # Count column for quantity
                 area=get_decimal("area") or get_decimal("ar"),
                 length=get_decimal("len") or get_decimal("length"),
                 width=get_decimal("wdth") or get_decimal("width"),
-                quality_code=get_str("qual_cd"),
+                quality_code=get_str("grade", maxlen=10),  # Grade is the quality
                 condition_code=get_str("cndtn_cd"),
                 year_built=get_int("yr_built") or get_int("date_erected"),
-                value=get_decimal("val") or get_decimal("value"),
+                value=get_decimal("uts"),  # UTS is the value column
                 # Import metadata
                 is_active=True,
                 import_date=import_date,

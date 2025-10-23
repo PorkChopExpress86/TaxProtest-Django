@@ -182,9 +182,10 @@
                     </div>
 
                     <!-- Results Table -->
-                    <div class="overflow-x-auto">
-                        <table class="w-full divide-y divide-gray-200 text-xs lg:text-sm table-auto">
-                            <thead class="bg-gray-50">
+                    <div class="relative">
+                        <div class="overflow-x-auto overflow-y-auto max-h-[70vh] border-b border-gray-200">
+                            <table class="min-w-full divide-y divide-gray-200 text-xs lg:text-sm">
+                                <thead class="bg-gray-50 sticky top-0 z-10 shadow-sm">
                                 <tr>
                                     <th class="px-2 lg:px-4 py-2 lg:py-3 text-left text-xs font-medium text-gray-600 uppercase tracking-wider whitespace-nowrap">Acct #</th>
                                     <th class="px-2 lg:px-4 py-2 lg:py-3 text-left text-xs font-medium text-gray-600 uppercase tracking-wider whitespace-nowrap">Owner</th>
@@ -277,6 +278,11 @@
                                 {% endfor %}
                             </tbody>
                         </table>
+                        </div>
+                        <!-- Scroll hint for horizontal scrolling -->
+                        <div class="px-4 py-2 bg-blue-50 text-center text-xs text-blue-700 lg:hidden border-t border-blue-200">
+                            👉 Swipe left/right to see all columns
+                        </div>
                     </div>
                     {% if page_obj %}
                     <div class="px-4 lg:px-8 py-4 flex flex-col gap-3 border-t border-gray-100 bg-gray-50/50">
