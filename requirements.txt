@@ -7,3 +7,4 @@ psycopg2-binary>=2.9
 python-dotenv>=1.0
 geopandas>=0.14
 pyogrio>=0.7
+gunicorn>=21.2

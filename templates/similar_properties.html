@@ -71,6 +71,27 @@
                             {% if target_bathrooms %}
                             <div><span class="font-semibold">Bathrooms:</span> {{ target_bathrooms }}</div>
                             {% endif %}
+                            {% if target_quality_code %}
+                            <div><span class="font-semibold">Quality:</span> 
+                                <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium
+                                    {% if target_quality_code == 'X' %}bg-purple-100 text-purple-800
+                                    {% elif target_quality_code == 'A' %}bg-green-100 text-green-800
+                                    {% elif target_quality_code == 'B' %}bg-blue-100 text-blue-800
+                                    {% elif target_quality_code == 'C' %}bg-yellow-100 text-yellow-800
+                                    {% elif target_quality_code == 'D' %}bg-orange-100 text-orange-800
+                                    {% else %}bg-gray-100 text-gray-800{% endif %}">
+                                    {{ target_quality_code }}
+                                    ({% if target_quality_code == 'X' %}Superior
+                                    {% elif target_quality_code == 'A' %}Excellent
+                                    {% elif target_quality_code == 'B' %}Good
+                                    {% elif target_quality_code == 'C' %}Average
+                                    {% elif target_quality_code == 'D' %}Low
+                                    {% elif target_quality_code == 'E' %}Very Low
+                                    {% elif target_quality_code == 'F' %}Poor
+                                    {% else %}{{ target_quality_code }}{% endif %})
+                                </span>
+                            </div>
+                            {% endif %}
                             {% if target_features %}
                             <div><span class="font-semibold">Features:</span> {{ target_features }}</div>
                             {% endif %}
@@ -119,6 +140,7 @@
                             <th class="px-2 lg:px-4 py-3 text-right text-xs font-medium text-gray-600 uppercase">Area</th>
                             <th class="px-2 lg:px-4 py-3 text-right text-xs font-medium text-gray-600 uppercase">Year</th>
                             <th class="px-2 lg:px-4 py-3 text-right text-xs font-medium text-gray-600 uppercase">Bed/Bath</th>
+                            <th class="px-2 lg:px-4 py-3 text-center text-xs font-medium text-gray-600 uppercase" title="Property Quality">Quality</th>
                             <th class="px-2 lg:px-4 py-3 text-right text-xs font-medium text-gray-600 uppercase">Value</th>
                             <th class="px-2 lg:px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase">Features</th>
                         </tr>
@@ -150,6 +172,29 @@
                                 {% if r.bedrooms or r.bathrooms %}
                                 {{ r.bedrooms|default:"-" }} / {{ r.bathrooms|default:"-" }}
                                 {% else %}-{% endif %}
+                            </td>
+                            <td class="px-2 lg:px-4 py-3 text-center text-xs whitespace-nowrap">
+                                {% if r.quality_code %}
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium
+                                        {% if r.quality_code == 'X' %}bg-purple-100 text-purple-800
+                                        {% elif r.quality_code == 'A' %}bg-green-100 text-green-800
+                                        {% elif r.quality_code == 'B' %}bg-blue-100 text-blue-800
+                                        {% elif r.quality_code == 'C' %}bg-yellow-100 text-yellow-800
+                                        {% elif r.quality_code == 'D' %}bg-orange-100 text-orange-800
+                                        {% else %}bg-gray-100 text-gray-800{% endif %}"
+                                        title="{% if r.quality_code == 'X' %}Superior
+                                        {% elif r.quality_code == 'A' %}Excellent
+                                        {% elif r.quality_code == 'B' %}Good
+                                        {% elif r.quality_code == 'C' %}Average
+                                        {% elif r.quality_code == 'D' %}Low
+                                        {% elif r.quality_code == 'E' %}Very Low
+                                        {% elif r.quality_code == 'F' %}Poor
+                                        {% else %}{{ r.quality_code }}{% endif %}">
+                                        {{ r.quality_code }}
+                                    </span>
+                                {% else %}
+                                    <span class="text-gray-400">-</span>
+                                {% endif %}
                             </td>
                             <td class="px-2 lg:px-4 py-3 text-right text-blue-700 font-semibold text-sm">
                                 {% if r.assessed_value %}${{ r.assessed_value|floatformat:0|intcomma }}{% else %}-{% endif %}
