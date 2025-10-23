@@ -7,6 +7,7 @@ Usage:
 
 from django.core.management.base import BaseCommand
 from django.core.management import call_command
+import sys
 
 
 class Command(BaseCommand):
@@ -102,3 +103,7 @@ class Command(BaseCommand):
         self.stdout.write(f'  Features:          {total_features:>10,}')
         self.stdout.write(f'  With coordinates:  {props_with_coords:>10,} ({props_with_coords/total_props*100:.1f}%)')
         self.stdout.write('\n' + '='*70 + '\n')
+        # Explicit final marker for external monitors and then exit cleanly
+        self.stdout.write(self.style.SUCCESS('IMPORT COMPLETE - EXITING'))
+        # Ensure process exits with a success status so orchestrators see completion
+        sys.exit(0)

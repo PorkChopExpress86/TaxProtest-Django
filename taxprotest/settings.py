@@ -19,8 +19,15 @@ from dotenv import load_dotenv
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 # Load .env from project root when present (development convenience)
-env_path = os.path.join(BASE_DIR, '.env')
+env_path = os.path.join(BASE_DIR, ".env")
 load_dotenv(env_path)
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 # Quick-start development settings - unsuitable for production
@@ -31,12 +38,42 @@ load_dotenv(env_path)
 SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY")
 if not SECRET_KEY:
     # Provide a very explicit error to prevent accidental deployment without a proper key.
-    raise RuntimeError("DJANGO_SECRET_KEY environment variable is required but not set.")
+    raise RuntimeError(
+        "DJANGO_SECRET_KEY environment variable is required but not set."
+    )
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = _env_bool("DEBUG", default=False)
 
-ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "").split(",") if os.environ.get("ALLOWED_HOSTS") else []
+_raw_hosts = os.environ.get("ALLOWED_HOSTS", "")
+ALLOWED_HOSTS = [host.strip() for host in _raw_hosts.split(",") if host.strip()]
+if not ALLOWED_HOSTS:
+    # include the reverse-proxy domain by default so local compose + reverse proxy works
+    ALLOWED_HOSTS = ["localhost", "127.0.0.1", "[::1]", "property.ohmygoshwhatever.com"]
+
+_raw_csrf = os.environ.get("CSRF_TRUSTED_ORIGINS", "")
+CSRF_TRUSTED_ORIGINS = [
+    origin.strip() for origin in _raw_csrf.split(",") if origin.strip()
+]
+if not CSRF_TRUSTED_ORIGINS:
+    # default to the reverse-proxy origin so CSRF checks succeed when using the proxy
+    CSRF_TRUSTED_ORIGINS = ["https://property.ohmygoshwhatever.com"]
+
+# Ensure the configured reverse proxy host is present even if ALLOWED_HOSTS/CSRF_TRUSTED_ORIGINS
+# were provided via environment but omitted the proxy domain. You can override the proxy
+# host by setting REVERSE_PROXY_HOST in the environment.
+_reverse_host = os.environ.get("REVERSE_PROXY_HOST", "property.ohmygoshwhatever.com")
+if _reverse_host:
+    if _reverse_host not in ALLOWED_HOSTS:
+        ALLOWED_HOSTS.append(_reverse_host)
+    # ensure CSRF origins include scheme; prefer https
+    https_origin = f"https://{_reverse_host}"
+    http_origin = f"http://{_reverse_host}"
+    if (
+        https_origin not in CSRF_TRUSTED_ORIGINS
+        and http_origin not in CSRF_TRUSTED_ORIGINS
+    ):
+        CSRF_TRUSTED_ORIGINS.append(https_origin)
 
 
 # Application definition
@@ -129,7 +166,43 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 
-STATIC_URL = "static/"
+STATIC_URL = "/static/"
+STATIC_ROOT = BASE_DIR / "staticfiles"
+
+USE_X_FORWARDED_HOST = _env_bool("USE_X_FORWARDED_HOST", default=False)
+if _env_bool("ENABLE_SECURE_PROXY_SSL_HEADER", default=False):
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+
+_force_secure_cookies = _env_bool("FORCE_SECURE_COOKIES", default=not DEBUG)
+if _force_secure_cookies:
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+
+# Optional security flags controlled by environment (safe to enable when reverse proxy terminates TLS)
+if _env_bool("ENABLE_SECURE_SETTINGS", default=False):
+    SECURE_SSL_REDIRECT = True
+    # A conservative default for HSTS when enabling: 1 week. Increase to 31536000 after testing.
+    SECURE_HSTS_SECONDS = int(os.environ.get("SECURE_HSTS_SECONDS", "604800"))
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = _env_bool(
+        "SECURE_HSTS_INCLUDE_SUBDOMAINS", default=False
+    )
+    SECURE_HSTS_PRELOAD = _env_bool("SECURE_HSTS_PRELOAD", default=False)
+
+# Additional recommended security settings (can be overridden via environment)
+# Enable XSS filter in browsers
+SECURE_BROWSER_XSS_FILTER = _env_bool("SECURE_BROWSER_XSS_FILTER", default=True)
+# Prevent the browser from guessing content types
+SECURE_CONTENT_TYPE_NOSNIFF = _env_bool("SECURE_CONTENT_TYPE_NOSNIFF", default=True)
+# Clickjacking protection; default to DENY
+X_FRAME_OPTIONS = os.environ.get("X_FRAME_OPTIONS", "DENY")
+# Ensure session cookies are HttpOnly
+SESSION_COOKIE_HTTPONLY = _env_bool("SESSION_COOKIE_HTTPONLY", default=True)
+# CSRF cookie HttpOnly defaults to False because some JS may need access; allow override
+CSRF_COOKIE_HTTPONLY = _env_bool("CSRF_COOKIE_HTTPONLY", default=False)
+# Referrer policy
+SECURE_REFERRER_POLICY = os.environ.get(
+    "SECURE_REFERRER_POLICY", "strict-origin-when-cross-origin"
+)
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
@@ -144,11 +217,11 @@ if DATABASE_URL:
     DATABASES = {
         "default": {
             "ENGINE": "django.db.backends.postgresql",
-            "NAME": url.path.lstrip('/'),
+            "NAME": url.path.lstrip("/"),
             "USER": url.username,
             "PASSWORD": url.password,
             "HOST": url.hostname,
-            "PORT": url.port or '',
+            "PORT": url.port or "",
         }
     }
 

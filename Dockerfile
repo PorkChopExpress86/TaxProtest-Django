@@ -24,11 +24,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy project
 COPY . /app/
 
-# Collect static files
-RUN python manage.py collectstatic --noinput || true
+# Collect static files during build so reverse proxies can serve them directly
+RUN DJANGO_SECRET_KEY=dummy python manage.py collectstatic --noinput || true
 
 # Expose port
 EXPOSE 8000
 
-# Run the application
-CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"]
+# Run the application with Gunicorn for production readiness
+CMD ["gunicorn", "taxprotest.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3"]
