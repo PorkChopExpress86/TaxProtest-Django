@@ -221,6 +221,7 @@ def find_similar_properties(
             longitude__isnull=False,
         )
         .exclude(account_number=account_number)  # Exclude the target property itself
+        .distinct()  # Ensure unique properties
         .select_related()
         .prefetch_related("buildings", "extra_features")
     )
@@ -229,10 +230,13 @@ def find_similar_properties(
     if target_building and target_building.heat_area:
         min_area = float(target_building.heat_area) * 0.5  # 50% smaller
         max_area = float(target_building.heat_area) * 1.5  # 50% larger
+        # Use a subquery to avoid duplicates from multiple buildings
         candidates = candidates.filter(
-            buildings__is_active=True,
-            buildings__heat_area__gte=min_area,
-            buildings__heat_area__lte=max_area,
+            account_number__in=BuildingDetail.objects.filter(
+                is_active=True,
+                heat_area__gte=min_area,
+                heat_area__lte=max_area,
+            ).values_list('account_number', flat=True).distinct()
         )
 
     # Calculate distances and similarity scores
