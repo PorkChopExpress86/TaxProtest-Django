@@ -162,7 +162,7 @@ def calculate_similarity_score(
 
 def find_similar_properties(
     account_number: str,
-    max_distance_miles: float = 5.0,
+    max_distance_miles: float = 7.0,
     max_results: int = 50,
     min_score: float = 30.0,
 ) -> List[Dict]:
@@ -236,7 +236,9 @@ def find_similar_properties(
                 is_active=True,
                 heat_area__gte=min_area,
                 heat_area__lte=max_area,
-            ).values_list('account_number', flat=True).distinct()
+            )
+            .values_list("account_number", flat=True)
+            .distinct()
         )
 
     # Calculate distances and similarity scores
@@ -307,33 +309,23 @@ def get_feature_summary(features: List[ExtraFeature]) -> Dict[str, int]:
 
 def format_feature_list(features: List[ExtraFeature], max_features: int = 10) -> str:
     """
-    Format a list of features into a readable string.
+    Format a list of features into a readable string using feature descriptions.
 
     Returns:
-        Comma-separated list like "Pool, Spa, Detached Garage (2)"
+        Comma-separated list like "Reinforced Concrete Pool, Frame Detached Garage"
     """
-    summary = get_feature_summary(features)
+    # Group features by description and count them
+    feature_counts = {}
+    for feature in features:
+        desc = feature.feature_description or feature.feature_code or "Unknown"
+        feature_counts[desc] = feature_counts.get(desc, 0) + 1
 
-    # Map common codes to readable names
-    name_map = {
-        "POOL": "Pool",
-        "POOLHTR": "Pool Heater",
-        "SPA": "Spa",
-        "DETGAR": "Detached Garage",
-        "CARPORT": "Carport",
-        "PATIO": "Covered Patio",
-        "SPRNK": "Sprinkler",
-        "FENCE": "Fence",
-        "GAZEBO": "Gazebo",
-        "TENNCT": "Tennis Court",
-    }
-
+    # Format as readable list
     items = []
-    for code, count in sorted(summary.items())[:max_features]:
-        name = name_map.get(code, code)
+    for desc, count in sorted(feature_counts.items())[:max_features]:
         if count > 1:
-            items.append(f"{name} ({count})")
+            items.append(f"{desc} ({count})")
         else:
-            items.append(name)
+            items.append(desc)
 
     return ", ".join(items) if items else "None"
