@@ -76,6 +76,11 @@ class BuildingDetailAdmin(admin.ModelAdmin):
         "import_date",
     )
     date_hierarchy = "import_date"
+    list_select_related = ("property",)
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        return qs.select_related("property")
     
     fieldsets = (
         ("Property Link", {
@@ -170,6 +175,11 @@ class ExtraFeatureAdmin(admin.ModelAdmin):
         "import_date",
     )
     date_hierarchy = "import_date"
+    list_select_related = ("property",)
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        return qs.select_related("property")
     
     fieldsets = (
         ("Property Link", {

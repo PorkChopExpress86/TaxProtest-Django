@@ -1,20 +1,23 @@
 import csv
 import os
+import logging
 from typing import Iterable, Dict, Optional, List
 
 from django.db import transaction, connection
 
 from .models import PropertyRecord
 
+logger = logging.getLogger(__name__)
+
 # Increase CSV field size limit to handle large HCAD fields
 csv.field_size_limit(10485760)  # 10MB limit
 
 
 try:
-    import geopandas as gpd
-
+    import geopandas as gpd  # type: ignore
     GEOPANDAS_AVAILABLE = True
-except ImportError:
+except ImportError:  # pragma: no cover - optional dependency
+    gpd = None  # type: ignore
     GEOPANDAS_AVAILABLE = False
 
 
@@ -188,12 +191,13 @@ def load_gis_parcels(shapefile_path: str, chunk_size: int = 5000) -> int:
 
     Returns number of records updated.
     """
-    if not GEOPANDAS_AVAILABLE:
+    if not GEOPANDAS_AVAILABLE or gpd is None:
         raise ImportError(
             "geopandas is required to process GIS data. Install with: pip install geopandas pyogrio"
         )
 
     # Read shapefile
+    assert gpd is not None  # for type checkers; guarded above
     gdf = gpd.read_file(shapefile_path)
 
     # Ensure CRS is WGS84 (lat/long) for consistent coordinates
@@ -229,7 +233,7 @@ def load_gis_parcels(shapefile_path: str, chunk_size: int = 5000) -> int:
     total_updated = 0
     batch = []
 
-    print(f"Processing {len(gdf)} parcel records from {shapefile_path}")
+    logger.info(f"Processing %s parcel records from %s", len(gdf), shapefile_path)
 
     with transaction.atomic():
         for idx, row in gdf.iterrows():
@@ -263,7 +267,7 @@ def load_gis_parcels(shapefile_path: str, chunk_size: int = 5000) -> int:
                         batch, ["latitude", "longitude", "parcel_id"]
                     )
                     total_updated += len(batch)
-                    print(f"Updated {total_updated} properties with GIS data...")
+                    logger.info("Updated %s properties with GIS data...", total_updated)
                     batch.clear()
 
         # Update remaining batch
@@ -273,7 +277,7 @@ def load_gis_parcels(shapefile_path: str, chunk_size: int = 5000) -> int:
             )
             total_updated += len(batch)
 
-    print(f"Completed: Updated {total_updated} properties with GIS coordinates")
+    logger.info("Completed: Updated %s properties with GIS coordinates", total_updated)
     return total_updated
 
 
@@ -321,16 +325,16 @@ def load_building_details(
     valid_accounts = set(
         PropertyRecord.objects.values_list("account_number", flat=True)
     )
-    print(f"Loaded {len(valid_accounts)} valid account numbers for validation")
+    logger.info("Loaded %s valid account numbers for validation", len(valid_accounts))
 
-    print(f"Loading building details from {filepath}")
-    print(f"Import batch ID: {import_batch_id}")
+    logger.info("Loading building details from %s", filepath)
+    logger.info("Import batch ID: %s", import_batch_id)
 
     # Truncate BuildingDetail table for clean import (faster than DELETE and resets sequences)
-    print("Truncating BuildingDetail table...")
+    logger.info("Truncating BuildingDetail table...")
     with connection.cursor() as cursor:
         cursor.execute('TRUNCATE TABLE "data_buildingdetail" RESTART IDENTITY CASCADE')
-    print("BuildingDetail table truncated successfully")
+    logger.info("BuildingDetail table truncated successfully")
 
     with transaction.atomic():
         for idx, row in enumerate(reader, start=1):
@@ -408,8 +412,11 @@ def load_building_details(
             if len(buf) >= chunk_size:
                 BuildingDetail.objects.bulk_create(buf, ignore_conflicts=True)
                 results["imported"] += len(buf)
-                print(
-                    f"Loaded {results['imported']} building records (invalid: {results['invalid']}, skipped: {results['skipped']})..."
+                logger.info(
+                    "Loaded %s building records (invalid: %s, skipped: %s)...",
+                    results["imported"],
+                    results["invalid"],
+                    results["skipped"],
                 )
                 buf.clear()
 
@@ -417,9 +424,11 @@ def load_building_details(
             BuildingDetail.objects.bulk_create(buf, ignore_conflicts=True)
             results["imported"] += len(buf)
 
-    print(f"Completed: Loaded {results['imported']} building detail records")
-    print(
-        f"Invalid account numbers: {results['invalid']}, Skipped: {results['skipped']}"
+    logger.info("Completed: Loaded %s building detail records", results["imported"])
+    logger.info(
+        "Invalid account numbers: %s, Skipped: %s",
+        results["invalid"],
+        results["skipped"],
     )
     return results
 
@@ -466,16 +475,16 @@ def load_extra_features(
     valid_accounts = set(
         PropertyRecord.objects.values_list("account_number", flat=True)
     )
-    print(f"Loaded {len(valid_accounts)} valid account numbers for validation")
+    logger.info("Loaded %s valid account numbers for validation", len(valid_accounts))
 
-    print(f"Loading extra features from {filepath}")
-    print(f"Import batch ID: {import_batch_id}")
+    logger.info("Loading extra features from %s", filepath)
+    logger.info("Import batch ID: %s", import_batch_id)
 
     # Truncate ExtraFeature table for clean import (faster than DELETE and resets sequences)
-    print("Truncating ExtraFeature table...")
+    logger.info("Truncating ExtraFeature table...")
     with connection.cursor() as cursor:
         cursor.execute('TRUNCATE TABLE "data_extrafeature" RESTART IDENTITY CASCADE')
-    print("ExtraFeature table truncated successfully")
+    logger.info("ExtraFeature table truncated successfully")
 
     with transaction.atomic():
         for idx, row in enumerate(reader, start=1):
@@ -556,8 +565,11 @@ def load_extra_features(
             if len(buf) >= chunk_size:
                 ExtraFeature.objects.bulk_create(buf, ignore_conflicts=True)
                 results["imported"] += len(buf)
-                print(
-                    f"Loaded {results['imported']} extra feature records (invalid: {results['invalid']}, skipped: {results['skipped']})..."
+                logger.info(
+                    "Loaded %s extra feature records (invalid: %s, skipped: %s)...",
+                    results["imported"],
+                    results["invalid"],
+                    results["skipped"],
                 )
                 buf.clear()
 
@@ -565,9 +577,11 @@ def load_extra_features(
             ExtraFeature.objects.bulk_create(buf, ignore_conflicts=True)
             results["imported"] += len(buf)
 
-    print(f"Completed: Loaded {results['imported']} extra feature records")
-    print(
-        f"Invalid account numbers: {results['invalid']}, Skipped: {results['skipped']}"
+    logger.info("Completed: Loaded %s extra feature records", results["imported"])
+    logger.info(
+        "Invalid account numbers: %s, Skipped: %s",
+        results["invalid"],
+        results["skipped"],
     )
     return results
 
@@ -591,12 +605,12 @@ def link_orphaned_records(chunk_size: int = 5000) -> dict:
         "features_invalid": 0,
     }
 
-    print("Linking orphaned building details...")
+    logger.info("Linking orphaned building details...")
 
     # Find buildings without property links
     orphaned_buildings = BuildingDetail.objects.filter(property__isnull=True)
     total_orphaned = orphaned_buildings.count()
-    print(f"Found {total_orphaned} orphaned building records")
+    logger.info("Found %s orphaned building records", total_orphaned)
 
     batch = []
     with transaction.atomic():
@@ -613,8 +627,9 @@ def link_orphaned_records(chunk_size: int = 5000) -> dict:
                     if len(batch) >= chunk_size:
                         BuildingDetail.objects.bulk_update(batch, ["property"])
                         results["buildings_linked"] += len(batch)
-                        print(
-                            f"Linked {results['buildings_linked']} building records..."
+                        logger.info(
+                            "Linked %s building records...",
+                            results["buildings_linked"],
                         )
                         batch.clear()
                 else:
@@ -625,16 +640,18 @@ def link_orphaned_records(chunk_size: int = 5000) -> dict:
             BuildingDetail.objects.bulk_update(batch, ["property"])
             results["buildings_linked"] += len(batch)
 
-    print(
-        f"Completed building linking: {results['buildings_linked']} linked, {results['buildings_invalid']} invalid"
+    logger.info(
+        "Completed building linking: %s linked, %s invalid",
+        results["buildings_linked"],
+        results["buildings_invalid"],
     )
 
     # Now link orphaned features
-    print("Linking orphaned extra features...")
+    logger.info("Linking orphaned extra features...")
 
     orphaned_features = ExtraFeature.objects.filter(property__isnull=True)
     total_orphaned = orphaned_features.count()
-    print(f"Found {total_orphaned} orphaned feature records")
+    logger.info("Found %s orphaned feature records", total_orphaned)
 
     batch = []
     with transaction.atomic():
@@ -651,7 +668,7 @@ def link_orphaned_records(chunk_size: int = 5000) -> dict:
                     if len(batch) >= chunk_size:
                         ExtraFeature.objects.bulk_update(batch, ["property"])
                         results["features_linked"] += len(batch)
-                        print(f"Linked {results['features_linked']} feature records...")
+                        logger.info("Linked %s feature records...", results["features_linked"])
                         batch.clear()
                 else:
                     results["features_invalid"] += 1
@@ -661,10 +678,12 @@ def link_orphaned_records(chunk_size: int = 5000) -> dict:
             ExtraFeature.objects.bulk_update(batch, ["property"])
             results["features_linked"] += len(batch)
 
-    print(
-        f"Completed feature linking: {results['features_linked']} linked, {results['features_invalid']} invalid"
+    logger.info(
+        "Completed feature linking: %s linked, %s invalid",
+        results["features_linked"],
+        results["features_invalid"],
     )
-    print(f"\nTotal results: {results}")
+    logger.info("Total results: %s", results)
 
     return results
 
@@ -697,7 +716,9 @@ def mark_old_records_inactive(exclude_batch_id: Optional[str] = None) -> dict:
         query = query.exclude(import_batch_id=exclude_batch_id)
 
     results["buildings_deactivated"] = query.update(is_active=False)
-    print(f"Marked {results['buildings_deactivated']} building records as inactive")
+    logger.info(
+        "Marked %s building records as inactive", results["buildings_deactivated"]
+    )
 
     # Mark old features as inactive
     query = ExtraFeature.objects.filter(is_active=True)
@@ -705,7 +726,9 @@ def mark_old_records_inactive(exclude_batch_id: Optional[str] = None) -> dict:
         query = query.exclude(import_batch_id=exclude_batch_id)
 
     results["features_deactivated"] = query.update(is_active=False)
-    print(f"Marked {results['features_deactivated']} feature records as inactive")
+    logger.info(
+        "Marked %s feature records as inactive", results["features_deactivated"]
+    )
 
     return results
 
@@ -742,7 +765,7 @@ def load_fixtures_room_counts(filepath: str, chunk_size: int = 5000) -> dict:
         "buildings_not_found": 0,
     }
 
-    print(f"Loading room counts from {filepath}")
+    logger.info("Loading room counts from %s", filepath)
 
     # First pass: collect all room counts from fixtures
     for idx, row in enumerate(reader, start=1):
@@ -784,12 +807,14 @@ def load_fixtures_room_counts(filepath: str, chunk_size: int = 5000) -> dict:
             room_data[key]["half_baths"] = int(units)
 
         if idx % 10000 == 0:
-            print(
-                f"Processed {idx:,} fixture records, found {len(room_data):,} buildings with room data..."
+            logger.info(
+                "Processed %s fixture records, found %s buildings with room data...",
+                f"{idx:,}",
+                f"{len(room_data):,}",
             )
 
-    print(f"\nFound room data for {len(room_data):,} buildings")
-    print(f"Updating BuildingDetail records...")
+    logger.info("Found room data for %s buildings", f"{len(room_data):,}")
+    logger.info("Updating BuildingDetail records...")
 
     # Second pass: update BuildingDetail records in batches
     keys_list = list(room_data.keys())
@@ -838,13 +863,24 @@ def load_fixtures_room_counts(filepath: str, chunk_size: int = 5000) -> dict:
                     results["buildings_updated"] += count
 
         if (i + chunk_size) % 50000 == 0:
-            print(f"Updated {results['buildings_updated']:,} buildings...")
+            logger.info("Updated %s buildings...", f"{results['buildings_updated']:,}")
 
-    print(f"\n✅ Fixture import complete!")
-    print(f"Total fixture records processed: {results['total_fixture_records']:,}")
-    print(f"Room records found (RMB/RMF/RMH): {results['room_records_found']:,}")
-    print(f"Buildings with room data: {len(room_data):,}")
-    print(f"BuildingDetail records updated: {results['buildings_updated']:,}")
-    print(f"Buildings not found in DB: {results['buildings_not_found']:,}")
+    logger.info("Fixture import complete!")
+    logger.info(
+        "Total fixture records processed: %s",
+        f"{results['total_fixture_records']:,}",
+    )
+    logger.info(
+        "Room records found (RMB/RMF/RMH): %s",
+        f"{results['room_records_found']:,}",
+    )
+    logger.info("Buildings with room data: %s", f"{len(room_data):,}")
+    logger.info(
+        "BuildingDetail records updated: %s",
+        f"{results['buildings_updated']:,}",
+    )
+    logger.info(
+        "Buildings not found in DB: %s", f"{results['buildings_not_found']:,}"
+    )
 
     return results
