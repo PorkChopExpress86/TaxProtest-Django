@@ -1,0 +1,6 @@
+pre-commit>=3.7
+black>=24.8
+ruff>=0.6.9
+mypy>=1.11
+django-stubs>=5.0.2
+django-stubs-ext>=5.0.2

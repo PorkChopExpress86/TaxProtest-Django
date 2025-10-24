@@ -2,6 +2,7 @@ from django.db import models
 
 
 class DownloadRecord(models.Model):
+    """Tracks downloaded source files and whether they were extracted."""
     url = models.URLField()
     filename = models.CharField(max_length=512)
     downloaded_at = models.DateTimeField(auto_now_add=True)
@@ -13,6 +14,7 @@ from django.db import models
 
 
 class PropertyRecord(models.Model):
+    """Primary property table with core address/owner fields and HCAD attributes."""
     address = models.CharField(max_length=255)
     city = models.CharField(max_length=100, blank=True)
     zipcode = models.CharField(max_length=20, blank=True)
@@ -41,7 +43,7 @@ class PropertyRecord(models.Model):
 
 
 class BuildingDetail(models.Model):
-    """Residential building details from building_res.txt"""
+    """Residential building details imported from building_res.txt."""
     property = models.ForeignKey(PropertyRecord, on_delete=models.CASCADE, related_name='buildings')
     account_number = models.CharField(max_length=20, db_index=True)
     
@@ -101,7 +103,7 @@ class BuildingDetail(models.Model):
 
 
 class ExtraFeature(models.Model):
-    """Extra features like pools, garages, etc. from extra_features.txt"""
+    """Extra features (pools, garages, etc.) imported from extra_features.txt."""
     property = models.ForeignKey(PropertyRecord, on_delete=models.CASCADE, related_name='extra_features')
     account_number = models.CharField(max_length=20, db_index=True)
     

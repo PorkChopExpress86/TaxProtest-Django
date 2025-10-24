@@ -14,6 +14,7 @@ from pathlib import Path
 import os
 from urllib.parse import urlparse
 from dotenv import load_dotenv
+import logging
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -228,3 +229,34 @@ if DATABASE_URL:
 # Celery settings (dev-friendly; override via env)
 CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://redis:6379/0")
 CELERY_RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND", CELERY_BROKER_URL)
+
+# Standardized logging across Django and Celery
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "verbose": {
+            "format": "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        },
+        "simple": {
+            "format": "[%(levelname)s] %(message)s",
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "verbose" if not DEBUG else "simple",
+        },
+    },
+    "root": {
+        "handlers": ["console"],
+        "level": LOG_LEVEL,
+    },
+    "loggers": {
+        "django": {"handlers": ["console"], "level": LOG_LEVEL, "propagate": False},
+        "celery": {"handlers": ["console"], "level": LOG_LEVEL, "propagate": False},
+        "data": {"handlers": ["console"], "level": LOG_LEVEL, "propagate": False},
+    },
+}

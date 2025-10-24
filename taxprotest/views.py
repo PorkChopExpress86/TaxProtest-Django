@@ -6,6 +6,7 @@ from django.utils.http import urlencode
 from django.http import HttpResponse
 import csv
 from data.models import PropertyRecord
+from typing import Dict
 from data.similarity import find_similar_properties, format_feature_list
 
 
@@ -21,6 +22,8 @@ def index(request):
     street_name = query_source.get("street_name", "").strip()
     zip_code = query_source.get("zip_code", "").strip()
     page_number = query_source.get("page", "1")
+    sort = query_source.get("sort", "zipcode")
+    direction = query_source.get("dir", "asc")
 
     filters_applied = any([first_name, last_name, address, street_name, zip_code])
 
@@ -38,7 +41,21 @@ def index(request):
         if first_name:
             qs = qs.filter(owner_name__icontains=first_name)
 
-        qs = qs.order_by("zipcode", "street_number", "street_name")
+        # Whitelist sortable fields and map to model fields
+        sort_map: Dict[str, str] = {
+            "zipcode": "zipcode",
+            "street_number": "street_number",
+            "street_name": "street_name",
+            "owner_name": "owner_name",
+            "value": "value",
+            "assessed_value": "assessed_value",
+            "building_area": "building_area",
+            "land_area": "land_area",
+        }
+
+        primary = sort_map.get(sort, "zipcode")
+        prefix = "-" if direction == "desc" else ""
+        qs = qs.order_by(f"{prefix}{primary}", "street_number", "street_name")
 
         paginator = Paginator(qs, 200)
         page_obj = paginator.get_page(page_number)
@@ -95,6 +112,8 @@ def index(request):
         "address": address,
         "street_name": street_name,
         "zip_code": zip_code,
+        "sort": sort,
+        "dir": direction,
     }
 
     context = {
@@ -103,6 +122,8 @@ def index(request):
         "base_query": base_query,
         "form_values": form_values,
         "filters_applied": filters_applied,
+        "sort": sort,
+        "dir": direction,
     }
 
     return render(request, "index.html", context)
@@ -115,6 +136,8 @@ def export_csv(request):
     address = request.GET.get("address", "").strip()
     street_name = request.GET.get("street_name", "").strip()
     zip_code = request.GET.get("zip_code", "").strip()
+    sort = request.GET.get("sort", "zipcode")
+    direction = request.GET.get("dir", "asc")
 
     filters_applied = any([first_name, last_name, address, street_name, zip_code])
 
@@ -139,7 +162,19 @@ def export_csv(request):
     if first_name:
         qs = qs.filter(owner_name__icontains=first_name)
 
-    qs = qs.order_by("zipcode", "street_number", "street_name")
+    sort_map: Dict[str, str] = {
+        "zipcode": "zipcode",
+        "street_number": "street_number",
+        "street_name": "street_name",
+        "owner_name": "owner_name",
+        "value": "value",
+        "assessed_value": "assessed_value",
+        "building_area": "building_area",
+        "land_area": "land_area",
+    }
+    primary = sort_map.get(sort, "zipcode")
+    prefix = "-" if direction == "desc" else ""
+    qs = qs.order_by(f"{prefix}{primary}", "street_number", "street_name")
 
     # Create CSV response
     response = HttpResponse(content_type="text/csv")

@@ -2,9 +2,11 @@ import os
 import zipfile
 import shutil
 import requests
+import logging
 from celery import shared_task
 from django.conf import settings
 from .models import DownloadRecord
+logger = logging.getLogger(__name__)
 
 
 HCAD_URLS = [
@@ -139,15 +141,15 @@ def download_and_import_building_data(self):
     local_name = 'Real_building_land.zip'
     local_path = os.path.join(download_dir, local_name)
     
-    print(f"Downloading {url}...")
+    logger.info("Downloading %s...", url)
     try:
         with requests.get(url, stream=True, timeout=300) as r:
             r.raise_for_status()
             with open(local_path, 'wb') as f:
                 shutil.copyfileobj(r.raw, f)
-        print(f"Downloaded to {local_path}")
+        logger.info("Downloaded to %s", local_path)
     except Exception as e:
-        print(f"Error downloading: {e}")
+        logger.error("Error downloading: %s", e)
         raise
     
     # Create download record
@@ -164,9 +166,9 @@ def download_and_import_building_data(self):
             z.extractall(extract_dir)
         rec.extracted = True
         rec.save()
-        print(f"Extracted to {extract_dir}")
+        logger.info("Extracted to %s", extract_dir)
     except Exception as e:
-        print(f"Error extracting: {e}")
+        logger.error("Error extracting: %s", e)
         raise
     
     # Find the building and features files
@@ -191,7 +193,7 @@ def download_and_import_building_data(self):
     
     # Mark old building details and extra features as inactive (soft delete)
     self.update_state(state='DEACTIVATING', meta={'step': 'Deactivating old building data'})
-    print(f"Marking old records as inactive (batch_id: {batch_id})...")
+    logger.info("Marking old records as inactive (batch_id: %s)...", batch_id)
     deactivate_results = mark_old_records_inactive()
     results['buildings_deactivated'] = deactivate_results['buildings_deactivated']
     results['features_deactivated'] = deactivate_results['features_deactivated']
@@ -199,47 +201,47 @@ def download_and_import_building_data(self):
     # Import building details
     if os.path.exists(building_file):
         self.update_state(state='IMPORTING', meta={'step': 'Importing building details'})
-        print(f"Importing building details from {building_file}")
+        logger.info("Importing building details from %s", building_file)
         try:
             building_results = load_building_details(building_file, chunk_size=5000, import_batch_id=batch_id)
             results['buildings_imported'] = building_results['imported']
             results['buildings_invalid'] = building_results['invalid']
-            print(f"Successfully imported {building_results['imported']} building records")
-            print(f"Invalid: {building_results['invalid']}, Skipped: {building_results['skipped']}")
+            logger.info("Successfully imported %s building records", building_results['imported'])
+            logger.info("Invalid: %s, Skipped: %s", building_results['invalid'], building_results['skipped'])
         except Exception as e:
-            print(f"Error importing building details: {e}")
+            logger.error("Error importing building details: %s", e)
             results['building_error'] = str(e)
     else:
-        print(f"Warning: Building file not found at {building_file}")
+        logger.warning("Building file not found at %s", building_file)
         results['building_error'] = 'File not found'
     
     # Import extra features
     if os.path.exists(features_file):
         self.update_state(state='IMPORTING', meta={'step': 'Importing extra features'})
-        print(f"Importing extra features from {features_file}")
+        logger.info("Importing extra features from %s", features_file)
         try:
             feature_results = load_extra_features(features_file, chunk_size=5000, import_batch_id=batch_id)
             results['features_imported'] = feature_results['imported']
             results['features_invalid'] = feature_results['invalid']
-            print(f"Successfully imported {feature_results['imported']} feature records")
-            print(f"Invalid: {feature_results['invalid']}, Skipped: {feature_results['skipped']}")
+            logger.info("Successfully imported %s feature records", feature_results['imported'])
+            logger.info("Invalid: %s, Skipped: %s", feature_results['invalid'], feature_results['skipped'])
         except Exception as e:
-            print(f"Error importing extra features: {e}")
+            logger.error("Error importing extra features: %s", e)
             results['features_error'] = str(e)
     else:
-        print(f"Warning: Features file not found at {features_file}")
+        logger.warning("Features file not found at %s", features_file)
         results['features_error'] = 'File not found'
     
     # Link orphaned records (where property=None but account_number exists)
     self.update_state(state='LINKING', meta={'step': 'Linking orphaned records to properties'})
-    print("Linking orphaned records to their properties...")
+    logger.info("Linking orphaned records to their properties...")
     try:
         link_results = link_orphaned_records(chunk_size=5000)
         results['buildings_linked'] = link_results['buildings_linked']
         results['features_linked'] = link_results['features_linked']
-        print(f"Linked {link_results['buildings_linked']} buildings and {link_results['features_linked']} features")
+        logger.info("Linked %s buildings and %s features", link_results['buildings_linked'], link_results['features_linked'])
     except Exception as e:
-        print(f"Error linking orphaned records: {e}")
+        logger.error("Error linking orphaned records: %s", e)
         results['linking_error'] = str(e)
     
     self.update_state(state='SUCCESS', meta={'step': 'Import completed'})
@@ -274,15 +276,15 @@ def download_and_import_gis_data(self):
     local_name = 'Parcels.zip'
     local_path = os.path.join(download_dir, local_name)
     
-    print(f"Downloading {url}...")
+    logger.info("Downloading %s...", url)
     try:
         with requests.get(url, stream=True, timeout=600) as r:
             r.raise_for_status()
             with open(local_path, 'wb') as f:
                 shutil.copyfileobj(r.raw, f)
-        print(f"Downloaded to {local_path}")
+        logger.info("Downloaded to %s", local_path)
     except Exception as e:
-        print(f"Error downloading: {e}")
+        logger.error("Error downloading: %s", e)
         raise
     
     # Create download record
@@ -299,9 +301,9 @@ def download_and_import_gis_data(self):
             z.extractall(extract_dir)
         rec.extracted = True
         rec.save()
-        print(f"Extracted to {extract_dir}")
+        logger.info("Extracted to %s", extract_dir)
     except Exception as e:
-        print(f"Error extracting: {e}")
+        logger.error("Error extracting: %s", e)
         raise
     
     # Find the shapefile
@@ -316,18 +318,18 @@ def download_and_import_gis_data(self):
     # Import GIS data
     if os.path.exists(shapefile_path):
         self.update_state(state='IMPORTING', meta={'step': 'Importing GIS location data'})
-        print(f"Importing GIS data from {shapefile_path}")
+        logger.info("Importing GIS data from %s", shapefile_path)
         try:
             updated_count = load_gis_parcels(shapefile_path, chunk_size=5000)
             results['properties_updated'] = updated_count
-            print(f"Successfully updated {updated_count} properties with location data")
+            logger.info("Successfully updated %s properties with location data", updated_count)
         except Exception as e:
-            print(f"Error importing GIS data: {e}")
+            logger.error("Error importing GIS data: %s", e)
             results['gis_error'] = str(e)
             raise
     else:
         error_msg = f'Shapefile not found at {shapefile_path}'
-        print(f"Error: {error_msg}")
+        logger.error("%s", error_msg)
         results['gis_error'] = error_msg
         raise FileNotFoundError(error_msg)
     

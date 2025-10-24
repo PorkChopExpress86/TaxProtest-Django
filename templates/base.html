@@ -64,26 +64,7 @@
 </head>
 <body class="bg-gradient-to-br from-blue-50 to-indigo-100 min-h-screen">
     <!-- Navigation -->
-    <nav class="bg-white shadow-lg border-b-2 border-blue-200">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="flex justify-between h-16">
-                <div class="flex items-center">
-                    <a href="/" class="flex items-center space-x-2">
-                        <div class="w-8 h-8 bg-gradient-to-r from-blue-500 to-indigo-600 rounded-lg flex items-center justify-center">
-                            <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"></path>
-                            </svg>
-                        </div>
-                        <span class="text-xl font-bold text-gray-800">Home Values</span>
-                    </a>
-                </div>
-                <div class="flex items-center space-x-4">
-                    <a href="#" class="text-gray-600 hover:text-blue-600 px-3 py-2 rounded-md text-sm font-medium transition-colors">About</a>
-                    <a href="#" class="text-gray-600 hover:text-blue-600 px-3 py-2 rounded-md text-sm font-medium transition-colors">Contact</a>
-                </div>
-            </div>
-        </div>
-    </nav>
+    {% include "includes/navbar.html" %}
 
     <!-- Main Content -->
     <main class="flex-1">
@@ -91,13 +72,6 @@
     </main>
 
     <!-- Footer -->
-    <footer class="bg-white border-t border-gray-200 mt-16">
-        <div class="max-w-7xl mx-auto py-8 px-4 sm:px-6 lg:px-8">
-            <div class="text-center text-gray-600">
-                <p>&copy; 2025 Home Values. All rights reserved.</p>
-                <p class="mt-2 text-sm">Get accurate property valuations and tax information.</p>
-            </div>
-        </div>
-    </footer>
+    {% include "includes/footer.html" %}
 </body>
 </html>
