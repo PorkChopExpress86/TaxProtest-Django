@@ -5,14 +5,14 @@ Run this with: docker compose exec web python scripts/diagnose_bedroom_bath.py
 """
 import os
 import sys
-import django
+import django  # type: ignore[import-not-found]
 
 # Setup Django
 sys.path.insert(0, '/app')
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'taxprotest.settings')
 django.setup()
 
-from data.models import PropertyRecord, BuildingDetail, ExtraFeature
+from data.models import PropertyRecord, BuildingDetail, ExtraFeature  # type: ignore[import-not-found]
 
 
 def main():
@@ -197,7 +197,7 @@ def main():
         print("✗ ISSUE: No BuildingDetail records found")
         print("  ACTION: Run building data import:")
         print("    docker compose exec web python manage.py import_building_data")
-    elif buildings.first().bedrooms is None:
+    elif buildings.first() and buildings.first().bedrooms is None:  # type: ignore[union-attr]
         print("✗ ISSUE: BuildingDetail exists but bedrooms/bathrooms are NULL")
         
         # Check if room data is in fixtures.txt
@@ -227,9 +227,11 @@ def main():
             print("    docker compose exec web python manage.py import_building_data")
     else:
         print("✓ Data looks good!")
-        print(f"  Bedrooms: {buildings.first().bedrooms}")
-        print(f"  Bathrooms: {buildings.first().bathrooms}")
-        print(f"  Half Baths: {buildings.first().half_baths}")
+        building = buildings.first()
+        if building:
+            print(f"  Bedrooms: {building.bedrooms}")
+            print(f"  Bathrooms: {building.bathrooms}")
+            print(f"  Half Baths: {building.half_baths}")
 
 
 if __name__ == "__main__":

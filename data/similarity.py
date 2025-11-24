@@ -4,9 +4,11 @@ Uses location (lat/long), size, age, and features to find similar properties.
 """
 
 from math import radians, cos, sin, asin, sqrt
-from typing import List, Dict, Optional
-from django.db.models import Q, F, Count
+from typing import List, Dict, Optional, TYPE_CHECKING
 from .models import PropertyRecord, BuildingDetail, ExtraFeature
+
+if TYPE_CHECKING:
+    from decimal import Decimal
 
 
 def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -48,30 +50,27 @@ def calculate_similarity_score(
 
     Higher score = more similar
 
-    Scoring weights:
-    - Distance: 25 points (closer is better, max 5 miles)
-    - Size match: 20 points (±20% tolerance)
-    - Age match: 10 points (±5 years tolerance)
-    - Quality match: 10 points (same quality grade)
-    - Feature match: 15 points (matching amenities)
-    - Bedroom match: 10 points (exact match important)
-    - Bathroom match: 10 points (exact match important)
+    Scoring weights (distance removed - used only for filtering):
+    - Heated Size match: 22 points (±20% tolerance)
+    - Lot Size match: 15 points (±20% tolerance)
+    - Bedroom match: 18 points (exact match important)
+    - Bathroom match: 18 points (exact match important)
+    - Quality match: 12 points (same quality grade)
+    - Feature match: 10 points (matching amenities)
+    - Age match: 5 points (±5 years tolerance)
+    
+    Note: Distance is used to filter candidates (max_distance_miles parameter)
+    but does not affect the similarity score. This allows comparison of
+    properties with similar attributes regardless of distance.
     """
     score = 0.0
 
-    # Distance scoring (25 points max)
-    # Within 1 mile: 25 pts, 2 miles: 18 pts, 3 miles: 10 pts, 5+ miles: 0 pts
-    if distance <= 1:
-        score += 25
-    elif distance <= 2:
-        score += 18
-    elif distance <= 3:
-        score += 10
-    elif distance <= 5:
-        score += 5
+    # Distance is NOT scored - it only filters candidates
+    # This allows finding similar properties for price/sqft comparison
+    # regardless of whether they're 1 mile or 10 miles away
 
     if target_building and candidate_building:
-        # Size matching (20 points max)
+        # Heated size matching (22 points max)
         if target_building.heat_area and candidate_building.heat_area:
             target_area = float(target_building.heat_area)
             candidate_area = float(candidate_building.heat_area)
@@ -80,35 +79,35 @@ def calculate_similarity_score(
             diff_pct = abs(target_area - candidate_area) / target_area
 
             if diff_pct <= 0.1:  # Within 10%
-                score += 20
+                score += 22
             elif diff_pct <= 0.2:  # Within 20%
-                score += 16
+                score += 18
             elif diff_pct <= 0.3:  # Within 30%
-                score += 10
+                score += 11
             elif diff_pct <= 0.5:  # Within 50%
-                score += 5
+                score += 6
 
-        # Age matching (10 points max)
+        # Age matching (5 points max)
         if target_building.year_built and candidate_building.year_built:
             year_diff = abs(target_building.year_built - candidate_building.year_built)
 
             if year_diff <= 2:
-                score += 10
-            elif year_diff <= 5:
-                score += 8
-            elif year_diff <= 10:
                 score += 5
-            elif year_diff <= 15:
+            elif year_diff <= 5:
+                score += 4
+            elif year_diff <= 10:
                 score += 3
+            elif year_diff <= 15:
+                score += 2
 
-        # Quality matching (10 points max)
+        # Quality matching (12 points max)
         # X=Superior, A=Excellent, B=Good, C=Average, D=Low, E=Very Low, F=Poor
         if target_building.quality_code and candidate_building.quality_code:
             target_q = target_building.quality_code.strip().upper()
             candidate_q = candidate_building.quality_code.strip().upper()
 
             if target_q == candidate_q:
-                score += 10  # Exact quality match
+                score += 12  # Exact quality match
             else:
                 # Define quality ranking (higher = better)
                 quality_rank = {"X": 7, "A": 6, "B": 5, "C": 4, "D": 3, "E": 2, "F": 1}
@@ -118,32 +117,32 @@ def calculate_similarity_score(
                 if target_rank > 0 and candidate_rank > 0:
                     rank_diff = abs(target_rank - candidate_rank)
                     if rank_diff == 1:
-                        score += 7  # One quality level off
+                        score += 8  # One quality level off
                     elif rank_diff == 2:
                         score += 4  # Two quality levels off
 
-        # Bedroom matching (10 points)
+        # Bedroom matching (18 points max)
         if target_building.bedrooms and candidate_building.bedrooms:
             if target_building.bedrooms == candidate_building.bedrooms:
-                score += 10  # Exact match
+                score += 18  # Exact match
             elif abs(target_building.bedrooms - candidate_building.bedrooms) == 1:
-                score += 6  # Off by 1
+                score += 10  # Off by 1
             elif abs(target_building.bedrooms - candidate_building.bedrooms) == 2:
-                score += 3  # Off by 2
+                score += 5  # Off by 2
 
-        # Bathroom matching (10 points)
+        # Bathroom matching (18 points max)
         if target_building.bathrooms and candidate_building.bathrooms:
             bath_diff = abs(
                 float(target_building.bathrooms) - float(candidate_building.bathrooms)
             )
             if bath_diff <= 0.5:
-                score += 10  # Exact or half-bath difference
+                score += 18  # Exact or half-bath difference
             elif bath_diff <= 1.0:
-                score += 6  # One full bath difference
+                score += 11  # One full bath difference
             elif bath_diff <= 1.5:
-                score += 3  # 1.5 bath difference
+                score += 5  # 1.5 bath difference
 
-    # Feature matching (15 points max)
+    # Feature matching (10 points max)
     if target_features and candidate_features:
         target_codes = set(f.feature_code for f in target_features)
         candidate_codes = set(f.feature_code for f in candidate_features)
@@ -155,14 +154,33 @@ def calculate_similarity_score(
 
             if union > 0:
                 feature_similarity = intersection / union
-                score += feature_similarity * 15
+                score += feature_similarity * 10
+    
+    # Lot size matching (15 points max)
+    # Uses PropertyRecord.land_area (total land square footage)
+    if target_prop.land_area and candidate_prop.land_area:
+        try:
+            target_land = float(target_prop.land_area)
+            candidate_land = float(candidate_prop.land_area)
+            if target_land > 0:
+                land_diff_pct = abs(target_land - candidate_land) / target_land
+                if land_diff_pct <= 0.1:  # Within 10%
+                    score += 15
+                elif land_diff_pct <= 0.2:  # Within 20%
+                    score += 12
+                elif land_diff_pct <= 0.3:  # Within 30%
+                    score += 8
+                elif land_diff_pct <= 0.5:  # Within 50%
+                    score += 4
+        except (ValueError, TypeError):
+            pass
 
     return round(score, 1)
 
 
 def find_similar_properties(
     account_number: str,
-    max_distance_miles: float = 7.0,
+    max_distance_miles: float = 10.0,
     max_results: int = 50,
     min_score: float = 30.0,
 ) -> List[Dict]:
@@ -171,7 +189,7 @@ def find_similar_properties(
 
     Args:
         account_number: The account number to find matches for
-        max_distance_miles: Maximum distance in miles (default: 5)
+            max_distance_miles: Maximum distance in miles (default: 10)
         max_results: Maximum number of results to return (default: 50)
         min_score: Minimum similarity score (0-100) to include (default: 30)
 
@@ -201,8 +219,8 @@ def find_similar_properties(
     target_lon = float(target.longitude)
 
     # Get target building and features (only active records)
-    target_building = target.buildings.filter(is_active=True).first()
-    target_features = list(target.extra_features.filter(is_active=True))
+    target_building = target.buildings.filter(is_active=True).first()  # type: ignore[attr-defined]
+    target_features = list(target.extra_features.filter(is_active=True))  # type: ignore[attr-defined]
 
     # Calculate rough bounding box for filtering
     # 1 degree of latitude ≈ 69 miles
@@ -244,6 +262,10 @@ def find_similar_properties(
     # Calculate distances and similarity scores
     results = []
     for candidate in candidates[:500]:  # Limit candidates to process
+        # Skip if coordinates are missing
+        if not candidate.latitude or not candidate.longitude:
+            continue
+            
         candidate_lat = float(candidate.latitude)
         candidate_lon = float(candidate.longitude)
 
@@ -257,8 +279,8 @@ def find_similar_properties(
             continue
 
         # Get candidate building and features (only active records)
-        candidate_building = candidate.buildings.filter(is_active=True).first()
-        candidate_features = list(candidate.extra_features.filter(is_active=True))
+        candidate_building = candidate.buildings.filter(is_active=True).first()  # type: ignore[attr-defined]
+        candidate_features = list(candidate.extra_features.filter(is_active=True))  # type: ignore[attr-defined]
 
         # Calculate similarity score
         score = calculate_similarity_score(

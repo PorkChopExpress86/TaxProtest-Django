@@ -245,7 +245,7 @@ def similar_properties(request, account_number):
         )
 
     # Get search parameters
-    max_distance = float(request.GET.get("max_distance", "5"))
+    max_distance = float(request.GET.get("max_distance", "10"))
     max_results = int(request.GET.get("max_results", "20"))
     min_score = float(request.GET.get("min_score", "30"))
 
@@ -337,6 +337,21 @@ def similar_properties(request, account_number):
         target_position = sum(1 for v in ppsf_values_sorted if v <= target_ppsf)
         target_ppsf_percentile = (target_position / len(ppsf_values_sorted)) * 100
 
+    # Sort comparable properties by price per square foot (target always first)
+    target_entry = next((r for r in formatted_results if r.get("is_target")), None)
+    comparable_entries = [r for r in formatted_results if not r.get("is_target")]
+
+    def ppsf_sort_key(entry):
+        value = entry.get("ppsf")
+        return float(value) if value is not None else float("inf")
+
+    comparable_entries.sort(key=ppsf_sort_key)
+
+    if target_entry:
+        formatted_results = [target_entry] + comparable_entries
+    else:
+        formatted_results = comparable_entries
+
     context = {
         "target_property": target_property,
         "target_building": target_building,
@@ -355,6 +370,7 @@ def similar_properties(request, account_number):
         "target_ppsf": target_ppsf,
         "target_ppsf_percentile": target_ppsf_percentile,
         "results": formatted_results,
+        "results_sort_label": "price per square foot (lowest first)",
         "max_distance": max_distance,
         "max_results": max_results,
         "min_score": min_score,
