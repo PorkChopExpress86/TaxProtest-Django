@@ -1,13 +1,18 @@
 # home/views.py
 
-from django.shortcuts import render
-from django.core.paginator import Paginator
-from django.utils.http import urlencode
-from django.http import HttpResponse
 import csv
+
+import redis
+from django.conf import settings
+from django.core.paginator import Paginator
+from django.db import connection
+from django.http import HttpResponse, JsonResponse
+from django.shortcuts import render
+from django.utils.http import urlencode
+
 from data.models import PropertyRecord
-from typing import Dict
 from data.similarity import find_similar_properties, format_feature_list
+from data.query import build_property_search_queryset
 
 
 def index(request):
@@ -27,35 +32,18 @@ def index(request):
 
     filters_applied = any([first_name, last_name, address, street_name, zip_code])
 
+    params = {
+        "first_name": first_name,
+        "last_name": last_name,
+        "address": address,
+        "street_name": street_name,
+        "zip_code": zip_code,
+        "sort": sort,
+        "dir": direction,
+    }
+
     if filters_applied:
-        qs = PropertyRecord.objects.all()
-
-        if address:
-            qs = qs.filter(address__icontains=address)
-        if street_name:
-            qs = qs.filter(street_name__icontains=street_name)
-        if zip_code:
-            qs = qs.filter(zipcode__icontains=zip_code)
-        if last_name:
-            qs = qs.filter(owner_name__icontains=last_name)
-        if first_name:
-            qs = qs.filter(owner_name__icontains=first_name)
-
-        # Whitelist sortable fields and map to model fields
-        sort_map: Dict[str, str] = {
-            "zipcode": "zipcode",
-            "street_number": "street_number",
-            "street_name": "street_name",
-            "owner_name": "owner_name",
-            "value": "value",
-            "assessed_value": "assessed_value",
-            "building_area": "building_area",
-            "land_area": "land_area",
-        }
-
-        primary = sort_map.get(sort, "zipcode")
-        prefix = "-" if direction == "desc" else ""
-        qs = qs.order_by(f"{prefix}{primary}", "street_number", "street_name")
+        qs = build_property_search_queryset(params)
 
         paginator = Paginator(qs, 200)
         page_obj = paginator.get_page(page_number)
@@ -103,24 +91,21 @@ def index(request):
         results = formatted
 
     query_params = request.GET.copy()
-    query_params.pop("page", None)
-    base_query = query_params.urlencode()
+    page_query = query_params.copy()
+    page_query.pop("page", None)
+    base_query = page_query.urlencode()
 
-    form_values = {
-        "first_name": first_name,
-        "last_name": last_name,
-        "address": address,
-        "street_name": street_name,
-        "zip_code": zip_code,
-        "sort": sort,
-        "dir": direction,
-    }
+    sort_query_params = page_query.copy()
+    sort_query_params.pop("sort", None)
+    sort_query_params.pop("dir", None)
+    sort_query = sort_query_params.urlencode()
 
     context = {
         "results": results,
         "page_obj": page_obj,
         "base_query": base_query,
-        "form_values": form_values,
+        "sort_query": sort_query,
+        "form_values": params,
         "filters_applied": filters_applied,
         "sort": sort,
         "dir": direction,
@@ -149,32 +134,17 @@ def export_csv(request):
         writer.writerow(["No search criteria provided"])
         return response
 
-    qs = PropertyRecord.objects.all()
-
-    if address:
-        qs = qs.filter(address__icontains=address)
-    if street_name:
-        qs = qs.filter(street_name__icontains=street_name)
-    if zip_code:
-        qs = qs.filter(zipcode__icontains=zip_code)
-    if last_name:
-        qs = qs.filter(owner_name__icontains=last_name)
-    if first_name:
-        qs = qs.filter(owner_name__icontains=first_name)
-
-    sort_map: Dict[str, str] = {
-        "zipcode": "zipcode",
-        "street_number": "street_number",
-        "street_name": "street_name",
-        "owner_name": "owner_name",
-        "value": "value",
-        "assessed_value": "assessed_value",
-        "building_area": "building_area",
-        "land_area": "land_area",
+    params = {
+        "first_name": first_name,
+        "last_name": last_name,
+        "address": address,
+        "street_name": street_name,
+        "zip_code": zip_code,
+        "sort": sort,
+        "dir": direction,
     }
-    primary = sort_map.get(sort, "zipcode")
-    prefix = "-" if direction == "desc" else ""
-    qs = qs.order_by(f"{prefix}{primary}", "street_number", "street_name")
+
+    qs = build_property_search_queryset(params)
 
     # Create CSV response
     response = HttpResponse(content_type="text/csv")
@@ -289,6 +259,40 @@ def similar_properties(request, account_number):
 
     # Format results for template
     formatted_results = []
+    
+    # First, add the target property to the results
+    target_assessed = target_property.assessed_value or target_property.value
+    target_bldg_area = target_building.heat_area if target_building else (target_property.building_area or 0)
+    target_ppsf = None
+    if target_assessed and target_bldg_area and target_bldg_area > 0:
+        try:
+            target_ppsf = float(target_assessed) / float(target_bldg_area)
+        except Exception:
+            target_ppsf = None
+    
+    formatted_results.append(
+        {
+            "account_number": target_property.account_number,
+            "owner_name": target_property.owner_name,
+            "address": target_property.street_number,
+            "street_name": target_property.street_name,
+            "zip_code": target_property.zipcode,
+            "assessed_value": target_assessed,
+            "building_area": target_bldg_area,
+            "land_area": target_property.land_area,
+            "ppsf": target_ppsf,
+            "distance": 0.0,
+            "similarity_score": 100,
+            "year_built": target_building.year_built if target_building else None,
+            "bedrooms": target_building.bedrooms if target_building else None,
+            "bathrooms": target_building.bathrooms if target_building else None,
+            "quality_code": target_building.quality_code if target_building else None,
+            "features": format_feature_list(target_features, max_features=5),
+            "is_target": True,
+        }
+    )
+    
+    # Then add similar properties
     for result in similar:
         prop = result["property"]
         building = result["building"]
@@ -321,8 +325,17 @@ def similar_properties(request, account_number):
                 "bathrooms": building.bathrooms if building else None,
                 "quality_code": building.quality_code if building else None,
                 "features": format_feature_list(features, max_features=5),
+                "is_target": False,
             }
         )
+    
+    # Calculate percentile for target property's price per sqft
+    ppsf_values = [r["ppsf"] for r in formatted_results if r["ppsf"] is not None]
+    target_ppsf_percentile = None
+    if target_ppsf and ppsf_values:
+        ppsf_values_sorted = sorted(ppsf_values)
+        target_position = sum(1 for v in ppsf_values_sorted if v <= target_ppsf)
+        target_ppsf_percentile = (target_position / len(ppsf_values_sorted)) * 100
 
     context = {
         "target_property": target_property,
@@ -339,6 +352,8 @@ def similar_properties(request, account_number):
             if target_building
             else target_property.building_area
         ),
+        "target_ppsf": target_ppsf,
+        "target_ppsf_percentile": target_ppsf_percentile,
         "results": formatted_results,
         "max_distance": max_distance,
         "max_results": max_results,
@@ -349,3 +364,39 @@ def similar_properties(request, account_number):
 
 
 ## Removed mock results function; now using real data
+
+
+def healthz(request):
+    """Return 200 if the app can reach the database."""
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT 1")
+    except Exception as exc:  # pragma: no cover - defensive
+        return JsonResponse({"status": "error", "detail": str(exc)}, status=503)
+
+    return JsonResponse({"status": "ok"})
+
+
+def readiness(request):
+    """Return readiness status including Redis availability."""
+    payload = {"database": "ok", "redis": "ok"}
+    status_code = 200
+
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT 1")
+    except Exception as exc:
+        payload["database"] = "error"
+        payload["detail_database"] = str(exc)
+        status_code = 503
+
+    try:
+        client = redis.from_url(settings.CELERY_BROKER_URL, socket_timeout=1)
+        client.ping()
+        client.close()
+    except Exception as exc:  # pragma: no cover - depends on runtime redis
+        payload["redis"] = "error"
+        payload["detail_redis"] = str(exc)
+        status_code = 503
+
+    return JsonResponse(payload, status=status_code)
