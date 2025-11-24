@@ -17,11 +17,19 @@ Including another URLconf
 
 from django.contrib import admin
 from django.urls import path
-from .views import index, export_csv, similar_properties  # Import your views
+from .views import (
+    export_csv,
+    healthz,
+    index,
+    readiness,
+    similar_properties,
+)  # Import your views
 
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("", index, name="index"),  # Root URL
     path("export/", export_csv, name="export_csv"),  # CSV export
     path("similar/<str:account_number>/", similar_properties, name="similar_properties"),  # Similar properties
+    path("healthz/", healthz, name="healthz"),
+    path("readiness/", readiness, name="readiness"),
 ]

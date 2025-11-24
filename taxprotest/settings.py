@@ -46,6 +46,8 @@ if not SECRET_KEY:
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = _env_bool("DEBUG", default=False)
 
+REQUEST_LOG_SAMPLE = float(os.environ.get("REQUEST_LOG_SAMPLE", "1.0") or "0")
+
 _raw_hosts = os.environ.get("ALLOWED_HOSTS", "")
 ALLOWED_HOSTS = [host.strip() for host in _raw_hosts.split(",") if host.strip()]
 if not ALLOWED_HOSTS:
@@ -94,6 +96,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "taxprotest.middleware.RequestLoggingMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -258,5 +261,10 @@ LOGGING = {
         "django": {"handlers": ["console"], "level": LOG_LEVEL, "propagate": False},
         "celery": {"handlers": ["console"], "level": LOG_LEVEL, "propagate": False},
         "data": {"handlers": ["console"], "level": LOG_LEVEL, "propagate": False},
+        "taxprotest.request": {
+            "handlers": ["console"],
+            "level": LOG_LEVEL,
+            "propagate": False,
+        },
     },
 }
