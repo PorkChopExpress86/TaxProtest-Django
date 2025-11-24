@@ -1,6 +1,6 @@
 {% comment %}Reusable sortable header with arrow indicator{% endcomment %}
 <th class="px-2 lg:px-4 py-2 lg:py-3 text-{{ align }} text-xs font-medium uppercase tracking-wider whitespace-nowrap">
-  <a href="{{ url }}" class="hover:text-blue-700 {{ 'text-blue-700' if is_active else 'text-gray-600' }}">
+  <a href="{{ url }}" class="hover:text-blue-700 {{ is_active|yesno:'text-blue-700,text-gray-600' }}">
     <span class="inline-flex items-center gap-1">
       <span>{{ label }}</span>
       {% if arrow %}<span>{{ arrow }}</span>{% endif %}
