@@ -62,6 +62,13 @@
                             {% if target_area %}
                             <div><span class="font-semibold">Living Area:</span> {{ target_area|floatformat:0|intcomma }} sqft</div>
                             {% endif %}
+                            {% if target_ppsf %}
+                            <div><span class="font-semibold">Price per Sqft:</span> ${{ target_ppsf|floatformat:2 }}
+                                {% if target_ppsf_percentile %}
+                                <span class="text-xs text-gray-600">({{ target_ppsf_percentile|floatformat:0 }}th percentile)</span>
+                                {% endif %}
+                            </div>
+                            {% endif %}
                             {% if target_year_built %}
                             <div><span class="font-semibold">Year Built:</span> {{ target_year_built }}</div>
                             {% endif %}
@@ -143,23 +150,32 @@
                             <th class="px-2 lg:px-4 py-3 text-right text-xs font-medium text-gray-600 uppercase">Bed/Bath</th>
                             <th class="px-2 lg:px-4 py-3 text-center text-xs font-medium text-gray-600 uppercase" title="Property Quality">Quality</th>
                             <th class="px-2 lg:px-4 py-3 text-right text-xs font-medium text-gray-600 uppercase">Value</th>
+                            <th class="px-2 lg:px-4 py-3 text-right text-xs font-medium text-gray-600 uppercase">$/Sqft</th>
                             <th class="px-2 lg:px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase">Features</th>
                         </tr>
                     </thead>
                     <tbody class="bg-white divide-y divide-gray-100">
                         {% for r in results %}
-                        <tr class="hover:bg-blue-50/50">
+                        <tr class="{% if r.is_target %}bg-indigo-50 border-2 border-indigo-300{% else %}hover:bg-blue-50/50{% endif %}">
                             <td class="px-2 lg:px-4 py-3">
+                                {% if r.is_target %}
+                                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold bg-indigo-600 text-white">
+                                    YOUR PROPERTY
+                                </span>
+                                {% else %}
                                 <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
                                     {% if r.similarity_score >= 70 %}bg-green-100 text-green-800
                                     {% elif r.similarity_score >= 50 %}bg-yellow-100 text-yellow-800
                                     {% else %}bg-blue-100 text-blue-800{% endif %}">
                                     {{ r.similarity_score }}%
                                 </span>
+                                {% endif %}
                             </td>
-                            <td class="px-2 lg:px-4 py-3 text-sm text-gray-600">{{ r.distance }} mi</td>
+                            <td class="px-2 lg:px-4 py-3 text-sm text-gray-600">
+                                {% if r.is_target %}<span class="font-semibold">-</span>{% else %}{{ r.distance }} mi{% endif %}
+                            </td>
                             <td class="px-2 lg:px-4 py-3 text-sm">
-                                <div class="font-medium">{{ r.address }} {{ r.street_name }}</div>
+                                <div class="{% if r.is_target %}font-bold{% else %}font-medium{% endif %}">{{ r.address }} {{ r.street_name }}</div>
                                 <div class="text-gray-500 text-xs truncate max-w-xs">{{ r.owner_name }}</div>
                             </td>
                             <td class="px-2 lg:px-4 py-3 text-sm">{{ r.zip_code }}</td>
@@ -199,6 +215,9 @@
                             </td>
                             <td class="px-2 lg:px-4 py-3 text-right text-blue-700 font-semibold text-sm">
                                 {% if r.assessed_value %}${{ r.assessed_value|floatformat:0|intcomma }}{% else %}-{% endif %}
+                            </td>
+                            <td class="px-2 lg:px-4 py-3 text-right {% if r.is_target %}font-bold text-indigo-700{% else %}text-gray-700{% endif %} text-sm">
+                                {% if r.ppsf %}${{ r.ppsf|floatformat:2 }}{% else %}-{% endif %}
                             </td>
                             <td class="px-2 lg:px-4 py-3 text-xs text-gray-600 max-w-xs truncate">
                                 {{ r.features|default:"-" }}
