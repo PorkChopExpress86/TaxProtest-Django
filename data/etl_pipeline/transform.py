@@ -452,18 +452,14 @@ BUILDING_RES_SCHEMA = TableSchema(
 EXTRA_FEATURES_SCHEMA = TableSchema(
     name='extra_features',
     fields=[
+        # HCAD columns: acct, bld_num, count, grade, cd, s_dscr, l_dscr, cat, dscr, note, uts
         FieldSchema('account_number', ['acct'], 'str', max_length=20, required=True),
         FieldSchema('feature_number', ['bld_num'], 'int'),
-        FieldSchema('feature_code', ['code'], 'str', max_length=10),
-        FieldSchema('feature_description', ['dscr'], 'str', max_length=255),
-        FieldSchema('quantity', ['units'], 'decimal'),
-        FieldSchema('area', ['area'], 'decimal'),
-        FieldSchema('length', ['length'], 'decimal'),
-        FieldSchema('width', ['width'], 'decimal'),
-        FieldSchema('quality_code', ['grade_cd'], 'str', max_length=10),
-        FieldSchema('condition_code', ['cond_cd'], 'str', max_length=10),
-        FieldSchema('year_built', ['yr_built'], 'int'),
-        FieldSchema('value', ['value'], 'decimal'),
+        FieldSchema('feature_code', ['cd'], 'str', max_length=10),
+        FieldSchema('feature_description', ['l_dscr'], 'str', max_length=255),
+        FieldSchema('quantity', ['count'], 'decimal'),
+        FieldSchema('quality_code', ['grade'], 'str', max_length=10),
+        FieldSchema('value', ['uts'], 'decimal'),
     ],
     key_fields=['account_number', 'feature_number', 'feature_code'],
 )

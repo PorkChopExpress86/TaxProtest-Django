@@ -10,6 +10,7 @@ Modules:
     extract: Archive extraction with streaming support
     transform: Data parsing, validation, and normalization
     load: Database loading with transaction safety
+    model_loader: Django model loading for PropertyRecord, BuildingDetail, ExtraFeature
     orchestrator: Pipeline coordination and error handling
     logging: Structured logging infrastructure
 
@@ -26,6 +27,7 @@ from .download import DownloadManager
 from .extract import ExtractManager
 from .transform import DataTransformer
 from .load import LoadManager
+from .model_loader import ModelLoader
 from .orchestrator import ETLOrchestrator
 from .logging import ETLLogger
 
@@ -36,6 +38,7 @@ __all__ = [
     'ExtractManager',
     'DataTransformer',
     'LoadManager',
+    'ModelLoader',
     'ETLOrchestrator',
     'ETLLogger',
 ]
