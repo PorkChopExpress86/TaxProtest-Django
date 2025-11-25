@@ -10,7 +10,6 @@ class DownloadRecord(models.Model):
 
     def __str__(self):
         return f"{self.filename} ({'extracted' if self.extracted else 'downloaded'})"
-from django.db import models
 
 
 class PropertyRecord(models.Model):

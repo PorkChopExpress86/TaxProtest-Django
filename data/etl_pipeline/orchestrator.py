@@ -310,7 +310,7 @@ class ETLOrchestrator:
             
             success_count = sum(1 for r in results if r.success)
             total_bytes = sum(r.bytes_extracted for r in results)
-            total_files = sum(len(r.files_extracted) for r in results)
+            total_files = sum(len(r.files_extracted or []) for r in results)
             
             metrics.records_processed = len(results)
             metrics.records_success = success_count
@@ -441,7 +441,8 @@ class ETLOrchestrator:
             return {'loaded': len(records), 'failed': 0}
         
         # Transform and load records to Django models
-        records_gen = self.transformer.iter_records(file_path, schema)
+        # Filter out None values from the generator
+        records_gen = (r for r in self.transformer.iter_records(file_path, schema) if r is not None)
         
         if schema_name == 'real_acct':
             result = self.model_loader.load_property_records(

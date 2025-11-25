@@ -286,7 +286,7 @@ class DataTransformer:
         filepath: Path,
         schema: TableSchema,
         limit: Optional[int] = None,
-    ) -> Generator[Tuple[Dict[str, Any], List[ValidationError]], None, TransformResult]:
+    ) -> Generator[Tuple[Optional[Dict[str, Any]], List[ValidationError]], None, TransformResult]:
         """Transform all rows in a file.
         
         Yields:
@@ -345,7 +345,7 @@ class DataTransformer:
         schema: TableSchema,
         skip_invalid: bool = True,
         limit: Optional[int] = None,
-    ) -> Generator[Dict[str, Any], None, None]:
+    ) -> Generator[Optional[Dict[str, Any]], None, None]:
         """Iterate over transformed records from a file.
         
         Args:

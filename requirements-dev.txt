@@ -4,3 +4,5 @@ ruff>=0.6.9
 mypy>=1.11
 django-stubs>=5.0.2
 django-stubs-ext>=5.0.2
+pytest>=8.0
+pytest-django>=4.8
