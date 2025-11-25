@@ -34,7 +34,8 @@ class FieldSchema:
     
     def get_source_name(self, available_fields: List[str]) -> Optional[str]:
         """Find matching source field name."""
-        available_lower = {f.lower(): f for f in available_fields}
+        # Filter out None values from available fields
+        available_lower = {f.lower(): f for f in available_fields if f is not None}
         for name in self.source_names:
             if name.lower() in available_lower:
                 return available_lower[name.lower()]
