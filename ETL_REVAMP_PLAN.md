@@ -38,6 +38,21 @@ Revamp the entire data ETL (Extract, Transform, Load) pipeline for HCAD property
 - Bandwidth throttling support
 - Resume partial downloads
 
+**URLS for Property data**
+Replace {year} with the current year, or latest year. Current year should be updated March/April every year. Data and explainations of the files are located in .github\instructions\database-instructions.instructions.md.
+- https://download.hcad.org/data/CAMA/{year}/Real_acct_owner.zip
+- https://download.hcad.org/data/CAMA/{year}/Real_acct_ownership_history.zip
+- https://download.hcad.org/data/CAMA/{year}/Real_building_land.zip
+- https://download.hcad.org/data/CAMA/{year}/Real_jur_exempt.zip
+- https://download.hcad.org/data/CAMA/{year}/Code_description_real.zip
+- https://download.hcad.org/data/CAMA/{year}/PP_files.zip
+- https://download.hcad.org/data/CAMA/{year}/Code_description_pp.zip
+- https://download.hcad.org/data/CAMA/{year}/Hearing_files.zip
+
+**URL for GIS Data**
+This is the parcel GIS data and should be downloaded to the same location, but will be processed separtly than the Property data.
+- https://download.hcad.org/data/GIS/Parcels.zip
+
 **Implementation**:
 ```python
 class DownloadManager:
@@ -45,6 +60,9 @@ class DownloadManager:
     def download_batch(file_specs, max_parallel=3)
     def verify_checksum(file_path, expected_hash)
 ```
+
+**File management**
+- All downloaded files are zip files and should be downloaded in the dowloads folder.
 
 ### 2. Extract Manager
 **Purpose**: Safe and efficient archive extraction
@@ -84,10 +102,15 @@ class DataTransformer:
     def deduplicate(records, key_fields)
 ```
 
+**File Management**
+The files in downloads will be extracted to the folder extracted. Each file will have its own folder with the zip file name that will contain all of the extracted text or data files. Overwrite all files if there are conflicts, or delete folders before extracting again.
+
 ### 4. Load Manager
-**Purpose**: Efficient and reliable database loading
+**Purpose**: Efficient and reliable database loading into a PostGres database hosted on docker. 
 
 **Features**:
+- Check file encoding type to ensure import sucess
+- Drop existing table data to avoid duplicates
 - Transaction-safe bulk inserts
 - Idempotent operations (upsert support)
 - Batch size optimization
@@ -95,6 +118,7 @@ class DataTransformer:
 - Progress checkpointing
 - Rollback on errors
 - Partial import support
+- Options for low memory systems
 
 **Implementation**:
 ```python
@@ -109,12 +133,14 @@ class LoadManager:
 **Purpose**: Coordinate all ETL stages with error handling
 
 **Features**:
+- Check file encoding type to ensure that the files are properly read
 - Stage-by-stage execution
 - Dependency management
 - Error handling and recovery
 - Comprehensive logging
 - Metrics collection
 - Notification system
+- Have option to drop existing data and reimport all data fresh to avoid duplicates
 
 **Implementation**:
 ```python
@@ -127,34 +153,34 @@ class ETLOrchestrator:
 
 ## Implementation Phases
 
-### Phase 1: Foundation (Week 1-2)
-- [ ] Create base classes for Download, Extract, Transform, Load managers
-- [ ] Implement configuration system for data sources
-- [ ] Set up logging infrastructure
-- [ ] Add basic unit tests
+### Phase 1: Foundation (Week 1-2) ✅ COMPLETE
+- [x] Create base classes for Download, Extract, Transform, Load managers
+- [x] Implement configuration system for data sources
+- [x] Set up logging infrastructure
+- [x] Add basic unit tests
 
 ### Phase 2: Download & Extract (Week 3)
-- [ ] Implement DownloadManager with retry logic
-- [ ] Add checksum validation
-- [ ] Implement ExtractManager with streaming support
+- [x] Implement DownloadManager with retry logic
+- [x] Add checksum validation
+- [x] Implement ExtractManager with streaming support
 - [ ] Add integration tests
 
 ### Phase 3: Transform (Week 4)
-- [ ] Refactor data parsing logic into DataTransformer
-- [ ] Implement validation rules
-- [ ] Add normalization and deduplication
+- [x] Refactor data parsing logic into DataTransformer
+- [x] Implement validation rules
+- [x] Add normalization and deduplication
 - [ ] Add transform tests
 
 ### Phase 4: Load (Week 5)
-- [ ] Implement LoadManager with bulk upsert
-- [ ] Add checkpointing and resume support
-- [ ] Optimize batch sizes
+- [x] Implement LoadManager with bulk upsert
+- [x] Add checkpointing and resume support
+- [x] Optimize batch sizes
 - [ ] Add load tests
 
 ### Phase 5: Orchestration (Week 6)
-- [ ] Implement ETLOrchestrator
-- [ ] Add error handling and recovery
-- [ ] Implement metrics collection
+- [x] Implement ETLOrchestrator
+- [x] Add error handling and recovery
+- [x] Implement metrics collection
 - [ ] Add end-to-end tests
 
 ### Phase 6: Migration & Testing (Week 7)
