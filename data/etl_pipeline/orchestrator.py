@@ -17,6 +17,7 @@ from .download import DownloadManager, DownloadResult
 from .extract import ExtractManager, ExtractResult
 from .transform import DataTransformer, TransformResult, get_schema
 from .load import LoadManager, LoadResult
+from .model_loader import ModelLoader, ModelLoadResult
 from .logging import ETLLogger, ETLMetrics
 
 
@@ -126,6 +127,7 @@ class ETLOrchestrator:
         self.extract_manager = ExtractManager(self.config, self.logger)
         self.transformer = DataTransformer(self.config, self.logger)
         self.load_manager = LoadManager(self.config, self.logger)
+        self.model_loader = ModelLoader(self.config, self.logger)
         
         # Pipeline state
         self.current_stage: Optional[PipelineStage] = None
@@ -394,17 +396,33 @@ class ETLOrchestrator:
         self,
         file_path: Path,
         skip_load: bool = False,
+        truncate: bool = True,
     ) -> Dict[str, int]:
-        """Process a single data file."""
+        """Process a single data file.
+        
+        Args:
+            file_path: Path to the data file
+            skip_load: If True, only transform without loading to database
+            truncate: If True, truncate the table before loading
+        
+        Returns:
+            Dictionary with 'loaded' and 'failed' counts
+        """
         # Determine schema based on filename
         filename = file_path.stem.lower()
         schema_name = None
         
-        if 'real_acct' in filename:
+        # Skip code description files (lookup tables, not actual data)
+        if filename.startswith('desc_'):
+            self.logger.debug(f"Skipping code description file: {file_path.name}")
+            return {'loaded': 0, 'failed': 0}
+        
+        # Match exact filenames for data files
+        if filename == 'real_acct':
             schema_name = 'real_acct'
-        elif 'building_res' in filename:
+        elif filename == 'building_res':
             schema_name = 'building_res'
-        elif 'extra_features' in filename:
+        elif filename == 'extra_features':
             schema_name = 'extra_features'
         
         if not schema_name:
@@ -417,15 +435,33 @@ class ETLOrchestrator:
         
         self.logger.info(f"Processing {file_path.name} with schema {schema_name}")
         
-        # Transform records
-        records = list(self.transformer.iter_records(file_path, schema))
-        
         if skip_load:
+            # Just transform and count records without loading
+            records = list(self.transformer.iter_records(file_path, schema))
             return {'loaded': len(records), 'failed': 0}
         
-        # Load would happen here - for now just return count
-        # In full implementation, would call load_manager
-        return {'loaded': len(records), 'failed': 0}
+        # Transform and load records to Django models
+        records_gen = self.transformer.iter_records(file_path, schema)
+        
+        if schema_name == 'real_acct':
+            result = self.model_loader.load_property_records(
+                records_gen, truncate=truncate
+            )
+        elif schema_name == 'building_res':
+            result = self.model_loader.load_building_details(
+                records_gen, truncate=truncate
+            )
+        elif schema_name == 'extra_features':
+            result = self.model_loader.load_extra_features(
+                records_gen, truncate=truncate
+            )
+        else:
+            return {'loaded': 0, 'failed': 0}
+        
+        return {
+            'loaded': result.records_loaded,
+            'failed': result.records_invalid + result.records_skipped,
+        }
     
     def _process_gis_source(self, source: DataSource) -> Dict[str, int]:
         """Process GIS data source."""
