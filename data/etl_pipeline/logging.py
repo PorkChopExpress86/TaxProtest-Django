@@ -105,13 +105,13 @@ class StructuredLogFormatter(logging.Formatter):
         
         # Add extra fields if present
         if hasattr(record, 'stage'):
-            log_data['stage'] = record.stage
+            log_data['stage'] = getattr(record, 'stage')
         if hasattr(record, 'source'):
-            log_data['source'] = record.source
+            log_data['source'] = getattr(record, 'source')
         if hasattr(record, 'progress'):
-            log_data['progress'] = record.progress
+            log_data['progress'] = getattr(record, 'progress')
         if hasattr(record, 'metrics'):
-            log_data['metrics'] = record.metrics
+            log_data['metrics'] = getattr(record, 'metrics')
         
         # Add exception info if present
         if record.exc_info:

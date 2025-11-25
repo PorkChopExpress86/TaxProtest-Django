@@ -206,16 +206,26 @@ class LoadManager:
         buffer: List[T],
         result: LoadResult,
         update_fields: Optional[List[str]] = None,
+        unique_fields: Optional[List[str]] = None,
     ) -> None:
-        """Flush buffer to database."""
+        """Flush buffer to database.
+        
+        Args:
+            model_class: Django model class
+            buffer: List of model instances to insert
+            result: LoadResult to update with statistics
+            update_fields: Fields to update on conflict (for upsert)
+            unique_fields: Fields that define uniqueness for conflict resolution
+        """
         try:
             if update_fields:
                 # Upsert with update on conflict
+                unique = unique_fields or ['account_number']
                 model_class.objects.bulk_create(
                     buffer,
                     update_conflicts=True,
                     update_fields=update_fields,
-                    unique_fields=['account_number'],  # May need to parameterize
+                    unique_fields=unique,
                 )
             else:
                 model_class.objects.bulk_create(buffer)

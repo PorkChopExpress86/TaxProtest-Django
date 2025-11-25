@@ -24,7 +24,7 @@ class ExtractResult:
     source: DataSource
     success: bool
     extract_dir: Optional[Path] = None
-    files_extracted: List[str] = None
+    files_extracted: Optional[List[str]] = None
     error: Optional[str] = None
     bytes_extracted: int = 0
     
@@ -34,7 +34,7 @@ class ExtractResult:
     
     def __str__(self) -> str:
         status = "SUCCESS" if self.success else "FAILED"
-        count = len(self.files_extracted)
+        count = len(self.files_extracted or [])
         return f"ExtractResult({self.source.name}: {status}, {count} files)"
 
 
@@ -364,7 +364,7 @@ class ExtractManager:
         # Log summary
         success_count = sum(1 for r in results if r.success)
         total_bytes = sum(r.bytes_extracted for r in results)
-        total_files = sum(len(r.files_extracted) for r in results)
+        total_files = sum(len(r.files_extracted or []) for r in results)
         
         self.logger.info(
             f"Batch extraction complete: {success_count}/{len(sources)} succeeded, "

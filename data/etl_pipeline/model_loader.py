@@ -61,6 +61,11 @@ class ModelLoader:
         self._valid_accounts: Optional[Set[str]] = None
         self._account_to_property: Optional[Dict[str, int]] = None
     
+    def reset_cache(self) -> None:
+        """Clear cached account lookups. Call after loading PropertyRecords."""
+        self._valid_accounts = None
+        self._account_to_property = None
+    
     def _generate_batch_id(self) -> str:
         """Generate a unique batch ID for tracking imports."""
         return timezone.now().strftime("%Y%m%d_%H%M%S")
@@ -327,8 +332,7 @@ class ModelLoader:
             if truncate:
                 self._truncate_table(PropertyRecord)
                 # Clear cached account data since we're truncating
-                self._valid_accounts = None
-                self._account_to_property = None
+                self.reset_cache()
             
             buf: List[PropertyRecord] = []
             
@@ -378,12 +382,13 @@ class ModelLoader:
             self.logger.info(f"Completed: Loaded {result.records_loaded} property records")
             
             # Clear cached data since we've modified the table
-            self._valid_accounts = None
-            self._account_to_property = None
+            self.reset_cache()
             
         except Exception as e:
             result.error = str(e)
             self.logger.exception(f"Error loading property records: {e}")
+            # Clear cache on error too, since table state is uncertain
+            self.reset_cache()
         
         result.duration = (datetime.now() - start_time).total_seconds()
         return result
