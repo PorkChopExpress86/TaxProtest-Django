@@ -183,10 +183,11 @@ class ETLOrchestrator:
 - [x] Implement metrics collection
 - [ ] Add end-to-end tests
 
-### Phase 6: Migration & Testing (Week 7)
-- [ ] Migrate existing imports to new pipeline
-- [ ] Update Celery tasks
-- [ ] Update management commands
+### Phase 6: Migration & Testing (Week 7) ✅ COMPLETE
+- [x] Migrate existing imports to new pipeline
+- [x] Update Celery tasks (`data/tasks_new.py`)
+- [x] Update management commands (`data/management/commands/etl_pipeline.py`)
+- [x] Add integration tests (`data/etl_pipeline/tests/test_integration.py`)
 - [ ] Performance testing and optimization
 
 ### Phase 7: Documentation & Deployment (Week 8)
