@@ -356,12 +356,15 @@ class ETLOrchestrator:
         with self.logger.stage("transform_load") as metrics:
             total_loaded = 0
             total_failed = 0
+            gis_loaded = 0
             
             # Process each source type
             for source in sources:
                 if source.source_type == DataSourceType.GIS_DATA:
                     # GIS data requires special handling
-                    self._process_gis_source(source)
+                    gis_result = self._process_gis_source(source)
+                    gis_loaded += gis_result.get('loaded', 0)
+                    total_failed += gis_result.get('failed', 0)
                     continue
                 
                 # Find extracted files for this source
@@ -383,6 +386,7 @@ class ETLOrchestrator:
             stage_result.metrics = {
                 'records_loaded': total_loaded,
                 'records_failed': total_failed,
+                'gis_coordinates_updated': gis_loaded,
             }
             
             if total_failed > 0:
@@ -465,10 +469,58 @@ class ETLOrchestrator:
         }
     
     def _process_gis_source(self, source: DataSource) -> Dict[str, int]:
-        """Process GIS data source."""
+        """Process GIS data source.
+        
+        Finds shapefiles in the extracted GIS data and loads coordinates
+        into PropertyRecord latitude/longitude fields.
+        
+        Args:
+            source: The GIS data source configuration
+            
+        Returns:
+            Dictionary with 'loaded' and 'failed' counts
+        """
         self.logger.info(f"Processing GIS source: {source.name}")
-        # GIS processing would be implemented here
-        return {'loaded': 0, 'failed': 0}
+        
+        # Get the extract path for GIS data
+        extract_path = self.extract_manager.get_extract_path(source)
+        if not extract_path.exists():
+            self.logger.warning(f"GIS extract path not found: {extract_path}")
+            return {'loaded': 0, 'failed': 0}
+        
+        # Find shapefile(s) in extracted directory
+        shapefiles = list(extract_path.rglob('*.shp'))
+        if not shapefiles:
+            self.logger.warning(f"No shapefiles found in {extract_path}")
+            return {'loaded': 0, 'failed': 0}
+        
+        # Prefer ParcelsCity.shp if available (primary parcel data)
+        shapefile_path = None
+        for shp in shapefiles:
+            if 'ParcelsCity' in shp.name:
+                shapefile_path = shp
+                break
+        
+        # Fall back to first shapefile found
+        if shapefile_path is None:
+            shapefile_path = shapefiles[0]
+        
+        self.logger.info(f"Loading GIS data from: {shapefile_path}")
+        
+        try:
+            # Import and call the GIS loading function
+            from data.etl import load_gis_parcels
+            
+            count = load_gis_parcels(str(shapefile_path))
+            self.logger.info(f"Updated {count} properties with GIS coordinates")
+            return {'loaded': count, 'failed': 0}
+            
+        except ImportError as e:
+            self.logger.error(f"GIS processing requires geopandas: {e}")
+            return {'loaded': 0, 'failed': 1}
+        except Exception as e:
+            self.logger.exception(f"Error processing GIS data: {e}")
+            return {'loaded': 0, 'failed': 1}
     
     def execute_download_only(
         self,
