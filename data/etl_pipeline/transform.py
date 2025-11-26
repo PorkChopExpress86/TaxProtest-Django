@@ -409,6 +409,7 @@ REAL_ACCT_SCHEMA = TableSchema(
         FieldSchema('owner_name', ['mailto', 'owner_name', 'owner'], 'str', max_length=255),
         FieldSchema('street_number', ['str_num', 'site_addr_num'], 'str', max_length=16),
         FieldSchema('street_name', ['str', 'site_addr_street'], 'str', max_length=128),
+        FieldSchema('street_suffix', ['str_sfx'], 'str', max_length=10),
         FieldSchema('site_addr_1', ['site_addr_1', 'site_addr'], 'str', max_length=255),
         FieldSchema('city', ['site_addr_2', 'situs_city', 'city'], 'str', max_length=100),
         FieldSchema('zipcode', ['site_addr_3', 'zip', 'zip_code'], 'str', max_length=10),
