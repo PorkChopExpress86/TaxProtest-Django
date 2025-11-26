@@ -345,7 +345,10 @@ class ModelLoader:
                     
                     # Build address from components
                     street_num = str(record.get('street_number', '')).strip()
-                    street_name = str(record.get('street_name', '')).strip()
+                    street_name_base = str(record.get('street_name', '')).strip()
+                    street_suffix = str(record.get('street_suffix', '')).strip()
+                    # Combine street name with suffix (e.g., "WALL" + "ST" -> "WALL ST")
+                    street_name = f"{street_name_base} {street_suffix}".strip() if street_suffix else street_name_base
                     site_addr = str(record.get('site_addr_1', '')).strip()
                     address = site_addr or f"{street_num} {street_name}".strip()
                     
