@@ -116,7 +116,32 @@ brew install gdal spatialindex
 
 ## Import Process
 
-### Initial Import
+### Integrated ETL Pipeline (Recommended)
+
+GIS data is now integrated into the main ETL pipeline. Running the full pipeline
+will automatically download, extract, and load GIS coordinates:
+
+```bash
+# Full pipeline (includes property data + GIS)
+docker compose exec web python manage.py etl_pipeline run
+
+# GIS only (if property data is already loaded)
+docker compose exec web python manage.py etl_pipeline run --skip-download --skip-extract --gis-only
+
+# Property data only (skip GIS)
+docker compose exec web python manage.py etl_pipeline run --property-only
+```
+
+**Pipeline Status:**
+```bash
+docker compose exec web python manage.py etl_pipeline status
+```
+
+Shows which sources are downloaded and extracted, including GIS Parcels.
+
+### Standalone GIS Import
+
+For importing GIS data independently:
 
 **Step 1: Download and Import**
 ```bash

@@ -153,6 +153,27 @@ Contains multiple files:
 
 ## Import Commands
 
+### ETL Pipeline (Recommended)
+
+The unified ETL pipeline handles all data imports:
+
+```bash
+# Full import (property data + building details + GIS coordinates)
+docker compose exec web python manage.py etl_pipeline run
+
+# Check status
+docker compose exec web python manage.py etl_pipeline status
+
+# Skip download (use existing files)
+docker compose exec web python manage.py etl_pipeline run --skip-download --skip-extract
+
+# Property data only (skip GIS)
+docker compose exec web python manage.py etl_pipeline run --property-only
+
+# GIS data only (update coordinates)
+docker compose exec web python manage.py etl_pipeline run --skip-download --skip-extract --gis-only
+```
+
 ### Manual Import Commands
 
 **Property Records (Required):**
