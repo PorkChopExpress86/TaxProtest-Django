@@ -337,6 +337,46 @@ class ETLOrchestrator:
         self._run_stage_callbacks(PipelineStage.EXTRACT, stage_result)
         return stage_result
     
+    def _preload_fixtures(self, sources: List[DataSource]) -> None:
+        """
+        Pre-load fixtures.txt to extract bedroom/bathroom counts.
+        
+        This must be called before processing building_res.txt so that
+        bedroom/bathroom data is available during building loading.
+        
+        Args:
+            sources: List of data sources to search for fixtures.txt
+        """
+        self.logger.info("Pre-loading fixtures for bedroom/bathroom data...")
+        
+        # Find the Real Building Land source
+        for source in sources:
+            if source.name == "Real Building Land":
+                extract_path = self.extract_manager.get_extract_path(source)
+                fixtures_path = extract_path / 'fixtures.txt'
+                
+                if fixtures_path.exists():
+                    try:
+                        self.model_loader.fixtures_aggregator.load_fixtures_file(fixtures_path)
+                        
+                        # Log statistics
+                        stats = self.model_loader.fixtures_aggregator.get_stats()
+                        self.logger.info(
+                            f"Fixtures loaded: {stats['total_buildings']:,} buildings, "
+                            f"{stats['with_bedrooms']:,} with bedrooms, "
+                            f"{stats['with_bathrooms']:,} with bathrooms"
+                        )
+                        return
+                    except Exception as e:
+                        self.logger.error(f"Error loading fixtures: {e}")
+                        # Continue without fixtures - fields will be NULL
+                        return
+                else:
+                    self.logger.warning(f"Fixtures file not found: {fixtures_path}")
+                    return
+        
+        self.logger.warning("Real Building Land source not found in sources list")
+    
     def _execute_transform_load(
         self,
         sources: List[DataSource],
@@ -357,6 +397,10 @@ class ETLOrchestrator:
             total_loaded = 0
             total_failed = 0
             gis_loaded = 0
+            
+            # STEP 1: Pre-load fixtures for bedroom/bathroom data
+            # This must happen before processing building_res.txt
+            self._preload_fixtures(sources)
             
             # Process each source type
             for source in sources:

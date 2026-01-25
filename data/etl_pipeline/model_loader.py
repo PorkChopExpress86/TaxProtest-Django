@@ -9,6 +9,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, Generator, List, Optional, Set, Type
+from pathlib import Path
 
 from django.db import connection, transaction
 from django.db.models import Model
@@ -16,6 +17,7 @@ from django.utils import timezone
 
 from .config import ETLConfig
 from .logging import ETLLogger
+from .fixtures_aggregator import FixturesAggregator
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +62,7 @@ class ModelLoader:
         self.batch_size = batch_size
         self._valid_accounts: Optional[Set[str]] = None
         self._account_to_property: Optional[Dict[str, int]] = None
+        self.fixtures_aggregator = FixturesAggregator()
     
     def reset_cache(self) -> None:
         """Clear cached account lookups. Call after loading PropertyRecords."""
@@ -171,9 +174,9 @@ class ModelLoader:
                         exterior_wall=str(record.get('exterior_wall', ''))[:10],
                         roof_cover=str(record.get('roof_cover', ''))[:10],
                         roof_type=str(record.get('roof_type', ''))[:10],
-                        bedrooms=self._safe_int(record.get('bedrooms')),
-                        bathrooms=self._safe_decimal(record.get('full_baths')),
-                        half_baths=self._safe_int(record.get('half_baths')),
+                        bedrooms=self._get_bedrooms(account_num, building_num, record),
+                        bathrooms=self._get_bathrooms(account_num, building_num, record),
+                        half_baths=self._get_half_baths(account_num, building_num, record),
                         fireplaces=self._safe_int(record.get('fireplaces')),
                         is_active=True,
                         import_date=import_date,
@@ -415,3 +418,70 @@ class ModelLoader:
             return float(str(value).strip())
         except (ValueError, TypeError):
             return None
+    
+    def _get_bedrooms(self, account_num: str, building_num: int, record: Dict[str, Any]) -> Optional[int]:
+        """
+        Get bedroom count from fixtures aggregator or fallback to record.
+        
+        Args:
+            account_num: Property account number
+            building_num: Building number
+            record: Transformed building record
+            
+        Returns:
+            Bedroom count or None
+        """
+        # Try fixtures first
+        bedroom_count = self.fixtures_aggregator.get_bedroom_count(account_num, building_num)
+        if bedroom_count > 0:
+            return bedroom_count
+        
+        # Fallback to record (building_res.txt columns if they exist)
+        return self._safe_int(record.get('bedrooms'))
+    
+    def _get_bathrooms(self, account_num: str, building_num: int, record: Dict[str, Any]) -> Optional[float]:
+        """
+        Get total bathroom count from fixtures aggregator or fallback to record.
+        
+        Total bathrooms = full_baths + (half_baths * 0.5)
+        
+        Args:
+            account_num: Property account number
+            building_num: Building number
+            record: Transformed building record
+            
+        Returns:
+            Total bathroom count or None
+        """
+        # Try fixtures first
+        bathroom_count = self.fixtures_aggregator.get_bathroom_count(account_num, building_num)
+        if bathroom_count > 0:
+            return bathroom_count
+        
+        # Fallback to record
+        full_baths = self._safe_decimal(record.get('full_baths')) or 0
+        half_baths = self._safe_int(record.get('half_baths')) or 0
+        
+        total = full_baths + (half_baths * 0.5)
+        return total if total > 0 else None
+    
+    def _get_half_baths(self, account_num: str, building_num: int, record: Dict[str, Any]) -> Optional[int]:
+        """
+        Get half bathroom count from fixtures aggregator or fallback to record.
+        
+        Args:
+            account_num: Property account number
+            building_num: Building number
+            record: Transformed building record
+            
+        Returns:
+            Half bathroom count or None
+        """
+        # Try fixtures first
+        fixtures = self.fixtures_aggregator.get_fixtures(account_num, building_num)
+        half_bath_count = int(fixtures['half_baths'])
+        if half_bath_count > 0:
+            return half_bath_count
+        
+        # Fallback to record
+        return self._safe_int(record.get('half_baths'))

@@ -260,23 +260,34 @@ def find_similar_properties(
         )
 
     # Calculate distances and similarity scores
+    # Process candidates in batches for performance while ensuring quality results
     results = []
-    for candidate in candidates[:500]:  # Limit candidates to process
-        # Skip if coordinates are missing
-        if not candidate.latitude or not candidate.longitude:
-            continue
+    processed = 0
+    batch_size = 1000
+    
+    # Process candidates in batches until we have enough good matches
+    # or we've exhausted all candidates
+    for offset in range(0, candidates.count(), batch_size):
+        batch = candidates[offset:offset + batch_size]
+        
+        for candidate in batch:
+            # Skip if coordinates are missing
+            if not candidate.latitude or not candidate.longitude:
+                continue
+                
+            candidate_lat = float(candidate.latitude)
+            candidate_lon = float(candidate.longitude)
+
+            # Calculate distance
+            distance = haversine_distance(
+                target_lat, target_lon, candidate_lat, candidate_lon
+            )
+
+            # Skip if too far
+            if distance > max_distance_miles:
+                continue
             
-        candidate_lat = float(candidate.latitude)
-        candidate_lon = float(candidate.longitude)
-
-        # Calculate distance
-        distance = haversine_distance(
-            target_lat, target_lon, candidate_lat, candidate_lon
-        )
-
-        # Skip if too far
-        if distance > max_distance_miles:
-            continue
+            processed += 1
 
         # Get candidate building and features (only active records)
         candidate_building = candidate.buildings.filter(is_active=True).first()  # type: ignore[attr-defined]
@@ -306,7 +317,19 @@ def find_similar_properties(
                 "similarity_score": score,
             }
         )
-
+        
+        # Early termination: if we have 3x max_results with good scores, stop processing
+        # This balances thoroughness with performance
+        if len(results) >= max_results * 3:
+            # Check if we have enough high-quality results
+            high_quality_count = sum(1 for r in results if r["similarity_score"] >= 50)
+            if high_quality_count >= max_results:
+                break
+        
+        # Absolute limit to prevent runaway processing
+        if processed >= 50000:
+            break
+    
     # Sort by similarity score (highest first)
     results.sort(key=lambda x: x["similarity_score"], reverse=True)
 

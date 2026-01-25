@@ -352,6 +352,88 @@ def similar_properties(request, account_number):
     else:
         formatted_results = comparable_entries
 
+    # Calculate protest recommendation based on PPSF comparison
+    protest_recommendation = None
+    protest_recommendation_reason = None
+    protest_recommendation_level = None
+    ppsf_median = None
+    ppsf_average = None
+    ppsf_min = None
+    ppsf_max = None
+    comparable_count = 0
+    comparable_avg_score = None
+
+    # Only calculate if target has valid PPSF
+    if target_ppsf and comparable_entries:
+        # Extract PPSF values from comparables only (exclude target)
+        comparable_ppsf_data = [
+            {"ppsf": r["ppsf"], "score": r["similarity_score"]}
+            for r in comparable_entries
+            if r.get("ppsf") is not None and r.get("similarity_score") is not None
+        ]
+
+        # Require at least 3 valid comparables
+        if len(comparable_ppsf_data) >= 3:
+            comparable_ppsf_values = [d["ppsf"] for d in comparable_ppsf_data]
+            comparable_ppsf_values_sorted = sorted(comparable_ppsf_values)
+            comparable_count = len(comparable_ppsf_values)
+
+            # Calculate median
+            mid = comparable_count // 2
+            if comparable_count % 2 == 1:
+                ppsf_median = comparable_ppsf_values_sorted[mid]
+            else:
+                ppsf_median = (
+                    comparable_ppsf_values_sorted[mid - 1]
+                    + comparable_ppsf_values_sorted[mid]
+                ) / 2.0
+
+            # Calculate average
+            ppsf_average = sum(comparable_ppsf_values) / comparable_count
+
+            # Calculate range
+            ppsf_min = comparable_ppsf_values_sorted[0]
+            ppsf_max = comparable_ppsf_values_sorted[-1]
+
+            # Calculate average similarity score
+            comparable_scores = [d["score"] for d in comparable_ppsf_data]
+            comparable_avg_score = sum(comparable_scores) / len(comparable_scores)
+
+            # Calculate percentage difference from median
+            over_percentage = ((float(target_ppsf) - float(ppsf_median)) / float(ppsf_median)) * 100.0
+
+            # Generate recommendation based on thresholds
+            if over_percentage >= 20:
+                protest_recommendation_level = "strong"
+                protest_recommendation = "Recommend protesting"
+                protest_recommendation_reason = (
+                    f"Your price per sqft (${target_ppsf:.2f}) is about {over_percentage:.0f}% above "
+                    f"the median (${ppsf_median:.2f}) of {comparable_count} similar properties "
+                    f"(avg similarity score {comparable_avg_score:.0f}%)."
+                )
+            elif over_percentage >= 10:
+                protest_recommendation_level = "moderate"
+                protest_recommendation = "Consider protesting"
+                protest_recommendation_reason = (
+                    f"Your price per sqft (${target_ppsf:.2f}) is about {over_percentage:.0f}% above "
+                    f"the median (${ppsf_median:.2f}) of {comparable_count} similar properties "
+                    f"(avg similarity score {comparable_avg_score:.0f}%)."
+                )
+            elif over_percentage <= -10:
+                protest_recommendation_level = "low"
+                protest_recommendation = "Protest not recommended"
+                protest_recommendation_reason = (
+                    f"Your price per sqft (${target_ppsf:.2f}) is about {abs(over_percentage):.0f}% below "
+                    f"the median (${ppsf_median:.2f}) of {comparable_count} similar properties."
+                )
+            else:
+                protest_recommendation_level = "neutral"
+                protest_recommendation = "Borderline – depends on other factors"
+                protest_recommendation_reason = (
+                    f"Your price per sqft (${target_ppsf:.2f}) is close to the median (${ppsf_median:.2f}) "
+                    f"of {comparable_count} similar properties."
+                )
+
     context = {
         "target_property": target_property,
         "target_building": target_building,
@@ -374,6 +456,16 @@ def similar_properties(request, account_number):
         "max_distance": max_distance,
         "max_results": max_results,
         "min_score": min_score,
+        # Protest recommendation fields
+        "protest_recommendation": protest_recommendation,
+        "protest_recommendation_reason": protest_recommendation_reason,
+        "protest_recommendation_level": protest_recommendation_level,
+        "ppsf_median": ppsf_median,
+        "ppsf_average": ppsf_average,
+        "ppsf_min": ppsf_min,
+        "ppsf_max": ppsf_max,
+        "comparable_count": comparable_count,
+        "comparable_avg_score": comparable_avg_score,
     }
 
     return render(request, "similar_properties.html", context)
