@@ -109,6 +109,133 @@
             </div>
         </div>
 
+        <!-- Protest Recommendation Banner -->
+        {% if protest_recommendation %}
+        <div class="mb-8">
+            <div class="rounded-xl p-5 flex items-start shadow-md
+                {% if protest_recommendation_level == 'strong' %}
+                    bg-red-50 border-2 border-red-300
+                {% elif protest_recommendation_level == 'moderate' %}
+                    bg-amber-50 border-2 border-amber-300
+                {% elif protest_recommendation_level == 'low' %}
+                    bg-green-50 border-2 border-green-300
+                {% else %}
+                    bg-gray-50 border-2 border-gray-300
+                {% endif %}
+            ">
+                <div class="flex-shrink-0 mt-0.5 mr-4">
+                    <svg class="h-7 w-7
+                        {% if protest_recommendation_level == 'strong' %}
+                            text-red-600
+                        {% elif protest_recommendation_level == 'moderate' %}
+                            text-amber-600
+                        {% elif protest_recommendation_level == 'low' %}
+                            text-green-600
+                        {% else %}
+                            text-gray-600
+                        {% endif %}
+                    " fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                              d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                </div>
+                <div class="flex-1">
+                    <h3 class="text-base font-bold
+                        {% if protest_recommendation_level == 'strong' %}
+                            text-red-900
+                        {% elif protest_recommendation_level == 'moderate' %}
+                            text-amber-900
+                        {% elif protest_recommendation_level == 'low' %}
+                            text-green-900
+                        {% else %}
+                            text-gray-900
+                        {% endif %}
+                    ">
+                        {{ protest_recommendation }}
+                    </h3>
+                    {% if protest_recommendation_reason %}
+                    <p class="mt-2 text-sm
+                        {% if protest_recommendation_level == 'strong' %}
+                            text-red-800
+                        {% elif protest_recommendation_level == 'moderate' %}
+                            text-amber-800
+                        {% elif protest_recommendation_level == 'low' %}
+                            text-green-800
+                        {% else %}
+                            text-gray-800
+                        {% endif %}
+                    ">
+                        {{ protest_recommendation_reason }}
+                    </p>
+                    {% endif %}
+                    
+                    <!-- PPSF Statistics -->
+                    <div class="mt-3 pt-3 border-t
+                        {% if protest_recommendation_level == 'strong' %}
+                            border-red-200
+                        {% elif protest_recommendation_level == 'moderate' %}
+                            border-amber-200
+                        {% elif protest_recommendation_level == 'low' %}
+                            border-green-200
+                        {% else %}
+                            border-gray-200
+                        {% endif %}
+                    ">
+                        <div class="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs text-gray-700">
+                            <div>
+                                <span class="font-semibold">Your PPSF:</span> ${{ target_ppsf|floatformat:2 }}
+                                {% if target_ppsf_percentile %}
+                                <span class="text-gray-500">({{ target_ppsf_percentile|floatformat:0 }}th percentile)</span>
+                                {% endif %}
+                            </div>
+                            {% if ppsf_median %}
+                            <div>
+                                <span class="font-semibold">Comp Median:</span> ${{ ppsf_median|floatformat:2 }}
+                            </div>
+                            {% endif %}
+                            {% if ppsf_min and ppsf_max %}
+                            <div>
+                                <span class="font-semibold">Comp Range:</span> ${{ ppsf_min|floatformat:2 }} - ${{ ppsf_max|floatformat:2 }}
+                            </div>
+                            {% endif %}
+                        </div>
+                        {% if comparable_count %}
+                        <p class="mt-2 text-xs text-gray-600">
+                            Based on {{ comparable_count }} comparable propert{{ comparable_count|pluralize:"y,ies" }}
+                            {% if comparable_avg_score %}with avg similarity {{ comparable_avg_score|floatformat:0 }}%{% endif %}
+                        </p>
+                        {% endif %}
+                    </div>
+                    
+                    <!-- Disclaimer -->
+                    <p class="mt-3 text-[11px] text-gray-500 italic">
+                        ⚠️ This is an informational estimate based only on price per sqft of similar properties. Not legal or tax advice. 
+                        Consult a property tax professional for personalized guidance.
+                    </p>
+                </div>
+            </div>
+        </div>
+        {% elif target_ppsf and comparable_count < 3 %}
+        <!-- Insufficient data message -->
+        <div class="mb-8">
+            <div class="rounded-xl p-4 bg-blue-50 border border-blue-200 flex items-start">
+                <div class="flex-shrink-0 mt-0.5 mr-3">
+                    <svg class="h-6 w-6 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                              d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                </div>
+                <div>
+                    <h3 class="text-sm font-semibold text-blue-900">Not Enough Data for Recommendation</h3>
+                    <p class="mt-1 text-xs text-blue-800">
+                        Not enough similar properties with pricing data to make a recommendation. 
+                        Try expanding your search radius or lowering the minimum similarity score.
+                    </p>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
         <!-- Search Parameters -->
         <div class="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-8">
             <div class="flex items-center justify-between">
