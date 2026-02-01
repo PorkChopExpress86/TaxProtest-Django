@@ -4,6 +4,7 @@ Complete installation and configuration guide for setting up the TaxProtest-Djan
 
 ## Table of Contents
 
+- [Quick Start](#quick-start)
 - [Prerequisites](#prerequisites)
 - [Installation](#installation)
 - [Configuration](#configuration)
@@ -11,6 +12,14 @@ Complete installation and configuration guide for setting up the TaxProtest-Djan
 - [Initial Data Import](#initial-data-import)
 - [Production Deployment](#production-deployment)
 - [Troubleshooting](#troubleshooting)
+
+## Quick Start
+You can set up the entire project, including data download and import, by running the automated setup script:
+```bash
+./setup.sh
+```
+This script handles container building, migrations, and data imports. It provides progress feedback during large file downloads.
+
 
 ## Prerequisites
 
@@ -112,7 +121,14 @@ docker compose exec web python manage.py createsuperuser
 
 ### 5. Verify Installation
 
+### 5. Verify Installation
+
 Visit http://localhost:8000 - you should see the property search page.
+
+> [!TIP]
+> **Alternative: Automated Setup**
+> Instead of running steps 3, 4, and the Data Import section manually, you can simply run `./setup.sh` from the project root.
+
 
 ## Configuration
 
