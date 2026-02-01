@@ -40,15 +40,23 @@ class Command(BaseCommand):
         if not skip_download:
             self.stdout.write(self.style.SUCCESS(f'Downloading GIS data from {url}...'))
             
-            # Download the zip file
+            # Download the zip file with progress
             response = requests.get(url, stream=True, timeout=300)
             response.raise_for_status()
+            total_length = int(response.headers.get('content-length') or 0)
+            downloaded = 0
             
             with open(zip_path, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     f.write(chunk)
+                    downloaded += len(chunk)
+                    if total_length > 0:
+                        percent = int(100 * downloaded / total_length)
+                        if downloaded % (5 * 1024 * 1024) < 8192:  # Every 5MB
+                            self.stdout.write(f'  ... {percent}% ({downloaded//(1024*1024)} MB)', ending='\r')
+                            self.stdout.flush()
             
-            self.stdout.write(self.style.SUCCESS(f'Downloaded {zip_filename}'))
+            self.stdout.write(f'\nDownloaded {downloaded//(1024*1024)} MB to {zip_filename}')
             
             # Extract the zip file
             self.stdout.write(self.style.SUCCESS(f'Extracting {zip_filename}...'))
