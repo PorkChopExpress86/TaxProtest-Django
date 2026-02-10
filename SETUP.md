@@ -18,7 +18,9 @@ You can set up the entire project, including data download and import, by runnin
 ```bash
 ./setup.sh
 ```
-This script handles container building, migrations, and data imports. It provides progress feedback during large file downloads.
+./setup.sh
+```
+This script handles container building and migrations. The data import will start automatically when the containers launch for the first time.
 
 
 ## Prerequisites
@@ -268,8 +270,9 @@ services:
 ### Step 1: Import Property Records (Required)
 
 ```bash
-# Import ~1.6M property records from HCAD
-docker compose exec web python manage.py import_hcad_data
+# This now happens AUTOMATICALLY on container startup if the database is empty.
+# You can check progress with:
+docker compose logs -f web
 ```
 
 This takes 15-30 minutes and imports:
