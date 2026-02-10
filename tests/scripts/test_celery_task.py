@@ -14,7 +14,7 @@ sys.path.insert(0, '/app')
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'taxprotest.settings')
 django.setup()
 
-from data.tasks import download_and_import_building_data
+from data.tasks_new import download_and_import_building_data
 from celery.result import AsyncResult
 import time
 

@@ -8,7 +8,7 @@ Usage:
 import sys
 from django.core.management.base import BaseCommand
 from django.core.management import call_command
-from data.tasks import download_and_extract_hcad
+from data.tasks_new import download_and_extract_hcad
 
 class Command(BaseCommand):
     help = 'Run complete data import: download, property records, building details, and GIS coordinates'
