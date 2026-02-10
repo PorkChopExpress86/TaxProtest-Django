@@ -135,6 +135,17 @@ def download_and_import_building_data(self):
     current_year = datetime.now().year
     url = f'https://download.hcad.org/data/CAMA/{current_year}/Real_building_land.zip'
     
+    # Check if current year data is available, otherwise fallback
+    try:
+        logger.info(f'Checking availability for {current_year}...')
+        head = requests.head(url, timeout=10)
+        if head.status_code == 404:
+            logger.warning(f'Data for {current_year} not found (404). Falling back to {current_year-1}')
+            current_year -= 1
+            url = f'https://download.hcad.org/data/CAMA/{current_year}/Real_building_land.zip'
+    except Exception as e:
+        logger.warning(f'Could not check URL availability: {e}. Proceeding with default.')
+    
     self.update_state(state='DOWNLOADING', meta={'step': 'Downloading ZIP file'})
     
     # Download the ZIP file

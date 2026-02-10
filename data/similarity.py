@@ -5,6 +5,8 @@ Uses location (lat/long), size, age, and features to find similar properties.
 
 from math import radians, cos, sin, asin, sqrt
 from typing import List, Dict, Optional, TYPE_CHECKING
+from django.db.models import F, Value, FloatField, ExpressionWrapper
+from django.db.models.functions import ACos, Cos, Radians, Sin, Least, Greatest
 from .models import PropertyRecord, BuildingDetail, ExtraFeature
 
 if TYPE_CHECKING:
@@ -69,7 +71,12 @@ def calculate_similarity_score(
     # This allows finding similar properties for price/sqft comparison
     # regardless of whether they're 1 mile or 10 miles away
 
-    if target_building and candidate_building:
+    # Determine if we are comparing land-only (no target building)
+    is_land_only = target_building is None
+
+    if not is_land_only and target_building and candidate_building:
+        # Standard Scoring (Building + Land)
+        
         # Heated size matching (22 points max)
         if target_building.heat_area and candidate_building.heat_area:
             target_area = float(target_building.heat_area)
@@ -156,7 +163,12 @@ def calculate_similarity_score(
                 feature_similarity = intersection / union
                 score += feature_similarity * 10
     
-    # Lot size matching (15 points max)
+    # Lot size matching
+    # Standard: 15 points max
+    # Land Only: 90 points max (since filtering out building criteria)
+    
+    max_land_points = 90.0 if is_land_only else 15.0
+    
     # Uses PropertyRecord.land_area (total land square footage)
     if target_prop.land_area and candidate_prop.land_area:
         try:
@@ -164,14 +176,42 @@ def calculate_similarity_score(
             candidate_land = float(candidate_prop.land_area)
             if target_land > 0:
                 land_diff_pct = abs(target_land - candidate_land) / target_land
-                if land_diff_pct <= 0.1:  # Within 10%
-                    score += 15
-                elif land_diff_pct <= 0.2:  # Within 20%
-                    score += 12
-                elif land_diff_pct <= 0.3:  # Within 30%
-                    score += 8
-                elif land_diff_pct <= 0.5:  # Within 50%
-                    score += 4
+                
+                points = 0
+                if is_land_only:
+                    # Granular scoring for land-only to avoid "all 90%"
+                    if land_diff_pct <= 0.005: # 0.5% or less
+                        points = max_land_points 
+                    elif land_diff_pct <= 0.05: # 0.5-5%
+                        # Linear drop from 90 to 80
+                        ratio = (land_diff_pct - 0.005) / 0.045
+                        points = 90 - (10 * ratio)
+                    elif land_diff_pct <= 0.1: # 5-10%
+                        # Linear drop from 80 to 70
+                        ratio = (land_diff_pct - 0.05) / 0.05
+                        points = 80 - (10 * ratio)
+                    elif land_diff_pct <= 0.2: # 10-20%
+                        # Linear drop from 70 to 50
+                        ratio = (land_diff_pct - 0.1) / 0.1
+                        points = 70 - (20 * ratio)
+                    elif land_diff_pct <= 0.5: # 20-50%
+                        # Linear drop from 50 to 20
+                        ratio = (land_diff_pct - 0.2) / 0.3
+                        points = 50 - (30 * ratio)
+                    elif land_diff_pct <= 1.0: # 50-100%
+                        points = 15.0
+                else: 
+                     # Standard building + land scoring
+                    if land_diff_pct <= 0.1:  # Within 10%
+                        points = max_land_points
+                    elif land_diff_pct <= 0.2:  # Within 20%
+                        points = max_land_points * 0.8
+                    elif land_diff_pct <= 0.3:
+                         points = max_land_points * 0.53
+                    elif land_diff_pct <= 0.5:
+                         points = max_land_points * 0.27
+                
+                score += points
         except (ValueError, TypeError):
             pass
 
@@ -186,24 +226,9 @@ def find_similar_properties(
 ) -> List[Dict]:
     """
     Find properties similar to the given account number.
-
-    Args:
-        account_number: The account number to find matches for
-            max_distance_miles: Maximum distance in miles (default: 10)
-        max_results: Maximum number of results to return (default: 50)
-        min_score: Minimum similarity score (0-100) to include (default: 30)
-
-    Returns:
-        List of dictionaries with property details and similarity info:
-        {
-            'property': PropertyRecord,
-            'building': BuildingDetail,
-            'features': List[ExtraFeature],
-            'distance': float (miles),
-            'similarity_score': float (0-100),
-        }
+    Optimized to perform distance calculation in the database.
     """
-    # Get the target property (use first() to handle potential duplicates)
+    # Get the target property
     try:
         target = PropertyRecord.objects.filter(account_number=account_number).first()
         if not target:
@@ -218,122 +243,127 @@ def find_similar_properties(
     target_lat = float(target.latitude)
     target_lon = float(target.longitude)
 
-    # Get target building and features (only active records)
+    # Get target building and features
     target_building = target.buildings.filter(is_active=True).first()  # type: ignore[attr-defined]
     target_features = list(target.extra_features.filter(is_active=True))  # type: ignore[attr-defined]
 
-    # Calculate rough bounding box for filtering
-    # 1 degree of latitude ≈ 69 miles
-    # 1 degree of longitude ≈ 69 * cos(latitude) miles
+    # Calculate bounding box for initial index-based filtering
+    # 1 degree lat =~ 69 miles
     lat_range = max_distance_miles / 69.0
     lon_range = max_distance_miles / (69.0 * cos(radians(target_lat)))
 
-    # Query for nearby properties with coordinates
-    candidates = (
-        PropertyRecord.objects.filter(
-            latitude__gte=target_lat - lat_range,
-            latitude__lte=target_lat + lat_range,
-            longitude__gte=target_lon - lon_range,
-            longitude__lte=target_lon + lon_range,
-            latitude__isnull=False,
-            longitude__isnull=False,
-        )
-        .exclude(account_number=account_number)  # Exclude the target property itself
-        .distinct()  # Ensure unique properties
-        .select_related()
-        .prefetch_related("buildings", "extra_features")
-    )
+    min_lat = target_lat - lat_range
+    max_lat = target_lat + lat_range
+    min_lon = target_lon - lon_range
+    max_lon = target_lon + lon_range
 
-    # Optional: Filter by size if we have target building data
-    if target_building and target_building.heat_area:
-        min_area = float(target_building.heat_area) * 0.5  # 50% smaller
-        max_area = float(target_building.heat_area) * 1.5  # 50% larger
-        # Use a subquery to avoid duplicates from multiple buildings
-        candidates = candidates.filter(
-            account_number__in=BuildingDetail.objects.filter(
-                is_active=True,
-                heat_area__gte=min_area,
-                heat_area__lte=max_area,
-            )
-            .values_list("account_number", flat=True)
-            .distinct()
-        )
-
-    # Calculate distances and similarity scores
-    # Process candidates in batches for performance while ensuring quality results
-    results = []
-    processed = 0
-    batch_size = 1000
+    # Query for nearby properties using Django ORM with annotations
+    # This avoids raw SQL issues and "GROUP BY" errors while still being efficient
     
-    # Process candidates in batches until we have enough good matches
-    # or we've exhausted all candidates
-    for offset in range(0, candidates.count(), batch_size):
-        batch = candidates[offset:offset + batch_size]
+    # 1. Base filter by bounding box (uses database index)
+    candidates = PropertyRecord.objects.filter(
+        latitude__gte=min_lat,
+        latitude__lte=max_lat,
+        longitude__gte=min_lon,
+        longitude__lte=max_lon,
+        latitude__isnull=False,
+        longitude__isnull=False,
+    ).exclude(account_number=account_number)
+
+    # 2. Optional: Filter by size if we have target building data
+    if target_building and target_building.heat_area:
+        min_area = float(target_building.heat_area) * 0.5
+        max_area = float(target_building.heat_area) * 1.5
         
-        for candidate in batch:
-            # Skip if coordinates are missing
-            if not candidate.latitude or not candidate.longitude:
-                continue
-                
-            candidate_lat = float(candidate.latitude)
-            candidate_lon = float(candidate.longitude)
+        # Use subquery to filter efficiently
+        matching_buildings = BuildingDetail.objects.filter(
+            is_active=True,
+            heat_area__gte=min_area,
+            heat_area__lte=max_area
+        ).values('account_number')
+        
+        candidates = candidates.filter(account_number__in=matching_buildings)
 
-            # Calculate distance
-            distance = haversine_distance(
-                target_lat, target_lon, candidate_lat, candidate_lon
-            )
+    # 3. Annotate with distance calculation and filter
+    # Formula: 3959 * acos(cos(radians(lat1)) * cos(radians(lat2)) * cos(radians(long2) - radians(long1)) + sin(radians(lat1)) * sin(radians(lat2)))
+    
+    # We use Value() for constants (target lat/lon) and F() for DB fields
+    # Ensure float conversion for constants to avoid type issues
+    target_lat_rad = radians(target_lat)
+    target_lon_rad = radians(target_lon)
+    
+    candidates = candidates.annotate(
+        distance=ExpressionWrapper(
+            3959.0 * ACos(
+                Least(1.0, Greatest(-1.0,
+                    Cos(Value(target_lat_rad)) * Cos(Radians(F('latitude'))) *
+                    Cos(Radians(F('longitude')) - Value(target_lon_rad)) +
+                    Sin(Value(target_lat_rad)) * Sin(Radians(F('latitude')))
+                ))
+            ),
+            output_field=FloatField()
+        )
+    ).filter(
+        distance__lte=max_distance_miles
+    ).order_by('distance')
+    
+    # Limit the number of candidates we process in Python
+    # We fetch more than max_results to allow for filtering by similarity score
+    candidates = candidates[:2000]
 
-            # Skip if too far
-            if distance > max_distance_miles:
-                continue
-            
-            processed += 1
-
-        # Get candidate building and features (only active records)
-        candidate_building = candidate.buildings.filter(is_active=True).first()  # type: ignore[attr-defined]
-        candidate_features = list(candidate.extra_features.filter(is_active=True))  # type: ignore[attr-defined]
-
-        # Calculate similarity score
+    # Process candidates
+    results = []
+    
+    # Fetch related data efficiently
+    # Since we sliced the queryset, we need to evaluate it to get the list of objects
+    # and then fetch related data for those specific objects
+    candidate_list = list(candidates)
+    
+    if not candidate_list:
+        return []
+        
+    candidate_accts = [c.account_number for c in candidate_list]
+    
+    # Bulk fetch buildings
+    buildings_map = {}
+    for b in BuildingDetail.objects.filter(account_number__in=candidate_accts, is_active=True):
+        buildings_map[b.account_number] = b
+        
+    # Bulk fetch features
+    from collections import defaultdict
+    features_map = defaultdict(list)
+    for f in ExtraFeature.objects.filter(account_number__in=candidate_accts, is_active=True):
+        features_map[f.account_number].append(f)
+        
+    # Calculate scores
+    for candidate in candidate_list:
+        dist = getattr(candidate, 'distance', 0.0)
+        
+        c_building = buildings_map.get(candidate.account_number)
+        c_features = features_map.get(candidate.account_number, [])
+        
+        # Calculate score
         score = calculate_similarity_score(
             target,
             candidate,
             target_building,
-            candidate_building,
+            c_building,
             target_features,
-            candidate_features,
-            distance,
+            c_features,
+            dist,
         )
-
-        # Skip if score is too low
-        if score < min_score:
-            continue
-
-        results.append(
-            {
+        
+        if score >= min_score:
+            results.append({
                 "property": candidate,
-                "building": candidate_building,
-                "features": candidate_features,
-                "distance": round(distance, 2),
+                "building": c_building,
+                "features": c_features,
+                "distance": round(dist, 2),
                 "similarity_score": score,
-            }
-        )
-        
-        # Early termination: if we have 3x max_results with good scores, stop processing
-        # This balances thoroughness with performance
-        if len(results) >= max_results * 3:
-            # Check if we have enough high-quality results
-            high_quality_count = sum(1 for r in results if r["similarity_score"] >= 50)
-            if high_quality_count >= max_results:
-                break
-        
-        # Absolute limit to prevent runaway processing
-        if processed >= 50000:
-            break
-    
-    # Sort by similarity score (highest first)
+            })
+            
+    # Sort and limit
     results.sort(key=lambda x: x["similarity_score"], reverse=True)
-
-    # Return top N results
     return results[:max_results]
 
 
