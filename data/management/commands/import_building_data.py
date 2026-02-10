@@ -6,7 +6,7 @@ Usage:
 """
 
 from django.core.management.base import BaseCommand
-from data.tasks import download_and_import_building_data
+from data.tasks_new import download_and_import_building_data
 
 
 class Command(BaseCommand):

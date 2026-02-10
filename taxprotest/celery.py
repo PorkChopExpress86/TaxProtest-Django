@@ -17,7 +17,7 @@ app.autodiscover_tasks()
 # Periodic task schedule
 app.conf.beat_schedule = {
     'download-and-import-building-data-monthly': {
-        'task': 'data.tasks.download_and_import_building_data',
+        'task': 'data.tasks_new.download_and_import_building_data',
         'schedule': crontab(
             day_of_week='tuesday',      # Tuesday
             day_of_month='8-14',        # 2nd Tuesday (days 8-14)
@@ -29,7 +29,7 @@ app.conf.beat_schedule = {
         }
     },
     'download-and-import-gis-data-annually': {
-        'task': 'data.tasks.download_and_import_gis_data',
+        'task': 'data.tasks_new.download_and_import_gis_data',
         'schedule': crontab(
             month_of_year='1',          # January
             day_of_month='15',          # 15th day of the month
