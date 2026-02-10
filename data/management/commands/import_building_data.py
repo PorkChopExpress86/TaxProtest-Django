@@ -56,6 +56,20 @@ class Command(BaseCommand):
             
             current_year = datetime.now().year
             url = f'https://download.hcad.org/data/CAMA/{current_year}/Real_building_land.zip'
+
+            # Check if current year data is available, otherwise fallback
+            if not options.get('skip_download'):
+                try:
+                    self.stdout.write(f'Checking availability for {current_year}...')
+                    # Fast timeout for check
+                    head = requests.head(url, timeout=10)
+                    if head.status_code == 404:
+                        self.stdout.write(self.style.WARNING(f'Data for {current_year} not found (404). Falling back to {current_year-1}'))
+                        current_year -= 1
+                        url = f'https://download.hcad.org/data/CAMA/{current_year}/Real_building_land.zip'
+                except Exception as e:
+                    self.stdout.write(self.style.WARNING(f'Could not check URL availability: {e}. Proceeding with default.'))
+            
             local_name = 'Real_building_land.zip'
             local_path = os.path.join(download_dir, local_name)
             extract_dir = os.path.join(download_dir, 'Real_building_land')
@@ -139,21 +153,54 @@ class Command(BaseCommand):
                 results['building_error'] = 'File not found'
                 self.stdout.write(self.style.WARNING(f'Building file not found at {building_file}'))
             
-            # Import extra features
-            if os.path.exists(features_file):
+            # Import extra features (try detail files first)
+            detail_files = [f for f in os.listdir(extract_dir) if f.startswith('extra_features_detail') and f.endswith('.txt')]
+            detail_files.sort() # Ensure deterministic order
+            
+            if detail_files:
+                self.stdout.write(f'Found {len(detail_files)} detailed feature files: {detail_files}')
+                truncate_features = True
+                
+                for fname in detail_files:
+                    fpath = os.path.join(extract_dir, fname)
+                    self.stdout.write(f'Importing extra features from {fpath} (truncate={truncate_features})...')
+                    try:
+                        feature_results = load_extra_features(
+                            fpath, 
+                            chunk_size=5000, 
+                            import_batch_id=batch_id,
+                            truncate=truncate_features
+                        )
+                        results['features_imported'] += feature_results['imported']
+                        results['features_invalid'] += feature_results['invalid']
+                        self.stdout.write(self.style.SUCCESS(f'Imported {feature_results["imported"]} feature records from {fname}'))
+                        
+                        # Only truncate on the first file
+                        truncate_features = False
+                        
+                    except Exception as e:
+                        results['features_error'] = str(e)
+                        self.stdout.write(self.style.ERROR(f'Error importing features from {fname}: {e}'))
+            
+            elif os.path.exists(features_file):
+                # Fallback to old file if detailed ones missing
                 self.stdout.write(f'Importing extra features from {features_file}...')
                 try:
-                    feature_results = load_extra_features(features_file, chunk_size=5000, import_batch_id=batch_id)
+                    feature_results = load_extra_features(
+                        features_file, 
+                        chunk_size=5000, 
+                        import_batch_id=batch_id,
+                        truncate=True
+                    )
                     results['features_imported'] = feature_results['imported']
                     results['features_invalid'] = feature_results['invalid']
                     self.stdout.write(self.style.SUCCESS(f'Imported {feature_results["imported"]} feature records'))
-                    self.stdout.write(f'Invalid: {feature_results["invalid"]}, Skipped: {feature_results["skipped"]}')
                 except Exception as e:
                     results['features_error'] = str(e)
                     self.stdout.write(self.style.ERROR(f'Error importing features: {e}'))
             else:
                 results['features_error'] = 'File not found'
-                self.stdout.write(self.style.WARNING(f'Features file not found at {features_file}'))
+                self.stdout.write(self.style.WARNING(f'No feature files found in {extract_dir}'))
             
             # Link orphaned records
             self.stdout.write('Linking orphaned records to properties...')

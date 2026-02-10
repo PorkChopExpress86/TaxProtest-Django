@@ -21,7 +21,7 @@ class PropertyRecord(models.Model):
     source_url = models.TextField(blank=True)
 
     # Extended HCAD fields
-    account_number = models.CharField(max_length=20, blank=True, db_index=True)
+    account_number = models.CharField(max_length=20, blank=True, db_index=True, unique=True)
     owner_name = models.CharField(max_length=255, blank=True, db_index=True)
     assessed_value = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     building_area = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
@@ -96,6 +96,9 @@ class BuildingDetail(models.Model):
             models.Index(fields=['account_number', 'building_number']),
             models.Index(fields=['is_active', 'import_date']),
         ]
+        constraints = [
+            models.UniqueConstraint(fields=['account_number', 'building_number'], name='unique_building_per_account')
+        ]
     
     def __str__(self):
         return f"Building {self.building_number} for {self.account_number}"
@@ -137,6 +140,9 @@ class ExtraFeature(models.Model):
         indexes = [
             models.Index(fields=['account_number', 'feature_code']),
             models.Index(fields=['is_active', 'import_date']),
+        ]
+        constraints = [
+            models.UniqueConstraint(fields=['account_number', 'feature_code', 'feature_number'], name='unique_feature_per_account')
         ]
     
     def __str__(self):

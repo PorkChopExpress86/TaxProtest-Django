@@ -139,6 +139,20 @@ class DownloadManager:
             DownloadResult with download status and metadata
         """
         url = source.get_url(self.config.data_year)
+        
+        # Check for 404 and fallback if needed
+        try:
+             # Only check if it looks like a year-based URL (contains year digits)
+             if str(self.config.data_year) in url:
+                 head_resp = self.session.head(url, timeout=10)
+                 if head_resp.status_code == 404:
+                     fallback_year = self.config.data_year - 1
+                     fallback_url = source.get_url(fallback_year)
+                     self.logger.warning(f"URL {url} returned 404. Falling back to previous year: {fallback_url}")
+                     url = fallback_url
+        except Exception as e:
+            self.logger.debug(f"Pre-download check failed for {url}: {e}")
+
         dest_path = dest_path or (self.download_dir / source.filename)
         
         self.logger.info(f"Downloading {source.name} from {url}")
