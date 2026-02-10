@@ -140,20 +140,53 @@ def iter_property_rows(reader: csv.DictReader) -> Iterable[Dict]:
 
 
 def bulk_load_properties(
-    filepath: str, chunk_size: int = 5000, limit: Optional[int] = None
+    filepath: str, chunk_size: int = 5000, limit: Optional[int] = None, truncate: bool = True
 ) -> int:
     """Load a Real Account file into PropertyRecord table.
+
+    Args:
+        filepath: Path to the real_acct.txt file
+        chunk_size: Number of records to batch before bulk insert
+        limit: Optional limit on number of rows to insert (for testing)
+        truncate: If True, truncate the table before importing (default: True)
+                  This ensures clean imports without duplicates on re-runs.
 
     Returns number of rows inserted.
     """
     reader = open_reader(filepath)
     buf: List[PropertyRecord] = []
     total = 0
+    skipped_duplicates = 0
+    
+    # Truncate table for clean import if requested
+    if truncate:
+        logger.info("Truncating PropertyRecord table for clean import...")
+        with connection.cursor() as cursor:
+            cursor.execute('TRUNCATE TABLE "data_propertyrecord" RESTART IDENTITY CASCADE')
+        logger.info("PropertyRecord table truncated successfully.")
+        existing_accounts: set = set()
+    else:
+        # Pre-fetch existing account numbers to prevent duplicates
+        # This is memory efficient enough for ~2M records (approx 30-50MB RAM)
+        existing_accounts = set(PropertyRecord.objects.values_list('account_number', flat=True))
+        logger.info(f"Loaded {len(existing_accounts)} existing accounts for deduplication.")
+
     with transaction.atomic():
         for idx, data in enumerate(iter_property_rows(reader), start=1):
             # simple validation: require either address or zipcode
             if not (data.get("address") or data.get("zipcode")):
                 continue
+                
+            acct = data.get("account_number", "")[:20]
+            
+            # Skip if account already exists
+            if acct in existing_accounts:
+                skipped_duplicates += 1
+                continue
+                
+            # Add to local set to prevent duplicates within the same file/batch
+            existing_accounts.add(acct)
+            
             buf.append(
                 PropertyRecord(
                     address=data.get("address", "")[:255],
@@ -163,7 +196,7 @@ def bulk_load_properties(
                     assessed_value=data.get("assessed_value"),
                     building_area=data.get("building_area"),
                     land_area=data.get("land_area"),
-                    account_number=data.get("account_number", "")[:20],
+                    account_number=acct,
                     owner_name=data.get("owner_name", "")[:255],
                     street_number=data.get("street_number", "")[:16],
                     street_name=data.get("street_name", "")[:128],
@@ -171,14 +204,19 @@ def bulk_load_properties(
                 )
             )
             if len(buf) >= chunk_size:
-                PropertyRecord.objects.bulk_create(buf)
+                PropertyRecord.objects.bulk_create(buf, ignore_conflicts=True)
                 total += len(buf)
+                logger.info(f"Imported {total} records...")
                 buf.clear()
             if limit and total >= limit:
                 break
         if buf:
-            PropertyRecord.objects.bulk_create(buf)
+            PropertyRecord.objects.bulk_create(buf, ignore_conflicts=True)
             total += len(buf)
+            
+    if skipped_duplicates > 0:
+        logger.info(f"Skipped {skipped_duplicates} duplicate records.")
+        
     return total
 
 
@@ -397,10 +435,11 @@ def load_building_details(
                 exterior_wall=get_str("exterior_wall"),
                 roof_cover=get_str("roof_cover"),
                 roof_type=get_str("roof_typ"),
-                bedrooms=get_int("bed_rm"),
-                bathrooms=get_decimal("full_bath"),
-                half_baths=get_int("half_bath"),
-                fireplaces=get_int("fireplace"),
+                # Bedrooms/Bathrooms not in building_res.txt; loaded later
+                bedrooms=None,
+                bathrooms=None,
+                half_baths=None,
+                fireplaces=None,
                 # Import metadata
                 is_active=True,
                 import_date=import_date,
@@ -434,25 +473,24 @@ def load_building_details(
 
 
 def load_extra_features(
-    filepath: str, chunk_size: int = 5000, import_batch_id: Optional[str] = None
+    filepath: str, 
+    chunk_size: int = 5000, 
+    import_batch_id: Optional[str] = None,
+    truncate: bool = True
 ) -> dict:
-    """Load extra features (pools, garages, etc.) from extra_features.txt.
+    """Load extra features from extra_features_detail files.
 
-    Expected columns: acct, extr_ftr_cd, extr_ftr_dscr, qty, area, len, wdth,
-    qual_cd, cndtn_cd, yr_built, val, etc.
+    Expected columns in detail files: 
+    acct, cd, dscr, grade, cond_cd, bld_num, length, width, units, unit_price, etc.
 
     Args:
-        filepath: Path to the extra_features.txt file
+        filepath: Path to the extra_features file
         chunk_size: Number of records to batch before bulk insert
         import_batch_id: Optional batch identifier for tracking imports
+        truncate: Whether to truncate the table before loading (default: True)
 
     Returns:
-        Dictionary with import statistics:
-        {
-            'imported': int,      # Successfully imported records
-            'invalid': int,       # Records with invalid account numbers
-            'skipped': int,       # Records skipped (no account)
-        }
+        Dictionary with import statistics
     """
     from .models import ExtraFeature, PropertyRecord
     from django.utils import timezone
@@ -472,19 +510,22 @@ def load_extra_features(
     import_date = timezone.now()
 
     # Cache valid account numbers for validation
+    if truncate:
+         logger.info("Preparing to load extra features...")
+
     valid_accounts = set(
         PropertyRecord.objects.values_list("account_number", flat=True)
     )
-    logger.info("Loaded %s valid account numbers for validation", len(valid_accounts))
-
+    
     logger.info("Loading extra features from %s", filepath)
-    logger.info("Import batch ID: %s", import_batch_id)
 
-    # Truncate ExtraFeature table for clean import (faster than DELETE and resets sequences)
-    logger.info("Truncating ExtraFeature table...")
-    with connection.cursor() as cursor:
-        cursor.execute('TRUNCATE TABLE "data_extrafeature" RESTART IDENTITY CASCADE')
-    logger.info("ExtraFeature table truncated successfully")
+    if truncate:
+        logger.info("Truncating ExtraFeature table...")
+        with connection.cursor() as cursor:
+            cursor.execute('TRUNCATE TABLE "data_extrafeature" RESTART IDENTITY CASCADE')
+        logger.info("ExtraFeature table truncated successfully")
+    else:
+        logger.info("Appending to ExtraFeature table (no truncate)...")
 
     with transaction.atomic():
         for idx, row in enumerate(reader, start=1):
@@ -498,13 +539,17 @@ def load_extra_features(
                 results["invalid"] += 1
                 continue
 
-            # Try to find the associated property
+            # Check prop existence
             try:
                 prop = PropertyRecord.objects.filter(account_number=acct).first()
             except Exception:
                 prop = None
                 results["invalid"] += 1
                 continue
+            
+            if not prop:
+                 results["invalid"] += 1
+                 continue
 
             def get_int(field):
                 val = (row.get(field) or "").strip()
@@ -527,33 +572,21 @@ def load_extra_features(
             def get_str(field, maxlen=10):
                 return (row.get(field) or "").strip()[:maxlen]
 
-            # Map actual column names from extra_features.txt
-            # Columns: acct, bld_num, count, grade, cd, s_dscr, l_dscr, cat, dscr, note, uts
-            feature_code = get_str("cd", maxlen=10)  # Feature code (e.g., CPA1, CCP6)
-            long_desc = (
-                row.get("l_dscr") or ""
-            ).strip()  # Long description (preferred)
-            short_desc = (
-                row.get("s_dscr") or ""
-            ).strip()  # Short description (fallback)
-            feature_description = (
-                long_desc or short_desc
-            )  # Use long description, fallback to short
-
+            # Mapping for extra_features_detail*.txt
             feature = ExtraFeature(
                 property=prop,
                 account_number=acct,
-                feature_number=get_int("bld_num"),  # Building number from file
-                feature_code=feature_code,
-                feature_description=feature_description[:255],
-                quantity=get_decimal("count"),  # Count column for quantity
-                area=get_decimal("area") or get_decimal("ar"),
-                length=get_decimal("len") or get_decimal("length"),
-                width=get_decimal("wdth") or get_decimal("width"),
-                quality_code=get_str("grade", maxlen=10),  # Grade is the quality
-                condition_code=get_str("cndtn_cd"),
-                year_built=get_int("yr_built") or get_int("date_erected"),
-                value=get_decimal("uts"),  # UTS is the value column
+                feature_number=get_int("bld_num"), 
+                feature_code=get_str("cd", maxlen=10),
+                feature_description=(row.get("dscr") or "").strip()[:255],
+                quantity=get_decimal("units"),
+                area=None, 
+                length=get_decimal("length"),
+                width=get_decimal("width"),
+                quality_code=get_str("grade", maxlen=10),
+                condition_code=get_str("cond_cd", maxlen=10),
+                year_built=get_int("act_yr"),
+                value=get_decimal("asd_val"), 
                 # Import metadata
                 is_active=True,
                 import_date=import_date,
@@ -566,10 +599,8 @@ def load_extra_features(
                 ExtraFeature.objects.bulk_create(buf, ignore_conflicts=True)
                 results["imported"] += len(buf)
                 logger.info(
-                    "Loaded %s extra feature records (invalid: %s, skipped: %s)...",
-                    results["imported"],
-                    results["invalid"],
-                    results["skipped"],
+                    "Loaded %s extra feature records...",
+                    results["imported"]
                 )
                 buf.clear()
 
@@ -577,7 +608,7 @@ def load_extra_features(
             ExtraFeature.objects.bulk_create(buf, ignore_conflicts=True)
             results["imported"] += len(buf)
 
-    logger.info("Completed: Loaded %s extra feature records", results["imported"])
+    logger.info("Completed: Loaded %s extra feature records from %s", results["imported"], filepath)
     logger.info(
         "Invalid account numbers: %s, Skipped: %s",
         results["invalid"],
