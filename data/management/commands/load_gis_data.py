@@ -3,10 +3,40 @@ Management command to download and load GIS parcel data from HCAD.
 """
 import os
 import zipfile
+
 import requests
 from django.core.management.base import BaseCommand
 from django.conf import settings
 from data.etl import load_gis_parcels
+
+
+def find_preferred_shapefile(extract_dir: str) -> str | None:
+    """Return the best shapefile candidate from an extracted HCAD GIS archive.
+
+    Recent HCAD parcel archives may contain both a top-level `Parcels.shp` and a
+    nested `ParcelsCity.shp`. The nested `ParcelsCity.shp` is the primary parcel
+    layer with usable parcel identifiers, so prefer it when present.
+    """
+    shapefiles: list[str] = []
+
+    for root, dirs, files in os.walk(extract_dir):
+        for file in files:
+            if file.endswith('.shp'):
+                shapefiles.append(os.path.join(root, file))
+
+    if not shapefiles:
+        return None
+
+    def priority(path: str) -> tuple[int, int, int]:
+        normalized = path.replace('\\', '/').lower()
+        name = os.path.basename(normalized)
+        return (
+            2 if name == 'parcelscity.shp' else 1 if 'parcelscity' in name else 0,
+            1 if '/gis/pdata/' in normalized else 0,
+            len(normalized),
+        )
+
+    return max(shapefiles, key=priority)
 
 
 class Command(BaseCommand):
@@ -68,14 +98,7 @@ class Command(BaseCommand):
             self.stdout.write(self.style.SUCCESS(f'Extracted to {extract_dir}'))
         
         # Find shapefile in extracted directory
-        shapefile_path = None
-        for root, dirs, files in os.walk(extract_dir):
-            for file in files:
-                if file.endswith('.shp'):
-                    shapefile_path = os.path.join(root, file)
-                    break
-            if shapefile_path:
-                break
+        shapefile_path = find_preferred_shapefile(extract_dir)
         
         if not shapefile_path:
             self.stdout.write(self.style.ERROR(f'No shapefile (.shp) found in {extract_dir}'))

@@ -1,0 +1,47 @@
+{% extends "admin/base_site.html" %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+    <a href="{% url 'admin:index' %}">Home</a>
+    &rsaquo; <a href="{% url 'admin:app_list' app_label=opts.app_label %}">{{ opts.app_config.verbose_name }}</a>
+    &rsaquo; <a href="{{ changelist_url }}">{{ opts.verbose_name_plural|capfirst }}</a>
+    &rsaquo; Re-download and run ETL pipeline
+</div>
+{% endblock %}
+
+{% block content %}
+<div id="content-main">
+    <div class="module aligned">
+        <h1>Re-download and run ETL pipeline</h1>
+        <p>
+            This admin-only action queues the full Celery ETL pipeline with download and extract stages enabled.
+            Use it when you want to fetch fresh HCAD files and rerun the pipeline end to end.
+        </p>
+        <p>
+            The task runs in the background. After submitting, check the worker logs or your Celery task backend for progress.
+        </p>
+
+        <form method="post" novalidate>
+            {% csrf_token %}
+            <fieldset class="module aligned">
+                {% for field in form %}
+                <div class="form-row{% if field.errors %} errors{% endif %}">
+                    <div>
+                        {{ field.errors }}
+                        {{ field.label_tag }}
+                        {{ field }}
+                        {% if field.help_text %}
+                        <div class="help">{{ field.help_text }}</div>
+                        {% endif %}
+                    </div>
+                </div>
+                {% endfor %}
+            </fieldset>
+            <div class="submit-row">
+                <input type="submit" value="Queue ETL pipeline" class="default">
+                <a href="{{ changelist_url }}" class="button cancel-link">Cancel</a>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}

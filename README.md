@@ -44,20 +44,43 @@ Services:
 
 ## Data imports
 
-Initial load and periodic updates are run inside the web container:
+The current production-ready ETL flow is the legacy management-command path, with a strict full import that now fails if residential building or GIS completeness is not achieved:
 
 ```bash
-# Property records (~1.6M)
-docker compose exec web python manage.py import_hcad_data
+# Full residential-ready import
+docker compose exec web python manage.py import_all_data
 
-# GIS coordinates (30–45 min)
-docker compose exec web python manage.py load_gis_data
-
-# Building details & features (60–90 min)
-docker compose exec web python manage.py import_building_data
+# Validate the current dataset
+docker compose exec web python manage.py validate_data
 ```
 
-See DATABASE.md for detailed import documentation.
+Manual stages are still available when you need to rerun one part of the import:
+
+```bash
+# Property records
+docker compose exec web python manage.py load_hcad_real_acct
+
+# GIS coordinates
+docker compose exec web python manage.py load_gis_data
+
+# Building details, features, and room counts
+docker compose exec web python manage.py import_building_data
+
+# Room counts only (fixtures.txt)
+docker compose exec web python manage.py load_room_counts
+```
+
+If you are upgrading an older database that may still contain mixed or incomplete rows, preview and apply cleanup with:
+
+```bash
+# Preview legacy-row cleanup
+docker compose exec web python manage.py reconcile_property_data
+
+# Apply cleanup for legacy mixed/incomplete rows
+docker compose exec web python manage.py reconcile_property_data --apply
+```
+
+The modular `etl_pipeline` command still exists for alternate and experimental workflows, but `import_all_data` + `validate_data` is the authoritative path today. See `DATABASE.md` for the full ETL guide.
 
 ## Usage
 

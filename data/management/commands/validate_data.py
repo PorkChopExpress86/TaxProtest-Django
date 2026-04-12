@@ -10,10 +10,9 @@ Usage:
 
 from __future__ import annotations
 
-import sys
 from typing import List, Tuple
 
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from django.db.models import Count, Q
 
 from data.models import BuildingDetail, ExtraFeature, PropertyRecord
@@ -30,9 +29,21 @@ class Command(BaseCommand):
             action="store_true",
             help="Show detailed output for each check.",
         )
+        parser.add_argument(
+            "--skip-building-checks",
+            action="store_true",
+            help="Skip active-building and room-count completeness checks.",
+        )
+        parser.add_argument(
+            "--skip-gis-checks",
+            action="store_true",
+            help="Skip GIS coordinate completeness checks.",
+        )
 
     def handle(self, *args, **options) -> None:  # type: ignore[override]
         verbose: bool = options["verbose"]
+        skip_building_checks: bool = options["skip_building_checks"]
+        skip_gis_checks: bool = options["skip_gis_checks"]
         failures: List[Tuple[str, str]] = []
 
         self.stdout.write(self.style.SUCCESS("=" * 70))
@@ -43,20 +54,117 @@ class Command(BaseCommand):
         # 1. Table counts
         # ------------------------------------------------------------------
         prop_count = PropertyRecord.objects.count()
+        residential_prop_count = PropertyRecord.objects.filter(is_residential=True).count()
+        ready_prop_count = PropertyRecord.objects.filter(is_data_ready=True).count()
         building_count = BuildingDetail.objects.filter(is_active=True).count()
         feature_count = ExtraFeature.objects.filter(is_active=True).count()
 
         self.stdout.write(f"\n  Properties : {prop_count:>10,}")
+        self.stdout.write(f"  Residential: {residential_prop_count:>10,}")
+        self.stdout.write(f"  Ready      : {ready_prop_count:>10,}")
         self.stdout.write(f"  Buildings  : {building_count:>10,}")
         self.stdout.write(f"  Features   : {feature_count:>10,}")
 
         if prop_count == 0:
             failures.append(("EMPTY", "PropertyRecord table is empty"))
-        if building_count == 0:
+        if building_count == 0 and not skip_building_checks:
             failures.append(("EMPTY", "BuildingDetail table has no active rows"))
 
         # ------------------------------------------------------------------
-        # 2. Duplicate PropertyRecords
+        # 2. Residential-only readiness contract
+        # ------------------------------------------------------------------
+        self._section("PropertyRecord residential readiness")
+
+        if prop_count > 0:
+            missing_state_class = PropertyRecord.objects.filter(state_class="").count()
+            non_residential = PropertyRecord.objects.filter(is_residential=False).count()
+            not_ready = PropertyRecord.objects.filter(
+                is_residential=True,
+                is_data_ready=False,
+            ).count()
+            residential_without_buildings = (
+                PropertyRecord.objects.filter(is_residential=True)
+                .exclude(buildings__is_active=True)
+                .distinct()
+                .count()
+            )
+            residential_missing_room_data = (
+                PropertyRecord.objects.filter(is_residential=True)
+                .exclude(
+                    buildings__is_active=True,
+                    buildings__bedrooms__isnull=False,
+                    buildings__bathrooms__isnull=False,
+                )
+                .distinct()
+                .count()
+            )
+            residential_missing_gis = PropertyRecord.objects.filter(
+                is_residential=True,
+            ).filter(
+                Q(latitude__isnull=True) | Q(longitude__isnull=True)
+            ).count()
+
+            if missing_state_class == 0:
+                self._pass("All properties have an HCAD state class")
+            else:
+                msg = f"{missing_state_class:,} properties are missing state_class"
+                self._fail(msg)
+                failures.append(("CLASSIFICATION", msg))
+
+            if non_residential == 0:
+                self._pass("PropertyRecord contains residential-only rows")
+            else:
+                msg = f"{non_residential:,} non-residential properties remain in PropertyRecord"
+                self._fail(msg)
+                failures.append(("RESIDENTIAL", msg))
+
+            if skip_building_checks:
+                self._warn("Skipped active-building and room-count readiness checks")
+            else:
+                if residential_without_buildings == 0:
+                    self._pass("All residential properties have an active building record")
+                else:
+                    msg = f"{residential_without_buildings:,} residential properties have no active building"
+                    self._fail(msg)
+                    failures.append(("BUILDINGS", msg))
+
+                if residential_missing_room_data == 0:
+                    self._pass("All residential properties have populated bedroom/bathroom counts")
+                else:
+                    msg = (
+                        f"{residential_missing_room_data:,} residential properties are missing "
+                        "bedroom/bathroom data"
+                    )
+                    self._fail(msg)
+                    failures.append(("ROOMS", msg))
+
+            if skip_gis_checks:
+                self._warn("Skipped GIS coordinate readiness checks")
+            else:
+                if residential_missing_gis == 0:
+                    self._pass("All residential properties have GIS coordinates")
+                else:
+                    msg = f"{residential_missing_gis:,} residential properties are missing GIS coordinates"
+                    self._fail(msg)
+                    failures.append(("GIS", msg))
+
+            if skip_building_checks or skip_gis_checks:
+                readiness_msg = (
+                    f"{ready_prop_count:,}/{residential_prop_count:,} residential properties are currently marked data-ready"
+                )
+                if not_ready == 0:
+                    self._pass(readiness_msg)
+                else:
+                    self._warn(readiness_msg)
+            elif not_ready == 0:
+                self._pass("All residential properties are marked data-ready")
+            else:
+                msg = f"{not_ready:,} residential properties are not data-ready"
+                self._fail(msg)
+                failures.append(("READINESS", msg))
+
+        # ------------------------------------------------------------------
+        # 3. Duplicate PropertyRecords
         # ------------------------------------------------------------------
         self._section("Duplicate PropertyRecords (by account_number)")
         dup_props = (
@@ -78,7 +186,7 @@ class Command(BaseCommand):
                     )
 
         # ------------------------------------------------------------------
-        # 3. Duplicate BuildingDetails
+        # 4. Duplicate BuildingDetails
         # ------------------------------------------------------------------
         self._section("Duplicate BuildingDetails (by account + building_number)")
         dup_buildings = (
@@ -96,7 +204,7 @@ class Command(BaseCommand):
             failures.append(("DUPLICATE", msg))
 
         # ------------------------------------------------------------------
-        # 4. Duplicate ExtraFeatures
+        # 5. Duplicate ExtraFeatures
         # ------------------------------------------------------------------
         self._section("Duplicate ExtraFeatures (by account + code + number)")
         dup_feats = (
@@ -114,28 +222,36 @@ class Command(BaseCommand):
             failures.append(("DUPLICATE", msg))
 
         # ------------------------------------------------------------------
-        # 5. BuildingDetail completeness
+        # 6. BuildingDetail completeness
         # ------------------------------------------------------------------
         self._section("BuildingDetail completeness (active records)")
 
-        if building_count > 0:
-            missing_beds = BuildingDetail.objects.filter(
-                is_active=True, bedrooms__isnull=True
+        residential_buildings = BuildingDetail.objects.filter(
+            is_active=True,
+            property__is_residential=True,
+        )
+        residential_building_count = residential_buildings.count()
+
+        if skip_building_checks:
+            self._warn("Skipped building completeness percentages by request")
+        elif residential_building_count > 0:
+            missing_beds = residential_buildings.filter(
+                bedrooms__isnull=True
             ).count()
-            missing_baths = BuildingDetail.objects.filter(
-                is_active=True, bathrooms__isnull=True
+            missing_baths = residential_buildings.filter(
+                bathrooms__isnull=True
             ).count()
-            missing_quality = BuildingDetail.objects.filter(
-                is_active=True, quality_code=""
+            missing_quality = residential_buildings.filter(
+                quality_code=""
             ).count()
-            missing_heat = BuildingDetail.objects.filter(
-                is_active=True, heat_area__isnull=True
+            missing_heat = residential_buildings.filter(
+                heat_area__isnull=True
             ).count()
 
-            bed_pct = (1 - missing_beds / building_count) * 100
-            bath_pct = (1 - missing_baths / building_count) * 100
-            quality_pct = (1 - missing_quality / building_count) * 100
-            heat_pct = (1 - missing_heat / building_count) * 100
+            bed_pct = (1 - missing_beds / residential_building_count) * 100
+            bath_pct = (1 - missing_baths / residential_building_count) * 100
+            quality_pct = (1 - missing_quality / residential_building_count) * 100
+            heat_pct = (1 - missing_heat / residential_building_count) * 100
 
             for label, pct, missing in [
                 ("Bedrooms", bed_pct, missing_beds),
@@ -153,7 +269,7 @@ class Command(BaseCommand):
                     failures.append(("COMPLETENESS", msg))
 
         # ------------------------------------------------------------------
-        # 6. Orphaned BuildingDetails (no matching PropertyRecord)
+        # 7. Orphaned BuildingDetails (no matching PropertyRecord)
         # ------------------------------------------------------------------
         self._section("Orphaned records (FK integrity)")
 
@@ -178,22 +294,23 @@ class Command(BaseCommand):
             self._warn(msg)
 
         # ------------------------------------------------------------------
-        # 7. GIS coverage
+        # 8. GIS coverage
         # ------------------------------------------------------------------
         self._section("GIS coordinate coverage")
 
-        if prop_count > 0:
+        if skip_gis_checks:
+            self._warn("Skipped GIS coverage check by request")
+        elif residential_prop_count > 0:
             with_coords = PropertyRecord.objects.filter(
+                is_residential=True,
                 latitude__isnull=False, longitude__isnull=False
             ).count()
-            coord_pct = with_coords / prop_count * 100
+            coord_pct = with_coords / residential_prop_count * 100
 
-            if coord_pct >= 80.0:
-                self._pass(f"{coord_pct:.1f}% of properties have coordinates ({with_coords:,}/{prop_count:,})")
-            elif coord_pct >= 30.0:
-                self._warn(f"{coord_pct:.1f}% of properties have coordinates ({with_coords:,}/{prop_count:,})")
+            if coord_pct >= 100.0:
+                self._pass(f"{coord_pct:.1f}% of residential properties have coordinates ({with_coords:,}/{residential_prop_count:,})")
             else:
-                msg = f"Only {coord_pct:.1f}% of properties have coordinates"
+                msg = f"Only {coord_pct:.1f}% of residential properties have coordinates"
                 self._fail(msg)
                 failures.append(("GIS", msg))
 
@@ -206,7 +323,7 @@ class Command(BaseCommand):
             for category, msg in failures:
                 self.stdout.write(self.style.ERROR(f"    [{category}] {msg}"))
             self.stdout.write("=" * 70 + "\n")
-            sys.exit(1)
+            raise CommandError("; ".join(msg for _, msg in failures))
         else:
             self.stdout.write(self.style.SUCCESS("  ✅ ALL CHECKS PASSED"))
             self.stdout.write("=" * 70 + "\n")

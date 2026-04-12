@@ -4,8 +4,10 @@ import logging
 from typing import Iterable, Dict, Optional, List
 
 from django.db import transaction, connection
+from django.db.models import Exists, OuterRef
 
 from .models import PropertyRecord
+from .residential import is_residential_state_class, normalize_state_class
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +115,7 @@ def iter_property_rows(reader: csv.DictReader) -> Iterable[Dict]:
         )
         building_area = parse_currency(get(row, "bld_ar", "bldg_ar", "bld_area"))
         land_area = parse_currency(get(row, "land_ar", "land_area"))
+        state_class = normalize_state_class(get(row, "state_class"))
 
         account_number = get(row, "acct", "account", "account_number")
         owner_name = get(row, "mailto", "owner_name", "owner")
@@ -132,6 +135,9 @@ def iter_property_rows(reader: csv.DictReader) -> Iterable[Dict]:
             "assessed_value": assessed_value,
             "building_area": building_area,
             "land_area": land_area,
+            "state_class": state_class,
+            "is_residential": is_residential_state_class(state_class),
+            "is_data_ready": False,
             "account_number": account_number,
             "owner_name": owner_name,
             "street_number": number,
@@ -157,6 +163,7 @@ def bulk_load_properties(
     buf: List[PropertyRecord] = []
     total = 0
     skipped_duplicates = 0
+    skipped_non_residential = 0
     
     # Truncate table for clean import if requested
     if truncate:
@@ -175,6 +182,10 @@ def bulk_load_properties(
         for idx, data in enumerate(iter_property_rows(reader), start=1):
             # simple validation: require either address or zipcode
             if not (data.get("address") or data.get("zipcode")):
+                continue
+
+            if not data.get("is_residential", False):
+                skipped_non_residential += 1
                 continue
                 
             acct = data.get("account_number", "")[:20]
@@ -196,6 +207,9 @@ def bulk_load_properties(
                     assessed_value=data.get("assessed_value"),
                     building_area=data.get("building_area"),
                     land_area=data.get("land_area"),
+                    state_class=data.get("state_class", "")[:10],
+                    is_residential=bool(data.get("is_residential", False)),
+                    is_data_ready=bool(data.get("is_data_ready", False)),
                     account_number=acct,
                     owner_name=data.get("owner_name", "")[:255],
                     street_number=data.get("street_number", "")[:16],
@@ -216,8 +230,51 @@ def bulk_load_properties(
             
     if skipped_duplicates > 0:
         logger.info(f"Skipped {skipped_duplicates} duplicate records.")
+    if skipped_non_residential > 0:
+        logger.info(f"Skipped {skipped_non_residential} non-residential property records.")
+
+    refresh_property_readiness()
         
     return total
+
+
+def refresh_property_readiness() -> dict:
+    """Recompute PropertyRecord.is_data_ready based on building, room, and GIS completeness."""
+    from .models import BuildingDetail
+
+    ready_buildings = BuildingDetail.objects.filter(
+        property_id=OuterRef("pk"),
+        is_active=True,
+        bedrooms__isnull=False,
+        bathrooms__isnull=False,
+    )
+
+    residential_properties = PropertyRecord.objects.filter(is_residential=True)
+    results = {
+        "properties_evaluated": PropertyRecord.objects.count(),
+        "residential_properties": residential_properties.count(),
+    }
+
+    results["ready_properties_cleared"] = PropertyRecord.objects.filter(
+        is_data_ready=True
+    ).update(is_data_ready=False)
+
+    results["ready_properties_set"] = (
+        residential_properties.filter(
+            latitude__isnull=False,
+            longitude__isnull=False,
+        )
+        .annotate(has_ready_building=Exists(ready_buildings))
+        .filter(has_ready_building=True)
+        .update(is_data_ready=True)
+    )
+
+    logger.info(
+        "Refreshed property readiness: %s/%s residential properties ready",
+        results["ready_properties_set"],
+        results["residential_properties"],
+    )
+    return results
 
 
 def load_gis_parcels(shapefile_path: str, chunk_size: int = 5000) -> int:
@@ -316,6 +373,7 @@ def load_gis_parcels(shapefile_path: str, chunk_size: int = 5000) -> int:
             total_updated += len(batch)
 
     logger.info("Completed: Updated %s properties with GIS coordinates", total_updated)
+    refresh_property_readiness()
     return total_updated
 
 
@@ -913,5 +971,7 @@ def load_fixtures_room_counts(filepath: str, chunk_size: int = 5000) -> dict:
     logger.info(
         "Buildings not found in DB: %s", f"{results['buildings_not_found']:,}"
     )
+
+    refresh_property_readiness()
 
     return results

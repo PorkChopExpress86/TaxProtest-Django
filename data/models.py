@@ -26,6 +26,9 @@ class PropertyRecord(models.Model):
     assessed_value = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     building_area = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     land_area = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    state_class = models.CharField(max_length=10, blank=True, db_index=True)
+    is_residential = models.BooleanField(default=False, db_index=True)
+    is_data_ready = models.BooleanField(default=False, db_index=True)
     street_number = models.CharField(max_length=16, blank=True)
     street_name = models.CharField(max_length=128, blank=True)
 

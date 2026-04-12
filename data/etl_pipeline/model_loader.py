@@ -15,6 +15,8 @@ from django.db import connection, transaction
 from django.db.models import Model
 from django.utils import timezone
 
+from data.residential import is_residential_state_class, normalize_state_class
+
 from .config import ETLConfig
 from .logging import ETLLogger
 from .fixtures_aggregator import FixturesAggregator
@@ -153,11 +155,15 @@ class ModelLoader:
                     if not property_id:
                         result.records_invalid += 1
                         continue
+
+                    building_num = self._safe_int(record.get('building_number'))
+                    if building_num is None:
+                        building_num = 1
                     
                     building = BuildingDetail(
                         property_id=property_id,
                         account_number=acct,
-                        building_number=self._safe_int(record.get('building_number')),
+                        building_number=building_num,
                         building_type=str(record.get('building_type', ''))[:10],
                         building_style=str(record.get('building_style', ''))[:10],
                         building_class=str(record.get('building_class', ''))[:10],
@@ -174,9 +180,9 @@ class ModelLoader:
                         exterior_wall=str(record.get('exterior_wall', ''))[:10],
                         roof_cover=str(record.get('roof_cover', ''))[:10],
                         roof_type=str(record.get('roof_type', ''))[:10],
-                        bedrooms=self._get_bedrooms(account_num, building_num, record),
-                        bathrooms=self._get_bathrooms(account_num, building_num, record),
-                        half_baths=self._get_half_baths(account_num, building_num, record),
+                        bedrooms=self._get_bedrooms(acct, building_num, record),
+                        bathrooms=self._get_bathrooms(acct, building_num, record),
+                        half_baths=self._get_half_baths(acct, building_num, record),
                         fireplaces=self._safe_int(record.get('fireplaces')),
                         is_active=True,
                         import_date=import_date,
@@ -345,6 +351,8 @@ class ModelLoader:
                     if not acct:
                         result.records_skipped += 1
                         continue
+
+                    state_class = normalize_state_class(record.get('state_class'))[:10]
                     
                     # Build address from components
                     street_num = str(record.get('street_number', '')).strip()
@@ -365,6 +373,9 @@ class ModelLoader:
                         assessed_value=self._safe_decimal(record.get('assessed_value')),
                         building_area=self._safe_decimal(record.get('building_area')),
                         land_area=self._safe_decimal(record.get('land_area')),
+                        state_class=state_class,
+                        is_residential=is_residential_state_class(state_class),
+                        is_data_ready=False,
                         street_number=street_num[:16],
                         street_name=street_name[:128],
                     )

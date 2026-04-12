@@ -11,6 +11,7 @@ import shutil
 import requests
 import logging
 from datetime import datetime
+from typing import Any
 from celery import shared_task
 from django.conf import settings
 
@@ -27,16 +28,85 @@ logger = logging.getLogger(__name__)
 # Legacy Tasks (kept for backward compatibility during migration)
 # =============================================================================
 
-HCAD_URLS = [
-    'https://download.hcad.org/data/CAMA/2025/Real_acct_owner.zip',
-    'https://download.hcad.org/data/CAMA/2025/Real_acct_ownership_history.zip',
-    'https://download.hcad.org/data/CAMA/2025/Real_building_land.zip',
-    'https://download.hcad.org/data/CAMA/2025/Code_description_real.zip',
-    'https://download.hcad.org/data/CAMA/2025/PP_files.zip',
-    'https://download.hcad.org/data/CAMA/2025/Code_description_pp.zip',
-    'https://download.hcad.org/data/CAMA/2025/Hearing_files.zip',
-    'https://download.hcad.org/data/GIS/Parcels.zip',
+HCAD_ARCHIVE_SOURCES = [
+    {'filename': 'Real_acct_owner.zip', 'required': True, 'timeout': 300},
+    {'filename': 'Real_acct_ownership_history.zip', 'required': False, 'timeout': 300},
+    {'filename': 'Real_building_land.zip', 'required': True, 'timeout': 300},
+    {'filename': 'Code_description_real.zip', 'required': False, 'timeout': 120},
+    {'filename': 'PP_files.zip', 'required': False, 'timeout': 300},
+    {'filename': 'Code_description_pp.zip', 'required': False, 'timeout': 120},
+    {'filename': 'Hearing_files.zip', 'required': False, 'timeout': 300},
+    {
+        'filename': 'Parcels.zip',
+        'required': True,
+        'timeout': 600,
+        'url': 'https://download.hcad.org/data/GIS/Parcels.zip',
+    },
 ]
+
+
+def candidate_cama_years(reference_year: int | None = None) -> list[int]:
+    """Return candidate CAMA data years, preferring the current year then previous year."""
+    year = reference_year or datetime.now().year
+    years = [year]
+    if year > 2000:
+        years.append(year - 1)
+    return years
+
+
+def build_archive_candidate_urls(source: dict[str, Any], reference_year: int | None = None) -> list[str]:
+    """Build candidate download URLs for an HCAD archive source."""
+    explicit_url = source.get('url')
+    if explicit_url:
+        return [explicit_url]
+
+    filename = source['filename']
+    return [
+        f'https://download.hcad.org/data/CAMA/{year}/{filename}'
+        for year in candidate_cama_years(reference_year)
+    ]
+
+
+def download_archive_with_fallback(
+    source: dict[str, Any],
+    download_dir: str,
+    reference_year: int | None = None,
+) -> tuple[str | None, str]:
+    """Download an archive, falling back across candidate URLs when needed.
+
+    Returns the URL that succeeded (or ``None`` for skipped optional archives)
+    along with the local path used for the download.
+    """
+    filename = source['filename']
+    local_path = os.path.join(download_dir, filename)
+    candidate_urls = build_archive_candidate_urls(source, reference_year)
+    last_error: Exception | None = None
+
+    for url in candidate_urls:
+        try:
+            with requests.get(url, stream=True, timeout=source.get('timeout', 300)) as r:
+                r.raise_for_status()
+                with open(local_path, 'wb') as f:
+                    shutil.copyfileobj(r.raw, f)
+            return url, local_path
+        except requests.RequestException as exc:
+            last_error = exc
+            if os.path.exists(local_path):
+                os.remove(local_path)
+
+            status_code = getattr(getattr(exc, 'response', None), 'status_code', None)
+            if status_code == 404:
+                logger.warning('Archive %s not available at %s', filename, url)
+            else:
+                logger.warning('Failed downloading %s from %s: %s', filename, url, exc)
+
+    if source.get('required', True):
+        if last_error:
+            raise last_error
+        raise FileNotFoundError(f'No candidate URLs succeeded for required archive {filename}')
+
+    logger.warning('Skipping optional archive %s after trying %s', filename, candidate_urls)
+    return None, local_path
 
 
 def ensure_download_dir():
@@ -53,18 +123,31 @@ def download_and_extract_hcad(self):
     """
     download_dir = ensure_download_dir()
     results = []
-    for url in HCAD_URLS:
-        local_name = url.split('/')[-1]
-        local_path = os.path.join(download_dir, local_name)
+    reference_year = datetime.now().year
 
-        # stream download
-        with requests.get(url, stream=True, timeout=60) as r:
-            r.raise_for_status()
-            with open(local_path, 'wb') as f:
-                shutil.copyfileobj(r.raw, f)
+    for source in HCAD_ARCHIVE_SOURCES:
+        local_name = source['filename']
+        downloaded_url, local_path = download_archive_with_fallback(
+            source,
+            download_dir,
+            reference_year=reference_year,
+        )
+
+        if downloaded_url is None:
+            results.append(
+                {
+                    'filename': local_name,
+                    'url': None,
+                    'local': local_path,
+                    'extracted': False,
+                    'optional': True,
+                    'skipped': True,
+                }
+            )
+            continue
 
         # create DB record
-        rec = DownloadRecord.objects.create(url=url, filename=local_name)
+        rec = DownloadRecord.objects.create(url=downloaded_url, filename=local_name)
 
         # try to extract if zip
         try:
@@ -76,10 +159,20 @@ def download_and_extract_hcad(self):
                 rec.extracted = True
                 rec.save()
         except Exception as ex:
-            # Do not fail the whole task on one file; log and continue
-            self.retry(exc=ex, countdown=30, max_retries=2)
+            if source.get('required', True):
+                raise
+            logger.warning('Skipping optional archive %s after extraction error: %s', local_name, ex)
 
-        results.append({'url': url, 'local': local_path, 'extracted': rec.extracted})
+        results.append(
+            {
+                'filename': local_name,
+                'url': downloaded_url,
+                'local': local_path,
+                'extracted': rec.extracted,
+                'optional': not source.get('required', True),
+                'skipped': False,
+            }
+        )
 
     return results
 
@@ -100,29 +193,21 @@ def download_and_import_building_data(self):
     """
     download_dir = ensure_download_dir()
     
-    # Use current year for the URL
-    current_year = datetime.now().year
-    url = f'https://download.hcad.org/data/CAMA/{current_year}/Real_building_land.zip'
-    
     self.update_state(state='DOWNLOADING', meta={'step': 'Downloading ZIP file'})
     
     # Download the ZIP file
-    local_name = 'Real_building_land.zip'
-    local_path = os.path.join(download_dir, local_name)
-    
-    logger.info("Downloading %s...", url)
+    source = next(s for s in HCAD_ARCHIVE_SOURCES if s['filename'] == 'Real_building_land.zip')
+
+    logger.info("Downloading %s...", source['filename'])
     try:
-        with requests.get(url, stream=True, timeout=300) as r:
-            r.raise_for_status()
-            with open(local_path, 'wb') as f:
-                shutil.copyfileobj(r.raw, f)
-        logger.info("Downloaded to %s", local_path)
+        url, local_path = download_archive_with_fallback(source, download_dir)
+        logger.info("Downloaded %s to %s", url, local_path)
     except Exception as e:
         logger.error("Error downloading: %s", e)
         raise
     
     # Create download record
-    rec = DownloadRecord.objects.create(url=url, filename=local_name)
+    rec = DownloadRecord.objects.create(url=url, filename=source['filename'])
     
     self.update_state(state='EXTRACTING', meta={'step': 'Extracting ZIP file'})
     
@@ -208,8 +293,8 @@ def download_and_import_building_data(self):
         logger.info("Loading room counts from %s", fixtures_file)
         try:
             room_results = load_fixtures_room_counts(fixtures_file)
-            results['room_counts_updated'] = room_results.get('updated', 0)
-            logger.info("Updated %s buildings with room counts", room_results.get('updated', 0))
+            results['room_counts_updated'] = room_results.get('buildings_updated', 0)
+            logger.info("Updated %s buildings with room counts", room_results.get('buildings_updated', 0))
         except Exception as e:
             logger.error("Error loading room counts: %s", e)
             results['room_counts_error'] = str(e)
@@ -450,7 +535,7 @@ def extract_hcad_data(self):
     results = extract_manager.extract_batch(sources)
     
     success_count = sum(1 for r in results if r.success)
-    total_files = sum(len(r.files_extracted) for r in results)
+    total_files = sum(len(r.files_extracted or []) for r in results)
     
     self.update_state(state='SUCCESS', meta={'step': 'Extraction completed'})
     
@@ -462,7 +547,7 @@ def extract_hcad_data(self):
             {
                 'name': r.source.name,
                 'success': r.success,
-                'files': len(r.files_extracted),
+                'files': len(r.files_extracted or []),
                 'error': r.error,
             }
             for r in results
