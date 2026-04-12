@@ -143,21 +143,21 @@ class SimilarPropertiesViewTests(TestCase):
         )
 
     @patch("taxprotest.views.find_similar_properties")
-    def test_similar_results_sorted_by_ppsf(self, mock_find_similar):
+    def test_similar_results_sorted_by_similarity_score(self, mock_find_similar):
         mock_find_similar.return_value = [
-            {
-                "property": self.high_ppsf_property,
-                "building": self.high_ppsf_building,
-                "features": [],
-                "distance": 0.9,
-                "similarity_score": 85,
-            },
             {
                 "property": self.low_ppsf_property,
                 "building": self.low_ppsf_building,
                 "features": [],
                 "distance": 0.5,
                 "similarity_score": 80,
+            },
+            {
+                "property": self.high_ppsf_property,
+                "building": self.high_ppsf_building,
+                "features": [],
+                "distance": 0.9,
+                "similarity_score": 85,
             },
         ]
 
@@ -168,7 +168,9 @@ class SimilarPropertiesViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         results = response.context["results"]
         self.assertTrue(results[0]["is_target"])
-        self.assertLess(results[1]["ppsf"], results[2]["ppsf"])
+        self.assertEqual(results[1]["account_number"], self.high_ppsf_property.account_number)
+        self.assertEqual(results[1]["match_label"], "Best match")
+        self.assertEqual(results[2]["account_number"], self.low_ppsf_property.account_number)
 
 
 class ProtestRecommendationTests(TestCase):

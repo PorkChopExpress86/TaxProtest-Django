@@ -11,7 +11,7 @@ from django.shortcuts import render
 from django.utils.http import urlencode
 
 from data.models import PropertyRecord
-from data.similarity import find_similar_properties, format_feature_list
+from data.similarity import find_similar_properties, format_feature_list, get_similarity_label
 from data.query import build_property_search_queryset
 
 
@@ -288,6 +288,7 @@ def similar_properties(request, account_number):
             "bathrooms": target_building.bathrooms if target_building else None,
             "quality_code": target_building.quality_code if target_building else None,
             "features": format_feature_list(target_features, max_features=5),
+            "match_label": "Your property",
             "is_target": True,
         }
     )
@@ -325,6 +326,7 @@ def similar_properties(request, account_number):
                 "bathrooms": building.bathrooms if building else None,
                 "quality_code": building.quality_code if building else None,
                 "features": format_feature_list(features, max_features=5),
+                "match_label": get_similarity_label(result["similarity_score"]),
                 "is_target": False,
             }
         )
@@ -337,7 +339,7 @@ def similar_properties(request, account_number):
         target_position = sum(1 for v in ppsf_values_sorted if v <= target_ppsf)
         target_ppsf_percentile = (target_position / len(ppsf_values_sorted)) * 100
 
-    # Sort comparable properties by price per square foot (target always first)
+    # Sort comparable properties by match quality (target always first)
     target_entry = next((r for r in formatted_results if r.get("is_target")), None)
     comparable_entries = [r for r in formatted_results if not r.get("is_target")]
 
@@ -345,7 +347,14 @@ def similar_properties(request, account_number):
         value = entry.get("ppsf")
         return float(value) if value is not None else float("inf")
 
-    comparable_entries.sort(key=ppsf_sort_key)
+    comparable_entries.sort(
+        key=lambda entry: (
+            -float(entry.get("similarity_score") or 0),
+            float(entry.get("distance") or 0),
+            ppsf_sort_key(entry),
+            entry.get("account_number") or "",
+        )
+    )
 
     if target_entry:
         formatted_results = [target_entry] + comparable_entries
@@ -409,7 +418,7 @@ def similar_properties(request, account_number):
                 protest_recommendation_reason = (
                     f"Your price per sqft (${target_ppsf:.2f}) is about {over_percentage:.0f}% above "
                     f"the median (${ppsf_median:.2f}) of {comparable_count} similar properties "
-                    f"(avg similarity score {comparable_avg_score:.0f}%)."
+                    f"(avg match score {comparable_avg_score:.0f})."
                 )
             elif over_percentage >= 10:
                 protest_recommendation_level = "moderate"
@@ -417,7 +426,7 @@ def similar_properties(request, account_number):
                 protest_recommendation_reason = (
                     f"Your price per sqft (${target_ppsf:.2f}) is about {over_percentage:.0f}% above "
                     f"the median (${ppsf_median:.2f}) of {comparable_count} similar properties "
-                    f"(avg similarity score {comparable_avg_score:.0f}%)."
+                    f"(avg match score {comparable_avg_score:.0f})."
                 )
             elif over_percentage <= -10:
                 protest_recommendation_level = "low"
@@ -452,7 +461,7 @@ def similar_properties(request, account_number):
         "target_ppsf": target_ppsf,
         "target_ppsf_percentile": target_ppsf_percentile,
         "results": formatted_results,
-        "results_sort_label": "price per square foot (lowest first)",
+        "results_sort_label": "match score (best match first)",
         "max_distance": max_distance,
         "max_results": max_results,
         "min_score": min_score,

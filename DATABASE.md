@@ -27,6 +27,9 @@ Main property records table with owner and valuation data.
 - `assessed_value` - Property assessed value
 - `building_area` - Building square footage
 - `land_area` - Land square footage
+- `state_class` - HCAD state class used to identify residential parcels
+- `is_residential` - Residential classification flag derived from `state_class`
+- `is_data_ready` - Whether building, room-count, and GIS data are all present
 - `latitude` - Geographic coordinate
 - `longitude` - Geographic coordinate
 - `parcel_id` - GIS parcel identifier
@@ -153,9 +156,70 @@ Contains multiple files:
 
 ## Import Commands
 
-### ETL Pipeline (Recommended)
+### Current Import Path (Recommended)
 
-The unified ETL pipeline handles all data imports:
+The current authoritative ETL flow is the legacy management-command path, with strict post-import validation of the residential-ready dataset:
+
+```bash
+# Full import: property records + building data + GIS coordinates
+docker compose exec web python manage.py import_all_data
+
+# Validate the residential-only, data-ready contract
+docker compose exec web python manage.py validate_data
+
+# Preview cleanup for older mixed/incomplete datasets
+docker compose exec web python manage.py reconcile_property_data
+
+# Apply legacy-row cleanup
+docker compose exec web python manage.py reconcile_property_data --apply
+```
+
+`import_all_data` now fails hard if the requested building or GIS completeness is not achieved.
+
+### Manual Stage Commands
+
+Use these when you need to rerun one portion of the import:
+
+**Property Records (Required):**
+```bash
+docker compose exec web python manage.py load_hcad_real_acct
+```
+
+**GIS Data:**
+```bash
+# Download and import
+docker compose exec web python manage.py load_gis_data
+
+# Skip download (use existing files)
+docker compose exec web python manage.py load_gis_data --skip-download
+```
+
+**Building Details & Features:**
+```bash
+# Full import (building details, features, fixtures)
+docker compose exec web python manage.py import_building_data
+
+# Async via Celery
+docker compose exec web python manage.py import_building_data --async
+```
+
+**Room Counts (Bedrooms/Bathrooms):**
+```bash
+docker compose exec web python manage.py load_room_counts
+```
+
+**Link Orphaned Records:**
+```bash
+# Link building/feature records to properties
+docker compose exec web python manage.py link_orphaned_records
+
+# Custom batch size
+docker compose exec web python manage.py link_orphaned_records --chunk-size 10000
+```
+
+### Modular ETL Pipeline (Alternate)
+
+The modular `etl_pipeline` command remains available for alternate workflows and targeted debugging, but it is not the authoritative production path today:
 
 ```bash
 # Full import (property data + building details + GIS coordinates)
@@ -172,45 +236,6 @@ docker compose exec web python manage.py etl_pipeline run --property-only
 
 # GIS data only (update coordinates)
 docker compose exec web python manage.py etl_pipeline run --skip-download --skip-extract --gis-only
-```
-
-### Manual Import Commands
-
-**Property Records (Required):**
-```bash
-docker compose exec web python manage.py import_hcad_data
-```
-
-**GIS Data (Recommended):**
-```bash
-# Download and import
-docker compose exec web python manage.py load_gis_data
-
-# Skip download (use existing files)
-docker compose exec web python manage.py load_gis_data --skip-download
-```
-
-**Building Details & Features (Recommended):**
-```bash
-# Full import (building details, features, fixtures)
-docker compose exec web python manage.py import_building_data
-
-# Async via Celery
-docker compose exec web python manage.py import_building_data --async
-```
-
-**Link Orphaned Records:**
-```bash
-# Link building/feature records to properties
-docker compose exec web python manage.py link_orphaned_records
-
-# Custom batch size
-docker compose exec web python manage.py link_orphaned_records --chunk-size 10000
-```
-
-**Load Room Counts (Bedrooms/Bathrooms):**
-```bash
-docker compose exec web python manage.py load_fixtures
 ```
 
 ### Check Database State
@@ -365,13 +390,13 @@ BuildingDetail.objects.filter(import_batch_id='20251016_140532').update(is_activ
 ### Monthly Building Data Import
 
 **Schedule:** 2nd Tuesday of each month at 2:00 AM Central  
-**Task:** `data.tasks.download_and_import_building_data`  
+**Task:** `data.tasks_new.download_and_import_building_data`  
 **What:** Building details, features, fixtures (bedrooms/bathrooms)
 
 **Configured in:** `taxprotest/celery.py`
 ```python
 'download-and-import-building-data-monthly': {
-    'task': 'data.tasks.download_and_import_building_data',
+    'task': 'data.tasks_new.download_and_import_building_data',
     'schedule': crontab(
         day_of_week='tuesday',
         day_of_month='8-14',  # 2nd week
@@ -389,7 +414,7 @@ BuildingDetail.objects.filter(import_batch_id='20251016_140532').update(is_activ
 ### Annual GIS Import
 
 **Schedule:** January 15th at 3:00 AM Central  
-**Task:** `data.tasks.download_and_import_gis_data`  
+**Task:** `data.tasks_new.download_and_import_gis_data`  
 **What:** Property coordinates (lat/long)
 
 **Why Annually?**

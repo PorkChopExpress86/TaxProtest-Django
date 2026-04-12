@@ -116,10 +116,18 @@ brew install gdal spatialindex
 
 ## Import Process
 
-### Integrated ETL Pipeline (Recommended)
+### Current Recommended Import Path
 
-GIS data is now integrated into the main ETL pipeline. Running the full pipeline
-will automatically download, extract, and load GIS coordinates:
+GIS completeness is part of the residential-ready data contract. The easiest way to load and verify it is through the strict full import path:
+
+```bash
+docker compose exec web python manage.py import_all_data
+docker compose exec web python manage.py validate_data
+```
+
+### Alternate Modular ETL Pipeline
+
+GIS data is also available through the modular `etl_pipeline` workflow when you want a targeted or exploratory run:
 
 ```bash
 # Full pipeline (includes property data + GIS)
@@ -178,7 +186,7 @@ print(f'Coverage: {with_coords/total*100:.1f}%')
 "
 ```
 
-**Expected Coverage:** 90-95% (some properties lack parcel data)
+**Expected Coverage:** 100% of residential properties in a validated, residential-ready dataset. If coverage is lower, the GIS import is incomplete and `validate_data` will fail.
 
 ### Re-import (Update Coordinates)
 
@@ -390,12 +398,12 @@ for prop, score in similar:
 ### Annual GIS Import
 
 **Schedule:** January 15th at 3:00 AM Central  
-**Task:** `data.tasks.download_and_import_gis_data`  
+**Task:** `data.tasks_new.download_and_import_gis_data`  
 **Configured in:** `taxprotest/celery.py`
 
 ```python
 'download-and-import-gis-data-annually': {
-    'task': 'data.tasks.download_and_import_gis_data',
+    'task': 'data.tasks_new.download_and_import_gis_data',
     'schedule': crontab(
         month_of_year=1,
         day_of_month=15,

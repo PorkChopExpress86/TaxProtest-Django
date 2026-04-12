@@ -4,15 +4,27 @@
 
 The ETL (Extract, Transform, Load) pipeline provides automated data processing for Harris County Appraisal District (HCAD) property data. It downloads, extracts, transforms, and loads property records into the Django database.
 
+> Note: the current production-authoritative import path is `import_all_data` followed by `validate_data`. This document covers the alternate modular `etl_pipeline` workflow, which remains available for targeted runs and pipeline debugging.
+
 ## Quick Start
 
-### Run Full Pipeline (with download)
+### Production-Ready Import Path
+
+```bash
+docker compose exec web python manage.py import_all_data
+docker compose exec web python manage.py validate_data
+
+# Optional cleanup pass for older mixed/incomplete databases
+docker compose exec web python manage.py reconcile_property_data --apply
+```
+
+### Run Modular Pipeline (with download)
 
 ```bash
 docker compose exec web python manage.py etl_pipeline run
 ```
 
-### Run with Pre-downloaded Data
+### Run Modular Pipeline with Pre-downloaded Data
 
 ```bash
 docker compose exec web python manage.py etl_pipeline run --skip-download --skip-extract
@@ -124,12 +136,16 @@ Actions:
   download     Download only
   extract      Extract only
   status       Show pipeline status
+  cleanup      Remove temporary ETL files
+  list         List configured data sources
 
 Options:
   --skip-download    Skip download stage
   --skip-extract     Skip extract stage
   --dry-run          Simulate without database changes
   --year YEAR        Data year (default: current year)
+  --property-only    Load property/building data without GIS
+  --gis-only         Load GIS data only
 ```
 
 ## Performance

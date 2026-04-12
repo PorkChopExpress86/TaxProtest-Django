@@ -173,7 +173,7 @@ Edit `taxprotest/celery.py` to customize automated task schedules:
 app.conf.beat_schedule = {
     # Monthly building data import
     'download-and-import-building-data-monthly': {
-        'task': 'data.tasks.download_and_import_building_data',
+        'task': 'data.tasks_new.download_and_import_building_data',
         'schedule': crontab(
             day_of_week='tuesday',
             day_of_month='8-14',  # 2nd Tuesday
@@ -183,7 +183,7 @@ app.conf.beat_schedule = {
     },
     # Annual GIS update
     'download-and-import-gis-data-annually': {
-        'task': 'data.tasks.download_and_import_gis_data',
+        'task': 'data.tasks_new.download_and_import_gis_data',
         'schedule': crontab(
             month_of_year='1',  # January
             day_of_month='15',
@@ -267,44 +267,37 @@ services:
 
 ## Initial Data Import
 
-### Step 1: Import Property Records (Required)
+### Step 1: Run the Full Residential-Ready Import
 
 ```bash
-# This now happens AUTOMATICALLY on container startup if the database is empty.
-# You can check progress with:
-docker compose logs -f web
+docker compose exec web python manage.py import_all_data
 ```
 
-This takes 15-30 minutes and imports:
-- Owner names and addresses
-- Property locations (street, zip)
-- Assessed values
-- Building and land area
+This runs the current authoritative ETL flow and now fails hard if building or GIS completeness is not achieved.
 
-### Step 2: Import GIS Data (Recommended)
+### Step 2: Validate the Imported Dataset
 
 ```bash
-# Import latitude/longitude coordinates
-docker compose exec web python manage.py load_gis_data
+docker compose exec web python manage.py validate_data
 ```
 
-This takes 30-45 minutes and adds:
-- Latitude/longitude for each property
-- Enables location-based similarity search
-- Required for distance calculations
+Validation enforces the residential-only, data-ready contract:
+- residential properties only
+- active residential building records present
+- bedroom and bathroom counts populated
+- GIS coordinates present
 
-### Step 3: Import Building Details (Recommended)
+### Step 3: Clean Up Older Mixed/Incomplete Rows (If Needed)
 
 ```bash
-# Import building specs and features
-docker compose exec web python manage.py import_building_data
+# Preview cleanup
+docker compose exec web python manage.py reconcile_property_data
+
+# Apply cleanup to legacy mixed/incomplete rows
+docker compose exec web python manage.py reconcile_property_data --apply
 ```
 
-This takes 60-90 minutes and adds:
-- Building area, year built
-- Bedrooms and bathrooms
-- Extra features (pools, garages, etc.)
-- Enables feature-based similarity matching
+Use this when upgrading an older database that may still contain non-residential rows or residential records missing building, room-count, or GIS data.
 
 ### Import Progress Monitoring
 

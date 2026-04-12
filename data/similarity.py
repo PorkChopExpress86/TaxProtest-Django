@@ -4,13 +4,232 @@ Uses location (lat/long), size, age, and features to find similar properties.
 """
 
 from math import radians, cos, sin, asin, sqrt
-from typing import List, Dict, Optional, TYPE_CHECKING
+from typing import List, Dict, Optional, TYPE_CHECKING, Tuple
 from django.db.models import F, Value, FloatField, ExpressionWrapper
 from django.db.models.functions import ACos, Cos, Radians, Sin, Least, Greatest
 from .models import PropertyRecord, BuildingDetail, ExtraFeature
 
 if TYPE_CHECKING:
     from decimal import Decimal
+
+
+QUALITY_RANK = {"X": 7, "A": 6, "B": 5, "C": 4, "D": 3, "E": 2, "F": 1}
+
+RESIDENTIAL_WEIGHTS = {
+    "living_area": 24.0,
+    "land_size": 10.0,
+    "bedrooms": 14.0,
+    "bathrooms": 12.0,
+    "quality": 10.0,
+    "condition": 6.0,
+    "age": 8.0,
+    "stories": 4.0,
+    "building_character": 4.0,
+    "features": 4.0,
+    "distance": 4.0,
+}
+
+LAND_ONLY_WEIGHTS = {
+    "land_size": 80.0,
+    "features": 10.0,
+    "distance": 10.0,
+}
+
+
+def _clamp(value: float, lower: float = 0.0, upper: float = 1.0) -> float:
+    return max(lower, min(upper, value))
+
+
+def _interpolate_curve(value: float, curve: List[Tuple[float, float]]) -> float:
+    """Return a smoothed similarity value from a piecewise linear curve."""
+    if not curve:
+        return 0.0
+
+    if value <= curve[0][0]:
+        return curve[0][1]
+
+    for (start_x, start_y), (end_x, end_y) in zip(curve, curve[1:]):
+        if value <= end_x:
+            if end_x == start_x:
+                return end_y
+
+            ratio = (value - start_x) / (end_x - start_x)
+            return start_y + ((end_y - start_y) * ratio)
+
+    return curve[-1][1]
+
+
+def _safe_float(value: object) -> Optional[float]:
+    if value is None:
+        return None
+
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalized_code(value: object) -> str:
+    return str(value or "").strip().upper()
+
+
+def _percentage_similarity(
+    target_value: object,
+    candidate_value: object,
+    curve: List[Tuple[float, float]],
+) -> Optional[float]:
+    target_num = _safe_float(target_value)
+    candidate_num = _safe_float(candidate_value)
+
+    if target_num is None or candidate_num is None or target_num <= 0:
+        return None
+
+    diff_pct = abs(target_num - candidate_num) / target_num
+    return _clamp(_interpolate_curve(diff_pct, curve))
+
+
+def _difference_similarity(
+    target_value: object,
+    candidate_value: object,
+    curve: List[Tuple[float, float]],
+) -> Optional[float]:
+    target_num = _safe_float(target_value)
+    candidate_num = _safe_float(candidate_value)
+
+    if target_num is None or candidate_num is None:
+        return None
+
+    return _clamp(_interpolate_curve(abs(target_num - candidate_num), curve))
+
+
+def _ranked_code_similarity(
+    target_code: object,
+    candidate_code: object,
+    rank_map: Dict[str, int],
+) -> Optional[float]:
+    normalized_target = _normalized_code(target_code)
+    normalized_candidate = _normalized_code(candidate_code)
+
+    if not normalized_target or not normalized_candidate:
+        return None
+
+    if normalized_target == normalized_candidate:
+        return 1.0
+
+    target_rank = rank_map.get(normalized_target)
+    candidate_rank = rank_map.get(normalized_candidate)
+
+    if target_rank is None or candidate_rank is None:
+        return None
+
+    return _clamp(
+        _interpolate_curve(
+            abs(target_rank - candidate_rank),
+            [(0.0, 1.0), (1.0, 0.72), (2.0, 0.42), (3.0, 0.18), (5.0, 0.0)],
+        )
+    )
+
+
+def _categorical_similarity(target_code: object, candidate_code: object) -> Optional[float]:
+    normalized_target = _normalized_code(target_code)
+    normalized_candidate = _normalized_code(candidate_code)
+
+    if not normalized_target or not normalized_candidate:
+        return None
+
+    if normalized_target == normalized_candidate:
+        return 1.0
+
+    if len(normalized_target) >= 2 and len(normalized_candidate) >= 2:
+        if normalized_target[:2] == normalized_candidate[:2]:
+            return 0.65
+
+    if normalized_target[0] == normalized_candidate[0]:
+        return 0.4
+
+    return 0.0
+
+
+def _condition_similarity(target_code: object, candidate_code: object) -> Optional[float]:
+    ranked_similarity = _ranked_code_similarity(target_code, candidate_code, QUALITY_RANK)
+    if ranked_similarity is not None:
+        return ranked_similarity
+
+    return _categorical_similarity(target_code, candidate_code)
+
+
+def _building_character_similarity(
+    target_building: "BuildingDetail",
+    candidate_building: "BuildingDetail",
+) -> Optional[float]:
+    for attr_name in ("building_style", "building_type", "building_class"):
+        similarity = _categorical_similarity(
+            getattr(target_building, attr_name, None),
+            getattr(candidate_building, attr_name, None),
+        )
+        if similarity is not None:
+            return similarity
+
+    return None
+
+
+def _effective_year(building: Optional["BuildingDetail"]) -> Optional[int]:
+    if building is None:
+        return None
+
+    for attr_name in ("effective_year", "year_remodeled", "year_built"):
+        value = getattr(building, attr_name, None)
+        if value:
+            return int(value)
+
+    return None
+
+
+def _feature_similarity(
+    target_features: Optional[List[ExtraFeature]],
+    candidate_features: Optional[List[ExtraFeature]],
+) -> Optional[float]:
+    if target_features is None or candidate_features is None:
+        return None
+
+    target_codes = {f.feature_code for f in target_features if f.feature_code}
+    candidate_codes = {f.feature_code for f in candidate_features if f.feature_code}
+
+    if not target_codes and not candidate_codes:
+        return None
+
+    union = len(target_codes | candidate_codes)
+    if union == 0:
+        return None
+
+    intersection = len(target_codes & candidate_codes)
+    return intersection / union
+
+
+def _distance_similarity(distance: float, max_distance_miles: float) -> Optional[float]:
+    if max_distance_miles <= 0:
+        return None
+
+    ratio = _clamp(distance / max_distance_miles)
+    return _clamp(
+        _interpolate_curve(
+            ratio,
+            [(0.0, 1.0), (0.1, 0.93), (0.25, 0.78), (0.5, 0.52), (0.75, 0.24), (1.0, 0.05)],
+        )
+    )
+
+
+def get_similarity_label(score: float) -> str:
+    """Return a user-facing label for a 0-100 match score."""
+    if score >= 84:
+        return "Best match"
+    if score >= 70:
+        return "Highly similar"
+    if score >= 52:
+        return "Good match"
+    if score >= 36:
+        return "OK match"
+    return "Broad match"
 
 
 def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -46,6 +265,7 @@ def calculate_similarity_score(
     target_features: Optional[List[ExtraFeature]] = None,
     candidate_features: Optional[List[ExtraFeature]] = None,
     distance: float = 0.0,
+    max_distance_miles: float = 10.0,
 ) -> float:
     """
     Calculate a similarity score between two properties (0-100).
@@ -65,157 +285,142 @@ def calculate_similarity_score(
     but does not affect the similarity score. This allows comparison of
     properties with similar attributes regardless of distance.
     """
-    score = 0.0
-
-    # Distance is NOT scored - it only filters candidates
-    # This allows finding similar properties for price/sqft comparison
-    # regardless of whether they're 1 mile or 10 miles away
-
-    # Determine if we are comparing land-only (no target building)
-    is_land_only = target_building is None
+    components: List[Tuple[str, float, Optional[float]]] = []
+    is_land_only = target_building is None and candidate_building is None
 
     if not is_land_only and target_building and candidate_building:
-        # Standard Scoring (Building + Land)
-        
-        # Heated size matching (22 points max)
-        if target_building.heat_area and candidate_building.heat_area:
-            target_area = float(target_building.heat_area)
-            candidate_area = float(candidate_building.heat_area)
+        components.extend(
+            [
+                (
+                    "living_area",
+                    RESIDENTIAL_WEIGHTS["living_area"],
+                    _percentage_similarity(
+                        target_building.heat_area,
+                        candidate_building.heat_area,
+                        [
+                            (0.0, 1.0),
+                            (0.05, 0.97),
+                            (0.10, 0.90),
+                            (0.20, 0.72),
+                            (0.30, 0.52),
+                            (0.40, 0.34),
+                            (0.50, 0.18),
+                            (0.75, 0.0),
+                        ],
+                    ),
+                ),
+                (
+                    "bedrooms",
+                    RESIDENTIAL_WEIGHTS["bedrooms"],
+                    _difference_similarity(
+                        target_building.bedrooms,
+                        candidate_building.bedrooms,
+                        [(0.0, 1.0), (1.0, 0.68), (2.0, 0.35), (3.0, 0.12), (4.0, 0.0)],
+                    ),
+                ),
+                (
+                    "bathrooms",
+                    RESIDENTIAL_WEIGHTS["bathrooms"],
+                    _difference_similarity(
+                        target_building.bathrooms,
+                        candidate_building.bathrooms,
+                        [(0.0, 1.0), (0.5, 0.82), (1.0, 0.54), (1.5, 0.26), (2.5, 0.0)],
+                    ),
+                ),
+                (
+                    "quality",
+                    RESIDENTIAL_WEIGHTS["quality"],
+                    _ranked_code_similarity(
+                        target_building.quality_code,
+                        candidate_building.quality_code,
+                        QUALITY_RANK,
+                    ),
+                ),
+                (
+                    "condition",
+                    RESIDENTIAL_WEIGHTS["condition"],
+                    _condition_similarity(
+                        target_building.condition_code,
+                        candidate_building.condition_code,
+                    ),
+                ),
+                (
+                    "age",
+                    RESIDENTIAL_WEIGHTS["age"],
+                    _difference_similarity(
+                        _effective_year(target_building),
+                        _effective_year(candidate_building),
+                        [(0.0, 1.0), (2.0, 0.95), (5.0, 0.82), (10.0, 0.60), (15.0, 0.38), (25.0, 0.12), (40.0, 0.0)],
+                    ),
+                ),
+                (
+                    "stories",
+                    RESIDENTIAL_WEIGHTS["stories"],
+                    _difference_similarity(
+                        target_building.stories,
+                        candidate_building.stories,
+                        [(0.0, 1.0), (0.5, 0.70), (1.0, 0.35), (2.0, 0.0)],
+                    ),
+                ),
+                (
+                    "building_character",
+                    RESIDENTIAL_WEIGHTS["building_character"],
+                    _building_character_similarity(target_building, candidate_building),
+                ),
+            ]
+        )
 
-            # Calculate percentage difference
-            diff_pct = abs(target_area - candidate_area) / target_area
+    land_weight = LAND_ONLY_WEIGHTS["land_size"] if is_land_only else RESIDENTIAL_WEIGHTS["land_size"]
+    feature_weight = LAND_ONLY_WEIGHTS["features"] if is_land_only else RESIDENTIAL_WEIGHTS["features"]
+    distance_weight = LAND_ONLY_WEIGHTS["distance"] if is_land_only else RESIDENTIAL_WEIGHTS["distance"]
 
-            if diff_pct <= 0.1:  # Within 10%
-                score += 22
-            elif diff_pct <= 0.2:  # Within 20%
-                score += 18
-            elif diff_pct <= 0.3:  # Within 30%
-                score += 11
-            elif diff_pct <= 0.5:  # Within 50%
-                score += 6
+    components.extend(
+        [
+            (
+                "land_size",
+                land_weight,
+                _percentage_similarity(
+                    target_prop.land_area,
+                    candidate_prop.land_area,
+                    [
+                        (0.0, 1.0),
+                        (0.05, 0.95),
+                        (0.10, 0.87),
+                        (0.20, 0.70),
+                        (0.35, 0.42),
+                        (0.50, 0.24),
+                        (0.80, 0.0),
+                    ],
+                ),
+            ),
+            ("features", feature_weight, _feature_similarity(target_features, candidate_features)),
+            (
+                "distance",
+                distance_weight,
+                _distance_similarity(distance, max_distance_miles),
+            ),
+        ]
+    )
 
-        # Age matching (5 points max)
-        if target_building.year_built and candidate_building.year_built:
-            year_diff = abs(target_building.year_built - candidate_building.year_built)
+    total_possible_weight = sum(weight for _, weight, _ in components)
+    available_components = [
+        (weight, similarity)
+        for _, weight, similarity in components
+        if similarity is not None
+    ]
 
-            if year_diff <= 2:
-                score += 5
-            elif year_diff <= 5:
-                score += 4
-            elif year_diff <= 10:
-                score += 3
-            elif year_diff <= 15:
-                score += 2
+    if not available_components or total_possible_weight <= 0:
+        return 0.0
 
-        # Quality matching (12 points max)
-        # X=Superior, A=Excellent, B=Good, C=Average, D=Low, E=Very Low, F=Poor
-        if target_building.quality_code and candidate_building.quality_code:
-            target_q = target_building.quality_code.strip().upper()
-            candidate_q = candidate_building.quality_code.strip().upper()
+    available_weight = sum(weight for weight, _ in available_components)
+    weighted_sum = sum(weight * similarity for weight, similarity in available_components)
 
-            if target_q == candidate_q:
-                score += 12  # Exact quality match
-            else:
-                # Define quality ranking (higher = better)
-                quality_rank = {"X": 7, "A": 6, "B": 5, "C": 4, "D": 3, "E": 2, "F": 1}
-                target_rank = quality_rank.get(target_q, 0)
-                candidate_rank = quality_rank.get(candidate_q, 0)
+    base_score = weighted_sum / available_weight
+    coverage_ratio = 1.0 if is_land_only else (available_weight / total_possible_weight)
+    completeness_multiplier = 1.0 if is_land_only else (0.8 + (0.2 * coverage_ratio))
+    final_score = base_score * completeness_multiplier * 100.0
 
-                if target_rank > 0 and candidate_rank > 0:
-                    rank_diff = abs(target_rank - candidate_rank)
-                    if rank_diff == 1:
-                        score += 8  # One quality level off
-                    elif rank_diff == 2:
-                        score += 4  # Two quality levels off
-
-        # Bedroom matching (18 points max)
-        if target_building.bedrooms and candidate_building.bedrooms:
-            if target_building.bedrooms == candidate_building.bedrooms:
-                score += 18  # Exact match
-            elif abs(target_building.bedrooms - candidate_building.bedrooms) == 1:
-                score += 10  # Off by 1
-            elif abs(target_building.bedrooms - candidate_building.bedrooms) == 2:
-                score += 5  # Off by 2
-
-        # Bathroom matching (18 points max)
-        if target_building.bathrooms and candidate_building.bathrooms:
-            bath_diff = abs(
-                float(target_building.bathrooms) - float(candidate_building.bathrooms)
-            )
-            if bath_diff <= 0.5:
-                score += 18  # Exact or half-bath difference
-            elif bath_diff <= 1.0:
-                score += 11  # One full bath difference
-            elif bath_diff <= 1.5:
-                score += 5  # 1.5 bath difference
-
-    # Feature matching (10 points max)
-    if target_features and candidate_features:
-        target_codes = set(f.feature_code for f in target_features)
-        candidate_codes = set(f.feature_code for f in candidate_features)
-
-        if target_codes and candidate_codes:
-            # Calculate Jaccard similarity for features
-            intersection = len(target_codes & candidate_codes)
-            union = len(target_codes | candidate_codes)
-
-            if union > 0:
-                feature_similarity = intersection / union
-                score += feature_similarity * 10
-    
-    # Lot size matching
-    # Standard: 15 points max
-    # Land Only: 90 points max (since filtering out building criteria)
-    
-    max_land_points = 90.0 if is_land_only else 15.0
-    
-    # Uses PropertyRecord.land_area (total land square footage)
-    if target_prop.land_area and candidate_prop.land_area:
-        try:
-            target_land = float(target_prop.land_area)
-            candidate_land = float(candidate_prop.land_area)
-            if target_land > 0:
-                land_diff_pct = abs(target_land - candidate_land) / target_land
-                
-                points = 0
-                if is_land_only:
-                    # Granular scoring for land-only to avoid "all 90%"
-                    if land_diff_pct <= 0.005: # 0.5% or less
-                        points = max_land_points 
-                    elif land_diff_pct <= 0.05: # 0.5-5%
-                        # Linear drop from 90 to 80
-                        ratio = (land_diff_pct - 0.005) / 0.045
-                        points = 90 - (10 * ratio)
-                    elif land_diff_pct <= 0.1: # 5-10%
-                        # Linear drop from 80 to 70
-                        ratio = (land_diff_pct - 0.05) / 0.05
-                        points = 80 - (10 * ratio)
-                    elif land_diff_pct <= 0.2: # 10-20%
-                        # Linear drop from 70 to 50
-                        ratio = (land_diff_pct - 0.1) / 0.1
-                        points = 70 - (20 * ratio)
-                    elif land_diff_pct <= 0.5: # 20-50%
-                        # Linear drop from 50 to 20
-                        ratio = (land_diff_pct - 0.2) / 0.3
-                        points = 50 - (30 * ratio)
-                    elif land_diff_pct <= 1.0: # 50-100%
-                        points = 15.0
-                else: 
-                     # Standard building + land scoring
-                    if land_diff_pct <= 0.1:  # Within 10%
-                        points = max_land_points
-                    elif land_diff_pct <= 0.2:  # Within 20%
-                        points = max_land_points * 0.8
-                    elif land_diff_pct <= 0.3:
-                         points = max_land_points * 0.53
-                    elif land_diff_pct <= 0.5:
-                         points = max_land_points * 0.27
-                
-                score += points
-        except (ValueError, TypeError):
-            pass
-
-    return round(score, 1)
+    return round(_clamp(final_score, lower=0.0, upper=100.0), 1)
 
 
 def find_similar_properties(
@@ -351,6 +556,7 @@ def find_similar_properties(
             target_features,
             c_features,
             dist,
+            max_distance_miles=max_distance_miles,
         )
         
         if score >= min_score:
@@ -363,7 +569,13 @@ def find_similar_properties(
             })
             
     # Sort and limit
-    results.sort(key=lambda x: x["similarity_score"], reverse=True)
+    results.sort(
+        key=lambda x: (
+            -x["similarity_score"],
+            x["distance"],
+            x["property"].account_number,
+        )
+    )
     return results[:max_results]
 
 

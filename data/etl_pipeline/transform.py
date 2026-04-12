@@ -413,6 +413,7 @@ REAL_ACCT_SCHEMA = TableSchema(
         FieldSchema('site_addr_1', ['site_addr_1', 'site_addr'], 'str', max_length=255),
         FieldSchema('city', ['site_addr_2', 'situs_city', 'city'], 'str', max_length=100),
         FieldSchema('zipcode', ['site_addr_3', 'zip', 'zip_code'], 'str', max_length=10),
+        FieldSchema('state_class', ['state_class'], 'str', max_length=10),
         FieldSchema('value', ['tot_appr_val', 'mkt_val'], 'decimal'),
         FieldSchema('assessed_value', ['assessed_val'], 'decimal'),
         FieldSchema('building_area', ['bld_ar', 'bldg_ar'], 'decimal'),
