@@ -602,7 +602,91 @@ def protest_analysis(request, account_number):
 
 
 def protest_analysis_export(request, account_number):
-    return HttpResponse("Not yet implemented", status=501)
+    """CSV export of protest analysis comparable properties."""
+    target_property = PropertyRecord.objects.filter(account_number=account_number).first()
+    if not target_property:
+        raise Http404("Property not found")
+
+    target_building = target_property.buildings.filter(is_active=True).first()
+
+    try:
+        min_score = float(request.GET.get("min_score", "70.0"))
+    except (ValueError, TypeError):
+        min_score = 70.0
+    min_score = max(52.0, min(100.0, min_score))
+
+    subject_heat_area = float(target_building.heat_area) if target_building and target_building.heat_area else None
+    subject_assessed = target_property.assessed_value or target_property.value
+    subject_value_per_sqft = None
+    if subject_assessed and subject_heat_area and subject_heat_area > 0:
+        try:
+            subject_value_per_sqft = float(subject_assessed) / subject_heat_area
+        except Exception:
+            pass
+
+    similar = find_similar_properties(
+        account_number=account_number,
+        max_distance_miles=10.0,
+        max_results=50,
+        min_score=min_score,
+    )
+
+    response = HttpResponse(content_type="text/csv")
+    response["Content-Disposition"] = (
+        f'attachment; filename="protest_analysis_{account_number}.csv"'
+    )
+
+    writer = csv.writer(response)
+    writer.writerow([
+        "address",
+        "similarity_score",
+        "similarity_label",
+        "living_area_sqft",
+        "bedrooms",
+        "bathrooms",
+        "year_built",
+        "quality_code",
+        "condition_code",
+        "assessed_value",
+        "value_per_sqft",
+        "delta_vs_subject_per_sqft",
+    ])
+
+    for result in similar:
+        prop = result["property"]
+        building = result["building"]
+
+        comp_assessed = prop.assessed_value or prop.value
+        comp_heat_area = float(building.heat_area) if building and building.heat_area else None
+
+        comp_value_per_sqft = None
+        comp_delta = None
+        if comp_assessed and comp_heat_area and comp_heat_area > 0:
+            try:
+                comp_value_per_sqft = float(comp_assessed) / comp_heat_area
+                if subject_value_per_sqft is not None:
+                    comp_delta = comp_value_per_sqft - subject_value_per_sqft
+            except Exception:
+                pass
+
+        full_address = f"{prop.street_number} {prop.street_name}".strip()
+
+        writer.writerow([
+            full_address,
+            f"{result['similarity_score']:.1f}",
+            get_similarity_label(result["similarity_score"]),
+            f"{comp_heat_area:.0f}" if comp_heat_area else "",
+            building.bedrooms if building else "",
+            f"{float(building.bathrooms):.1f}" if building and building.bathrooms else "",
+            building.year_built if building else "",
+            building.quality_code if building else "",
+            building.condition_code if building else "",
+            f"{float(comp_assessed):.2f}" if comp_assessed else "",
+            f"{comp_value_per_sqft:.2f}" if comp_value_per_sqft is not None else "",
+            f"{comp_delta:.2f}" if comp_delta is not None else "",
+        ])
+
+    return response
 
 
 def about(request):
