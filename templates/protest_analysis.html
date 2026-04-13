@@ -1,10 +1,357 @@
 {% extends "base.html" %}
+{% load humanize %}
 
-{% block title %}Protest Analysis{% endblock %}
+{% block title %}Protest Analysis – {{ target_property.street_number }} {{ target_property.street_name }}{% endblock %}
 
 {% block content %}
-<div class="container mx-auto px-4 py-8">
-    <h1 class="text-2xl font-bold mb-4">Protest Analysis</h1>
-    <p>Account: {{ target_property.account_number }}</p>
+<style>
+  @media print {
+    nav, footer, .no-print { display: none !important; }
+    .print-header { display: block !important; }
+    body { font-family: Georgia, serif; font-size: 11pt; }
+    .shadow-xl, .shadow-md, .shadow-sm { box-shadow: none !important; }
+    a { color: inherit; text-decoration: none; }
+  }
+  .print-header { display: none; }
+</style>
+
+<div class="min-h-screen py-8 lg:py-12">
+  <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+
+    <!-- Print-only header -->
+    <div class="print-header mb-4 border-b border-gray-400 pb-2">
+      <p class="text-sm font-semibold text-gray-700">
+        Harris County Property Tax Protest Analysis &mdash;
+        {{ target_property.street_number }} {{ target_property.street_name }},
+        {{ target_property.zipcode }}
+      </p>
+      <p class="text-xs text-gray-500">Prepared from HCAD appraisal records &bull; For informational use only</p>
+    </div>
+
+    <!-- Error state -->
+    {% if error %}
+    <div class="bg-red-50 border border-red-200 rounded-xl p-6 mb-8">
+      <div class="flex">
+        <div class="flex-shrink-0">
+          <svg class="h-6 w-6 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+          </svg>
+        </div>
+        <div class="ml-3">
+          <h3 class="text-lg font-medium text-red-800">{{ error }}</h3>
+        </div>
+      </div>
+    </div>
+    {% else %}
+
+    <!-- Back button (screen only) -->
+    <div class="mb-6 no-print">
+      <a href="{% url 'similar_properties' target_property.account_number %}"
+         class="inline-flex items-center text-blue-600 hover:text-blue-800 text-sm">
+        <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/>
+        </svg>
+        Back to Similar Properties
+      </a>
+    </div>
+
+    <!-- ── Subject Property Card ── -->
+    <div class="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden mb-6">
+      <div class="bg-gradient-to-r from-blue-700 to-indigo-700 px-8 py-5">
+        <h1 class="text-2xl font-bold text-white">Protest Analysis</h1>
+        <p class="text-blue-200 text-sm mt-1">
+          {{ target_property.street_number }} {{ target_property.street_name }},
+          {{ target_property.city }}, TX {{ target_property.zipcode }}
+        </p>
+      </div>
+      <div class="px-8 py-5 grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div>
+          <p class="text-xs text-gray-500 uppercase font-medium">Account</p>
+          <p class="text-sm font-semibold text-gray-900">{{ target_property.account_number }}</p>
+        </div>
+        {% if target_property.assessed_value %}
+        <div>
+          <p class="text-xs text-gray-500 uppercase font-medium">Assessed Value</p>
+          <p class="text-sm font-semibold text-gray-900">${{ target_property.assessed_value|floatformat:0|intcomma }}</p>
+        </div>
+        {% endif %}
+        {% if subject_value_per_sqft %}
+        <div>
+          <p class="text-xs text-gray-500 uppercase font-medium">Your $/sqft</p>
+          <p class="text-sm font-bold text-indigo-700">${{ subject_value_per_sqft|floatformat:2 }}</p>
+        </div>
+        {% endif %}
+        {% if target_building %}
+        <div>
+          <p class="text-xs text-gray-500 uppercase font-medium">Living Area</p>
+          <p class="text-sm font-semibold text-gray-900">
+            {{ target_building.heat_area|floatformat:0|intcomma }} sqft
+          </p>
+        </div>
+        <div>
+          <p class="text-xs text-gray-500 uppercase font-medium">Bed / Bath</p>
+          <p class="text-sm font-semibold text-gray-900">
+            {{ target_building.bedrooms|default:"–" }} / {{ target_building.bathrooms|default:"–" }}
+          </p>
+        </div>
+        <div>
+          <p class="text-xs text-gray-500 uppercase font-medium">Year Built</p>
+          <p class="text-sm font-semibold text-gray-900">{{ target_building.year_built|default:"–" }}</p>
+        </div>
+        <div>
+          <p class="text-xs text-gray-500 uppercase font-medium">Quality</p>
+          <p class="text-sm font-semibold text-gray-900">{{ target_building.quality_code|default:"–" }}</p>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- ── Equity Summary Banner ── -->
+    {% if subject_value_per_sqft and median_comp_value_per_sqft %}
+      {% if equity_gap_per_sqft > 0 %}
+      <div class="rounded-xl p-5 mb-6 bg-amber-50 border-2 border-amber-300 shadow-md">
+        <h2 class="text-base font-bold text-amber-900">Potential Equity Protest Case</h2>
+        <p class="mt-1 text-sm text-amber-800">
+          Your property is assessed at
+          <strong>${{ subject_value_per_sqft|floatformat:2 }}/sqft</strong>
+          &mdash;
+          <strong>${{ equity_gap_per_sqft|floatformat:2 }}/sqft above</strong>
+          the median of {{ qualifying_comp_count }} comparable propert{{ qualifying_comp_count|pluralize:"y,ies" }}
+          (${{ median_comp_value_per_sqft|floatformat:2 }}/sqft).
+        </p>
+        {% if estimated_savings %}
+        <p class="mt-2 text-sm font-semibold text-amber-900">
+          Estimated equity protest savings:
+          <span class="text-lg">${{ estimated_savings|floatformat:0|intcomma }}</span>
+        </p>
+        {% endif %}
+        <p class="mt-1 text-xs text-amber-700">
+          {{ comps_below_subject }} of {{ qualifying_comp_count }}
+          comparable propert{{ qualifying_comp_count|pluralize:"y,ies" }}
+          {{ comps_below_subject|pluralize:"is,are" }} assessed below your $/sqft.
+        </p>
+      </div>
+      {% else %}
+      <div class="rounded-xl p-5 mb-6 bg-green-50 border-2 border-green-300 shadow-md">
+        <h2 class="text-base font-bold text-green-900">At or Below Comparable Median</h2>
+        <p class="mt-1 text-sm text-green-800">
+          Your property's assessed value per sqft
+          (${{ subject_value_per_sqft|floatformat:2 }})
+          is at or below the median of {{ qualifying_comp_count }}
+          comparable propert{{ qualifying_comp_count|pluralize:"y,ies" }}
+          (${{ median_comp_value_per_sqft|floatformat:2 }}/sqft).
+          An equity protest may not be the strongest argument for this property.
+        </p>
+      </div>
+      {% endif %}
+    {% elif not subject_value_per_sqft %}
+    <div class="rounded-xl p-4 mb-6 bg-gray-50 border border-gray-200">
+      <p class="text-sm text-gray-700">
+        <strong>Equity analysis unavailable:</strong>
+        This property does not have an assessed value and/or living area on record.
+        The comparable table below is still available for review.
+      </p>
+    </div>
+    {% elif not qualifying_comp_count %}
+    <div class="rounded-xl p-4 mb-6 bg-blue-50 border border-blue-200">
+      <p class="text-sm text-blue-800">
+        No qualifying comparables found at the current similarity threshold.
+        Try lowering the minimum score using the slider below.
+      </p>
+    </div>
+    {% endif %}
+
+    <!-- ── How to Use This Analysis ── -->
+    <div class="mb-6 no-print">
+      <details class="bg-white border border-gray-200 rounded-xl shadow-sm">
+        <summary class="px-6 py-4 cursor-pointer text-sm font-semibold text-gray-800 select-none list-none flex items-center justify-between">
+          <span>&#x2139;&#xFE0F; How to Use This Analysis</span>
+          <svg class="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+          </svg>
+        </summary>
+        <div class="px-6 py-4 border-t border-gray-100 grid grid-cols-1 md:grid-cols-3 gap-6 text-sm text-gray-700">
+          <div>
+            <h3 class="font-semibold text-gray-900 mb-2">Equity Protest (Texas &sect;41.43)</h3>
+            <p>
+              Texas law requires "equal and uniform" appraisal. If your property is appraised
+              at a higher ratio than comparable properties of the same kind and character, the
+              appraisal district must prove otherwise by <em>preponderance of the evidence</em>.
+              The comparable table below is direct evidence for this argument.
+            </p>
+            <p class="mt-2 text-xs text-gray-500">
+              Exchange evidence with the ARB at least <strong>5 business days</strong> before
+              your hearing date.
+            </p>
+          </div>
+          <div>
+            <h3 class="font-semibold text-gray-900 mb-2">Market Value Protest</h3>
+            <p>
+              A separate argument: your appraised value exceeds what a willing buyer would pay.
+              This requires <strong>recent sale prices</strong> (MLS data). This tool uses HCAD
+              assessed values, which are a proxy — not sale prices. Supplement with MLS comps
+              from a real estate professional for a market value argument.
+            </p>
+          </div>
+          <div>
+            <h3 class="font-semibold text-gray-900 mb-2">Submitting Your Evidence</h3>
+            <ul class="list-disc list-inside space-y-1">
+              <li>Print 3 copies of this report to bring to your ARB hearing.</li>
+              <li>Upload evidence to HCAD's online protest portal at least 5 days before your hearing.</li>
+              <li>Include photos of property condition issues if relevant.</li>
+              <li>The protest deadline is typically <strong>May 15</strong> or 30 days after your notice of appraised value, whichever is later.</li>
+            </ul>
+          </div>
+        </div>
+      </details>
+    </div>
+
+    <!-- ── Controls Row ── -->
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6 no-print">
+      <div class="flex items-center gap-3">
+        <label for="min_score_slider" class="text-sm font-medium text-gray-700 whitespace-nowrap">
+          Min similarity score:
+        </label>
+        <input
+          type="range"
+          id="min_score_slider"
+          min="52" max="100" step="1"
+          value="{{ min_score|floatformat:0 }}"
+          class="w-32 accent-indigo-600"
+          oninput="document.getElementById('score_display').textContent = this.value"
+          onchange="window.location.href = '?min_score=' + this.value"
+        />
+        <span id="score_display" class="text-sm font-semibold text-indigo-700 w-8">
+          {{ min_score|floatformat:0 }}
+        </span>
+      </div>
+      <div class="flex items-center gap-3">
+        <a href="{% url 'protest_analysis_export' target_property.account_number %}?min_score={{ min_score|floatformat:0 }}"
+           class="inline-flex items-center px-4 py-2 border border-gray-300 rounded-lg text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 shadow-sm">
+          <svg class="w-4 h-4 mr-2 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+          </svg>
+          Download CSV
+        </a>
+        <button onclick="window.print()"
+                class="inline-flex items-center px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 shadow-sm">
+          <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"/>
+          </svg>
+          Print Report
+        </button>
+      </div>
+    </div>
+
+    <!-- ── Comparable Properties Table ── -->
+    <div class="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden mb-8">
+      <div class="bg-gradient-to-r from-green-600 to-emerald-700 px-8 py-5">
+        <h2 class="text-xl font-bold text-white">Comparable Properties</h2>
+        <p class="text-green-100 text-sm mt-1">
+          {{ comps|length }} propert{{ comps|length|pluralize:"y,ies" }} with similarity score &ge; {{ min_score|floatformat:0 }}
+        </p>
+      </div>
+
+      {% if comps %}
+      <div class="overflow-x-auto">
+        <table class="min-w-full divide-y divide-gray-200 text-xs lg:text-sm">
+          <thead class="bg-gray-50 sticky top-0 z-10">
+            <tr>
+              <th class="px-3 py-3 text-left text-xs font-medium text-gray-600 uppercase">Address</th>
+              <th class="px-3 py-3 text-left text-xs font-medium text-gray-600 uppercase">Score</th>
+              <th class="px-3 py-3 text-right text-xs font-medium text-gray-600 uppercase">Sqft</th>
+              <th class="px-3 py-3 text-right text-xs font-medium text-gray-600 uppercase">Bed/Bath</th>
+              <th class="px-3 py-3 text-right text-xs font-medium text-gray-600 uppercase">Year</th>
+              <th class="px-3 py-3 text-center text-xs font-medium text-gray-600 uppercase">Qual</th>
+              <th class="px-3 py-3 text-right text-xs font-medium text-gray-600 uppercase">Assessed Value</th>
+              {% if subject_value_per_sqft %}
+              <th class="px-3 py-3 text-right text-xs font-medium text-gray-600 uppercase">$/sqft</th>
+              <th class="px-3 py-3 text-right text-xs font-medium text-gray-600 uppercase">vs. Yours</th>
+              {% endif %}
+            </tr>
+          </thead>
+          <tbody class="bg-white divide-y divide-gray-100">
+            {% for c in comps %}
+            <tr class="hover:bg-gray-50">
+              <td class="px-3 py-3">
+                <a href="{% url 'similar_properties' c.account_number %}"
+                   class="font-medium text-blue-700 hover:underline">
+                  {{ c.address }} {{ c.street_name }}
+                </a>
+                <div class="text-xs text-gray-500">{{ c.zip_code }}</div>
+              </td>
+              <td class="px-3 py-3">
+                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
+                  {% if c.similarity_score >= 84 %}bg-green-100 text-green-800
+                  {% elif c.similarity_score >= 70 %}bg-blue-100 text-blue-800
+                  {% else %}bg-yellow-100 text-yellow-800{% endif %}">
+                  {{ c.similarity_score|floatformat:0 }}
+                </span>
+                <div class="text-xs text-gray-500 mt-0.5">{{ c.match_label }}</div>
+              </td>
+              <td class="px-3 py-3 text-right text-gray-700">
+                {% if c.heat_area %}{{ c.heat_area|floatformat:0 }}{% else %}&ndash;{% endif %}
+              </td>
+              <td class="px-3 py-3 text-right text-gray-700">
+                {{ c.bedrooms|default:"&ndash;" }} / {{ c.bathrooms|default:"&ndash;" }}
+              </td>
+              <td class="px-3 py-3 text-right text-gray-700">
+                {{ c.year_built|default:"&ndash;" }}
+              </td>
+              <td class="px-3 py-3 text-center">
+                {% if c.quality_code %}
+                <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium
+                  {% if c.quality_code == 'X' %}bg-purple-100 text-purple-800
+                  {% elif c.quality_code == 'A' %}bg-green-100 text-green-800
+                  {% elif c.quality_code == 'B' %}bg-blue-100 text-blue-800
+                  {% elif c.quality_code == 'C' %}bg-yellow-100 text-yellow-800
+                  {% elif c.quality_code == 'D' %}bg-orange-100 text-orange-800
+                  {% else %}bg-gray-100 text-gray-800{% endif %}">
+                  {{ c.quality_code }}
+                </span>
+                {% else %}&ndash;{% endif %}
+              </td>
+              <td class="px-3 py-3 text-right font-semibold text-blue-700">
+                {% if c.assessed_value %}${{ c.assessed_value|floatformat:0|intcomma }}{% else %}&ndash;{% endif %}
+              </td>
+              {% if subject_value_per_sqft %}
+              <td class="px-3 py-3 text-right text-gray-700">
+                {% if c.comp_value_per_sqft %}${{ c.comp_value_per_sqft|floatformat:2 }}{% else %}&ndash;{% endif %}
+              </td>
+              <td class="px-3 py-3 text-right font-semibold">
+                {% if c.comp_delta is not None %}
+                  {% if c.comp_delta < 0 %}
+                  <span class="text-green-700">{{ c.comp_delta|floatformat:2 }}</span>
+                  {% else %}
+                  <span class="text-red-700">+{{ c.comp_delta|floatformat:2 }}</span>
+                  {% endif %}
+                {% else %}&ndash;{% endif %}
+              </td>
+              {% endif %}
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <div class="p-10 text-center text-gray-500">
+        <p class="text-base font-medium">No comparable properties found at similarity score &ge; {{ min_score|floatformat:0 }}.</p>
+        <p class="mt-1 text-sm">Try lowering the minimum score using the slider above.</p>
+      </div>
+      {% endif %}
+    </div>
+
+    <!-- ── Legal Disclaimer ── -->
+    <p class="text-xs text-gray-400 italic text-center mb-8 no-print">
+      This analysis uses Harris County Appraisal District (HCAD) data and is for informational
+      purposes only. It does not constitute legal or appraisal advice. Assessed values are from
+      HCAD records and may not reflect current market sale prices. Consult a licensed property
+      tax consultant or appraiser for professional advice.
+    </p>
+
+    {% endif %}
+  </div>
 </div>
 {% endblock %}
