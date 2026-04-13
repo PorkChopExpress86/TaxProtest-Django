@@ -1,0 +1,43 @@
+{% extends "admin/index.html" %}
+{% load i18n %}
+
+{% block content %}
+{{ block.super }}
+<div class="module" style="margin-top:1.5em;">
+    <table>
+        <caption>
+            <a href="{% url 'admin:data_downloadrecord_etl_pipeline' %}" class="section">
+                {% trans "ETL Pipeline Operations" %}
+            </a>
+        </caption>
+        <tbody>
+            <tr>
+                <th scope="row" style="width:180px;">
+                    <a href="{% url 'admin:data_downloadrecord_etl_pipeline' %}">Full ETL Pipeline</a>
+                </th>
+                <td>Re-download, extract, and load all HCAD data sources for a given year</td>
+            </tr>
+            <tr>
+                <th scope="row">GIS Import</th>
+                <td>
+                    <form method="post" action="{% url 'admin:data_downloadrecord_trigger_gis_import' %}" style="display:inline;margin:0;">
+                        {% csrf_token %}
+                        <button type="submit" class="button">Trigger now</button>
+                    </form>
+                    &nbsp;Annual parcel location data &mdash; may take 30+ minutes
+                </td>
+            </tr>
+            <tr>
+                <th scope="row">Building Import</th>
+                <td>
+                    <form method="post" action="{% url 'admin:data_downloadrecord_trigger_building_import' %}" style="display:inline;margin:0;">
+                        {% csrf_token %}
+                        <button type="submit" class="button">Trigger now</button>
+                    </form>
+                    &nbsp;Monthly building &amp; extra features data &mdash; may take 15+ minutes
+                </td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+{% endblock %}

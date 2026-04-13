@@ -28,7 +28,12 @@ services:
       retries: 5
 
   web:
-    build: .
+    build:
+      context: .
+      args:
+        # Set SKIP_DATA_DOWNLOAD=1 in .env for faster dev/CI builds.
+        # Leave at 0 (default) for production so data is baked into the image.
+        SKIP_DATA_DOWNLOAD: ${SKIP_DATA_DOWNLOAD:-0}
     restart: unless-stopped
     ports:
       - "8020:8000"
@@ -53,10 +58,15 @@ services:
         condition: service_healthy
     volumes:
       - .:/app
+      # /hcad_downloads_baked lives outside /app in the image so the .:/app
+      # bind-mount never touches it. The entrypoint syncs it to /app/downloads.
 
   # Celery worker for processing background tasks
   worker:
-    build: .
+    build:
+      context: .
+      args:
+        SKIP_DATA_DOWNLOAD: ${SKIP_DATA_DOWNLOAD:-0}
     restart: unless-stopped
     env_file:
       - .env
@@ -77,7 +87,10 @@ services:
 
   # Celery beat for scheduled tasks (runs monthly imports)
   beat:
-    build: .
+    build:
+      context: .
+      args:
+        SKIP_DATA_DOWNLOAD: ${SKIP_DATA_DOWNLOAD:-0}
     restart: unless-stopped
     env_file:
       - .env

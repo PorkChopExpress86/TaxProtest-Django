@@ -18,6 +18,7 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import path
 from .views import (
+    about,
     export_csv,
     healthz,
     index,
@@ -30,6 +31,7 @@ urlpatterns = [
     path("", index, name="index"),  # Root URL
     path("export/", export_csv, name="export_csv"),  # CSV export
     path("similar/<str:account_number>/", similar_properties, name="similar_properties"),  # Similar properties
+    path("about/", about, name="about"),
     path("healthz/", healthz, name="healthz"),
     path("readiness/", readiness, name="readiness"),
 ]
