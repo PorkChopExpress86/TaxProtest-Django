@@ -632,8 +632,9 @@ def protest_analysis_export(request, account_number):
     )
 
     response = HttpResponse(content_type="text/csv")
+    safe_account = account_number.replace('"', "").replace("\\", "")
     response["Content-Disposition"] = (
-        f'attachment; filename="protest_analysis_{account_number}.csv"'
+        f'attachment; filename="protest_analysis_{safe_account}.csv"'
     )
 
     writer = csv.writer(response)
