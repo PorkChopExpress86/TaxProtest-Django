@@ -537,9 +537,10 @@ class ProtestAnalysisViewTests(TestCase):
     @patch("taxprotest.views.find_similar_properties")
     def test_min_score_defaults_to_70_when_not_provided(self, mock_find):
         mock_find.return_value = []
-        self.client.get(
+        response = self.client.get(
             reverse("protest_analysis", args=[self.target.account_number])
         )
+        self.assertEqual(response.context["min_score"], 70.0)
         mock_find.assert_called_with(
             account_number=self.target.account_number,
             max_distance_miles=10.0,
@@ -559,6 +560,7 @@ class ProtestAnalysisViewTests(TestCase):
         self.assertIsNone(response.context["subject_value_per_sqft"])
         self.assertIsNone(response.context["equity_gap_per_sqft"])
         self.assertIsNone(response.context["estimated_savings"])
+        self.assertIsNone(response.context["median_comp_value_per_sqft"])
 
     @patch("taxprotest.views.find_similar_properties")
     def test_comp_delta_is_negative_when_comp_cheaper_than_subject(self, mock_find):
@@ -570,7 +572,7 @@ class ProtestAnalysisViewTests(TestCase):
         comps = response.context["comps"]
         self.assertEqual(len(comps), 1)
         self.assertIn("comp_delta", comps[0])
-        self.assertLess(comps[0]["comp_delta"], 0)
+        self.assertAlmostEqual(comps[0]["comp_delta"], -25.0, places=1)
 
     @patch("taxprotest.views.find_similar_properties")
     def test_comps_below_subject_counted_correctly(self, mock_find):
