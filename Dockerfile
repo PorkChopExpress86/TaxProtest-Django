@@ -48,7 +48,7 @@ RUN chown -R django:django /app \
     && if [ -d /hcad_downloads_baked ]; then chown -R django:django /hcad_downloads_baked; fi
 
 # Switch to the non-root user
-# USER django
+USER django
 
 # Run the application with Gunicorn for production readiness
 # Run the entrypoint script

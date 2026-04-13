@@ -7,10 +7,6 @@ echo "Starting TaxProtest-Django..."
 echo "Running migrations..."
 python manage.py migrate --noinput
 
-# Collect static files
-echo "Collecting static files..."
-python manage.py collectstatic --noinput
-
 # Worker, beat, or any other custom command — skip data loading and run it directly.
 if [ $# -gt 0 ]; then
     exec "$@"
@@ -30,7 +26,7 @@ SYNCED_STAMP=$(cat /app/downloads/.synced_stamp 2>/dev/null || echo "")
 if [ -n "$BAKED_STAMP" ] && [ "$BAKED_STAMP" != "$SYNCED_STAMP" ]; then
     echo "Fresh build detected (stamp: $BAKED_STAMP) — syncing to /app/downloads..."
     mkdir -p /app/downloads
-    cp -rf "$BAKED_DIR/." /app/downloads/
+    cp -a "$BAKED_DIR/." /app/downloads/
     echo "$BAKED_STAMP" > /app/downloads/.synced_stamp
 
     echo "Importing data (full overwrite of existing database records)..."
@@ -42,4 +38,11 @@ else
 fi
 
 echo "Starting web server..."
-exec gunicorn taxprotest.wsgi:application --bind 0.0.0.0:8000 --workers ${WEB_CONCURRENCY:-3}
+exec gunicorn taxprotest.wsgi:application \
+    --bind 0.0.0.0:8000 \
+    --workers ${WEB_CONCURRENCY:-3} \
+    --worker-tmp-dir /dev/shm \
+    --no-control-socket \
+    --timeout 60 \
+    --max-requests 1000 \
+    --max-requests-jitter 100
