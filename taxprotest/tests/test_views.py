@@ -413,3 +413,170 @@ class ProtestRecommendationTests(TestCase):
         # Should only count 3 properties with valid PPSF, excluding the one without assessed value
         self.assertEqual(response.context["comparable_count"], 3)
         self.assertIsNotNone(response.context["protest_recommendation"])
+
+
+class ProtestAnalysisViewTests(TestCase):
+    def setUp(self):
+        self.target = PropertyRecord.objects.create(
+            address="16213 Wall St",
+            city="Houston",
+            zipcode="77040",
+            owner_name="Target Owner",
+            account_number="PROTEST_TGT",
+            street_number="16213",
+            street_name="Wall St",
+            assessed_value=370000,
+            building_area=2000,
+            latitude=29.8,
+            longitude=-95.5,
+        )
+        self.target_building = BuildingDetail.objects.create(
+            property=self.target,
+            account_number=self.target.account_number,
+            building_number=1,
+            heat_area=2000,
+            bedrooms=4,
+            bathrooms=2,
+            quality_code="B",
+            year_built=2005,
+            is_active=True,
+        )
+        self.comp = PropertyRecord.objects.create(
+            address="100 Similar Ln",
+            city="Houston",
+            zipcode="77040",
+            owner_name="Comp Owner",
+            account_number="PROTEST_CMP",
+            street_number="100",
+            street_name="Similar Ln",
+            assessed_value=320000,
+            building_area=2000,
+            latitude=29.81,
+            longitude=-95.5,
+        )
+        self.comp_building = BuildingDetail.objects.create(
+            property=self.comp,
+            account_number=self.comp.account_number,
+            building_number=1,
+            heat_area=2000,
+            bedrooms=4,
+            bathrooms=2,
+            quality_code="B",
+            year_built=2004,
+            is_active=True,
+        )
+
+    def _similar_result(self, prop, building, score=75.0, distance=0.5):
+        return {
+            "property": prop,
+            "building": building,
+            "features": [],
+            "distance": distance,
+            "similarity_score": score,
+        }
+
+    def test_404_for_unknown_account(self):
+        response = self.client.get(
+            reverse("protest_analysis", args=["DOESNOTEXIST"])
+        )
+        self.assertEqual(response.status_code, 404)
+
+    @patch("taxprotest.views.find_similar_properties")
+    def test_200_and_required_context_keys_present(self, mock_find):
+        mock_find.return_value = [self._similar_result(self.comp, self.comp_building)]
+        response = self.client.get(
+            reverse("protest_analysis", args=[self.target.account_number])
+        )
+        self.assertEqual(response.status_code, 200)
+        ctx = response.context
+        for key in [
+            "target_property",
+            "target_building",
+            "subject_value_per_sqft",
+            "comps",
+            "median_comp_value_per_sqft",
+            "equity_gap_per_sqft",
+            "estimated_savings",
+            "comps_below_subject",
+            "qualifying_comp_count",
+            "min_score",
+        ]:
+            self.assertIn(key, ctx, f"Missing context key: {key}")
+
+    @patch("taxprotest.views.find_similar_properties")
+    def test_equity_gap_and_savings_computed_correctly(self, mock_find):
+        # target: $370,000 / 2,000 sqft = $185/sqft
+        # comp:   $320,000 / 2,000 sqft = $160/sqft
+        # gap: 185 - 160 = $25/sqft  |  savings: 25 * 2000 = $50,000
+        mock_find.return_value = [self._similar_result(self.comp, self.comp_building)]
+        response = self.client.get(
+            reverse("protest_analysis", args=[self.target.account_number])
+        )
+        ctx = response.context
+        self.assertAlmostEqual(ctx["subject_value_per_sqft"], 185.0, places=1)
+        self.assertAlmostEqual(ctx["median_comp_value_per_sqft"], 160.0, places=1)
+        self.assertAlmostEqual(ctx["equity_gap_per_sqft"], 25.0, places=1)
+        self.assertAlmostEqual(ctx["estimated_savings"], 50000.0, places=0)
+
+    @patch("taxprotest.views.find_similar_properties")
+    def test_min_score_clamped_to_52_when_below(self, mock_find):
+        mock_find.return_value = []
+        response = self.client.get(
+            reverse("protest_analysis", args=[self.target.account_number]),
+            {"min_score": "10"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["min_score"], 52.0)
+        mock_find.assert_called_with(
+            account_number=self.target.account_number,
+            max_distance_miles=10.0,
+            max_results=50,
+            min_score=52.0,
+        )
+
+    @patch("taxprotest.views.find_similar_properties")
+    def test_min_score_defaults_to_70_when_not_provided(self, mock_find):
+        mock_find.return_value = []
+        self.client.get(
+            reverse("protest_analysis", args=[self.target.account_number])
+        )
+        mock_find.assert_called_with(
+            account_number=self.target.account_number,
+            max_distance_miles=10.0,
+            max_results=50,
+            min_score=70.0,
+        )
+
+    @patch("taxprotest.views.find_similar_properties")
+    def test_no_equity_summary_when_subject_missing_assessed_value(self, mock_find):
+        self.target.assessed_value = None
+        self.target.save()
+        mock_find.return_value = []
+        response = self.client.get(
+            reverse("protest_analysis", args=[self.target.account_number])
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.context["subject_value_per_sqft"])
+        self.assertIsNone(response.context["equity_gap_per_sqft"])
+        self.assertIsNone(response.context["estimated_savings"])
+
+    @patch("taxprotest.views.find_similar_properties")
+    def test_comp_delta_is_negative_when_comp_cheaper_than_subject(self, mock_find):
+        # subject: $185/sqft, comp: $160/sqft → delta = -25 (comp is cheaper)
+        mock_find.return_value = [self._similar_result(self.comp, self.comp_building)]
+        response = self.client.get(
+            reverse("protest_analysis", args=[self.target.account_number])
+        )
+        comps = response.context["comps"]
+        self.assertEqual(len(comps), 1)
+        self.assertIn("comp_delta", comps[0])
+        self.assertLess(comps[0]["comp_delta"], 0)
+
+    @patch("taxprotest.views.find_similar_properties")
+    def test_comps_below_subject_counted_correctly(self, mock_find):
+        # 1 comp at $160/sqft < subject $185/sqft → count = 1
+        mock_find.return_value = [self._similar_result(self.comp, self.comp_building)]
+        response = self.client.get(
+            reverse("protest_analysis", args=[self.target.account_number])
+        )
+        self.assertEqual(response.context["comps_below_subject"], 1)
