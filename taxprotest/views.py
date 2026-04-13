@@ -1,6 +1,7 @@
 # home/views.py
 
 import csv
+import statistics
 
 import redis
 from django.conf import settings
@@ -481,6 +482,117 @@ def similar_properties(request, account_number):
 
 
 ## Removed mock results function; now using real data
+
+
+def protest_analysis(request, account_number):
+    """Protest analysis page: equity comparison for ARB hearing preparation."""
+    target_property = PropertyRecord.objects.filter(account_number=account_number).first()
+    if not target_property:
+        from django.http import Http404
+        raise Http404("Property not found")
+
+    target_building = target_property.buildings.filter(is_active=True).first()
+    target_features = list(target_property.extra_features.filter(is_active=True))
+
+    # Parse and clamp min_score to [52.0, 100.0]; default 70.0
+    try:
+        min_score = float(request.GET.get("min_score", 70.0))
+    except (ValueError, TypeError):
+        min_score = 70.0
+    min_score = max(52.0, min(100.0, min_score))
+
+    # Compute subject $/sqft
+    subject_heat_area = float(target_building.heat_area) if target_building and target_building.heat_area else None
+    subject_assessed = target_property.assessed_value
+    subject_value_per_sqft = None
+    if subject_assessed and subject_heat_area and subject_heat_area > 0:
+        try:
+            subject_value_per_sqft = float(subject_assessed) / subject_heat_area
+        except Exception:
+            subject_value_per_sqft = None
+
+    # Find similar properties
+    similar = find_similar_properties(
+        account_number=account_number,
+        max_distance_miles=10.0,
+        max_results=50,
+        min_score=min_score,
+    )
+
+    # Build enriched comp list
+    comps = []
+    for result in similar:
+        prop = result["property"]
+        building = result["building"]
+        features = result["features"]
+
+        comp_assessed = prop.assessed_value
+        comp_heat_area = float(building.heat_area) if building and building.heat_area else None
+
+        comp_value_per_sqft = None
+        comp_delta = None
+        if comp_assessed and comp_heat_area and comp_heat_area > 0:
+            try:
+                comp_value_per_sqft = float(comp_assessed) / comp_heat_area
+                if subject_value_per_sqft is not None:
+                    comp_delta = comp_value_per_sqft - subject_value_per_sqft
+            except Exception:
+                pass
+
+        comps.append({
+            "account_number": prop.account_number,
+            "address": prop.street_number,
+            "street_name": prop.street_name,
+            "zip_code": prop.zipcode,
+            "assessed_value": comp_assessed,
+            "heat_area": comp_heat_area,
+            "comp_value_per_sqft": comp_value_per_sqft,
+            "comp_delta": comp_delta,
+            "distance": result["distance"],
+            "similarity_score": result["similarity_score"],
+            "match_label": get_similarity_label(result["similarity_score"]),
+            "year_built": building.year_built if building else None,
+            "bedrooms": building.bedrooms if building else None,
+            "bathrooms": building.bathrooms if building else None,
+            "quality_code": building.quality_code if building else None,
+            "condition_code": building.condition_code if building else None,
+            "features": format_feature_list(features, max_features=5),
+        })
+
+    # Compute equity summary
+    median_comp_value_per_sqft = None
+    equity_gap_per_sqft = None
+    estimated_savings = None
+    comps_below_subject = 0
+
+    qualifying_ppsf = [c["comp_value_per_sqft"] for c in comps if c["comp_value_per_sqft"] is not None]
+    if subject_value_per_sqft is not None and qualifying_ppsf:
+        median_comp_value_per_sqft = statistics.median(qualifying_ppsf)
+        equity_gap_per_sqft = subject_value_per_sqft - median_comp_value_per_sqft
+        if subject_heat_area:
+            estimated_savings = max(0.0, equity_gap_per_sqft * subject_heat_area)
+        comps_below_subject = sum(1 for p in qualifying_ppsf if p < subject_value_per_sqft)
+
+    context = {
+        "target_property": target_property,
+        "target_building": target_building,
+        "target_features": format_feature_list(target_features),
+        "subject_heat_area": subject_heat_area,
+        "subject_value_per_sqft": subject_value_per_sqft,
+        "comps": comps,
+        "median_comp_value_per_sqft": median_comp_value_per_sqft,
+        "equity_gap_per_sqft": equity_gap_per_sqft,
+        "estimated_savings": estimated_savings,
+        "comps_below_subject": comps_below_subject,
+        "qualifying_comp_count": len(qualifying_ppsf),
+        "min_score": min_score,
+    }
+
+    return render(request, "protest_analysis.html", context)
+
+
+def protest_analysis_export(request, account_number):
+    pass
 
 
 def about(request):
