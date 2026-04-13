@@ -173,3 +173,5 @@ cython_debug/
 # Archive
 archive/
 
+celerybeat-schedule-wal
+celerybeat-schedule-shm
