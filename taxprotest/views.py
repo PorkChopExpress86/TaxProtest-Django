@@ -483,6 +483,10 @@ def similar_properties(request, account_number):
 ## Removed mock results function; now using real data
 
 
+def about(request):
+    return render(request, "about.html")
+
+
 def healthz(request):
     """Return 200 if the app can reach the database."""
     try:

@@ -6,5 +6,17 @@
         Re-download &amp; run ETL pipeline
     </a>
 </li>
+<li>
+    <form method="post" action="{% url 'admin:data_downloadrecord_trigger_gis_import' %}" style="display:inline;margin:0;">
+        {% csrf_token %}
+        <button type="submit" class="button">Trigger GIS import</button>
+    </form>
+</li>
+<li>
+    <form method="post" action="{% url 'admin:data_downloadrecord_trigger_building_import' %}" style="display:inline;margin:0;">
+        {% csrf_token %}
+        <button type="submit" class="button">Trigger building import</button>
+    </form>
+</li>
 {{ block.super }}
 {% endblock %}

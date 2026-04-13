@@ -14,34 +14,173 @@
     <div class="module aligned">
         <h1>Re-download and run ETL pipeline</h1>
         <p>
-            This admin-only action queues the full Celery ETL pipeline with download and extract stages enabled.
-            Use it when you want to fetch fresh HCAD files and rerun the pipeline end to end.
+            This admin-only action queues the full Celery ETL pipeline.
+            Use it when you want to fetch fresh HCAD files and run the pipeline end to end.
         </p>
         <p>
-            The task runs in the background. After submitting, check the worker logs or your Celery task backend for progress.
+            The task runs in the background. After submitting, the status panel below will
+            update automatically every few seconds.
         </p>
 
         <form method="post" novalidate>
             {% csrf_token %}
+
             <fieldset class="module aligned">
-                {% for field in form %}
-                <div class="form-row{% if field.errors %} errors{% endif %}">
+                <h2>Pipeline Options</h2>
+                <div class="form-row{% if form.data_year.errors %} errors{% endif %}">
                     <div>
-                        {{ field.errors }}
-                        {{ field.label_tag }}
-                        {{ field }}
-                        {% if field.help_text %}
-                        <div class="help">{{ field.help_text }}</div>
+                        {{ form.data_year.errors }}
+                        {{ form.data_year.label_tag }}
+                        {{ form.data_year }}
+                        {% if form.data_year.help_text %}
+                        <div class="help">{{ form.data_year.help_text }}</div>
                         {% endif %}
                     </div>
                 </div>
-                {% endfor %}
             </fieldset>
+
+            <fieldset class="module aligned">
+                <h2>Skip Stages</h2>
+                <p class="help" style="padding:0 10px 8px;">
+                    Use these only when re-running after a partial failure to avoid re-doing completed work.
+                </p>
+                <div class="form-row{% if form.skip_download.errors %} errors{% endif %}">
+                    <div>
+                        {{ form.skip_download.errors }}
+                        {{ form.skip_download }}
+                        {{ form.skip_download.label_tag }}
+                        {% if form.skip_download.help_text %}
+                        <div class="help">{{ form.skip_download.help_text }}</div>
+                        {% endif %}
+                    </div>
+                </div>
+                <div class="form-row{% if form.skip_extract.errors %} errors{% endif %}">
+                    <div>
+                        {{ form.skip_extract.errors }}
+                        {{ form.skip_extract }}
+                        {{ form.skip_extract.label_tag }}
+                        {% if form.skip_extract.help_text %}
+                        <div class="help">{{ form.skip_extract.help_text }}</div>
+                        {% endif %}
+                    </div>
+                </div>
+                <div class="form-row{% if form.skip_load.errors %} errors{% endif %}">
+                    <div>
+                        {{ form.skip_load.errors }}
+                        {{ form.skip_load }}
+                        {{ form.skip_load.label_tag }}
+                        {% if form.skip_load.help_text %}
+                        <div class="help">{{ form.skip_load.help_text }}</div>
+                        {% endif %}
+                    </div>
+                </div>
+            </fieldset>
+
             <div class="submit-row">
                 <input type="submit" value="Queue ETL pipeline" class="default">
                 <a href="{{ changelist_url }}" class="button cancel-link">Cancel</a>
             </div>
         </form>
     </div>
+
+    {% if last_task_id %}
+    <div class="module aligned" id="etl-status-panel">
+        <h2>Last Task &mdash; {{ last_task_type }}</h2>
+        <table>
+            <tbody>
+                <tr>
+                    <th scope="row" style="width:120px;">Task ID</th>
+                    <td><code>{{ last_task_id }}</code></td>
+                </tr>
+                <tr>
+                    <th scope="row">State</th>
+                    <td><strong id="etl-task-state">Loading&hellip;</strong></td>
+                </tr>
+                <tr>
+                    <th scope="row">Step</th>
+                    <td><span id="etl-task-step"></span></td>
+                </tr>
+                <tr id="etl-task-error-row" style="display:none;">
+                    <th scope="row">Error</th>
+                    <td><span id="etl-task-error" style="color:var(--error-fg,#ba2121);"></span></td>
+                </tr>
+                <tr id="etl-task-result-row" style="display:none;">
+                    <th scope="row">Result</th>
+                    <td><pre id="etl-task-result" style="margin:0;white-space:pre-wrap;"></pre></td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <script>
+    (function () {
+        "use strict";
+        var taskId = "{{ last_task_id }}";
+        var statusUrl = "{{ task_status_url_template }}".replace("TASK_ID_PLACEHOLDER", taskId);
+        var stateEl = document.getElementById("etl-task-state");
+        var stepEl = document.getElementById("etl-task-step");
+        var errorRow = document.getElementById("etl-task-error-row");
+        var errorEl = document.getElementById("etl-task-error");
+        var resultRow = document.getElementById("etl-task-result-row");
+        var resultEl = document.getElementById("etl-task-result");
+        var terminalStates = {"SUCCESS": true, "FAILURE": true, "REVOKED": true};
+        var pollInterval = null;
+        // Track when PENDING state began so expiry is based on elapsed wall time,
+        // not tick count (which resets on transient non-PENDING responses).
+        var pendingStartTime = null;
+        var maxPendingMs = 60000;
+
+        function poll() {
+            // Skip fetch when tab is backgrounded; resume immediately on refocus.
+            if (document.visibilityState === "hidden") { return; }
+
+            fetch(statusUrl, {credentials: "same-origin"})
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                    var state = data.state || "UNKNOWN";
+
+                    if (state === "PENDING") {
+                        if (!pendingStartTime) { pendingStartTime = Date.now(); }
+                        if (Date.now() - pendingStartTime >= maxPendingMs) {
+                            stateEl.textContent = "PENDING (task may have expired or not yet started)";
+                            clearInterval(pollInterval);
+                            return;
+                        }
+                    } else {
+                        pendingStartTime = null;
+                    }
+
+                    stateEl.textContent = state;
+                    stepEl.textContent = data.step || "";
+
+                    if (data.error) {
+                        errorRow.style.display = "";
+                        errorEl.textContent = data.error;
+                    }
+
+                    if (state === "SUCCESS" && data.result) {
+                        resultRow.style.display = "";
+                        resultEl.textContent = JSON.stringify(data.result, null, 2);
+                    }
+
+                    if (terminalStates[state]) {
+                        clearInterval(pollInterval);
+                    }
+                })
+                .catch(function () {
+                    stateEl.textContent = "Error fetching status";
+                });
+        }
+
+        // Poll immediately when tab regains focus instead of waiting for next interval.
+        document.addEventListener("visibilitychange", function () {
+            if (document.visibilityState === "visible") { poll(); }
+        });
+
+        poll();
+        pollInterval = setInterval(poll, 4000);
+    }());
+    </script>
+    {% endif %}
 </div>
 {% endblock %}

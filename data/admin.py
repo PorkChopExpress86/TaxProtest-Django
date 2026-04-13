@@ -4,7 +4,7 @@ from typing import Any, cast
 
 from django import forms
 from django.contrib import admin, messages
-from django.http import HttpRequest, HttpResponse, HttpResponseRedirect
+from django.http import HttpRequest, HttpResponse, HttpResponseRedirect, JsonResponse
 from django.template.response import TemplateResponse
 from django.urls import path, reverse
 from django.utils import timezone
@@ -23,30 +23,22 @@ class ETLPipelineAdminForm(forms.Form):
         min_value=2020,
         required=False,
         initial=timezone.now().year,
-        help_text=(
-            "Leave blank to use the pipeline's configured default year. "
-            "The full download, extract, and load stages will run."
-        ),
+        help_text="Leave blank to use the pipeline's configured default year.",
     )
-
-
-@admin.action(description="Trigger GIS location data import (manual)")
-def trigger_gis_import(modeladmin, request, queryset):
-    """Admin action to manually trigger GIS data import."""
-    task = cast(Any, download_and_import_gis_data).delay()
-    messages.success(
-        request,
-        f"GIS import task started with ID: {task.id}. This may take 30+ minutes to complete.",
+    skip_download = forms.BooleanField(
+        label="Skip download",
+        required=False,
+        help_text="Re-use previously downloaded archive files (faster; skips network I/O).",
     )
-
-
-@admin.action(description="Trigger building data import (manual)")
-def trigger_building_import(modeladmin, request, queryset):
-    """Admin action to manually trigger building data import."""
-    task = cast(Any, download_and_import_building_data).delay()
-    messages.success(
-        request,
-        f"Building import task started with ID: {task.id}. This may take 15+ minutes to complete.",
+    skip_extract = forms.BooleanField(
+        label="Skip extract",
+        required=False,
+        help_text="Re-use previously extracted files (skip ZIP extraction).",
+    )
+    skip_load = forms.BooleanField(
+        label="Skip load (dry run)",
+        required=False,
+        help_text="Run download/extract stages only; do not write to the database.",
     )
 
 
@@ -54,44 +46,96 @@ def trigger_building_import(modeladmin, request, queryset):
 class DownloadRecordAdmin(admin.ModelAdmin):
     list_display = ("filename", "url", "downloaded_at", "extracted")
     readonly_fields = ("downloaded_at",)
-    actions = [trigger_gis_import, trigger_building_import]
     change_list_template = "admin/data/downloadrecord/change_list.html"
 
     def get_urls(self):
-        info = self.model._meta.app_label, self.model._meta.model_name
+        app, model = self.model._meta.app_label, self.model._meta.model_name
+
+        def n(suffix: str) -> str:
+            return f"{app}_{model}_{suffix}"
+
         custom_urls = [
-            path(
-                "etl-pipeline/",
-                self.admin_site.admin_view(self.etl_pipeline_view),
-                name=f"{info[0]}_{info[1]}_etl_pipeline",
-            ),
+            path("etl-pipeline/",           self.admin_site.admin_view(self.etl_pipeline_view),          name=n("etl_pipeline")),
+            path("trigger-gis-import/",     self.admin_site.admin_view(self.trigger_gis_import_view),    name=n("trigger_gis_import")),
+            path("trigger-building-import/",self.admin_site.admin_view(self.trigger_building_import_view),name=n("trigger_building_import")),
+            path("task-status/<str:task_id>/",self.admin_site.admin_view(self.task_status_view),         name=n("task_status")),
         ]
         return custom_urls + super().get_urls()
 
+    def _trigger_import_task(
+        self,
+        request: HttpRequest,
+        task_func: Any,
+        task_type: str,
+        duration_estimate: str,
+    ) -> HttpResponse:
+        """Queue an import Celery task and redirect back to the changelist."""
+        changelist_url = reverse("admin:data_downloadrecord_changelist")
+        if request.method != "POST":
+            return HttpResponseRedirect(changelist_url)
+        task = cast(Any, task_func).delay()
+        request.session["etl_last_task_id"] = task.id
+        request.session["etl_last_task_type"] = task_type
+        messages.success(
+            request,
+            f"{task_type} task queued (ID: {task.id}). This may take {duration_estimate} to complete.",
+        )
+        return HttpResponseRedirect(changelist_url)
+
+    def trigger_gis_import_view(self, request: HttpRequest) -> HttpResponse:
+        return self._trigger_import_task(request, download_and_import_gis_data, "GIS Import", "30+ minutes")
+
+    def trigger_building_import_view(self, request: HttpRequest) -> HttpResponse:
+        return self._trigger_import_task(request, download_and_import_building_data, "Building Import", "15+ minutes")
+
+    def task_status_view(self, request: HttpRequest, task_id: str) -> JsonResponse:
+        """Return JSON Celery task state for frontend polling."""
+        from celery.result import AsyncResult
+
+        result = AsyncResult(task_id)
+        data: dict[str, Any] = {"task_id": task_id, "state": result.state}
+        if isinstance(result.info, dict):
+            data["step"] = result.info.get("step", "")
+        elif isinstance(result.info, Exception):
+            data["error"] = str(result.info)
+        if result.state == "SUCCESS" and isinstance(result.result, dict):
+            data["result"] = result.result
+        return JsonResponse(data)
+
     def etl_pipeline_view(self, request: HttpRequest) -> HttpResponse:
         """Admin-only page to queue a full ETL pipeline run."""
+        pipeline_url = reverse("admin:data_downloadrecord_etl_pipeline")
         changelist_url = reverse("admin:data_downloadrecord_changelist")
 
         if request.method == "POST":
             form = ETLPipelineAdminForm(request.POST)
             if form.is_valid():
                 data_year = form.cleaned_data.get("data_year") or None
+                skip_download = form.cleaned_data.get("skip_download", False)
+                skip_extract = form.cleaned_data.get("skip_extract", False)
+                skip_load = form.cleaned_data.get("skip_load", False)
                 task = cast(Any, run_etl_pipeline).delay(
-                    skip_download=False,
-                    skip_extract=False,
-                    skip_load=False,
+                    skip_download=skip_download,
+                    skip_extract=skip_extract,
+                    skip_load=skip_load,
                     data_year=data_year,
                 )
+                request.session["etl_last_task_id"] = task.id
+                request.session["etl_last_task_type"] = "Full ETL Pipeline"
                 messages.success(
                     request,
-                    (
-                        f"Queued full ETL pipeline task {task.id}. "
-                        "The pipeline will re-download, re-extract, and load the configured HCAD sources."
-                    ),
+                    f"Queued ETL pipeline task {task.id} "
+                    f"(skip_download={skip_download}, skip_extract={skip_extract}, skip_load={skip_load}).",
                 )
-                return HttpResponseRedirect(changelist_url)
+                return HttpResponseRedirect(pipeline_url)
         else:
             form = ETLPipelineAdminForm(initial={"data_year": timezone.now().year})
+
+        # Build a URL template the JS can use for polling by replacing a placeholder
+        task_status_url_template = reverse(
+            "admin:data_downloadrecord_task_status",
+            args=["TASK_ID_PLACEHOLDER"],
+        )
 
         context = {
             **self.admin_site.each_context(request),
@@ -100,6 +144,9 @@ class DownloadRecordAdmin(admin.ModelAdmin):
             "form": form,
             "media": self.media + form.media,
             "changelist_url": changelist_url,
+            "last_task_id": request.session.get("etl_last_task_id"),
+            "last_task_type": request.session.get("etl_last_task_type"),
+            "task_status_url_template": task_status_url_template,
         }
         return TemplateResponse(
             request,

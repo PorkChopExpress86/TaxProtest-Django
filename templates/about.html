@@ -1,0 +1,264 @@
+{% extends "base.html" %}
+
+{% block title %}About — Home Values{% endblock %}
+
+{% block content %}
+<div class="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
+
+    <!-- Hero -->
+    <div class="text-center mb-14">
+        <div class="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-r from-blue-500 to-indigo-600 rounded-2xl mb-6 shadow-lg">
+            <svg class="w-9 h-9 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"></path>
+            </svg>
+        </div>
+        <h1 class="text-4xl font-bold text-gray-900 mb-4">About Home Values</h1>
+        <p class="text-xl text-gray-600 max-w-2xl mx-auto">
+            A free tool for Harris County homeowners to find comparable properties and build evidence for a property tax protest.
+        </p>
+    </div>
+
+    <!-- What it does -->
+    <section class="mb-14">
+        <h2 class="text-2xl font-bold text-gray-900 mb-6">What it does</h2>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-6">
+            <div class="bg-white rounded-xl shadow-sm border border-blue-100 p-6">
+                <div class="w-10 h-10 bg-blue-50 rounded-lg flex items-center justify-center mb-4">
+                    <svg class="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z"/>
+                    </svg>
+                </div>
+                <h3 class="font-semibold text-gray-900 mb-2">Search HCAD Records</h3>
+                <p class="text-gray-600 text-sm">Look up any Harris County property by owner name, street address, street name, or ZIP code. Data is sourced directly from the Harris County Appraisal District.</p>
+            </div>
+            <div class="bg-white rounded-xl shadow-sm border border-blue-100 p-6">
+                <div class="w-10 h-10 bg-indigo-50 rounded-lg flex items-center justify-center mb-4">
+                    <svg class="w-5 h-5 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+                    </svg>
+                </div>
+                <h3 class="font-semibold text-gray-900 mb-2">Find Comparable Properties</h3>
+                <p class="text-gray-600 text-sm">A multi-factor similarity algorithm ranks nearby properties by how closely they match yours in size, age, quality, bedrooms, bathrooms, lot size, and amenities.</p>
+            </div>
+            <div class="bg-white rounded-xl shadow-sm border border-blue-100 p-6">
+                <div class="w-10 h-10 bg-green-50 rounded-lg flex items-center justify-center mb-4">
+                    <svg class="w-5 h-5 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                    </svg>
+                </div>
+                <h3 class="font-semibold text-gray-900 mb-2">Get a Protest Recommendation</h3>
+                <p class="text-gray-600 text-sm">Your price per square foot is compared against the median of your comparables. If you are assessed significantly higher, the tool recommends protesting and explains why.</p>
+            </div>
+            <div class="bg-white rounded-xl shadow-sm border border-blue-100 p-6">
+                <div class="w-10 h-10 bg-yellow-50 rounded-lg flex items-center justify-center mb-4">
+                    <svg class="w-5 h-5 text-yellow-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+                    </svg>
+                </div>
+                <h3 class="font-semibold text-gray-900 mb-2">Export to CSV</h3>
+                <p class="text-gray-600 text-sm">Download your search results as a spreadsheet to attach to a protest filing or share with a property tax consultant.</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- How it works -->
+    <section class="mb-14">
+        <h2 class="text-2xl font-bold text-gray-900 mb-6">How it works</h2>
+        <div class="bg-white rounded-xl shadow-sm border border-blue-100 p-8">
+            <ol class="space-y-6">
+                <li class="flex gap-4">
+                    <span class="flex-shrink-0 w-8 h-8 bg-gradient-to-r from-blue-500 to-indigo-600 text-white rounded-full flex items-center justify-center font-bold text-sm">1</span>
+                    <div>
+                        <p class="font-semibold text-gray-900">Search for your property</p>
+                        <p class="text-gray-600 text-sm mt-1">Enter your last name, address, street, or ZIP on the home page. Results show assessed value, building area, lot size, and price per square foot (PPSF).</p>
+                    </div>
+                </li>
+                <li class="flex gap-4">
+                    <span class="flex-shrink-0 w-8 h-8 bg-gradient-to-r from-blue-500 to-indigo-600 text-white rounded-full flex items-center justify-center font-bold text-sm">2</span>
+                    <div>
+                        <p class="font-semibold text-gray-900">Open the similar properties view</p>
+                        <p class="text-gray-600 text-sm mt-1">Click "Find Similar" next to your property. The algorithm searches within 10 miles for properties that match yours across 11 weighted factors.</p>
+                    </div>
+                </li>
+                <li class="flex gap-4">
+                    <span class="flex-shrink-0 w-8 h-8 bg-gradient-to-r from-blue-500 to-indigo-600 text-white rounded-full flex items-center justify-center font-bold text-sm">3</span>
+                    <div>
+                        <p class="font-semibold text-gray-900">Review your comparables</p>
+                        <p class="text-gray-600 text-sm mt-1">Properties are ranked by match score (0–100). Each row shows PPSF, distance, bedrooms, bathrooms, year built, quality grade, and extra features so you can judge relevance.</p>
+                    </div>
+                </li>
+                <li class="flex gap-4">
+                    <span class="flex-shrink-0 w-8 h-8 bg-gradient-to-r from-blue-500 to-indigo-600 text-white rounded-full flex items-center justify-center font-bold text-sm">4</span>
+                    <div>
+                        <p class="font-semibold text-gray-900">See your protest recommendation</p>
+                        <p class="text-gray-600 text-sm mt-1">If at least 3 comparables exist, the tool compares your PPSF to the median. Being 20% or more above the median triggers a <strong>Recommend Protesting</strong> result; 10–19% above triggers <strong>Consider Protesting</strong>.</p>
+                    </div>
+                </li>
+                <li class="flex gap-4">
+                    <span class="flex-shrink-0 w-8 h-8 bg-gradient-to-r from-blue-500 to-indigo-600 text-white rounded-full flex items-center justify-center font-bold text-sm">5</span>
+                    <div>
+                        <p class="font-semibold text-gray-900">Export your evidence</p>
+                        <p class="text-gray-600 text-sm mt-1">Use the CSV export to download your comparable list. Bring it to your HCAD protest hearing as supporting evidence for an unequal appraisal argument.</p>
+                    </div>
+                </li>
+            </ol>
+        </div>
+    </section>
+
+    <!-- Example -->
+    <section class="mb-14">
+        <h2 class="text-2xl font-bold text-gray-900 mb-6">Example walkthrough</h2>
+        <div class="bg-white rounded-xl shadow-sm border border-blue-100 p-8 space-y-5">
+            <p class="text-gray-700">Jane Smith owns a 3-bedroom, 2-bathroom home at <strong>1234 Oak St, Houston, TX 77008</strong>, built in 1985 with a quality grade of C. HCAD assessed it at <strong>$420,000</strong> (2,100 sqft heated area = <strong>$200/sqft</strong>).</p>
+
+            <div class="border-l-4 border-blue-400 pl-4 text-gray-600 text-sm space-y-1">
+                <p>She searches her last name and ZIP on the home page and finds her property in the results.</p>
+                <p>She clicks <strong>Find Similar</strong>. The tool returns <strong>18 comparable homes</strong> with an average match score of <strong>74</strong> — all within a few miles, with similar square footage, age, and bedroom/bathroom counts.</p>
+                <p>The median PPSF of those 18 comparables is <strong>$162/sqft</strong>. Jane's PPSF of $200 is <strong>23% above the median</strong>.</p>
+            </div>
+
+            <div class="flex items-start gap-3 bg-red-50 border border-red-200 rounded-lg px-5 py-4">
+                <svg class="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+                </svg>
+                <div>
+                    <p class="font-semibold text-red-800">Recommend Protesting</p>
+                    <p class="text-red-700 text-sm">Your price per sqft ($200.00) is about 23% above the median ($162.00) of 18 similar properties (avg match score 74).</p>
+                </div>
+            </div>
+
+            <p class="text-gray-600 text-sm">Jane exports the comparable list to CSV and uses it as evidence at her HCAD protest hearing, arguing unequal appraisal.</p>
+        </div>
+    </section>
+
+    <!-- Similarity Score -->
+    <section class="mb-14">
+        <h2 class="text-2xl font-bold text-gray-900 mb-2">How the similarity score works</h2>
+        <p class="text-gray-600 mb-6">Each candidate property is scored 0–100 across up to 11 factors. Missing data reduces the available weight pool but does not penalize the score — properties with incomplete records are scored on what is available, then multiplied by a completeness factor (0.80–1.00).</p>
+
+        <div class="bg-white rounded-xl shadow-sm border border-blue-100 overflow-hidden mb-6">
+            <table class="w-full text-sm">
+                <thead>
+                    <tr class="bg-gradient-to-r from-blue-500 to-indigo-600 text-white">
+                        <th class="text-left px-5 py-3 font-semibold">Factor</th>
+                        <th class="text-center px-4 py-3 font-semibold w-24">Max Points</th>
+                        <th class="text-left px-5 py-3 font-semibold">How it is measured</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-100">
+                    <tr class="hover:bg-blue-50 transition-colors">
+                        <td class="px-5 py-3 font-medium text-gray-900">Heated / Living Area</td>
+                        <td class="px-4 py-3 text-center font-bold text-blue-700">24</td>
+                        <td class="px-5 py-3 text-gray-600">% size difference: ±5% → 0.97, ±20% → 0.72, ±50% → 0.18, &gt;75% → 0</td>
+                    </tr>
+                    <tr class="hover:bg-blue-50 transition-colors">
+                        <td class="px-5 py-3 font-medium text-gray-900">Bedrooms</td>
+                        <td class="px-4 py-3 text-center font-bold text-blue-700">14</td>
+                        <td class="px-5 py-3 text-gray-600">Count difference: 0 → 1.0, ±1 bed → 0.68, ±2 beds → 0.35, ±3+ → 0</td>
+                    </tr>
+                    <tr class="hover:bg-blue-50 transition-colors">
+                        <td class="px-5 py-3 font-medium text-gray-900">Bathrooms</td>
+                        <td class="px-4 py-3 text-center font-bold text-blue-700">12</td>
+                        <td class="px-5 py-3 text-gray-600">Count difference: ±0.5 → 0.82, ±1.0 → 0.54, ±2.5+ → 0</td>
+                    </tr>
+                    <tr class="hover:bg-blue-50 transition-colors">
+                        <td class="px-5 py-3 font-medium text-gray-900">Land / Lot Size</td>
+                        <td class="px-4 py-3 text-center font-bold text-blue-700">10</td>
+                        <td class="px-5 py-3 text-gray-600">% lot size difference: ±5% → 0.95, ±35% → 0.42, &gt;80% → 0</td>
+                    </tr>
+                    <tr class="hover:bg-blue-50 transition-colors">
+                        <td class="px-5 py-3 font-medium text-gray-900">Quality Grade</td>
+                        <td class="px-4 py-3 text-center font-bold text-blue-700">10</td>
+                        <td class="px-5 py-3 text-gray-600">HCAD rank gap (X=7, A=6, B=5, C=4, D=3, E=2, F=1): 0 ranks apart → 1.0, 1 rank → 0.72, 3 ranks → 0.18, 5+ → 0</td>
+                    </tr>
+                    <tr class="hover:bg-blue-50 transition-colors">
+                        <td class="px-5 py-3 font-medium text-gray-900">Age (Year Built)</td>
+                        <td class="px-4 py-3 text-center font-bold text-blue-700">8</td>
+                        <td class="px-5 py-3 text-gray-600">Year difference: ±2 yrs → 0.95, ±10 yrs → 0.60, ±25 yrs → 0.12, 40+ yrs → 0</td>
+                    </tr>
+                    <tr class="hover:bg-blue-50 transition-colors">
+                        <td class="px-5 py-3 font-medium text-gray-900">Condition Code</td>
+                        <td class="px-4 py-3 text-center font-bold text-blue-700">6</td>
+                        <td class="px-5 py-3 text-gray-600">Same rank system as quality grade</td>
+                    </tr>
+                    <tr class="hover:bg-blue-50 transition-colors">
+                        <td class="px-5 py-3 font-medium text-gray-900">Building Character</td>
+                        <td class="px-4 py-3 text-center font-bold text-blue-700">4</td>
+                        <td class="px-5 py-3 text-gray-600">Building style, type, and class: exact match → 1.0, partial → 0.4–0.65, no match → 0</td>
+                    </tr>
+                    <tr class="hover:bg-blue-50 transition-colors">
+                        <td class="px-5 py-3 font-medium text-gray-900">Extra Features</td>
+                        <td class="px-4 py-3 text-center font-bold text-blue-700">4</td>
+                        <td class="px-5 py-3 text-gray-600">Jaccard similarity of feature codes (pool, garage, patio, spa, sprinklers, etc.): intersection ÷ union</td>
+                    </tr>
+                    <tr class="hover:bg-blue-50 transition-colors">
+                        <td class="px-5 py-3 font-medium text-gray-900">Stories</td>
+                        <td class="px-4 py-3 text-center font-bold text-blue-700">4</td>
+                        <td class="px-5 py-3 text-gray-600">Story difference: 0 → 1.0, ±0.5 → 0.70, ±1.0 → 0.35, 2.0+ → 0</td>
+                    </tr>
+                    <tr class="hover:bg-blue-50 transition-colors">
+                        <td class="px-5 py-3 font-medium text-gray-900">Distance</td>
+                        <td class="px-4 py-3 text-center font-bold text-blue-700">4</td>
+                        <td class="px-5 py-3 text-gray-600">Miles from target: 0 mi → 1.0, 0.25 mi → 0.78, 0.5 mi → 0.52, 0.75 mi → 0.24, 1.0+ mi → 0.05</td>
+                    </tr>
+                    <tr class="bg-gray-50 font-semibold">
+                        <td class="px-5 py-3 text-gray-900">Total</td>
+                        <td class="px-4 py-3 text-center text-blue-700">100</td>
+                        <td class="px-5 py-3 text-gray-500 text-xs">Score = (weighted sum ÷ available weight) × completeness (0.80–1.00) × 100</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Score labels -->
+        <h3 class="font-semibold text-gray-900 mb-3">Score labels</h3>
+        <div class="grid grid-cols-2 sm:grid-cols-5 gap-3">
+            <div class="bg-green-50 border border-green-200 rounded-lg px-4 py-3 text-center">
+                <p class="font-bold text-green-800 text-lg">84–100</p>
+                <p class="text-green-700 text-xs mt-1">Best Match</p>
+            </div>
+            <div class="bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 text-center">
+                <p class="font-bold text-blue-800 text-lg">70–83</p>
+                <p class="text-blue-700 text-xs mt-1">Highly Similar</p>
+            </div>
+            <div class="bg-indigo-50 border border-indigo-200 rounded-lg px-4 py-3 text-center">
+                <p class="font-bold text-indigo-800 text-lg">52–69</p>
+                <p class="text-indigo-700 text-xs mt-1">Good Match</p>
+            </div>
+            <div class="bg-yellow-50 border border-yellow-200 rounded-lg px-4 py-3 text-center">
+                <p class="font-bold text-yellow-800 text-lg">36–51</p>
+                <p class="text-yellow-700 text-xs mt-1">OK Match</p>
+            </div>
+            <div class="bg-gray-50 border border-gray-200 rounded-lg px-4 py-3 text-center">
+                <p class="font-bold text-gray-700 text-lg">0–35</p>
+                <p class="text-gray-500 text-xs mt-1">Broad Match</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- Data source -->
+    <section class="mb-6">
+        <h2 class="text-2xl font-bold text-gray-900 mb-4">Data source</h2>
+        <div class="bg-white rounded-xl shadow-sm border border-blue-100 p-6 flex gap-4 items-start">
+            <div class="w-10 h-10 bg-blue-50 rounded-lg flex items-center justify-center flex-shrink-0">
+                <svg class="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7h18M3 12h18M3 17h10"/>
+                </svg>
+            </div>
+            <div>
+                <p class="font-semibold text-gray-900 mb-1">Harris County Appraisal District (HCAD)</p>
+                <p class="text-gray-600 text-sm mb-3">All property records are sourced from HCAD's publicly available data files, updated periodically. The raw files are free to download at:</p>
+                <a href="https://download.hcad.org/data/" target="_blank" rel="noopener noreferrer"
+                   class="inline-flex items-center gap-1.5 text-blue-600 hover:text-blue-800 font-medium text-sm transition-colors">
+                    https://download.hcad.org/data/
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/>
+                    </svg>
+                </a>
+                <p class="text-gray-500 text-xs mt-3">Files used: <code class="bg-gray-100 px-1 rounded">Real_acct_owner.txt</code> (property &amp; owner records), <code class="bg-gray-100 px-1 rounded">Real_building_land.zip</code> (building details &amp; extra features), <code class="bg-gray-100 px-1 rounded">Parcels.zip</code> (GIS coordinates)</p>
+            </div>
+        </div>
+    </section>
+
+</div>
+{% endblock %}
