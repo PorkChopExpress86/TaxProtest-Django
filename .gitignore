@@ -175,3 +175,6 @@ archive/
 
 celerybeat-schedule-wal
 celerybeat-schedule-shm
+
+# Django collectstatic output (regenerated at container build time)
+staticfiles/
