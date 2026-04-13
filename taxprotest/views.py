@@ -7,7 +7,7 @@ import redis
 from django.conf import settings
 from django.core.paginator import Paginator
 from django.db import connection
-from django.http import HttpResponse, JsonResponse
+from django.http import Http404, HttpResponse, JsonResponse
 from django.shortcuts import render
 from django.utils.http import urlencode
 
@@ -488,7 +488,6 @@ def protest_analysis(request, account_number):
     """Protest analysis page: equity comparison for ARB hearing preparation."""
     target_property = PropertyRecord.objects.filter(account_number=account_number).first()
     if not target_property:
-        from django.http import Http404
         raise Http404("Property not found")
 
     target_building = target_property.buildings.filter(is_active=True).first()
