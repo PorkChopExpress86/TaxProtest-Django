@@ -18,8 +18,6 @@ You can set up the entire project, including data download and import, by runnin
 ```bash
 ./setup.sh
 ```
-./setup.sh
-```
 This script handles container building and migrations. The data import will start automatically when the containers launch for the first time.
 
 
@@ -120,8 +118,6 @@ docker compose exec web python manage.py migrate
 # Create superuser for admin access
 docker compose exec web python manage.py createsuperuser
 ```
-
-### 5. Verify Installation
 
 ### 5. Verify Installation
 
@@ -371,6 +367,8 @@ server {
     }
     
     location /static/ {
+        # staticfiles/ is generated at container build time via collectstatic
+        # Mount or copy from the web container, e.g. /path/to/staticfiles/
         alias /path/to/staticfiles/;
     }
 }
