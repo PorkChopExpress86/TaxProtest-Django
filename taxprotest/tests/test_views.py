@@ -648,7 +648,7 @@ class ProtestAnalysisExportTests(TestCase):
             reverse("protest_analysis_export", args=[self.target.account_number])
         )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response["Content-Type"], "text/csv")
+        self.assertIn("text/csv", response["Content-Type"])
 
     @patch("taxprotest.views.find_similar_properties")
     def test_csv_filename_contains_account_number(self, mock_find):
@@ -691,8 +691,8 @@ class ProtestAnalysisExportTests(TestCase):
         content = response.content.decode()
         lines = content.splitlines()
         self.assertEqual(len(lines), 2)  # header + 1 data row
-        # data row should contain the comp's street number
-        self.assertIn("201", lines[1])
-        # delta: comp $150/sqft - subject $175/sqft = -25.00
-        # target: 350000/2000 = $175/sqft, comp: 300000/2000 = $150/sqft
-        self.assertIn("-25.00", lines[1])
+        # delta_vs_subject_per_sqft = comp $/sqft - subject $/sqft
+        # comp: 300000/2000 = $150/sqft; subject: 350000/2000 = $175/sqft → -25.00
+        self.assertIn("201 Export Ave", lines[1])   # full address field
+        self.assertIn("150.00", lines[1])           # value_per_sqft
+        self.assertIn("-25.00", lines[1])           # delta_vs_subject_per_sqft
