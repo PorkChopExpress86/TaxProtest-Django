@@ -582,3 +582,117 @@ class ProtestAnalysisViewTests(TestCase):
             reverse("protest_analysis", args=[self.target.account_number])
         )
         self.assertEqual(response.context["comps_below_subject"], 1)
+
+
+class ProtestAnalysisExportTests(TestCase):
+    def setUp(self):
+        self.target = PropertyRecord.objects.create(
+            address="200 Export Ave",
+            city="Houston",
+            zipcode="77040",
+            owner_name="Export Owner",
+            account_number="EXPORT_TGT",
+            street_number="200",
+            street_name="Export Ave",
+            assessed_value=350000,
+            building_area=2000,
+            latitude=29.8,
+            longitude=-95.5,
+        )
+        self.target_building = BuildingDetail.objects.create(
+            property=self.target,
+            account_number=self.target.account_number,
+            building_number=1,
+            heat_area=2000,
+            bedrooms=3,
+            bathrooms=2,
+            quality_code="C",
+            year_built=2000,
+            is_active=True,
+        )
+        self.comp = PropertyRecord.objects.create(
+            address="201 Export Ave",
+            city="Houston",
+            zipcode="77040",
+            owner_name="Comp Owner",
+            account_number="EXPORT_CMP",
+            street_number="201",
+            street_name="Export Ave",
+            assessed_value=300000,
+            building_area=2000,
+            latitude=29.81,
+            longitude=-95.5,
+        )
+        self.comp_building = BuildingDetail.objects.create(
+            property=self.comp,
+            account_number=self.comp.account_number,
+            building_number=1,
+            heat_area=2000,
+            bedrooms=3,
+            bathrooms=2,
+            quality_code="C",
+            year_built=1999,
+            is_active=True,
+        )
+
+    def test_404_for_unknown_account(self):
+        response = self.client.get(
+            reverse("protest_analysis_export", args=["DOESNOTEXIST"])
+        )
+        self.assertEqual(response.status_code, 404)
+
+    @patch("taxprotest.views.find_similar_properties")
+    def test_returns_csv_content_type(self, mock_find):
+        mock_find.return_value = []
+        response = self.client.get(
+            reverse("protest_analysis_export", args=[self.target.account_number])
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "text/csv")
+
+    @patch("taxprotest.views.find_similar_properties")
+    def test_csv_filename_contains_account_number(self, mock_find):
+        mock_find.return_value = []
+        response = self.client.get(
+            reverse("protest_analysis_export", args=[self.target.account_number])
+        )
+        self.assertIn(self.target.account_number, response["Content-Disposition"])
+
+    @patch("taxprotest.views.find_similar_properties")
+    def test_csv_header_row_has_required_columns(self, mock_find):
+        mock_find.return_value = []
+        response = self.client.get(
+            reverse("protest_analysis_export", args=[self.target.account_number])
+        )
+        content = response.content.decode()
+        header = content.splitlines()[0]
+        for col in [
+            "address", "similarity_score", "similarity_label",
+            "living_area_sqft", "bedrooms", "bathrooms", "year_built",
+            "quality_code", "condition_code", "assessed_value",
+            "value_per_sqft", "delta_vs_subject_per_sqft",
+        ]:
+            self.assertIn(col, header, f"Missing CSV column: {col}")
+
+    @patch("taxprotest.views.find_similar_properties")
+    def test_csv_data_row_contains_comp_values(self, mock_find):
+        mock_find.return_value = [
+            {
+                "property": self.comp,
+                "building": self.comp_building,
+                "features": [],
+                "distance": 0.5,
+                "similarity_score": 76.0,
+            }
+        ]
+        response = self.client.get(
+            reverse("protest_analysis_export", args=[self.target.account_number])
+        )
+        content = response.content.decode()
+        lines = content.splitlines()
+        self.assertEqual(len(lines), 2)  # header + 1 data row
+        # data row should contain the comp's street number
+        self.assertIn("201", lines[1])
+        # delta: comp $150/sqft - subject $175/sqft = -25.00
+        # target: 350000/2000 = $175/sqft, comp: 300000/2000 = $150/sqft
+        self.assertIn("-25.00", lines[1])
