@@ -493,16 +493,27 @@ def protest_analysis(request, account_number):
     target_building = target_property.buildings.filter(is_active=True).first()
     target_features = list(target_property.extra_features.filter(is_active=True))
 
+    if not target_property.latitude or not target_property.longitude:
+        return render(
+            request,
+            "protest_analysis.html",
+            {
+                "error": "This property does not have location data required for similarity search.",
+                "target_property": target_property,
+                "target_building": target_building,
+            },
+        )
+
     # Parse and clamp min_score to [52.0, 100.0]; default 70.0
     try:
-        min_score = float(request.GET.get("min_score", 70.0))
+        min_score = float(request.GET.get("min_score", "70.0"))
     except (ValueError, TypeError):
         min_score = 70.0
     min_score = max(52.0, min(100.0, min_score))
 
     # Compute subject $/sqft
     subject_heat_area = float(target_building.heat_area) if target_building and target_building.heat_area else None
-    subject_assessed = target_property.assessed_value
+    subject_assessed = target_property.assessed_value or target_property.value
     subject_value_per_sqft = None
     if subject_assessed and subject_heat_area and subject_heat_area > 0:
         try:
@@ -525,7 +536,7 @@ def protest_analysis(request, account_number):
         building = result["building"]
         features = result["features"]
 
-        comp_assessed = prop.assessed_value
+        comp_assessed = prop.assessed_value or prop.value
         comp_heat_area = float(building.heat_area) if building and building.heat_area else None
 
         comp_value_per_sqft = None
@@ -591,7 +602,7 @@ def protest_analysis(request, account_number):
 
 
 def protest_analysis_export(request, account_number):
-    pass
+    return HttpResponse("Not yet implemented", status=501)
 
 
 def about(request):
