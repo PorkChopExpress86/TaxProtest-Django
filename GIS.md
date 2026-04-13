@@ -333,64 +333,48 @@ print(f"Distance: {distance:.2f} miles")  # ~3.2 miles
 
 ## Similarity Search
 
-### Location-Based Weighting
+### Role of Distance in Scoring
 
-The similarity algorithm uses distance to weight property comparisons:
+Distance is used as a **filter only** — candidates beyond `max_distance_miles` (default 10) are excluded before scoring begins. Distance does not affect the similarity score itself. This lets properties with very similar physical attributes compare well regardless of whether they are 1 mile or 9 miles apart.
 
-**Distance Ranges:**
-- 0-2 miles: Weight 1.0 (same neighborhood)
-- 2-5 miles: Weight 0.5 (nearby area)
-- 5-10 miles: Weight 0.2 (same region)
-- 10+ miles: Weight 0.0 (too far for comparison)
+The small distance weight (4%) in `RESIDENTIAL_WEIGHTS` is retained in `data/similarity.py` for future use but is currently applied with a flat 1.0 value so it does not skew results.
 
-**Formula:**
+### Residential Scoring Weights
+
 ```python
-def get_distance_weight(distance_miles):
-    if distance_miles <= 2:
-        return 1.0
-    elif distance_miles <= 5:
-        return 0.5
-    elif distance_miles <= 10:
-        return 0.2
-    else:
-        return 0.0
+RESIDENTIAL_WEIGHTS = {
+    "living_area": 24.0,
+    "bedrooms": 14.0,
+    "bathrooms": 12.0,
+    "land_size": 10.0,
+    "quality": 10.0,
+    "age": 8.0,
+    "condition": 6.0,
+    "stories": 4.0,
+    "building_character": 4.0,
+    "features": 4.0,
+    "distance": 4.0,  # filter-only, not applied to score
+}
 ```
 
-### Similarity Score Calculation
-
-**Weighted components:**
-```python
-score = (
-    area_score * 0.3 +           # Building area similarity (30%)
-    value_score * 0.25 +          # Property value similarity (25%)
-    location_score * 0.20 +       # Distance proximity (20%)
-    features_score * 0.15 +       # Feature match (15%)
-    condition_score * 0.10        # Condition/quality (10%)
-)
-```
-
-**Location score:**
-- Based on distance weight
-- Properties without coordinates: score = 0
-- Close properties get higher scores
-- Encourages neighborhood comparisons
+Land-only properties use a separate weight set (`LAND_ONLY_WEIGHTS`: land_size 80%, features 10%, distance 10%).
 
 ### Example Query
 
-**Find similar properties within 5 miles:**
 ```python
-from data.similarity import find_similar_properties
+from data.similarity import find_similar_properties, haversine_distance
+from data.models import PropertyRecord
 
-property = PropertyRecord.objects.get(account_number='0040170000016')
-similar = find_similar_properties(property, limit=10)
+results = find_similar_properties(
+    account_number='0040170000016',
+    max_distance_miles=10.0,
+    max_results=50,
+    min_score=30.0,
+)
 
-for prop, score in similar:
-    if prop.latitude and prop.longitude and property.latitude and property.longitude:
-        distance = haversine_distance(
-            property.latitude, property.longitude,
-            prop.latitude, prop.longitude
-        )
-        print(f"{prop.street_name}: Score={score:.2f}, Distance={distance:.2f}mi")
+# Each result is a dict with property data and score
+for result in results:
+    print(f"{result['street_name']}: score={result['score']:.1f}")
 ```
 
 ## Scheduled Updates
@@ -440,15 +424,13 @@ docker compose exec web python manage.py load_gis_data
 
 **Via Django Admin:**
 1. Go to: http://localhost:8000/admin/
-2. Navigate to: Download records
-3. Select any record
-4. Action: "Trigger GIS data import"
-5. Click "Go"
-6. Monitor: `docker compose logs -f worker`
+2. Navigate to: **Download Records → ETL Pipeline**
+3. Click **"Trigger GIS Import"**
+4. Monitor: `docker compose logs -f worker`
 
 **Via Celery Task:**
 ```python
-from data.tasks import download_and_import_gis_data
+from data.tasks_new import download_and_import_gis_data
 
 # Queue task
 download_and_import_gis_data.delay()

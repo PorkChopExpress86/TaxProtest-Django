@@ -245,26 +245,19 @@ docker compose exec web python manage.py shell -c "
 from data.models import PropertyRecord, BuildingDetail, ExtraFeature
 
 # Record counts
-print(f'Properties: {PropertyRecord.objects.count():,}')
-print(f'Buildings: {BuildingDetail.objects.count():,}')
-print(f'Features: {ExtraFeature.objects.count():,}')
-
-# Active vs inactive
-print(f'Active Buildings: {BuildingDetail.objects.filter(is_active=True).count():,}')
-print(f'Inactive Buildings: {BuildingDetail.objects.filter(is_active=False).count():,}')
-
-# Properties with data
-from django.db.models import Count
-props_with_buildings = PropertyRecord.objects.annotate(
-    bld_count=Count('buildings')
-).filter(bld_count__gt=0).count()
-print(f'Properties with buildings: {props_with_buildings:,}')
+print(f'Properties:          {PropertyRecord.objects.count():,}')
+print(f'  Residential:       {PropertyRecord.objects.filter(is_residential=True).count():,}')
+print(f'  Data-ready:        {PropertyRecord.objects.filter(is_data_ready=True).count():,}')
+print(f'  Queryable:         {PropertyRecord.objects.filter(is_residential=True, is_data_ready=True).count():,}')
+print(f'Buildings:           {BuildingDetail.objects.count():,}')
+print(f'  Active:            {BuildingDetail.objects.filter(is_active=True).count():,}')
+print(f'Features:            {ExtraFeature.objects.count():,}')
 
 # Orphaned records
 orphaned_buildings = BuildingDetail.objects.filter(property__isnull=True).count()
 orphaned_features = ExtraFeature.objects.filter(property__isnull=True).count()
-print(f'Orphaned Buildings: {orphaned_buildings:,}')
-print(f'Orphaned Features: {orphaned_features:,}')
+print(f'Orphaned Buildings:  {orphaned_buildings:,}')
+print(f'Orphaned Features:   {orphaned_features:,}')
 "
 ```
 
@@ -444,11 +437,9 @@ docker compose exec worker celery -A taxprotest inspect registered
 ### Manual Trigger via Admin
 
 1. Go to http://localhost:8000/admin/
-2. Navigate to "Download records"
-3. Select any record
-4. Choose action: "Trigger building data import" or "Trigger GIS import"
-5. Click "Go"
-6. Monitor in worker logs: `docker compose logs -f worker`
+2. Navigate to **Download Records → ETL Pipeline**
+3. Click **"Trigger Building Import"** or **"Trigger GIS Import"**
+4. Monitor in worker logs: `docker compose logs -f worker`
 
 ## Data Management
 
@@ -474,15 +465,25 @@ Every import returns detailed statistics:
 
 ### Query Active Data Only
 
-**Always filter for active records:**
+**Queryable residential properties** must have both flags set:
+```python
+from data.models import PropertyRecord
+
+# The full residential-ready contract
+queryable = PropertyRecord.objects.filter(is_residential=True, is_data_ready=True)
+```
+
+- `is_residential` — derived from `state_class` via `data/residential.py`; excludes commercial, exempt, and other non-residential parcels
+- `is_data_ready` — set by ETL after building, room-count, and GIS data are all present
+
+**Always filter for active records** on related models:
 ```python
 from data.models import BuildingDetail, ExtraFeature
 
-# Correct - only active records
 buildings = BuildingDetail.objects.filter(is_active=True)
 features = ExtraFeature.objects.filter(is_active=True)
 
-# Property relationships
+# Via property relationship
 property.buildings.filter(is_active=True)
 property.extra_features.filter(is_active=True)
 ```

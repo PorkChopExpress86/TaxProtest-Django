@@ -5,12 +5,16 @@ A Django web app for property tax analysis and comparison using Harris County Ap
 ## Features
 
 - Property search by owner, address, street, or ZIP
-- Similar properties based on distance, size, age, and features
-- Building details (sqft, year built, bedrooms, bathrooms, etc.)
+- Similar properties ranked by a weighted similarity score (Excellent / Good / Fair / Partial / Poor)
+- Building details (sqft, year built, bedrooms, bathrooms, quality, condition, etc.)
 - Extra features (pools, garages, patios, etc.)
 - GIS coordinates (latitude/longitude) for location-aware results
+- Land-only property support with separate scoring weights
 - CSV export of search results
+- Admin ETL pipeline panel with GIS and building import triggers
 - Scheduled imports (Celery Beat)
+- Health check endpoints (`/healthz/`, `/readiness/`)
+- About page (`/about/`)
 
 ## Quick start (Docker Compose)
 
@@ -44,17 +48,17 @@ Services:
 
 ## Data imports
 
-The current production-ready ETL flow is the legacy management-command path, with a strict full import that now fails if residential building or GIS completeness is not achieved:
+The authoritative import path is `import_all_data`, which enforces residential building and GIS completeness before finishing:
 
 ```bash
-# Full residential-ready import
+# Full import
 docker compose exec web python manage.py import_all_data
 
 # Validate the current dataset
 docker compose exec web python manage.py validate_data
 ```
 
-Manual stages are still available when you need to rerun one part of the import:
+Manual stages are available when you need to rerun one part of the import:
 
 ```bash
 # Property records
@@ -70,30 +74,42 @@ docker compose exec web python manage.py import_building_data
 docker compose exec web python manage.py load_room_counts
 ```
 
-If you are upgrading an older database that may still contain mixed or incomplete rows, preview and apply cleanup with:
+If upgrading an older database that may contain mixed or incomplete rows, preview and apply cleanup with:
 
 ```bash
 # Preview legacy-row cleanup
 docker compose exec web python manage.py reconcile_property_data
 
-# Apply cleanup for legacy mixed/incomplete rows
+# Apply cleanup
 docker compose exec web python manage.py reconcile_property_data --apply
 ```
 
-The modular `etl_pipeline` command still exists for alternate and experimental workflows, but `import_all_data` + `validate_data` is the authoritative path today. See `DATABASE.md` for the full ETL guide.
+See `DATABASE.md` for the full ETL guide.
 
 ## Usage
 
 1. Browse to http://localhost:8000
-2. Search by address/owner/ZIP
-3. Open a result and click “Similar” to view comparable properties
+2. Search by address, owner, or ZIP
+3. Open a result and click "Similar" to view comparable properties
 
-Similarity considers:
-- Distance (default within 5 miles)
-- Size (±30% building area)
-- Age (±10 years)
-- Features (pools, garages, etc.)
-- Bedrooms/Bathrooms
+Similarity scoring uses weighted factors for residential properties:
+
+| Factor | Weight |
+|---|---|
+| Living area | 24% |
+| Bedrooms | 14% |
+| Bathrooms | 12% |
+| Land size | 10% |
+| Quality | 10% |
+| Age | 8% |
+| Condition | 6% |
+| Stories | 4% |
+| Building character | 4% |
+| Extra features | 4% |
+
+Distance is used as a **filter** (default 10 miles) but does not affect the score. Land-only properties use a separate weight set (land size 80%, features 10%, distance 10%).
+
+Match labels: **Excellent** (≥84) · **Good** (≥70) · **Fair** (≥52) · **Partial** (≥36) · **Poor** (<36)
 
 ## Development
 
@@ -101,9 +117,10 @@ Project layout:
 
 ```
 taxprotest/           # Django project (settings, URLs, Celery)
-data/                 # Models, ETL, tasks, similarity
+data/                 # Models, ETL, tasks, similarity, admin
 templates/            # HTML templates (Bootstrap 5)
-downloads/            # HCAD data files (auto-created)
+scripts/              # Entrypoint, build-time download, monitoring helpers
+downloads/            # HCAD data files (auto-created at build time)
 docker-compose.yml    # Docker services
 ```
 
@@ -138,20 +155,29 @@ pre-commit run --all-files
 mypy
 ```
 
+### Tests
+
+```bash
+docker compose exec web python manage.py test
+```
+
 ## Documentation
 
-- SETUP.md — installation and configuration
-- DATABASE.md — imports, ETL processes, and DB management
-- GIS.md — GIS data handling and location features
+- `SETUP.md` — installation and configuration
+- `DATABASE.md` — imports, ETL processes, and DB management
+- `GIS.md` — GIS data handling and location features
+- `docs/SIMILARITY_SCORING.md` — similarity algorithm details
+- `docs/ETL_PIPELINE.md` — ETL pipeline architecture
+- `docs/REVERSE_PROXY.md` — reverse proxy / production deployment notes
 
 ## Data sources
 
 HCAD: https://download.hcad.org/data/
 
 Data files used:
-- Real_acct_owner.txt — Property records
-- Real_building_land.zip — Building details and features
-- Parcels.zip — GIS shapefiles with coordinates
+- `Real_acct_owner.txt` — Property records
+- `Real_building_land.zip` — Building details and features
+- `Parcels.zip` — GIS shapefiles with coordinates
 
 ## Troubleshooting
 
@@ -169,9 +195,9 @@ docker compose up --build
 
 ## Security
 
-- Never commit .env files or secrets
+- Never commit `.env` files or secrets
 - Rotate Django secret keys if exposed
-- Configure ALLOWED_HOSTS for production
+- Configure `ALLOWED_HOSTS` for production
 
 ## License
 
