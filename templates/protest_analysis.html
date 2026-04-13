@@ -8,7 +8,7 @@
   @media print {
     nav, footer, .no-print { display: none !important; }
     .print-header { display: block !important; }
-    body { font-family: Georgia, serif; font-size: 11pt; }
+    body { font-family: Georgia, serif; font-size: 11pt; background: white !important; }
     .shadow-xl, .shadow-md, .shadow-sm { box-shadow: none !important; }
     a { color: inherit; text-decoration: none; }
   }
@@ -318,7 +318,7 @@
               </td>
               {% if subject_value_per_sqft %}
               <td class="px-3 py-3 text-right text-gray-700">
-                {% if c.comp_value_per_sqft %}${{ c.comp_value_per_sqft|floatformat:2 }}{% else %}&ndash;{% endif %}
+                {% if c.comp_value_per_sqft is not None %}${{ c.comp_value_per_sqft|floatformat:2 }}{% else %}&ndash;{% endif %}
               </td>
               <td class="px-3 py-3 text-right font-semibold">
                 {% if c.comp_delta is not None %}
