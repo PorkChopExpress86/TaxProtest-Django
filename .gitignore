@@ -13,6 +13,10 @@ develop-eggs/
 dist/
 downloads/
 extracted/
+var/downloads/
+var/extracted/
+var/logs/
+var/reports/
 eggs/
 .eggs/
 lib/

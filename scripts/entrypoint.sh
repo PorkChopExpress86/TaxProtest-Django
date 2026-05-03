@@ -21,13 +21,15 @@ fi
 
 BAKED_DIR=/hcad_downloads_baked
 BAKED_STAMP=$(cat "$BAKED_DIR/.build_stamp" 2>/dev/null || echo "")
-SYNCED_STAMP=$(cat /app/downloads/.synced_stamp 2>/dev/null || echo "")
+RUNTIME_ROOT="${RUNTIME_ROOT:-/app/var}"
+HCAD_DOWNLOAD_DIR="${HCAD_DOWNLOAD_DIR:-$RUNTIME_ROOT/downloads}"
+SYNCED_STAMP=$(cat "$HCAD_DOWNLOAD_DIR/.synced_stamp" 2>/dev/null || echo "")
 
 if [ -n "$BAKED_STAMP" ] && [ "$BAKED_STAMP" != "$SYNCED_STAMP" ]; then
-    echo "Fresh build detected (stamp: $BAKED_STAMP) — syncing to /app/downloads..."
-    mkdir -p /app/downloads
-    cp -a "$BAKED_DIR/." /app/downloads/
-    echo "$BAKED_STAMP" > /app/downloads/.synced_stamp
+    echo "Fresh build detected (stamp: $BAKED_STAMP) — syncing to $HCAD_DOWNLOAD_DIR..."
+    mkdir -p "$HCAD_DOWNLOAD_DIR"
+    cp -a "$BAKED_DIR/." "$HCAD_DOWNLOAD_DIR/"
+    echo "$BAKED_STAMP" > "$HCAD_DOWNLOAD_DIR/.synced_stamp"
 
     echo "Importing data (full overwrite of existing database records)..."
     python manage.py import_all_data --skip-download

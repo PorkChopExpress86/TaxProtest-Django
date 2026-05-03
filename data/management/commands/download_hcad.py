@@ -5,7 +5,7 @@ from data.tasks_new import download_and_extract_hcad
 
 
 class Command(BaseCommand):
-    help = "Download and extract HCAD archives into downloads/"
+    help = "Download HCAD archives into the configured runtime directories"
 
     def handle(self, *args, **options):
         self.stdout.write(self.style.WARNING("Starting HCAD download & extract..."))

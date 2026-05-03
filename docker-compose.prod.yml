@@ -44,14 +44,18 @@ services:
       - FORCE_SECURE_COOKIES=${FORCE_SECURE_COOKIES:-1}
       - WEB_CONCURRENCY=${WEB_CONCURRENCY:-3}
       - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
+      - HCAD_DOWNLOAD_DIR=${HCAD_DOWNLOAD_DIR:-/app/var/downloads}
+      - HCAD_EXTRACT_DIR=${HCAD_EXTRACT_DIR:-/app/var/extracted}
+      - HCAD_LOG_DIR=${HCAD_LOG_DIR:-/app/var/logs}
+      - PROJECT_REPORT_DIR=${PROJECT_REPORT_DIR:-/app/var/reports}
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
-    # No volume mount for code in production, but we need downloads
+    # No code bind mount in production, but the runtime data under /app/var persists.
     volumes:
-      - ./downloads:/app/downloads
+      - ./var:/app/var
     # Celery worker for processing background tasks
   worker:
     build: .
@@ -64,6 +68,10 @@ services:
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - DEBUG=0
       - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
+      - HCAD_DOWNLOAD_DIR=${HCAD_DOWNLOAD_DIR:-/app/var/downloads}
+      - HCAD_EXTRACT_DIR=${HCAD_EXTRACT_DIR:-/app/var/extracted}
+      - HCAD_LOG_DIR=${HCAD_LOG_DIR:-/app/var/logs}
+      - PROJECT_REPORT_DIR=${PROJECT_REPORT_DIR:-/app/var/reports}
     depends_on:
       db:
         condition: service_healthy
@@ -83,6 +91,10 @@ services:
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - DEBUG=0
       - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
+      - HCAD_DOWNLOAD_DIR=${HCAD_DOWNLOAD_DIR:-/app/var/downloads}
+      - HCAD_EXTRACT_DIR=${HCAD_EXTRACT_DIR:-/app/var/extracted}
+      - HCAD_LOG_DIR=${HCAD_LOG_DIR:-/app/var/logs}
+      - PROJECT_REPORT_DIR=${PROJECT_REPORT_DIR:-/app/var/reports}
     depends_on:
       db:
         condition: service_healthy

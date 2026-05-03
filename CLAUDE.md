@@ -212,7 +212,7 @@ HCAD: https://download.hcad.org/data/
 | `Real_building_land.zip` | Building details and features |
 | `Parcels.zip` | GIS shapefiles (~800MB) |
 
-Downloaded at build time via `scripts/build_time_download.py`. Re-download targets live in `downloads/`.
+Downloaded at build time via `scripts/build_time_download.py`. Re-download targets live in `var/downloads/`, with extracted data under `var/extracted/`.
 
 ---
 
@@ -221,9 +221,9 @@ Downloaded at build time via `scripts/build_time_download.py`. Re-download targe
 | File | Contents |
 |---|---|
 | `README.md` | Overview, features, quick start, similarity weights |
-| `SETUP.md` | Installation, Docker services, production deployment |
-| `DATABASE.md` | ETL processes, import commands, DB management |
-| `GIS.md` | GIS data handling, coordinate storage, similarity distance |
+| `docs/guides/SETUP.md` | Installation, Docker services, production deployment |
+| `docs/guides/DATABASE.md` | ETL processes, import commands, DB management |
+| `docs/guides/GIS.md` | GIS data handling, coordinate storage, similarity distance |
 | `docs/SIMILARITY_SCORING.md` | Similarity algorithm deep-dive |
 | `docs/ETL_PIPELINE.md` | ETL pipeline architecture |
 | `docs/REVERSE_PROXY.md` | Reverse proxy / production deployment notes |

@@ -1,0 +1,14 @@
+*
+!/.gitignore
+!/downloads/
+!/extracted/
+!/logs/
+!/reports/
+downloads/*
+!downloads/.gitkeep
+extracted/*
+!extracted/.gitkeep
+logs/*
+!logs/.gitkeep
+reports/*
+!reports/.gitkeep

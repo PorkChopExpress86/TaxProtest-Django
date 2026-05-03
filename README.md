@@ -84,7 +84,7 @@ docker compose exec web python manage.py reconcile_property_data
 docker compose exec web python manage.py reconcile_property_data --apply
 ```
 
-See `DATABASE.md` for the full ETL guide.
+See `docs/guides/DATABASE.md` for the full ETL guide.
 
 ## Usage
 
@@ -120,7 +120,7 @@ taxprotest/           # Django project (settings, URLs, Celery)
 data/                 # Models, ETL, tasks, similarity, admin
 templates/            # HTML templates (Bootstrap 5)
 scripts/              # Entrypoint, build-time download, monitoring helpers
-downloads/            # HCAD data files (auto-created at build time)
+var/                  # Runtime downloads, extracts, logs, and reports
 docker-compose.yml    # Docker services
 ```
 
@@ -163,9 +163,9 @@ docker compose exec web python manage.py test
 
 ## Documentation
 
-- `SETUP.md` — installation and configuration
-- `DATABASE.md` — imports, ETL processes, and DB management
-- `GIS.md` — GIS data handling and location features
+- `docs/guides/SETUP.md` — installation and configuration
+- `docs/guides/DATABASE.md` — imports, ETL processes, and DB management
+- `docs/guides/GIS.md` — GIS data handling and location features
 - `docs/SIMILARITY_SCORING.md` — similarity algorithm details
 - `docs/ETL_PIPELINE.md` — ETL pipeline architecture
 - `docs/REVERSE_PROXY.md` — reverse proxy / production deployment notes

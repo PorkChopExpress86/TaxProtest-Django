@@ -11,6 +11,7 @@ import shutil
 import requests
 import logging
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 from celery import shared_task
 from django.conf import settings
@@ -110,18 +111,25 @@ def download_archive_with_fallback(
 
 
 def ensure_download_dir():
-    download_dir = os.path.join(settings.BASE_DIR, 'downloads')
-    os.makedirs(download_dir, exist_ok=True)
-    return download_dir
+    download_dir = Path(settings.HCAD_DOWNLOAD_DIR)
+    download_dir.mkdir(parents=True, exist_ok=True)
+    return os.fspath(download_dir)
+
+
+def ensure_extract_dir() -> str:
+    extract_dir = Path(settings.HCAD_EXTRACT_DIR)
+    extract_dir.mkdir(parents=True, exist_ok=True)
+    return os.fspath(extract_dir)
 
 
 @shared_task(bind=True)
 def download_and_extract_hcad(self):
-    """Download a set of HCAD ZIP files, save them to downloads/, and extract them.
+    """Download a set of HCAD ZIP files and extract them into the configured runtime dirs.
 
     Records a DownloadRecord per file.
     """
     download_dir = ensure_download_dir()
+    extract_root = ensure_extract_dir()
     results = []
     reference_year = datetime.now().year
 
@@ -153,7 +161,9 @@ def download_and_extract_hcad(self):
         try:
             if zipfile.is_zipfile(local_path):
                 with zipfile.ZipFile(local_path, 'r') as z:
-                    extract_to = os.path.join(download_dir, local_name.replace('.zip', ''))
+                    extract_to = os.path.join(
+                        extract_root, local_name.replace('.zip', '')
+                    )
                     os.makedirs(extract_to, exist_ok=True)
                     z.extractall(extract_to)
                 rec.extracted = True
@@ -192,6 +202,7 @@ def download_and_import_building_data(self):
     Scheduled to run on the 2nd Tuesday of each month.
     """
     download_dir = ensure_download_dir()
+    extract_root = ensure_extract_dir()
     
     self.update_state(state='DOWNLOADING', meta={'step': 'Downloading ZIP file'})
     
@@ -212,7 +223,7 @@ def download_and_import_building_data(self):
     self.update_state(state='EXTRACTING', meta={'step': 'Extracting ZIP file'})
     
     # Extract the ZIP
-    extract_dir = os.path.join(download_dir, 'Real_building_land')
+    extract_dir = os.path.join(extract_root, 'Real_building_land')
     os.makedirs(extract_dir, exist_ok=True)
     
     try:
@@ -332,6 +343,7 @@ def download_and_import_gis_data(self):
     Scheduled to run annually on January 15th at 3 AM.
     """
     download_dir = ensure_download_dir()
+    extract_root = ensure_extract_dir()
     
     url = 'https://download.hcad.org/data/GIS/Parcels.zip'
     
@@ -358,7 +370,7 @@ def download_and_import_gis_data(self):
     self.update_state(state='EXTRACTING', meta={'step': 'Extracting GIS ZIP file'})
     
     # Extract the ZIP
-    extract_dir = os.path.join(download_dir, 'Parcels')
+    extract_dir = os.path.join(extract_root, 'Parcels')
     os.makedirs(extract_dir, exist_ok=True)
     
     try:

@@ -315,7 +315,7 @@ print(f'Orphaned Features:   {orphaned_features:,}')
 
 **Process:**
 1. Downloads Real_building_land.zip
-2. Extracts to downloads/Real_building_land/
+2. Extracts to `var/extracted/Real_building_land/`
 3. **Soft Delete Phase:**
    - Marks all existing records as `is_active=False`
    - Preserves historical data
@@ -570,7 +570,7 @@ docker compose logs worker
 **Re-run import:**
 ```bash
 # Delete old downloads
-rm -rf downloads/Real_building_land/
+rm -rf var/extracted/Real_building_land/
 
 # Re-run import
 docker compose exec web python manage.py import_building_data

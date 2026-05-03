@@ -1,4 +1,5 @@
 import logging
+from pathlib import Path
 from django.core.management.base import BaseCommand
 from django.core.management import call_command
 from data.models import PropertyRecord, BuildingDetail, ExtraFeature
@@ -32,14 +33,13 @@ class Command(BaseCommand):
             
             # Check if we have the files locally (e.g. baked into image)
             # We assume if Real_acct_owner exists, we are good to go.
-            import os
             from django.conf import settings
             
-            download_dir = os.path.join(settings.BASE_DIR, 'downloads')
+            extract_dir = Path(settings.HCAD_EXTRACT_DIR)
             has_files = (
-                os.path.exists(os.path.join(download_dir, 'Real_acct_owner')) and
-                os.path.exists(os.path.join(download_dir, 'Real_building_land')) and
-                os.path.exists(os.path.join(download_dir, 'Parcels'))
+                (extract_dir / 'Real_acct_owner').exists() and
+                (extract_dir / 'Real_building_land').exists() and
+                (extract_dir / 'Parcels').exists()
             )
             
             import_options = {}

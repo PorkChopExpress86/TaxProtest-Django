@@ -105,10 +105,10 @@ To run a clean import:
 from data.etl import load_building_details, load_extra_features
 
 # Import buildings (truncates first)
-load_building_details('downloads/Real_building_land/building_res.txt')
+load_building_details('var/extracted/Real_building_land/building_res.txt')
 
 # Import extra features (truncates first)
-load_extra_features('downloads/Real_building_land/extra_features.txt')
+load_extra_features('var/extracted/Real_building_land/extra_features.txt')
 ```
 
 Or via management command (if created):
@@ -130,7 +130,7 @@ TRUNCATE TABLE "data_extrafeature" RESTART IDENTITY CASCADE;
 
 ## Related Documentation
 
-- `DATABASE.md` - Data sources and ETL process
+- `docs/guides/DATABASE.md` - Data sources and ETL process
 - `docs/SIMILARITY_SCORING.md` - Similarity algorithm (uses quality codes)
 - `docs/archive/SCHEDULED_IMPORTS.md` - Celery scheduled imports
 

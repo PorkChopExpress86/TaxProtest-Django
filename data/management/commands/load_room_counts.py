@@ -1,10 +1,11 @@
 """
 Management command to load bedroom and bathroom counts from fixtures.txt.
 """
-import os
+from pathlib import Path
 from django.core.management.base import BaseCommand
 from django.conf import settings
 from data.etl import load_fixtures_room_counts
+from taxprotest.runtime_paths import resolve_from_base
 
 
 class Command(BaseCommand):
@@ -14,7 +15,7 @@ class Command(BaseCommand):
         parser.add_argument(
             '--fixtures-file',
             type=str,
-            default='downloads/Real_building_land/fixtures.txt',
+            default=str(Path(settings.HCAD_EXTRACT_DIR) / 'Real_building_land' / 'fixtures.txt'),
             help='Path to fixtures.txt file (relative to BASE_DIR)'
         )
         parser.add_argument(
@@ -29,10 +30,9 @@ class Command(BaseCommand):
         chunk_size = options['chunk_size']
         
         # Convert relative path to absolute
-        if not os.path.isabs(fixtures_file):
-            fixtures_file = os.path.join(settings.BASE_DIR, fixtures_file)
+        fixtures_file = str(resolve_from_base(settings.BASE_DIR, fixtures_file))
         
-        if not os.path.exists(fixtures_file):
+        if not Path(fixtures_file).exists():
             self.stdout.write(self.style.ERROR(
                 f'Fixtures file not found: {fixtures_file}\n'
                 f'Make sure Real_building_land.zip has been downloaded and extracted.'

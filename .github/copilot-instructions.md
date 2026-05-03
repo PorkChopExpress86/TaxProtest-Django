@@ -52,13 +52,13 @@
 - **Annual GIS Import**: Downloads and updates property coordinates on January 15th at 3 AM Central Time.
 - Task location: `data/tasks_new.py:download_and_import_building_data()` and `data/tasks_new.py:download_and_import_gis_data()`
 - To add new scheduled tasks, update `beat_schedule` in `taxprotest/celery.py`
-- See `DATABASE.md` for detailed documentation on data imports and scheduled tasks.
+- See `docs/guides/DATABASE.md` for detailed documentation on data imports and scheduled tasks.
 
 ## Documentation Structure
 - **README.md** - Project overview, features, quick start guide, and usage instructions
-- **SETUP.md** - Installation, configuration, Docker services, and production deployment
-- **DATABASE.md** - Data sources, import processes, ETL functions, and database management
-- **GIS.md** - GIS features, location data, coordinate handling, and similarity search
+- **docs/guides/SETUP.md** - Installation, configuration, Docker services, and production deployment
+- **docs/guides/DATABASE.md** - Data sources, import processes, ETL functions, and database management
+- **docs/guides/GIS.md** - GIS features, location data, coordinate handling, and similarity search
 - **docs/archive/** - Historical documentation (archived)
 
 ## Example File Structure
@@ -66,9 +66,9 @@
 TaxProtest-Django/
 ├── manage.py
 ├── README.md              # Start here
-├── SETUP.md               # Installation guide
-├── DATABASE.md            # Data import documentation
-├── GIS.md                 # GIS features documentation
+├── docs/guides/SETUP.md   # Installation guide
+├── docs/guides/DATABASE.md # Data import documentation
+├── docs/guides/GIS.md     # GIS features documentation
 ├── taxprotest/
 │   ├── settings.py
 │   ├── urls.py
@@ -92,5 +92,5 @@ TaxProtest-Django/
 
 ---
 **Agents and developers should always default to Docker Compose for running, testing, and deploying the app.**
-For detailed information, consult README.md, SETUP.md, DATABASE.md, and GIS.md.
+For detailed information, consult README.md, docs/guides/SETUP.md, docs/guides/DATABASE.md, and docs/guides/GIS.md.
 If you add new conventions, workflows, or apps, update this file to keep AI agents productive.

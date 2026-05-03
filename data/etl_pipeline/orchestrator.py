@@ -558,7 +558,7 @@ class ETLOrchestrator:
             self.logger.warning(f"GIS extract path not found: {extract_path}")
             return {'loaded': 0, 'failed': 0}
 
-        # Legacy extracts often live under downloads/<archive_name>. Include that
+        # Legacy extracts often lived under the download tree. Include that
         # location as a fallback so modern and legacy commands pick equivalent data.
         archive_base = Path(source.filename).name.rsplit('.', 1)[0]
         legacy_extract_path = self.config.download_dir / archive_base

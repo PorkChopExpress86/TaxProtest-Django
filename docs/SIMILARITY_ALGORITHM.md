@@ -427,8 +427,8 @@ print(f"Address: {top['property'].situs_street}")
 
 - **[SIMILARITY_SCORING.md](SIMILARITY_SCORING.md)** - Detailed scoring examples
 - **[SIMILARITY_QUICKREF.md](SIMILARITY_QUICKREF.md)** - Quick reference guide
-- **[GIS.md](../GIS.md)** - Location data and coordinate imports
-- **[DATABASE.md](../DATABASE.md)** - Data model and import processes
+- **[GIS.md](guides/GIS.md)** - Location data and coordinate imports
+- **[DATABASE.md](guides/DATABASE.md)** - Data model and import processes
 
 ---
 

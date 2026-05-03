@@ -241,9 +241,9 @@ class ETLConfig:
     """
     # Paths
     base_dir: Path = field(default_factory=lambda: Path(settings.BASE_DIR))
-    download_dir: Path = field(default_factory=lambda: Path(settings.BASE_DIR) / 'downloads')
-    extract_dir: Path = field(default_factory=lambda: Path(settings.BASE_DIR) / 'extracted')
-    log_dir: Path = field(default_factory=lambda: Path(settings.BASE_DIR) / 'logs')
+    download_dir: Path = field(default_factory=lambda: Path(settings.HCAD_DOWNLOAD_DIR))
+    extract_dir: Path = field(default_factory=lambda: Path(settings.HCAD_EXTRACT_DIR))
+    log_dir: Path = field(default_factory=lambda: Path(settings.HCAD_LOG_DIR))
     
     # Data year
     data_year: int = field(default_factory=lambda: datetime.now().year)

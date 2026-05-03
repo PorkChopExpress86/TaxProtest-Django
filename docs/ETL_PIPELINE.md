@@ -56,7 +56,7 @@ Downloads ZIP archives from HCAD's data portal:
 
 ### 2. Extract Stage
 
-Extracts downloaded ZIP archives to `downloads/` directory.
+Extracts downloaded ZIP archives to `var/extracted/` while preserving archives in `var/downloads/`.
 
 ### 3. Transform Stage
 
@@ -167,7 +167,9 @@ Configuration is managed via environment variables:
 
 ```bash
 # Download directory
-HCAD_DOWNLOAD_DIR=/app/downloads
+HCAD_DOWNLOAD_DIR=/app/var/downloads
+HCAD_EXTRACT_DIR=/app/var/extracted
+HCAD_LOG_DIR=/app/var/logs
 
 # Data year
 HCAD_DATA_YEAR=2025
@@ -217,6 +219,6 @@ See `taxprotest/celery.py` for schedule configuration.
 
 ## Related Documentation
 
-- [DATABASE.md](../DATABASE.md) - Data sources and schema
-- [GIS.md](../GIS.md) - GIS features and location data
-- [SETUP.md](../SETUP.md) - Installation and configuration
+- [DATABASE.md](guides/DATABASE.md) - Data sources and schema
+- [GIS.md](guides/GIS.md) - GIS features and location data
+- [SETUP.md](guides/SETUP.md) - Installation and configuration

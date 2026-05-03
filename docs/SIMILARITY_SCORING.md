@@ -420,6 +420,6 @@ Potential improvements to the algorithm:
 ---
 
 ## See Also
-- [GIS.md](../GIS.md) - Location data and coordinate handling
-- [DATABASE.md](../DATABASE.md) - Data sources and import process
+- [GIS.md](guides/GIS.md) - Location data and coordinate handling
+- [DATABASE.md](guides/DATABASE.md) - Data sources and import process
 - [data/similarity.py](../data/similarity.py) - Source code implementation

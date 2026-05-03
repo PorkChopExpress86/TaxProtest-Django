@@ -33,7 +33,7 @@ RUN DJANGO_SECRET_KEY=dummy python manage.py collectstatic --noinput || true
 ARG SKIP_DATA_DOWNLOAD=0
 RUN if [ "$SKIP_DATA_DOWNLOAD" = "0" ]; then \
         python scripts/build_time_download.py && \
-        cp -r /app/downloads /hcad_downloads_baked && \
+        cp -r /app/var/downloads /hcad_downloads_baked && \
         date -u +%Y%m%dT%H%M%SZ > /hcad_downloads_baked/.build_stamp; \
     fi
 

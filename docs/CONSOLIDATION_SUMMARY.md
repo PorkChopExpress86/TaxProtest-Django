@@ -23,7 +23,7 @@
 
 ---
 
-### 2. SETUP.md
+### 2. docs/guides/SETUP.md
 **Purpose:** Technical installation and configuration guide
 
 **Consolidated from:**
@@ -42,7 +42,7 @@
 
 ---
 
-### 3. DATABASE.md
+### 3. docs/guides/DATABASE.md
 **Purpose:** Database management and data import documentation
 
 **Consolidated from:**
@@ -68,7 +68,7 @@
 
 ---
 
-### 4. GIS.md
+### 4. docs/guides/GIS.md
 **Purpose:** GIS features and location data documentation
 
 **Consolidated from:**
@@ -138,9 +138,9 @@ All original documentation moved to `docs/archive/`:
 
 **Navigation Flow:**
 1. **README.md** - Start here for project overview
-2. **SETUP.md** - Follow for installation and configuration
-3. **DATABASE.md** - Reference for data imports and management
-4. **GIS.md** - Reference for location features
+2. **docs/guides/SETUP.md** - Follow for installation and configuration
+3. **docs/guides/DATABASE.md** - Reference for data imports and management
+4. **docs/guides/GIS.md** - Reference for location features
 5. **SIMILARITY_SEARCH.md** - Deep dive into algorithm (optional)
 
 ---
@@ -149,10 +149,10 @@ All original documentation moved to `docs/archive/`:
 
 Each document includes "For more information" sections that link to related documents:
 
-- README.md → SETUP.md, DATABASE.md, GIS.md
-- SETUP.md → README.md, DATABASE.md, GIS.md
-- DATABASE.md → SETUP.md, GIS.md, README.md
-- GIS.md → DATABASE.md, SETUP.md, README.md
+- README.md → docs/guides/SETUP.md, docs/guides/DATABASE.md, docs/guides/GIS.md
+- docs/guides/SETUP.md → README.md, docs/guides/DATABASE.md, docs/guides/GIS.md
+- docs/guides/DATABASE.md → docs/guides/SETUP.md, docs/guides/GIS.md, README.md
+- docs/guides/GIS.md → docs/guides/DATABASE.md, docs/guides/SETUP.md, README.md
 
 ---
 
@@ -162,9 +162,9 @@ Each document includes "For more information" sections that link to related docu
 - `.github/copilot-instructions.md` - Updated to reference new documentation structure
 
 **No longer needed:**
-- References to SCHEDULED_IMPORTS.md (now in DATABASE.md)
-- References to GIS_SETUP.md (now in GIS.md)
-- References to CELERY_SETUP_COMPLETE.md (now in SETUP.md)
+- References to SCHEDULED_IMPORTS.md (now in docs/guides/DATABASE.md)
+- References to GIS_SETUP.md (now in docs/guides/GIS.md)
+- References to CELERY_SETUP_COMPLETE.md (now in docs/guides/SETUP.md)
 
 ---
 
@@ -172,9 +172,9 @@ Each document includes "For more information" sections that link to related docu
 
 **Going forward:**
 - Keep README.md user-focused (features, usage)
-- Keep SETUP.md technical (installation, deployment)
-- Keep DATABASE.md data-focused (imports, ETL, schemas)
-- Keep GIS.md location-focused (coordinates, distance, maps)
+- Keep docs/guides/SETUP.md technical (installation, deployment)
+- Keep docs/guides/DATABASE.md data-focused (imports, ETL, schemas)
+- Keep docs/guides/GIS.md location-focused (coordinates, distance, maps)
 - Archive status update files after completion
 - Update relevant document when adding features
 - Avoid creating new documentation files unless absolutely necessary
