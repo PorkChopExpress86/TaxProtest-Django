@@ -1,9 +1,12 @@
 from unittest.mock import MagicMock, patch
 
+import csv
+from io import StringIO
+
 from django.test import TestCase
 from django.urls import reverse
 
-from data.models import BuildingDetail, PropertyRecord
+from data.models import BuildingDetail, ExtraFeature, PropertyRecord
 
 
 class PropertySearchViewTests(TestCase):
@@ -39,6 +42,42 @@ class PropertySearchViewTests(TestCase):
         self.assertTrue(results)
         self.assertEqual(results[0]["owner_name"], "Bob Brown")
 
+    def test_index_bulk_loads_related_buildings_and_features(self):
+        for i in range(5):
+            prop = PropertyRecord.objects.create(
+                address=f"{i} Search St",
+                city="Houston",
+                zipcode="77333",
+                owner_name=f"Search Owner {i}",
+                account_number=f"SEARCH{i:04d}",
+                street_number=str(i),
+                street_name="Search St",
+                value=100000 + i,
+            )
+            BuildingDetail.objects.create(
+                property=prop,
+                account_number=prop.account_number,
+                building_number=1,
+                bedrooms=3,
+                bathrooms=2,
+                quality_code="C",
+                is_active=True,
+            )
+            ExtraFeature.objects.create(
+                property=prop,
+                account_number=prop.account_number,
+                feature_number=1,
+                feature_code="POOL",
+                feature_description="Pool",
+                is_active=True,
+            )
+
+        with self.assertNumQueries(4):
+            response = self.client.get(reverse("index"), {"zip_code": "77333"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.context["results"]), 5)
+
     def test_export_csv_returns_rows(self):
         response = self.client.get(reverse("export_csv"), {"zip_code": "77001"})
         self.assertEqual(response.status_code, 200)
@@ -46,6 +85,90 @@ class PropertySearchViewTests(TestCase):
         content = response.content.decode().splitlines()
         self.assertGreaterEqual(len(content), 3)  # header + rows
         self.assertIn("Account Number", content[0])
+
+    def test_export_csv_requires_meaningful_filter(self):
+        response = self.client.get(reverse("export_csv"))
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("meaningful search criteria", response.content.decode())
+
+    def test_export_csv_rejects_short_text_filters(self):
+        response = self.client.get(reverse("export_csv"), {"last_name": "Al"})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("meaningful search criteria", response.content.decode())
+
+    def test_export_csv_limits_exported_rows(self):
+        for i in range(1005):
+            PropertyRecord.objects.create(
+                address=f"{i} Cap St",
+                city="Houston",
+                zipcode="77099",
+                owner_name=f"Owner {i}",
+                account_number=f"CAP{i:04d}",
+                street_number=str(i),
+                street_name="Cap St",
+                value=100000 + i,
+            )
+
+        response = self.client.get(reverse("export_csv"), {"zip_code": "77099"})
+
+        self.assertEqual(response.status_code, 200)
+        rows = list(csv.reader(StringIO(response.content.decode())))
+        self.assertEqual(len(rows), 1001)  # header + 1000 capped data rows
+
+    def test_export_csv_bulk_loads_related_data(self):
+        for i in range(5):
+            prop = PropertyRecord.objects.create(
+                address=f"{i} Bulk St",
+                city="Houston",
+                zipcode="77111",
+                owner_name=f"Bulk Owner {i}",
+                account_number=f"BULK{i:04d}",
+                street_number=str(i),
+                street_name="Bulk St",
+                value=100000 + i,
+            )
+            BuildingDetail.objects.create(
+                property=prop,
+                account_number=prop.account_number,
+                building_number=1,
+                bedrooms=3,
+                bathrooms=2,
+                quality_code="C",
+                is_active=True,
+            )
+            ExtraFeature.objects.create(
+                property=prop,
+                account_number=prop.account_number,
+                feature_number=1,
+                feature_code="POOL",
+                feature_description="Pool",
+                is_active=True,
+            )
+
+        with self.assertNumQueries(3):
+            response = self.client.get(reverse("export_csv"), {"zip_code": "77111"})
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_export_csv_escapes_formula_like_text_fields(self):
+        PropertyRecord.objects.create(
+            address="789 Formula St",
+            city="Houston",
+            zipcode="77222",
+            owner_name="=2+2",
+            account_number="FORMULA1",
+            street_number="@789",
+            street_name="+Formula St",
+            value=100000,
+        )
+
+        response = self.client.get(reverse("export_csv"), {"zip_code": "77222"})
+
+        self.assertEqual(response.status_code, 200)
+        rows = list(csv.reader(StringIO(response.content.decode())))
+        self.assertEqual(rows[1][1], "'=2+2")
+        self.assertEqual(rows[1][2], "'@789")
+        self.assertEqual(rows[1][3], "'+Formula St")
 
 
 class HealthEndpointsTests(TestCase):
@@ -171,6 +294,46 @@ class SimilarPropertiesViewTests(TestCase):
         self.assertEqual(results[1]["account_number"], self.high_ppsf_property.account_number)
         self.assertEqual(results[1]["match_label"], "Best match")
         self.assertEqual(results[2]["account_number"], self.low_ppsf_property.account_number)
+
+    @patch("taxprotest.views.find_similar_properties")
+    def test_similar_properties_invalid_query_params_use_defaults(self, mock_find_similar):
+        mock_find_similar.return_value = []
+
+        response = self.client.get(
+            reverse("similar_properties", args=[self.target.account_number]),
+            {"max_distance": "not-a-number", "max_results": "many", "min_score": "low"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        mock_find_similar.assert_called_once_with(
+            account_number=self.target.account_number,
+            max_distance_miles=10.0,
+            max_results=20,
+            min_score=30.0,
+        )
+        self.assertEqual(response.context["max_distance"], 10.0)
+        self.assertEqual(response.context["max_results"], 20)
+        self.assertEqual(response.context["min_score"], 30.0)
+
+    @patch("taxprotest.views.find_similar_properties")
+    def test_similar_properties_extreme_query_params_are_clamped(self, mock_find_similar):
+        mock_find_similar.return_value = []
+
+        response = self.client.get(
+            reverse("similar_properties", args=[self.target.account_number]),
+            {"max_distance": "9999", "max_results": "9999", "min_score": "-50"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        mock_find_similar.assert_called_once_with(
+            account_number=self.target.account_number,
+            max_distance_miles=50.0,
+            max_results=100,
+            min_score=0.0,
+        )
+        self.assertEqual(response.context["max_distance"], 50.0)
+        self.assertEqual(response.context["max_results"], 100)
+        self.assertEqual(response.context["min_score"], 0.0)
 
 
 class ProtestRecommendationTests(TestCase):

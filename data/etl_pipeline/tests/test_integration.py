@@ -20,8 +20,10 @@ from data.etl_pipeline import ETLConfig, ETLOrchestrator
 from data.etl_pipeline.config import DataSource, DataSourceType, FileFormat
 from data.etl_pipeline.download import DownloadManager, DownloadResult
 from data.etl_pipeline.extract import ExtractManager, ExtractResult
+from data.etl_pipeline.model_loader import ModelLoader
 from data.etl_pipeline.transform import DataTransformer, REAL_ACCT_SCHEMA
 from data.etl_pipeline.orchestrator import PipelineStatus
+from data.models import PropertyRecord, BuildingDetail
 
 
 class TestETLConfigIntegration(TestCase):
@@ -298,6 +300,82 @@ class TestETLOrchestratorIntegration(TestCase):
         # Extract dir should be cleaned
         assert not any(self.config.extract_dir.iterdir())
 
+    @patch('data.etl.load_gis_parcels')
+    def test_process_gis_source_prefers_parcelscity_from_legacy_extract(self, mock_load_gis):
+        """GIS stage should prefer ParcelsCity shapefile when available."""
+        mock_load_gis.return_value = 123
+
+        # Modern extracted path contains a fallback Parcels.shp
+        modern_extract = self.config.extract_dir / 'Parcels'
+        modern_extract.mkdir(parents=True, exist_ok=True)
+        (modern_extract / 'Parcels.shp').write_text('stub')
+
+        # Legacy-style extract path contains preferred ParcelsCity.shp
+        preferred_dir = (
+            self.config.download_dir
+            / 'Parcels'
+            / 'Parcels'
+            / 'Gis'
+            / 'pdata'
+            / 'ParcelsCity'
+        )
+        preferred_dir.mkdir(parents=True, exist_ok=True)
+        preferred_shp = preferred_dir / 'ParcelsCity.shp'
+        preferred_shp.write_text('stub')
+
+        source = DataSource(
+            name='GIS Parcels',
+            url_template='https://example.com/GIS/Parcels.zip',
+            filename='Parcels.zip',
+            source_type=DataSourceType.GIS_DATA,
+        )
+
+        orchestrator = ETLOrchestrator(self.config)
+        result = orchestrator._process_gis_source(source)
+
+        mock_load_gis.assert_called_once_with(str(preferred_shp))
+        assert result == {'loaded': 123, 'failed': 0}
+
+    def test_transform_load_prefers_extra_feature_detail_files_and_appends(self):
+        """When detail feature files exist, skip fallback extra_features.txt."""
+        source = DataSource(
+            name='Real Building Land',
+            url_template='https://example.com/Real_building_land.zip',
+            filename='Real_building_land.zip',
+            source_type=DataSourceType.PROPERTY_DATA,
+        )
+
+        extract_path = self.config.extract_dir / 'Real_building_land'
+        extract_path.mkdir(parents=True, exist_ok=True)
+        (extract_path / 'building_res.txt').write_text('acct\tbld_num\n')
+        (extract_path / 'extra_features.txt').write_text('acct\tbld_num\n')
+        (extract_path / 'extra_features_detail1.txt').write_text('acct\tbld_num\n')
+        (extract_path / 'extra_features_detail2.txt').write_text('acct\tbld_num\n')
+
+        orchestrator = ETLOrchestrator(self.config)
+
+        with patch.object(orchestrator, '_preload_fixtures') as mocked_preload:
+            with patch.object(orchestrator, '_process_data_file', return_value={'loaded': 1, 'failed': 0}) as mocked_process:
+                result = orchestrator._execute_transform_load([source])
+
+        mocked_preload.assert_called_once_with([source])
+        called_files = [call.args[0].stem for call in mocked_process.call_args_list]
+        assert called_files == [
+            'building_res',
+            'extra_features_detail1',
+            'extra_features_detail2',
+        ]
+
+        truncate_flags = [call.kwargs.get('truncate') for call in mocked_process.call_args_list]
+        assert truncate_flags == [True, True, False]
+        assert result.success is True
+        assert result.metrics['records_loaded'] == 3
+        assert result.metrics['records_failed'] == 0
+
+    def test_resolve_schema_name_maps_extra_feature_detail_files(self):
+        assert ETLOrchestrator._resolve_schema_name('extra_features_detail1') == 'extra_features'
+        assert ETLOrchestrator._resolve_schema_name('extra_features_detail2') == 'extra_features'
+
 
 class TestEndToEndPipeline(TestCase):
     """End-to-end pipeline tests with mock network."""
@@ -385,3 +463,110 @@ class TestEndToEndPipeline(TestCase):
         
         assert len(records) == 2
         assert records[0]['account_number'] == '1234567890123'
+
+
+class TestModelLoaderIntegration(TestCase):
+    """Integration tests for model loading behavior."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.config = ETLConfig(
+            download_dir=Path(self.tmpdir) / 'downloads',
+            extract_dir=Path(self.tmpdir) / 'extracted',
+            log_dir=Path(self.tmpdir) / 'logs',
+        )
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_load_property_records_skips_non_residential_rows(self):
+        loader = ModelLoader(self.config, batch_size=10)
+        records = iter(
+            [
+                {
+                    'account_number': 'RES001',
+                    'state_class': 'A1',
+                    'street_number': '100',
+                    'street_name': 'MAIN',
+                    'street_suffix': 'ST',
+                    'site_addr_1': '100 MAIN ST',
+                    'city': 'HOUSTON',
+                    'zipcode': '77001',
+                    'owner_name': 'OWNER A',
+                    'value': 250000,
+                    'assessed_value': 240000,
+                    'building_area': 2000,
+                    'land_area': 5000,
+                },
+                {
+                    'account_number': 'NONRES001',
+                    'state_class': 'F1',
+                    'street_number': '200',
+                    'street_name': 'COMMERCE',
+                    'street_suffix': 'ST',
+                    'site_addr_1': '200 COMMERCE ST',
+                    'city': 'HOUSTON',
+                    'zipcode': '77002',
+                    'owner_name': 'OWNER B',
+                    'value': 750000,
+                },
+            ]
+        )
+
+        result = loader.load_property_records(records, truncate=True, batch_id='test_batch')
+
+        assert result.records_loaded == 1
+        assert result.records_skipped == 1
+        assert PropertyRecord.objects.count() == 1
+
+        prop = PropertyRecord.objects.get(account_number='RES001')
+        assert prop.is_residential is True
+        assert prop.state_class == 'A1'
+
+    def test_load_building_details_uses_residential_account_map(self):
+        loader = ModelLoader(self.config, batch_size=10)
+
+        residential = PropertyRecord.objects.create(
+            account_number='RESB001',
+            address='100 MAIN ST',
+            city='HOUSTON',
+            zipcode='77001',
+            state_class='A1',
+            is_residential=True,
+        )
+        PropertyRecord.objects.create(
+            account_number='NONRESB001',
+            address='200 COMMERCE ST',
+            city='HOUSTON',
+            zipcode='77002',
+            state_class='F1',
+            is_residential=False,
+        )
+
+        records = iter(
+            [
+                {
+                    'account_number': 'RESB001',
+                    'building_number': 1,
+                    'building_type': 'A1',
+                    'quality_code': 'C',
+                    'condition_code': 'AV',
+                },
+                {
+                    'account_number': 'NONRESB001',
+                    'building_number': 1,
+                    'building_type': 'A1',
+                    'quality_code': 'C',
+                    'condition_code': 'AV',
+                },
+            ]
+        )
+
+        result = loader.load_building_details(records, truncate=True, batch_id='building_test')
+
+        assert result.records_loaded == 1
+        assert result.records_invalid == 1
+        assert BuildingDetail.objects.count() == 1
+
+        building = BuildingDetail.objects.get(account_number='RESB001')
+        assert building.property_id == residential.id

@@ -1,0 +1,8 @@
+label=modern_gis_stage
+container=bench_modern_gis
+start_iso=2026-05-02T15:36:40-05:00
+end_iso=2026-05-02T15:59:26-05:00
+start_epoch=1777754200
+end_epoch=1777755566
+elapsed_seconds=1366
+exit_code=0

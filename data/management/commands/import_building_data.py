@@ -28,6 +28,11 @@ class Command(BaseCommand):
             action='store_true',
             help='Also import GIS coordinate data after building import',
         )
+        parser.add_argument(
+            '--no-refresh-readiness',
+            action='store_true',
+            help='Skip readiness recomputation during building/GIS stages',
+        )
 
     def handle(self, *args, **options):
         if options['async']:
@@ -40,6 +45,7 @@ class Command(BaseCommand):
         else:
             # Run synchronously (direct call, no Celery)
             self.stdout.write(self.style.SUCCESS('Starting building data import (synchronous)...'))
+            no_refresh_readiness = options.get('no_refresh_readiness', False)
             
             # Import the actual function logic without the decorator
             import os
@@ -217,7 +223,11 @@ class Command(BaseCommand):
             if os.path.exists(fixtures_file):
                 self.stdout.write(f'Loading bedroom/bathroom counts from {fixtures_file}...')
                 try:
-                    fixtures_results = load_fixtures_room_counts(fixtures_file, chunk_size=5000)
+                    fixtures_results = load_fixtures_room_counts(
+                        fixtures_file,
+                        chunk_size=5000,
+                        refresh_readiness=not no_refresh_readiness,
+                    )
                     results['rooms_updated'] = fixtures_results['buildings_updated']
                     self.stdout.write(self.style.SUCCESS(f'Updated {fixtures_results["buildings_updated"]} buildings with room counts'))
                 except Exception as e:
@@ -246,9 +256,16 @@ class Command(BaseCommand):
                 from django.core.management import call_command
                 try:
                     if options.get('skip_download'):
-                        call_command('load_gis_data', '--skip-download')
+                        call_command(
+                            'load_gis_data',
+                            '--skip-download',
+                            no_refresh_readiness=no_refresh_readiness,
+                        )
                     else:
-                        call_command('load_gis_data')
+                        call_command(
+                            'load_gis_data',
+                            no_refresh_readiness=no_refresh_readiness,
+                        )
                     self.stdout.write(self.style.SUCCESS('✓ GIS data import completed'))
                 except Exception as e:
                     self.stdout.write(self.style.ERROR(f'✗ GIS import failed: {e}'))

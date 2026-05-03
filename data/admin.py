@@ -127,7 +127,7 @@ class DownloadRecordAdmin(admin.ModelAdmin):
                     f"Queued ETL pipeline task {task.id} "
                     f"(skip_download={skip_download}, skip_extract={skip_extract}, skip_load={skip_load}).",
                 )
-                return HttpResponseRedirect(pipeline_url)
+                return HttpResponseRedirect(changelist_url)
         else:
             form = ETLPipelineAdminForm(initial={"data_year": timezone.now().year})
 

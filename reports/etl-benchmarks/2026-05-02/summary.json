@@ -1,0 +1,118 @@
+{
+  "run_date": "2026-05-02",
+  "sampling_interval_seconds": 5,
+  "rows": [
+    {
+      "stage": "legacy_property",
+      "flow": "legacy",
+      "stage_group": "property",
+      "elapsed_seconds": 186,
+      "exit_code": 0,
+      "start_iso": "2026-05-02T14:36:03-05:00",
+      "end_iso": "2026-05-02T14:39:09-05:00",
+      "samples": 31,
+      "cpu_avg": 64.07935483870968,
+      "cpu_peak": 232.39,
+      "mem_avg_mib": 174.33483870967743,
+      "mem_peak_mib": 223.9,
+      "results": {
+        "property_imported_progress_max": 1260000,
+        "property_loaded": 1263641
+      }
+    },
+    {
+      "stage": "modern_property_stage",
+      "flow": "modern",
+      "stage_group": "property+building+feature",
+      "elapsed_seconds": 717,
+      "exit_code": 0,
+      "start_iso": "2026-05-02T15:24:42-05:00",
+      "end_iso": "2026-05-02T15:36:39-05:00",
+      "samples": 119,
+      "cpu_avg": 78.21025210084034,
+      "cpu_peak": 226.04,
+      "mem_avg_mib": 877.6064537815126,
+      "mem_peak_mib": 1084.416,
+      "results": {
+        "property_loaded": 1263641,
+        "building_loaded": 1275023,
+        "extra_loaded": 938295,
+        "records_failed": 651509
+      }
+    },
+    {
+      "stage": "legacy_building",
+      "flow": "legacy",
+      "stage_group": "building+feature",
+      "elapsed_seconds": 1453,
+      "exit_code": 0,
+      "start_iso": "2026-05-02T14:39:11-05:00",
+      "end_iso": "2026-05-02T15:03:24-05:00",
+      "samples": 241,
+      "cpu_avg": 48.546556016597506,
+      "cpu_peak": 225.99,
+      "mem_avg_mib": 1732.8509211618257,
+      "mem_peak_mib": 2159.616,
+      "results": {
+        "building_loaded": 1275023,
+        "extra_loaded": 930678,
+        "extra_loaded_from_files_sum": 997977
+      }
+    },
+    {
+      "stage": "legacy_gis",
+      "flow": "legacy",
+      "stage_group": "gis",
+      "elapsed_seconds": 1272,
+      "exit_code": 0,
+      "start_iso": "2026-05-02T15:03:29-05:00",
+      "end_iso": "2026-05-02T15:24:41-05:00",
+      "samples": 211,
+      "cpu_avg": 40.04232227488152,
+      "cpu_peak": 234.89,
+      "mem_avg_mib": 3626.0714881516587,
+      "mem_peak_mib": 3701.76,
+      "results": {
+        "gis_updated": 1261051
+      }
+    },
+    {
+      "stage": "modern_gis_stage",
+      "flow": "modern",
+      "stage_group": "gis",
+      "elapsed_seconds": 1366,
+      "exit_code": 0,
+      "start_iso": "2026-05-02T15:36:40-05:00",
+      "end_iso": "2026-05-02T15:59:26-05:00",
+      "samples": 227,
+      "cpu_avg": 38.59881057268723,
+      "cpu_peak": 226.3,
+      "mem_avg_mib": 3633.4482026431724,
+      "mem_peak_mib": 3697.664,
+      "results": {
+        "gis_updated": 1261051,
+        "readiness_ready": 1241469,
+        "readiness_total": 1263641
+      }
+    }
+  ],
+  "totals": {
+    "legacy_elapsed_seconds": 2911,
+    "modern_elapsed_seconds": 2083,
+    "delta_seconds_modern_minus_legacy": -828,
+    "percent_slower_modern_vs_legacy": -28.44383373411199
+  },
+  "in_stage_breakdown_seconds": {
+    "legacy": {
+      "building_seconds": 164.81,
+      "extra_detail1_seconds": 98.126,
+      "extra_detail2_seconds": 8.269,
+      "extra_total_seconds": 106.395
+    },
+    "modern": {
+      "property_seconds": 331.817,
+      "building_seconds": 268.636,
+      "extra_seconds": 112.789
+    }
+  }
+}

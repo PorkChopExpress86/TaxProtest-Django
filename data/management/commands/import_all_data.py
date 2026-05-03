@@ -7,6 +7,7 @@ Usage:
 from django.core.management import call_command
 from django.core.management.base import BaseCommand, CommandError
 
+from data.etl import refresh_property_readiness
 from data.tasks_new import download_and_extract_hcad
 
 
@@ -67,7 +68,10 @@ class Command(BaseCommand):
             self.stdout.write(self.style.SUCCESS('\n[1/3] Importing property records...'))
             self.stdout.write('-' * 70)
             try:
-                self.run_stage_command('load_hcad_real_acct')
+                self.run_stage_command(
+                    'load_hcad_real_acct',
+                    no_refresh_readiness=True,
+                )
                 self.stdout.write(self.style.SUCCESS('✓ Property records imported successfully\n'))
             except Exception as e:
                 raise CommandError(f'Property import failed: {e}') from e
@@ -78,7 +82,11 @@ class Command(BaseCommand):
             self.stdout.write(self.style.SUCCESS('[2/3] Importing building data...'))
             self.stdout.write('-' * 70)
             try:
-                self.run_stage_command('import_building_data', skip_download=True)
+                self.run_stage_command(
+                    'import_building_data',
+                    skip_download=True,
+                    no_refresh_readiness=True,
+                )
                 self.stdout.write(self.style.SUCCESS('✓ Building data imported successfully\n'))
             except Exception as e:
                 raise CommandError(f'Building import failed: {e}') from e
@@ -89,12 +97,20 @@ class Command(BaseCommand):
             self.stdout.write(self.style.SUCCESS('[3/3] Importing GIS coordinates...'))
             self.stdout.write('-' * 70)
             try:
-                self.run_stage_command('load_gis_data', skip_download=True)
+                self.run_stage_command(
+                    'load_gis_data',
+                    skip_download=True,
+                    no_refresh_readiness=True,
+                )
                 self.stdout.write(self.style.SUCCESS('✓ GIS data imported successfully\n'))
             except Exception as e:
                 raise CommandError(f'GIS import failed: {e}') from e
         else:
             self.stdout.write(self.style.WARNING('[3/3] Skipping GIS data import\n'))
+
+        self.stdout.write(self.style.SUCCESS('[readiness] Recomputing property readiness once...'))
+        self.stdout.write('-' * 70)
+        refresh_property_readiness()
 
         self.stdout.write(self.style.SUCCESS('[validation] Verifying residential-ready completeness...'))
         self.stdout.write('-' * 70)
