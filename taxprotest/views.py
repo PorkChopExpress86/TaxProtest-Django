@@ -2,18 +2,89 @@
 
 import csv
 import statistics
+from collections import defaultdict
 
 import redis
 from django.conf import settings
 from django.core.paginator import Paginator
 from django.db import connection
-from django.http import Http404, HttpResponse, JsonResponse
+from django.http import Http404, HttpResponse, HttpResponseBadRequest, JsonResponse
 from django.shortcuts import render
 from django.utils.http import urlencode
 
-from data.models import PropertyRecord
+from data.models import BuildingDetail, ExtraFeature, PropertyRecord
 from data.similarity import find_similar_properties, format_feature_list, get_similarity_label
 from data.query import build_property_search_queryset
+
+
+EXPORT_CSV_MAX_ROWS = 1000
+EXPORT_MIN_TEXT_FILTER_LENGTH = 3
+CSV_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+SIMILAR_DEFAULT_MAX_DISTANCE = 10.0
+SIMILAR_MIN_MAX_DISTANCE = 0.1
+SIMILAR_MAX_MAX_DISTANCE = 50.0
+SIMILAR_DEFAULT_MAX_RESULTS = 20
+SIMILAR_MIN_MAX_RESULTS = 1
+SIMILAR_MAX_MAX_RESULTS = 100
+SIMILAR_DEFAULT_MIN_SCORE = 30.0
+SIMILAR_MIN_MIN_SCORE = 0.0
+SIMILAR_MAX_MIN_SCORE = 100.0
+
+
+def _has_meaningful_export_filter(params):
+    zip_code = params.get("zip_code", "").strip()
+    if len(zip_code) == 5 and zip_code.isdigit():
+        return True
+
+    for field in ("first_name", "last_name", "address", "street_name"):
+        value = params.get(field, "")
+        if len("".join(str(value).split())) >= EXPORT_MIN_TEXT_FILTER_LENGTH:
+            return True
+
+    return False
+
+
+def _csv_safe_text(value):
+    text = str(value or "")
+    if text.startswith(CSV_FORMULA_PREFIXES):
+        return f"'{text}"
+    return text
+
+
+def _clamped_float_param(value, default, lower, upper):
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return max(lower, min(upper, parsed))
+
+
+def _clamped_int_param(value, default, lower, upper):
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(lower, min(upper, parsed))
+
+
+def _active_related_maps(properties):
+    account_numbers = [prop.account_number for prop in properties]
+
+    buildings_by_account = {}
+    for building in BuildingDetail.objects.filter(
+        account_number__in=account_numbers,
+        is_active=True,
+    ).order_by("id"):
+        buildings_by_account.setdefault(building.account_number, building)
+
+    features_by_account = defaultdict(list)
+    for feature in ExtraFeature.objects.filter(
+        account_number__in=account_numbers,
+        is_active=True,
+    ).order_by("feature_description", "feature_code", "id"):
+        features_by_account[feature.account_number].append(feature)
+
+    return buildings_by_account, features_by_account
 
 
 def index(request):
@@ -48,9 +119,11 @@ def index(request):
 
         paginator = Paginator(qs, 200)
         page_obj = paginator.get_page(page_number)
+        properties = list(page_obj.object_list)
+        buildings_by_account, features_by_account = _active_related_maps(properties)
 
         formatted = []
-        for prop in page_obj.object_list:
+        for prop in properties:
             assessed = prop.assessed_value or prop.value
             bldg_area = prop.building_area or 0
             ppsf = None
@@ -61,13 +134,13 @@ def index(request):
                     ppsf = None
 
             # Get building details (bedrooms, bathrooms, quality)
-            building = prop.buildings.filter(is_active=True).first()
+            building = buildings_by_account.get(prop.account_number)
             bedrooms = building.bedrooms if building else None
             bathrooms = building.bathrooms if building else None
             quality_code = building.quality_code if building else None
 
             # Get extra features (pool, garage, etc.)
-            features = list(prop.extra_features.filter(is_active=True))
+            features = features_by_account.get(prop.account_number, [])
             features_text = (
                 format_feature_list(features, max_features=5) if features else None
             )
@@ -125,16 +198,6 @@ def export_csv(request):
     sort = request.GET.get("sort", "zipcode")
     direction = request.GET.get("dir", "asc")
 
-    filters_applied = any([first_name, last_name, address, street_name, zip_code])
-
-    if not filters_applied:
-        # Return empty CSV if no filters
-        response = HttpResponse(content_type="text/csv")
-        response["Content-Disposition"] = 'attachment; filename="property_search.csv"'
-        writer = csv.writer(response)
-        writer.writerow(["No search criteria provided"])
-        return response
-
     params = {
         "first_name": first_name,
         "last_name": last_name,
@@ -145,7 +208,15 @@ def export_csv(request):
         "dir": direction,
     }
 
+    if not _has_meaningful_export_filter(params):
+        return HttpResponseBadRequest(
+            "Export requires meaningful search criteria: a 5-digit ZIP code or at least "
+            f"{EXPORT_MIN_TEXT_FILTER_LENGTH} non-space characters in a text filter."
+        )
+
     qs = build_property_search_queryset(params)
+    properties = list(qs[:EXPORT_CSV_MAX_ROWS])
+    buildings_by_account, features_by_account = _active_related_maps(properties)
 
     # Create CSV response
     response = HttpResponse(content_type="text/csv")
@@ -169,7 +240,7 @@ def export_csv(request):
         ]
     )
 
-    for prop in qs:
+    for prop in properties:
         assessed = prop.assessed_value or prop.value
         bldg_area = prop.building_area or 0
         ppsf = None
@@ -180,7 +251,7 @@ def export_csv(request):
                 ppsf = None
 
         # Get building details
-        building = prop.buildings.filter(is_active=True).first()
+        building = buildings_by_account.get(prop.account_number)
         bedrooms = building.bedrooms if building else ""
         bathrooms = (
             f"{float(building.bathrooms):.1f}"
@@ -190,24 +261,24 @@ def export_csv(request):
         quality_code = building.quality_code if building else ""
 
         # Get extra features
-        features = list(prop.extra_features.filter(is_active=True))
+        features = features_by_account.get(prop.account_number, [])
         features_text = (
             format_feature_list(features, max_features=10) if features else ""
         )
 
         writer.writerow(
             [
-                prop.account_number,
-                prop.owner_name,
-                prop.street_number,
-                prop.street_name,
-                prop.zipcode,
+                _csv_safe_text(prop.account_number),
+                _csv_safe_text(prop.owner_name),
+                _csv_safe_text(prop.street_number),
+                _csv_safe_text(prop.street_name),
+                _csv_safe_text(prop.zipcode),
                 assessed if assessed else "",
                 bldg_area if bldg_area else "",
                 bedrooms,
                 bathrooms,
-                quality_code,
-                features_text,
+                _csv_safe_text(quality_code),
+                _csv_safe_text(features_text),
                 f"{ppsf:.2f}" if ppsf else "",
             ]
         )
@@ -245,10 +316,25 @@ def similar_properties(request, account_number):
             },
         )
 
-    # Get search parameters
-    max_distance = float(request.GET.get("max_distance", "10"))
-    max_results = int(request.GET.get("max_results", "20"))
-    min_score = float(request.GET.get("min_score", "30"))
+    # Get bounded search parameters
+    max_distance = _clamped_float_param(
+        request.GET.get("max_distance"),
+        SIMILAR_DEFAULT_MAX_DISTANCE,
+        SIMILAR_MIN_MAX_DISTANCE,
+        SIMILAR_MAX_MAX_DISTANCE,
+    )
+    max_results = _clamped_int_param(
+        request.GET.get("max_results"),
+        SIMILAR_DEFAULT_MAX_RESULTS,
+        SIMILAR_MIN_MAX_RESULTS,
+        SIMILAR_MAX_MAX_RESULTS,
+    )
+    min_score = _clamped_float_param(
+        request.GET.get("min_score"),
+        SIMILAR_DEFAULT_MIN_SCORE,
+        SIMILAR_MIN_MIN_SCORE,
+        SIMILAR_MAX_MIN_SCORE,
+    )
 
     # Find similar properties
     similar = find_similar_properties(

@@ -416,10 +416,32 @@ class ETLOrchestrator:
                 if not extract_path.exists():
                     self.logger.warning(f"Extract path not found: {extract_path}")
                     continue
-                
-                # Process each data file
-                for file_path in extract_path.rglob('*.txt'):
-                    result = self._process_data_file(file_path, skip_load)
+
+                # Process each data file in deterministic order.
+                # Track per-schema truncate behavior so multi-file schemas like
+                # extra_features_detail*.txt append after first load.
+                schema_loaded: Dict[str, bool] = {}
+                data_files = sorted(extract_path.rglob('*.txt'))
+
+                # Prefer detailed extra feature files when present (legacy parity).
+                if source.name == "Real Building Land":
+                    has_extra_feature_details = any(
+                        path.stem.lower().startswith('extra_features_detail')
+                        for path in data_files
+                    )
+                    if has_extra_feature_details:
+                        data_files = [
+                            path for path in data_files
+                            if path.stem.lower() != 'extra_features'
+                        ]
+
+                for file_path in data_files:
+                    schema_name = self._resolve_schema_name(file_path.stem)
+                    if schema_name is None:
+                        continue
+                    truncate = not schema_loaded.get(schema_name, False)
+                    result = self._process_data_file(file_path, skip_load, truncate=truncate)
+                    schema_loaded[schema_name] = True
                     total_loaded += result.get('loaded', 0)
                     total_failed += result.get('failed', 0)
             
@@ -458,20 +480,7 @@ class ETLOrchestrator:
         """
         # Determine schema based on filename
         filename = file_path.stem.lower()
-        schema_name = None
-        
-        # Skip code description files (lookup tables, not actual data)
-        if filename.startswith('desc_'):
-            self.logger.debug(f"Skipping code description file: {file_path.name}")
-            return {'loaded': 0, 'failed': 0}
-        
-        # Match exact filenames for data files
-        if filename == 'real_acct':
-            schema_name = 'real_acct'
-        elif filename == 'building_res':
-            schema_name = 'building_res'
-        elif filename == 'extra_features':
-            schema_name = 'extra_features'
+        schema_name = self._resolve_schema_name(filename)
         
         if not schema_name:
             self.logger.debug(f"No schema for {file_path.name}, skipping")
@@ -511,6 +520,23 @@ class ETLOrchestrator:
             'loaded': result.records_loaded,
             'failed': result.records_invalid + result.records_skipped,
         }
+
+    @staticmethod
+    def _resolve_schema_name(filename_stem: str) -> Optional[str]:
+        """Map a source filename stem to a transform schema name."""
+        filename = filename_stem.lower()
+
+        # Skip code description files (lookup tables, not actual data)
+        if filename.startswith('desc_'):
+            return None
+
+        if filename == 'real_acct':
+            return 'real_acct'
+        if filename == 'building_res':
+            return 'building_res'
+        if filename == 'extra_features' or filename.startswith('extra_features_detail'):
+            return 'extra_features'
+        return None
     
     def _process_gis_source(self, source: DataSource) -> Dict[str, int]:
         """Process GIS data source.
@@ -525,30 +551,28 @@ class ETLOrchestrator:
             Dictionary with 'loaded' and 'failed' counts
         """
         self.logger.info(f"Processing GIS source: {source.name}")
-        
+
         # Get the extract path for GIS data
         extract_path = self.extract_manager.get_extract_path(source)
         if not extract_path.exists():
             self.logger.warning(f"GIS extract path not found: {extract_path}")
             return {'loaded': 0, 'failed': 0}
-        
-        # Find shapefile(s) in extracted directory
-        shapefiles = list(extract_path.rglob('*.shp'))
-        if not shapefiles:
-            self.logger.warning(f"No shapefiles found in {extract_path}")
-            return {'loaded': 0, 'failed': 0}
-        
-        # Prefer ParcelsCity.shp if available (primary parcel data)
-        shapefile_path = None
-        for shp in shapefiles:
-            if 'ParcelsCity' in shp.name:
-                shapefile_path = shp
-                break
-        
-        # Fall back to first shapefile found
+
+        # Legacy extracts often live under downloads/<archive_name>. Include that
+        # location as a fallback so modern and legacy commands pick equivalent data.
+        archive_base = Path(source.filename).name.rsplit('.', 1)[0]
+        legacy_extract_path = self.config.download_dir / archive_base
+
+        candidate_roots = [extract_path]
+        if legacy_extract_path.exists() and legacy_extract_path != extract_path:
+            candidate_roots.append(legacy_extract_path)
+
+        shapefile_path = self._select_preferred_gis_shapefile(candidate_roots)
         if shapefile_path is None:
-            shapefile_path = shapefiles[0]
-        
+            searched = ", ".join(str(root) for root in candidate_roots)
+            self.logger.warning(f"No shapefiles found in candidate roots: {searched}")
+            return {'loaded': 0, 'failed': 0}
+
         self.logger.info(f"Loading GIS data from: {shapefile_path}")
         
         try:
@@ -565,6 +589,43 @@ class ETLOrchestrator:
         except Exception as e:
             self.logger.exception(f"Error processing GIS data: {e}")
             return {'loaded': 0, 'failed': 1}
+
+    @staticmethod
+    def _select_preferred_gis_shapefile(search_roots: List[Path]) -> Optional[Path]:
+        """Select the best shapefile candidate from one or more roots.
+
+        Preference order matches the legacy GIS loader behavior:
+        1) Exact `ParcelsCity.shp`
+        2) Any shapefile containing `ParcelsCity`
+        3) Paths under `/Gis/pdata/`
+        4) Shorter path depth as stable tie-breaker
+        """
+        shapefiles: List[Path] = []
+        seen: set[str] = set()
+
+        for root in search_roots:
+            if not root.exists():
+                continue
+            for path in root.rglob('*.shp'):
+                normalized = str(path).replace('\\', '/')
+                if normalized in seen:
+                    continue
+                seen.add(normalized)
+                shapefiles.append(path)
+
+        if not shapefiles:
+            return None
+
+        def priority(path: Path) -> tuple[int, int, int]:
+            normalized = str(path).replace('\\', '/').lower()
+            name = path.name.lower()
+            return (
+                2 if name == 'parcelscity.shp' else 1 if 'parcelscity' in name else 0,
+                1 if '/gis/pdata/' in normalized else 0,
+                -len(path.parts),
+            )
+
+        return max(shapefiles, key=priority)
     
     def execute_download_only(
         self,

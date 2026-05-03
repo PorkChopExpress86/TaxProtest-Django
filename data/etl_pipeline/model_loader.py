@@ -80,7 +80,7 @@ class ModelLoader:
         if self._valid_accounts is None:
             from data.models import PropertyRecord
             self._valid_accounts = set(
-                PropertyRecord.objects.values_list("account_number", flat=True)
+                PropertyRecord.objects.filter(is_residential=True).values_list("account_number", flat=True)
             )
             self.logger.info(f"Loaded {len(self._valid_accounts)} valid account numbers")
         return self._valid_accounts
@@ -90,7 +90,7 @@ class ModelLoader:
         if self._account_to_property is None:
             from data.models import PropertyRecord
             self._account_to_property = dict(
-                PropertyRecord.objects.values_list("account_number", "id")
+                PropertyRecord.objects.filter(is_residential=True).values_list("account_number", "id")
             )
             self.logger.info(f"Loaded {len(self._account_to_property)} account->property mappings")
         return self._account_to_property
@@ -353,6 +353,10 @@ class ModelLoader:
                         continue
 
                     state_class = normalize_state_class(record.get('state_class'))[:10]
+                    is_residential = is_residential_state_class(state_class)
+                    if not is_residential:
+                        result.records_skipped += 1
+                        continue
                     
                     # Build address from components
                     street_num = str(record.get('street_number', '')).strip()
@@ -374,7 +378,7 @@ class ModelLoader:
                         building_area=self._safe_decimal(record.get('building_area')),
                         land_area=self._safe_decimal(record.get('land_area')),
                         state_class=state_class,
-                        is_residential=is_residential_state_class(state_class),
+                        is_residential=is_residential,
                         is_data_ready=False,
                         street_number=street_num[:16],
                         street_name=street_name[:128],

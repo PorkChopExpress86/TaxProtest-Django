@@ -1,0 +1,8 @@
+label=modern_property_stage
+container=bench_modern_property
+start_iso=2026-05-02T15:24:42-05:00
+end_iso=2026-05-02T15:36:39-05:00
+start_epoch=1777753482
+end_epoch=1777754199
+elapsed_seconds=717
+exit_code=0

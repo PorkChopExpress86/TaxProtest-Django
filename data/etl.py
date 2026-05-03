@@ -1,6 +1,8 @@
 import csv
-import os
 import logging
+import math
+from collections import defaultdict
+from decimal import Decimal
 from typing import Iterable, Dict, Optional, List
 
 from django.db import transaction, connection
@@ -67,6 +69,30 @@ def parse_currency(value: Optional[str]) -> Optional[float]:
         return float(v)
     except Exception:
         return None
+
+
+def load_account_property_map(
+    *,
+    account_numbers: Optional[set[str]] = None,
+    residential_only: bool = True,
+) -> dict[str, int]:
+    """Load account_number -> PropertyRecord.id mapping.
+
+    If account_numbers is provided, limit the mapping query to that account set.
+    """
+    query = PropertyRecord.objects.all()
+    if residential_only:
+        query = query.filter(is_residential=True)
+    if account_numbers is not None:
+        query = query.filter(account_number__in=account_numbers)
+    return dict(query.values_list("account_number", "id"))
+
+
+def _is_nan(value: object) -> bool:
+    try:
+        return math.isnan(value)  # type: ignore[arg-type]
+    except TypeError:
+        return False
 
 
 def iter_property_rows(reader: csv.DictReader) -> Iterable[Dict]:
@@ -146,7 +172,11 @@ def iter_property_rows(reader: csv.DictReader) -> Iterable[Dict]:
 
 
 def bulk_load_properties(
-    filepath: str, chunk_size: int = 5000, limit: Optional[int] = None, truncate: bool = True
+    filepath: str,
+    chunk_size: int = 5000,
+    limit: Optional[int] = None,
+    truncate: bool = True,
+    refresh_readiness: bool = True,
 ) -> int:
     """Load a Real Account file into PropertyRecord table.
 
@@ -233,7 +263,8 @@ def bulk_load_properties(
     if skipped_non_residential > 0:
         logger.info(f"Skipped {skipped_non_residential} non-residential property records.")
 
-    refresh_property_readiness()
+    if refresh_readiness:
+        refresh_property_readiness()
         
     return total
 
@@ -277,7 +308,11 @@ def refresh_property_readiness() -> dict:
     return results
 
 
-def load_gis_parcels(shapefile_path: str, chunk_size: int = 5000) -> int:
+def load_gis_parcels(
+    shapefile_path: str,
+    chunk_size: int = 5000,
+    refresh_readiness: bool = True,
+) -> int:
     """Load GIS parcel data from shapefile and update PropertyRecord with lat/long.
 
     Expected shapefile columns:
@@ -325,55 +360,69 @@ def load_gis_parcels(shapefile_path: str, chunk_size: int = 5000) -> int:
             parcel_col = col
             break
 
+    updates_by_account: dict[str, tuple[float, float, str]] = {}
     total_updated = 0
-    batch = []
 
     logger.info(f"Processing %s parcel records from %s", len(gdf), shapefile_path)
 
+    for row in gdf.itertuples(index=False):
+        account_num = str(getattr(row, account_col)).strip() if account_col else ""
+        if not account_num:
+            continue
+
+        lat = getattr(row, "latitude", None)
+        lon = getattr(row, "longitude", None)
+        if lat is None or lon is None or _is_nan(lat) or _is_nan(lon):
+            continue
+
+        parcel_raw = getattr(row, parcel_col) if parcel_col else ""
+        parcel_id = str(parcel_raw).strip() if parcel_raw is not None else ""
+        updates_by_account[account_num] = (lat, lon, parcel_id)
+
+    if not updates_by_account:
+        logger.info("No valid GIS rows found in %s", shapefile_path)
+        return 0
+
+    batch: list[PropertyRecord] = []
+    properties = PropertyRecord.objects.filter(
+        account_number__in=updates_by_account.keys(),
+        is_residential=True,
+    ).only("id", "account_number", "latitude", "longitude", "parcel_id")
+
     with transaction.atomic():
-        for idx, row in gdf.iterrows():
-            account_num = str(row[account_col]).strip() if account_col else None
-            parcel_id = str(row[parcel_col]).strip() if parcel_col else None
-            lat = row["latitude"]
-            lon = row["longitude"]
-
-            # Skip if account number is missing or coordinates are invalid
-            if not account_num:
+        for prop in properties.iterator(chunk_size=chunk_size):
+            update = updates_by_account.get(prop.account_number)
+            if not update:
                 continue
+            lat, lon, parcel_id = update
 
-            # Check for NaN or invalid coordinates
-            import math
+            prop.latitude = lat
+            prop.longitude = lon
+            if parcel_id:
+                prop.parcel_id = parcel_id
+            batch.append(prop)
 
-            if lat is None or lon is None or math.isnan(lat) or math.isnan(lon):
-                continue
+            if len(batch) >= chunk_size:
+                PropertyRecord.objects.bulk_update(
+                    batch,
+                    ["latitude", "longitude", "parcel_id"],
+                    batch_size=chunk_size,
+                )
+                total_updated += len(batch)
+                logger.info("Updated %s properties with GIS data...", total_updated)
+                batch.clear()
 
-            # Find matching property records by account number
-            props = PropertyRecord.objects.filter(account_number=account_num)
-
-            for prop in props:
-                prop.latitude = lat
-                prop.longitude = lon
-                if parcel_id:
-                    prop.parcel_id = parcel_id
-                batch.append(prop)
-
-                if len(batch) >= chunk_size:
-                    PropertyRecord.objects.bulk_update(
-                        batch, ["latitude", "longitude", "parcel_id"]
-                    )
-                    total_updated += len(batch)
-                    logger.info("Updated %s properties with GIS data...", total_updated)
-                    batch.clear()
-
-        # Update remaining batch
         if batch:
             PropertyRecord.objects.bulk_update(
-                batch, ["latitude", "longitude", "parcel_id"]
+                batch,
+                ["latitude", "longitude", "parcel_id"],
+                batch_size=chunk_size,
             )
             total_updated += len(batch)
 
     logger.info("Completed: Updated %s properties with GIS coordinates", total_updated)
-    refresh_property_readiness()
+    if refresh_readiness:
+        refresh_property_readiness()
     return total_updated
 
 
@@ -400,7 +449,7 @@ def load_building_details(
             'skipped': int,       # Records skipped (no account)
         }
     """
-    from .models import BuildingDetail, PropertyRecord
+    from .models import BuildingDetail
     from django.utils import timezone
 
     reader = open_reader(filepath)
@@ -417,11 +466,13 @@ def load_building_details(
 
     import_date = timezone.now()
 
-    # Cache valid account numbers for validation
-    valid_accounts = set(
-        PropertyRecord.objects.values_list("account_number", flat=True)
+    # Cache property mapping for validation and FK assignment
+    account_to_property = load_account_property_map()
+    valid_accounts = set(account_to_property.keys())
+    logger.info(
+        "Loaded %s valid account numbers for validation",
+        len(valid_accounts),
     )
-    logger.info("Loaded %s valid account numbers for validation", len(valid_accounts))
 
     logger.info("Loading building details from %s", filepath)
     logger.info("Import batch ID: %s", import_batch_id)
@@ -444,11 +495,8 @@ def load_building_details(
                 results["invalid"] += 1
                 continue
 
-            # Try to find the associated property
-            try:
-                prop = PropertyRecord.objects.filter(account_number=acct).first()
-            except Exception:
-                prop = None
+            property_id = account_to_property.get(acct)
+            if property_id is None:
                 results["invalid"] += 1
                 continue
 
@@ -474,7 +522,7 @@ def load_building_details(
                 return (row.get(field) or "").strip()[:maxlen]
 
             building = BuildingDetail(
-                property=prop,
+                property_id=property_id,
                 account_number=acct,
                 building_number=get_int("bld_num"),
                 building_type=get_str("imprv_type"),
@@ -550,7 +598,7 @@ def load_extra_features(
     Returns:
         Dictionary with import statistics
     """
-    from .models import ExtraFeature, PropertyRecord
+    from .models import ExtraFeature
     from django.utils import timezone
 
     reader = open_reader(filepath)
@@ -567,13 +615,12 @@ def load_extra_features(
 
     import_date = timezone.now()
 
-    # Cache valid account numbers for validation
+    # Cache property mapping for validation and FK assignment
     if truncate:
          logger.info("Preparing to load extra features...")
 
-    valid_accounts = set(
-        PropertyRecord.objects.values_list("account_number", flat=True)
-    )
+    account_to_property = load_account_property_map()
+    valid_accounts = set(account_to_property.keys())
     
     logger.info("Loading extra features from %s", filepath)
 
@@ -597,17 +644,10 @@ def load_extra_features(
                 results["invalid"] += 1
                 continue
 
-            # Check prop existence
-            try:
-                prop = PropertyRecord.objects.filter(account_number=acct).first()
-            except Exception:
-                prop = None
+            property_id = account_to_property.get(acct)
+            if property_id is None:
                 results["invalid"] += 1
                 continue
-            
-            if not prop:
-                 results["invalid"] += 1
-                 continue
 
             def get_int(field):
                 val = (row.get(field) or "").strip()
@@ -632,7 +672,7 @@ def load_extra_features(
 
             # Mapping for extra_features_detail*.txt
             feature = ExtraFeature(
-                property=prop,
+                property_id=property_id,
                 account_number=acct,
                 feature_number=get_int("bld_num"), 
                 feature_code=get_str("cd", maxlen=10),
@@ -685,7 +725,7 @@ def link_orphaned_records(chunk_size: int = 5000) -> dict:
     Returns:
         Dictionary with counts of linked records and validation stats
     """
-    from .models import BuildingDetail, ExtraFeature, PropertyRecord
+    from .models import BuildingDetail, ExtraFeature
 
     results = {
         "buildings_linked": 0,
@@ -693,6 +733,7 @@ def link_orphaned_records(chunk_size: int = 5000) -> dict:
         "buildings_invalid": 0,
         "features_invalid": 0,
     }
+    account_to_property = load_account_property_map()
 
     logger.info("Linking orphaned building details...")
 
@@ -705,12 +746,9 @@ def link_orphaned_records(chunk_size: int = 5000) -> dict:
     with transaction.atomic():
         for building in orphaned_buildings.iterator(chunk_size=chunk_size):
             if building.account_number:
-                # Try to find matching property
-                prop = PropertyRecord.objects.filter(
-                    account_number=building.account_number
-                ).first()
-                if prop:
-                    building.property = prop
+                property_id = account_to_property.get(building.account_number)
+                if property_id:
+                    building.property_id = property_id
                     batch.append(building)
 
                     if len(batch) >= chunk_size:
@@ -746,12 +784,9 @@ def link_orphaned_records(chunk_size: int = 5000) -> dict:
     with transaction.atomic():
         for feature in orphaned_features.iterator(chunk_size=chunk_size):
             if feature.account_number:
-                # Try to find matching property
-                prop = PropertyRecord.objects.filter(
-                    account_number=feature.account_number
-                ).first()
-                if prop:
-                    feature.property = prop
+                property_id = account_to_property.get(feature.account_number)
+                if property_id:
+                    feature.property_id = property_id
                     batch.append(feature)
 
                     if len(batch) >= chunk_size:
@@ -822,7 +857,11 @@ def mark_old_records_inactive(exclude_batch_id: Optional[str] = None) -> dict:
     return results
 
 
-def load_fixtures_room_counts(filepath: str, chunk_size: int = 5000) -> dict:
+def load_fixtures_room_counts(
+    filepath: str,
+    chunk_size: int = 5000,
+    refresh_readiness: bool = True,
+) -> dict:
     """
     Load bedroom and bathroom counts from fixtures.txt and update BuildingDetail records.
 
@@ -839,7 +878,6 @@ def load_fixtures_room_counts(filepath: str, chunk_size: int = 5000) -> dict:
         Dictionary with update statistics
     """
     from .models import BuildingDetail
-    from decimal import Decimal
 
     reader = open_reader(filepath)
 
@@ -905,54 +943,69 @@ def load_fixtures_room_counts(filepath: str, chunk_size: int = 5000) -> dict:
     logger.info("Found room data for %s buildings", f"{len(room_data):,}")
     logger.info("Updating BuildingDetail records...")
 
-    # Second pass: update BuildingDetail records in batches
+    # Second pass: in-memory matching + batched bulk_update
     keys_list = list(room_data.keys())
+    accounts = {acct for acct, _ in keys_list}
+    buildings_by_key: dict[tuple[str, int], list] = defaultdict(list)
+    query = BuildingDetail.objects.filter(
+        is_active=True,
+        account_number__in=accounts,
+    ).only("id", "account_number", "building_number", "bedrooms", "bathrooms", "half_baths")
+    for building in query.iterator(chunk_size=chunk_size):
+        key = (building.account_number, int(building.building_number or 0))
+        buildings_by_key[key].append(building)
 
+    to_update = []
     for i in range(0, len(keys_list), chunk_size):
         batch_keys = keys_list[i : i + chunk_size]
+        for acct, bld_num in batch_keys:
+            buildings = buildings_by_key.get((acct, bld_num))
+            if not buildings:
+                results["buildings_not_found"] += 1
+                continue
 
-        with transaction.atomic():
-            for acct, bld_num in batch_keys:
-                data = room_data[(acct, bld_num)]
+            data = room_data[(acct, bld_num)]
+            full_baths = data["bathrooms"] if data["bathrooms"] is not None else Decimal("0")
+            half_baths_count = data["half_baths"] if data["half_baths"] is not None else 0
 
-                # Find the building record(s)
-                buildings = BuildingDetail.objects.filter(
-                    account_number=acct, building_number=bld_num, is_active=True
-                )
-
-                if not buildings.exists():
-                    results["buildings_not_found"] += 1
-                    continue
-
-                # Update the building(s) with room counts
-                update_fields = {}
-                if data["bedrooms"] is not None:
-                    update_fields["bedrooms"] = data["bedrooms"]
-
-                # Calculate total bathrooms: full baths + (0.5 * half baths)
-                # Store the total in bathrooms field with one decimal place
-                full_baths = (
-                    data["bathrooms"] if data["bathrooms"] is not None else Decimal("0")
-                )
-                half_baths_count = (
-                    data["half_baths"] if data["half_baths"] is not None else 0
-                )
+            for building in buildings:
+                changed = False
+                if data["bedrooms"] is not None and building.bedrooms != data["bedrooms"]:
+                    building.bedrooms = data["bedrooms"]
+                    changed = True
 
                 if data["bathrooms"] is not None or data["half_baths"] is not None:
-                    total_bathrooms = full_baths + (
-                        Decimal("0.5") * Decimal(half_baths_count)
-                    )
-                    update_fields["bathrooms"] = total_bathrooms
+                    total_bathrooms = full_baths + (Decimal("0.5") * Decimal(half_baths_count))
+                    if building.bathrooms != total_bathrooms:
+                        building.bathrooms = total_bathrooms
+                        changed = True
 
-                if data["half_baths"] is not None:
-                    update_fields["half_baths"] = data["half_baths"]
+                if data["half_baths"] is not None and building.half_baths != data["half_baths"]:
+                    building.half_baths = data["half_baths"]
+                    changed = True
 
-                if update_fields:
-                    count = buildings.update(**update_fields)
-                    results["buildings_updated"] += count
+                if changed:
+                    to_update.append(building)
 
-        if (i + chunk_size) % 50000 == 0:
+        if len(to_update) >= chunk_size:
+            with transaction.atomic():
+                BuildingDetail.objects.bulk_update(
+                    to_update,
+                    ["bedrooms", "bathrooms", "half_baths"],
+                    batch_size=chunk_size,
+                )
+            results["buildings_updated"] += len(to_update)
+            to_update.clear()
             logger.info("Updated %s buildings...", f"{results['buildings_updated']:,}")
+
+    if to_update:
+        with transaction.atomic():
+            BuildingDetail.objects.bulk_update(
+                to_update,
+                ["bedrooms", "bathrooms", "half_baths"],
+                batch_size=chunk_size,
+            )
+        results["buildings_updated"] += len(to_update)
 
     logger.info("Fixture import complete!")
     logger.info(
@@ -972,6 +1025,7 @@ def load_fixtures_room_counts(filepath: str, chunk_size: int = 5000) -> dict:
         "Buildings not found in DB: %s", f"{results['buildings_not_found']:,}"
     )
 
-    refresh_property_readiness()
+    if refresh_readiness:
+        refresh_property_readiness()
 
     return results

@@ -104,7 +104,13 @@ DEFAULT_PROPERTY_SOURCES: List[DataSource] = [
         filename="Real_building_land.zip",
         source_type=DataSourceType.PROPERTY_DATA,
         priority=20,
-        extract_patterns=["building_res.txt", "fixtures.txt", "extra_features.txt", "land.txt"],
+        extract_patterns=[
+            "building_res.txt",
+            "fixtures.txt",
+            "extra_features.txt",
+            "extra_features_detail*.txt",
+            "land.txt",
+        ],
     ),
     DataSource(
         name="Real Jur Exempt",

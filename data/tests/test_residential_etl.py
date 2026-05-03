@@ -5,7 +5,8 @@ import os
 import tempfile
 from decimal import Decimal
 from io import StringIO
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import ANY, patch
 
 from django.core.management import call_command
 from django.core.management.base import CommandError
@@ -13,7 +14,7 @@ from django.test import TestCase
 
 from data.etl import bulk_load_properties, iter_property_rows, refresh_property_readiness
 from data.management.commands.import_all_data import Command as ImportAllDataCommand
-from data.models import BuildingDetail, PropertyRecord
+from data.models import BuildingDetail, ExtraFeature, PropertyRecord
 
 
 class ResidentialPropertyImportTests(TestCase):
@@ -291,6 +292,264 @@ class ImportAllDataCommandTests(TestCase):
         call_command("import_all_data", skip_download=True, skip_property=True)
 
         self.assertEqual(mocked_run_stage.call_count, 2)
+
+    @patch("data.management.commands.import_all_data.refresh_property_readiness")
+    @patch.object(ImportAllDataCommand, "run_stage_command", autospec=True)
+    def test_import_all_data_defers_readiness_refresh_to_single_final_run(
+        self,
+        mocked_run_stage,
+        mocked_refresh,
+    ) -> None:
+        self._create_property(account_number="READYDEFER001")
+
+        call_command("import_all_data", skip_download=True, skip_property=True)
+
+        mocked_refresh.assert_called_once()
+        self.assertEqual(mocked_run_stage.call_count, 2)
+        mocked_run_stage.assert_any_call(
+            ANY,
+            "import_building_data",
+            skip_download=True,
+            no_refresh_readiness=True,
+        )
+        mocked_run_stage.assert_any_call(
+            ANY,
+            "load_gis_data",
+            skip_download=True,
+            no_refresh_readiness=True,
+        )
+
+
+class ETLLoaderOptimizationTests(TestCase):
+    def _create_temp_file(self, header: str, rows: list[str]) -> str:
+        handle = tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8")
+        handle.write(header + "\n")
+        for row in rows:
+            handle.write(row + "\n")
+        handle.close()
+        self.addCleanup(lambda: os.path.exists(handle.name) and os.unlink(handle.name))
+        return handle.name
+
+    def test_load_building_details_uses_cached_property_map(self) -> None:
+        from data.etl import load_building_details
+
+        prop = PropertyRecord.objects.create(
+            address="1 MAIN ST",
+            city="Houston",
+            zipcode="77001",
+            account_number="ACC1",
+            state_class="A1",
+            is_residential=True,
+        )
+        PropertyRecord.objects.create(
+            address="9 COMMERCE ST",
+            city="Houston",
+            zipcode="77002",
+            account_number="ACC9",
+            state_class="F1",
+            is_residential=False,
+        )
+        path = self._create_temp_file(
+            "acct\tbld_num\timprv_type\tqa_cd\tcndtn_cd\tdate_erected\theat_ar",
+            [
+                "ACC1\t1\tA1\tC\tAV\t2001\t1500",
+                "ACC9\t1\tA1\tC\tAV\t2002\t1300",
+                "MISSING\t1\tA1\tC\tAV\t2002\t1300",
+                "\t1\tA1\tC\tAV\t2003\t1100",
+            ],
+        )
+
+        result = load_building_details(path, chunk_size=50, import_batch_id="b1")
+
+        self.assertEqual(result["imported"], 1)
+        self.assertEqual(result["invalid"], 2)
+        self.assertEqual(result["skipped"], 1)
+        building = BuildingDetail.objects.get(account_number="ACC1")
+        self.assertEqual(building.property_id, prop.id)
+
+    def test_load_extra_features_uses_cached_property_map(self) -> None:
+        from data.etl import load_extra_features
+
+        prop = PropertyRecord.objects.create(
+            address="2 MAIN ST",
+            city="Houston",
+            zipcode="77001",
+            account_number="ACC2",
+            state_class="A1",
+            is_residential=True,
+        )
+        PropertyRecord.objects.create(
+            address="8 COMMERCE ST",
+            city="Houston",
+            zipcode="77002",
+            account_number="ACC8",
+            state_class="F1",
+            is_residential=False,
+        )
+        path = self._create_temp_file(
+            "acct\tbld_num\tcd\tdscr\tunits\tlength\twidth\tgrade\tcond_cd\tact_yr\tasd_val",
+            [
+                "ACC2\t1\tPOOL\tPool\t1\t20\t10\tA\tG\t2018\t5000",
+                "ACC8\t1\tGAR\tGarage\t1\t10\t10\tA\tG\t2010\t3000",
+                "MISSING\t1\tGAR\tGarage\t1\t10\t10\tA\tG\t2010\t3000",
+                "\t1\tPOR\tPorch\t1\t8\t8\tB\tF\t2015\t1500",
+            ],
+        )
+
+        result = load_extra_features(path, chunk_size=50, import_batch_id="b2", truncate=True)
+
+        self.assertEqual(result["imported"], 1)
+        self.assertEqual(result["invalid"], 2)
+        self.assertEqual(result["skipped"], 1)
+        feature = ExtraFeature.objects.get(account_number="ACC2")
+        self.assertEqual(feature.property_id, prop.id)
+
+    def test_load_fixtures_room_counts_bulk_updates_and_not_found_tracking(self) -> None:
+        from data.etl import load_fixtures_room_counts
+
+        prop = PropertyRecord.objects.create(
+            address="3 MAIN ST",
+            city="Houston",
+            zipcode="77001",
+            account_number="ACC3",
+            state_class="A1",
+            is_residential=True,
+        )
+        b1 = BuildingDetail.objects.create(
+            property=prop,
+            account_number="ACC3",
+            building_number=1,
+            is_active=True,
+        )
+        b2 = BuildingDetail.objects.create(
+            property=prop,
+            account_number="ACC3",
+            building_number=2,
+            is_active=True,
+        )
+        path = self._create_temp_file(
+            "acct\tbld_num\ttype\ttype_dscr\tunits",
+            [
+                "ACC3\t1\tRMB\tRoom: Bedroom\t4.00",
+                "ACC3\t1\tRMF\tRoom: Full Bath\t2.00",
+                "ACC3\t1\tRMH\tRoom: Half Bath\t1.00",
+                "ACC3\t2\tRMB\tRoom: Bedroom\t3.00",
+                "ACC3\t2\tRMF\tRoom: Full Bath\t1.00",
+                "NOPE\t1\tRMB\tRoom: Bedroom\t2.00",
+            ],
+        )
+
+        result = load_fixtures_room_counts(path, chunk_size=2, refresh_readiness=False)
+
+        b1.refresh_from_db()
+        b2.refresh_from_db()
+        self.assertEqual(result["buildings_updated"], 2)
+        self.assertEqual(result["buildings_not_found"], 1)
+        self.assertEqual(b1.bedrooms, 4)
+        self.assertEqual(b1.bathrooms, Decimal("2.5"))
+        self.assertEqual(b1.half_baths, 1)
+        self.assertEqual(b2.bedrooms, 3)
+        self.assertEqual(b2.bathrooms, Decimal("1"))
+
+    @patch("data.etl.gpd.read_file")
+    @patch("data.etl.GEOPANDAS_AVAILABLE", True)
+    def test_load_gis_parcels_updates_records_with_account_map(self, mocked_read_file) -> None:
+        from data.etl import load_gis_parcels
+
+        prop1 = PropertyRecord.objects.create(
+            address="4 MAIN ST",
+            city="Houston",
+            zipcode="77001",
+            account_number="GIS1",
+            state_class="A1",
+            is_residential=True,
+        )
+        prop2 = PropertyRecord.objects.create(
+            address="5 MAIN ST",
+            city="Houston",
+            zipcode="77001",
+            account_number="GIS2",
+            state_class="A1",
+            is_residential=True,
+        )
+        non_res = PropertyRecord.objects.create(
+            address="6 COMMERCE ST",
+            city="Houston",
+            zipcode="77002",
+            account_number="GIS_NON",
+            state_class="F1",
+            is_residential=False,
+        )
+
+        class _FakeCentroid:
+            def __init__(self, rows):
+                self.x = [row["x"] for row in rows]
+                self.y = [row["y"] for row in rows]
+
+        class _FakeGeometry:
+            def __init__(self, rows):
+                self.centroid = _FakeCentroid(rows)
+
+        class _FakeCRS:
+            def to_epsg(self):
+                return 4326
+
+        class _FakeGDF:
+            def __init__(self, rows):
+                self._rows = rows
+                self.columns = ["ACCT", "PARCEL_ID"]
+                self.crs = _FakeCRS()
+                self.geometry = _FakeGeometry(rows)
+                self._derived = {}
+
+            def __len__(self):
+                return len(self._rows)
+
+            def __setitem__(self, key, value):
+                self._derived[key] = value
+                if key in ("latitude", "longitude"):
+                    for row, v in zip(self._rows, value):
+                        row[key] = v
+
+            def __getitem__(self, key):
+                if key == "centroid":
+                    return self._derived.get("centroid", self.geometry.centroid)
+                return self._derived.get(key)
+
+            def to_crs(self, epsg):
+                return self
+
+            def itertuples(self, index=False):
+                for row in self._rows:
+                    yield SimpleNamespace(
+                        ACCT=row["ACCT"],
+                        PARCEL_ID=row["PARCEL_ID"],
+                        latitude=row.get("latitude"),
+                        longitude=row.get("longitude"),
+                    )
+
+        mocked_read_file.return_value = _FakeGDF(
+            [
+                {"ACCT": "GIS1", "PARCEL_ID": "P1", "x": -95.1, "y": 29.1},
+                {"ACCT": "GIS2", "PARCEL_ID": "P2", "x": -95.2, "y": 29.2},
+                {"ACCT": "GIS2", "PARCEL_ID": "P2B", "x": -95.25, "y": 29.25},
+                {"ACCT": "GIS_NON", "PARCEL_ID": "PNR", "x": -95.26, "y": 29.26},
+                {"ACCT": "MISSING", "PARCEL_ID": "P3", "x": -95.3, "y": 29.3},
+                {"ACCT": "", "PARCEL_ID": "P4", "x": -95.4, "y": 29.4},
+            ]
+        )
+
+        updated = load_gis_parcels("fake.shp", chunk_size=2, refresh_readiness=False)
+
+        self.assertEqual(updated, 2)
+        prop1.refresh_from_db()
+        prop2.refresh_from_db()
+        non_res.refresh_from_db()
+        self.assertEqual(prop1.parcel_id, "P1")
+        self.assertEqual(prop2.parcel_id, "P2B")
+        self.assertIsNone(non_res.latitude)
+        self.assertIsNone(non_res.longitude)
+        self.assertNotEqual(non_res.parcel_id, "PNR")
 
 
 class ReconcilePropertyDataCommandTests(TestCase):

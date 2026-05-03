@@ -54,6 +54,11 @@ class Command(BaseCommand):
             action='store_true',
             help='Skip download and use existing extracted files'
         )
+        parser.add_argument(
+            '--no-refresh-readiness',
+            action='store_true',
+            help='Skip readiness recomputation after GIS import',
+        )
 
     def handle(self, *args, **options):
         url = options['url']
@@ -109,7 +114,10 @@ class Command(BaseCommand):
         
         # Load the GIS data
         try:
-            count = load_gis_parcels(shapefile_path)
+            count = load_gis_parcels(
+                shapefile_path,
+                refresh_readiness=not options.get('no_refresh_readiness', False),
+            )
             self.stdout.write(self.style.SUCCESS(f'Successfully updated {count} property records with GIS coordinates'))
         except Exception as e:
             self.stdout.write(self.style.ERROR(f'Error loading GIS data: {str(e)}'))

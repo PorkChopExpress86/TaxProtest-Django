@@ -26,6 +26,11 @@ class Command(BaseCommand):
             action="store_true",
             help="Do NOT truncate table before import (append to existing data)",
         )
+        parser.add_argument(
+            "--no-refresh-readiness",
+            action="store_true",
+            help="Skip readiness recomputation after property import",
+        )
 
     def handle(self, *args, **options):
         filepath = options.get("filepath") or os.path.join(
@@ -47,7 +52,7 @@ class Command(BaseCommand):
             filepath, 
             chunk_size=options["chunk"], 
             limit=options.get("limit"),
-            truncate=truncate
+            truncate=truncate,
+            refresh_readiness=not options.get("no_refresh_readiness", False),
         )
         self.stdout.write(self.style.SUCCESS(f"Inserted {count} PropertyRecord rows."))
-
