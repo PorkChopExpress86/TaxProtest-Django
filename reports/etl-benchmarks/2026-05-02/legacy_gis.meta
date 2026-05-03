@@ -1,8 +1,0 @@
-label=legacy_gis
-container=bench_legacy_gis
-start_iso=2026-05-02T15:03:29-05:00
-end_iso=2026-05-02T15:24:41-05:00
-start_epoch=1777752209
-end_epoch=1777753481
-elapsed_seconds=1272
-exit_code=0

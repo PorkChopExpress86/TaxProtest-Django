@@ -10,14 +10,21 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
-from pathlib import Path
 import os
+from pathlib import Path
 from urllib.parse import urlparse
-from dotenv import load_dotenv
 import logging
+from dotenv import load_dotenv
+
+from taxprotest.runtime_paths import resolve_runtime_paths
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+PROJECT_PATHS = resolve_runtime_paths(BASE_DIR)
+HCAD_DOWNLOAD_DIR = PROJECT_PATHS.download_dir
+HCAD_EXTRACT_DIR = PROJECT_PATHS.extract_dir
+HCAD_LOG_DIR = PROJECT_PATHS.log_dir
+PROJECT_REPORT_DIR = PROJECT_PATHS.report_dir
 
 # Load .env from project root when present (development convenience)
 env_path = os.path.join(BASE_DIR, ".env")

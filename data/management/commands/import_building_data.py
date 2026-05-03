@@ -50,15 +50,17 @@ class Command(BaseCommand):
             # Import the actual function logic without the decorator
             import os
             import zipfile
-            import shutil
+            from pathlib import Path
             import requests
             from datetime import datetime
             from django.conf import settings
             from data.models import DownloadRecord, BuildingDetail, ExtraFeature
             from data.etl import load_building_details, load_extra_features, mark_old_records_inactive, link_orphaned_records, load_fixtures_room_counts
             
-            download_dir = os.path.join(settings.BASE_DIR, 'downloads')
-            os.makedirs(download_dir, exist_ok=True)
+            download_dir = Path(settings.HCAD_DOWNLOAD_DIR)
+            extract_root = Path(settings.HCAD_EXTRACT_DIR)
+            download_dir.mkdir(parents=True, exist_ok=True)
+            extract_root.mkdir(parents=True, exist_ok=True)
             
             current_year = datetime.now().year
             url = f'https://download.hcad.org/data/CAMA/{current_year}/Real_building_land.zip'
@@ -77,12 +79,12 @@ class Command(BaseCommand):
                     self.stdout.write(self.style.WARNING(f'Could not check URL availability: {e}. Proceeding with default.'))
             
             local_name = 'Real_building_land.zip'
-            local_path = os.path.join(download_dir, local_name)
-            extract_dir = os.path.join(download_dir, 'Real_building_land')
+            local_path = download_dir / local_name
+            extract_dir = extract_root / 'Real_building_land'
             
             if options.get('skip_download'):
                 self.stdout.write('Skipping download, using existing files...')
-                if not os.path.exists(extract_dir):
+                if not extract_dir.exists():
                     raise Exception(f'Extract directory not found: {extract_dir}. Remove --skip-download to download.')
             else:
                 self.stdout.write(f'Downloading {url}...')
@@ -92,7 +94,7 @@ class Command(BaseCommand):
                     total_length = int(r.headers.get('content-length') or 0)
                     downloaded = 0
                     
-                    with open(local_path, 'wb') as f:
+                    with local_path.open('wb') as f:
                         for chunk in r.iter_content(chunk_size=8192):
                             f.write(chunk)
                             downloaded += len(chunk)
@@ -106,7 +108,7 @@ class Command(BaseCommand):
                 
                 rec = DownloadRecord.objects.create(url=url, filename=local_name)
                 
-                os.makedirs(extract_dir, exist_ok=True)
+                extract_dir.mkdir(parents=True, exist_ok=True)
                 
                 self.stdout.write('Extracting ZIP file...')
                 with zipfile.ZipFile(local_path, 'r') as z:
@@ -115,9 +117,9 @@ class Command(BaseCommand):
                 rec.save()
                 self.stdout.write(self.style.SUCCESS(f'Extracted to {extract_dir}'))
             
-            building_file = os.path.join(extract_dir, 'building_res.txt')
-            features_file = os.path.join(extract_dir, 'extra_features.txt')
-            fixtures_file = os.path.join(extract_dir, 'fixtures.txt')
+            building_file = extract_dir / 'building_res.txt'
+            features_file = extract_dir / 'extra_features.txt'
+            fixtures_file = extract_dir / 'fixtures.txt'
             
             results = {
                 'download_url': url,
@@ -144,10 +146,10 @@ class Command(BaseCommand):
             self.stdout.write(f'Marked {results["buildings_deactivated"]} buildings and {results["features_deactivated"]} features as inactive')
             
             # Import building details
-            if os.path.exists(building_file):
+            if building_file.exists():
                 self.stdout.write(f'Importing building details from {building_file}...')
                 try:
-                    building_results = load_building_details(building_file, chunk_size=5000, import_batch_id=batch_id)
+                    building_results = load_building_details(str(building_file), chunk_size=5000, import_batch_id=batch_id)
                     results['buildings_imported'] = building_results['imported']
                     results['buildings_invalid'] = building_results['invalid']
                     self.stdout.write(self.style.SUCCESS(f'Imported {building_results["imported"]} building records'))
@@ -160,7 +162,7 @@ class Command(BaseCommand):
                 self.stdout.write(self.style.WARNING(f'Building file not found at {building_file}'))
             
             # Import extra features (try detail files first)
-            detail_files = [f for f in os.listdir(extract_dir) if f.startswith('extra_features_detail') and f.endswith('.txt')]
+            detail_files = [f.name for f in extract_dir.iterdir() if f.name.startswith('extra_features_detail') and f.name.endswith('.txt')]
             detail_files.sort() # Ensure deterministic order
             
             if detail_files:
@@ -168,12 +170,12 @@ class Command(BaseCommand):
                 truncate_features = True
                 
                 for fname in detail_files:
-                    fpath = os.path.join(extract_dir, fname)
+                    fpath = extract_dir / fname
                     self.stdout.write(f'Importing extra features from {fpath} (truncate={truncate_features})...')
                     try:
                         feature_results = load_extra_features(
-                            fpath, 
-                            chunk_size=5000, 
+                            str(fpath),
+                            chunk_size=5000,
                             import_batch_id=batch_id,
                             truncate=truncate_features
                         )
@@ -188,13 +190,13 @@ class Command(BaseCommand):
                         results['features_error'] = str(e)
                         self.stdout.write(self.style.ERROR(f'Error importing features from {fname}: {e}'))
             
-            elif os.path.exists(features_file):
+            elif features_file.exists():
                 # Fallback to old file if detailed ones missing
                 self.stdout.write(f'Importing extra features from {features_file}...')
                 try:
                     feature_results = load_extra_features(
-                        features_file, 
-                        chunk_size=5000, 
+                        str(features_file),
+                        chunk_size=5000,
                         import_batch_id=batch_id,
                         truncate=True
                     )
@@ -220,11 +222,11 @@ class Command(BaseCommand):
                 self.stdout.write(self.style.ERROR(f'Error linking orphaned records: {e}'))
             
             # Load room counts from fixtures
-            if os.path.exists(fixtures_file):
+            if fixtures_file.exists():
                 self.stdout.write(f'Loading bedroom/bathroom counts from {fixtures_file}...')
                 try:
                     fixtures_results = load_fixtures_room_counts(
-                        fixtures_file,
+                        str(fixtures_file),
                         chunk_size=5000,
                         refresh_readiness=not no_refresh_readiness,
                     )

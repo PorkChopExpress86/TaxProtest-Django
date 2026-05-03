@@ -1,8 +1,0 @@
-label=legacy_building
-container=bench_legacy_building
-start_iso=2026-05-02T14:39:11-05:00
-end_iso=2026-05-02T15:03:24-05:00
-start_epoch=1777750751
-end_epoch=1777752204
-elapsed_seconds=1453
-exit_code=0

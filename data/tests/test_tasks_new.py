@@ -59,8 +59,20 @@ class DownloadAndExtractHCADTests(TestCase):
             return FakeResponse(url=url, status_code=404)
         return FakeResponse(url=url, content=self.zip_bytes)
 
+    @staticmethod
+    def runtime_overrides(tmpdir: str) -> dict[str, str]:
+        return {
+            'BASE_DIR': tmpdir,
+            'HCAD_DOWNLOAD_DIR': str(Path(tmpdir) / 'var' / 'downloads'),
+            'HCAD_EXTRACT_DIR': str(Path(tmpdir) / 'var' / 'extracted'),
+            'HCAD_LOG_DIR': str(Path(tmpdir) / 'var' / 'logs'),
+            'PROJECT_REPORT_DIR': str(Path(tmpdir) / 'var' / 'reports'),
+        }
+
     def test_download_and_extract_hcad_skips_missing_optional_archive(self):
-        with tempfile.TemporaryDirectory() as tmpdir, override_settings(BASE_DIR=tmpdir):
+        with tempfile.TemporaryDirectory() as tmpdir, override_settings(
+            **self.runtime_overrides(tmpdir)
+        ):
             with patch('data.tasks_new.datetime', self.mock_datetime), patch(
                 'data.tasks_new.requests.get',
                 side_effect=self.fake_get_with_optional_missing,
@@ -78,11 +90,13 @@ class DownloadAndExtractHCADTests(TestCase):
                 DownloadRecord.objects.filter(filename='Real_acct_ownership_history.zip').exists()
             )
             self.assertTrue(
-                Path(tmpdir, 'downloads', 'Real_acct_owner', 'payload.txt').exists()
+                Path(tmpdir, 'var', 'extracted', 'Real_acct_owner', 'payload.txt').exists()
             )
 
     def test_download_and_extract_hcad_raises_for_missing_required_archive(self):
-        with tempfile.TemporaryDirectory() as tmpdir, override_settings(BASE_DIR=tmpdir):
+        with tempfile.TemporaryDirectory() as tmpdir, override_settings(
+            **self.runtime_overrides(tmpdir)
+        ):
             with patch('data.tasks_new.datetime', self.mock_datetime), patch(
                 'data.tasks_new.requests.get',
                 side_effect=self.fake_get_with_required_missing,

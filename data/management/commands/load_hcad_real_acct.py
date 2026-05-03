@@ -1,5 +1,6 @@
-import os
+from pathlib import Path
 from django.core.management.base import BaseCommand, CommandError
+from django.conf import settings
 
 from data.etl import bulk_load_properties
 
@@ -11,7 +12,7 @@ class Command(BaseCommand):
         parser.add_argument(
             "filepath",
             nargs="?",
-            help="Path to real_acct.txt (default: downloads/Real_acct_owner/real_acct.txt)",
+            help="Path to real_acct.txt (default: var/extracted/Real_acct_owner/real_acct.txt)",
         )
         parser.add_argument("--chunk", type=int, default=5000, help="Bulk insert chunk size")
         parser.add_argument("--limit", type=int, default=None, help="Limit number of rows to insert (for testing)")
@@ -33,10 +34,13 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        filepath = options.get("filepath") or os.path.join(
-            os.getcwd(), "downloads", "Real_acct_owner", "real_acct.txt"
-        )
-        if not os.path.exists(filepath):
+        if options.get("filepath"):
+            filepath = Path(options["filepath"])
+        else:
+            filepath = Path(settings.HCAD_EXTRACT_DIR) / "Real_acct_owner" / "real_acct.txt"
+        if not filepath.is_absolute():
+            filepath = Path(settings.BASE_DIR) / filepath
+        if not filepath.exists():
             raise CommandError(f"File not found: {filepath}")
         
         # Handle truncate flag (--no-truncate overrides --truncate)
@@ -49,8 +53,8 @@ class Command(BaseCommand):
         
         self.stdout.write(self.style.WARNING(f"Loading properties from: {filepath}"))
         count = bulk_load_properties(
-            filepath, 
-            chunk_size=options["chunk"], 
+            str(filepath),
+            chunk_size=options["chunk"],
             limit=options.get("limit"),
             truncate=truncate,
             refresh_readiness=not options.get("no_refresh_readiness", False),

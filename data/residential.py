@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-# Based on downloads/Code_description_real/desc_r_01_state_class.txt
+# Based on var/extracted/Code_description_real/desc_r_01_state_class.txt
 # Residential-like classes are limited to property types that should resolve
 # to a residential parcel in this app. Readiness is still enforced separately.
 RESIDENTIAL_STATE_CLASSES = frozenset(

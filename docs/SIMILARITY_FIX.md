@@ -138,7 +138,7 @@ Within 5 miles: 15+ properties
 2. **Data Backfill**: Re-run monthly HCAD import with fixtures data
 3. **Testing**: Test property 1074380000028 again after data backfill
 4. **Monitoring**: Check similarity score distribution across all properties
-5. **Documentation**: Update DATABASE.md with fixtures import process
+5. **Documentation**: Update `docs/guides/DATABASE.md` with fixtures import process
 
 ---
 
@@ -164,7 +164,7 @@ Within 5 miles: 15+ properties
 
 - `data/similarity.py` - Main algorithm (FIXED: batch processing)
 - `data/etl_pipeline/transform.py` - Building schema (NEEDS: fixtures aggregation)
-- `extracted/Real_building_land/fixtures.txt` - Source data file
+- `var/extracted/Real_building_land/fixtures.txt` - Source data file
 - `docs/SIMILARITY_ALGORITHM.md` - Algorithm documentation
 - `docs/SIMILARITY_SCORING.md` - Detailed scoring guide
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-OUTDIR="${1:-reports/etl-benchmarks/2026-05-02}"
+OUTDIR="${1:-var/reports/etl-benchmarks/2026-05-02}"
 mkdir -p "$OUTDIR"
 
 run_stage() {

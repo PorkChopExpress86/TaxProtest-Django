@@ -1,8 +1,0 @@
-label=legacy_property
-container=bench_legacy_property
-start_iso=2026-05-02T14:36:03-05:00
-end_iso=2026-05-02T14:39:09-05:00
-start_epoch=1777750563
-end_epoch=1777750749
-elapsed_seconds=186
-exit_code=0

@@ -451,7 +451,7 @@ docker compose logs worker
 df -h
 
 # Verify downloaded files
-ls -lh downloads/
+ls -lh var/downloads/
 
 # Re-run import
 docker compose exec web python manage.py import_building_data
@@ -500,7 +500,7 @@ ports:
 - Check [GIS.md](GIS.md) for location/mapping issues
 - View logs: `docker compose logs -f`
 - Check Django admin: http://localhost:8000/admin/
-- Review HCAD documentation in `downloads/Code_description_*/`
+- Review HCAD documentation in `var/extracted/Code_description_*/`
 
 ---
 

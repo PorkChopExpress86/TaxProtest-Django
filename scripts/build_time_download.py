@@ -15,8 +15,12 @@ from datetime import datetime
 
 import requests
 
+from taxprotest.runtime_paths import resolve_runtime_paths
+
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DOWNLOAD_DIR = os.path.join(BASE_DIR, 'downloads')
+RUNTIME_PATHS = resolve_runtime_paths(BASE_DIR)
+DOWNLOAD_DIR = os.fspath(RUNTIME_PATHS.download_dir)
+EXTRACT_DIR = os.fspath(RUNTIME_PATHS.extract_dir)
 
 
 def candidate_years() -> list[int]:
@@ -53,6 +57,7 @@ ARCHIVES = [
 
 def ensure_download_dir() -> None:
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+    os.makedirs(EXTRACT_DIR, exist_ok=True)
 
 
 def download_with_fallback(archive: dict) -> str | None:
@@ -95,7 +100,7 @@ def extract(local_path: str) -> None:
     if not zipfile.is_zipfile(local_path):
         return
     folder_name = os.path.basename(local_path).replace('.zip', '')
-    extract_to = os.path.join(DOWNLOAD_DIR, folder_name)
+    extract_to = os.path.join(EXTRACT_DIR, folder_name)
     os.makedirs(extract_to, exist_ok=True)
     print(f'  Extracting to {extract_to} ...', flush=True)
     with zipfile.ZipFile(local_path, 'r') as z:

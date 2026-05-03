@@ -229,4 +229,4 @@ Potential improvements:
 ## See Also
 - [SIMILARITY_SCORING.md](SIMILARITY_SCORING.md) - Full scoring algorithm documentation
 - [SIMILARITY_QUICKREF.md](SIMILARITY_QUICKREF.md) - Quick reference guide
-- [desc_r_07_quality_code.txt](../downloads/Code_description_real/desc_r_07_quality_code.txt) - HCAD quality code definitions
+- [desc_r_07_quality_code.txt](../var/extracted/Code_description_real/desc_r_07_quality_code.txt) - HCAD quality code definitions
