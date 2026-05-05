@@ -6,15 +6,15 @@ import tempfile
 from decimal import Decimal
 from io import StringIO
 from types import SimpleNamespace
-from unittest.mock import ANY, patch
+from unittest.mock import patch
 
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import TestCase
 
 from data.etl import bulk_load_properties, iter_property_rows, refresh_property_readiness
-from data.management.commands.import_all_data import Command as ImportAllDataCommand
 from data.models import BuildingDetail, ExtraFeature, PropertyRecord
+from data.residential import is_residential_state_class
 
 
 class ResidentialPropertyImportTests(TestCase):
@@ -46,6 +46,17 @@ class ResidentialPropertyImportTests(TestCase):
         self.assertEqual(rows[1]["state_class"], "F1")
         self.assertFalse(rows[1]["is_residential"])
 
+    def test_house_focused_residential_classes_exclude_condo_multifamily_and_auxiliary(self) -> None:
+        self.assertTrue(is_residential_state_class("A1"))
+        self.assertTrue(is_residential_state_class("A2"))
+        self.assertTrue(is_residential_state_class("A4"))
+        self.assertTrue(is_residential_state_class("E1"))
+        self.assertFalse(is_residential_state_class("A3"))
+        self.assertFalse(is_residential_state_class("B1"))
+        self.assertFalse(is_residential_state_class("B2"))
+        self.assertFalse(is_residential_state_class("Z1"))
+        self.assertFalse(is_residential_state_class("Z4"))
+
     def test_bulk_load_properties_filters_non_residential_rows(self) -> None:
         filepath = self._create_real_acct_file(
             [
@@ -63,6 +74,24 @@ class ResidentialPropertyImportTests(TestCase):
         self.assertEqual(prop.state_class, "A1")
         self.assertTrue(prop.is_residential)
         self.assertFalse(prop.is_data_ready)
+
+    def test_bulk_load_properties_excludes_condo_and_multifamily_rows(self) -> None:
+        filepath = self._create_real_acct_file(
+            [
+                "111\t111 MAIN ST\tHOUSTON\t77001\tA1\t250000\t2000\t8000\tOWNER ONE\t111\tMAIN",
+                "222\t222 HIGHRISE ST\tHOUSTON\t77002\tZ4\t350000\t1200\t1000\tOWNER TWO\t222\tHIGHRISE",
+                "333\t333 APARTMENT AVE\tHOUSTON\t77003\tB1\t450000\t5000\t12000\tOWNER THREE\t333\tAPARTMENT",
+                "444\t444 GARAGE LN\tHOUSTON\t77004\tA3\t150000\t0\t4000\tOWNER FOUR\t444\tGARAGE",
+            ]
+        )
+
+        inserted = bulk_load_properties(filepath, chunk_size=10, truncate=True)
+
+        self.assertEqual(inserted, 1)
+        self.assertEqual(
+            list(PropertyRecord.objects.values_list("account_number", flat=True)),
+            ["111"],
+        )
 
     def test_refresh_property_readiness_requires_rooms_building_and_gis(self) -> None:
         ready_prop = PropertyRecord.objects.create(
@@ -271,53 +300,54 @@ class ImportAllDataCommandTests(TestCase):
         refresh_property_readiness()
         return prop
 
-    @patch.object(ImportAllDataCommand, "run_stage_command", autospec=True)
-    def test_import_all_data_fails_when_requested_completeness_is_missing(self, mocked_run_stage) -> None:
-        self._create_property(
-            account_number="INCOMPLETE001",
-            with_building=True,
-            with_rooms=True,
-            with_gis=False,
+    @patch("data.management.commands.import_all_data.ETLOrchestrator.execute")
+    def test_import_all_data_fails_when_authoritative_pipeline_fails(self, mocked_execute) -> None:
+        mocked_execute.return_value = SimpleNamespace(
+            success=False,
+            status=SimpleNamespace(value="failed"),
+            duration=0.1,
+            stages={},
+            errors=["validation failed"],
         )
 
         with self.assertRaises(CommandError):
             call_command("import_all_data", skip_download=True, skip_property=True)
 
-        self.assertEqual(mocked_run_stage.call_count, 2)
-
-    @patch.object(ImportAllDataCommand, "run_stage_command", autospec=True)
-    def test_import_all_data_succeeds_when_existing_dataset_is_ready(self, mocked_run_stage) -> None:
-        self._create_property(account_number="READYIMPORT001")
+    @patch("data.management.commands.import_all_data.ETLOrchestrator.execute")
+    def test_import_all_data_delegates_to_modern_pipeline_with_strict_mode(self, mocked_execute) -> None:
+        mocked_execute.return_value = SimpleNamespace(
+            success=True,
+            status=SimpleNamespace(value="completed"),
+            duration=0.1,
+            stages={},
+            errors=[],
+        )
 
         call_command("import_all_data", skip_download=True, skip_property=True)
 
-        self.assertEqual(mocked_run_stage.call_count, 2)
+        mocked_execute.assert_called_once()
+        _, kwargs = mocked_execute.call_args
+        self.assertEqual(kwargs["scope"], "full")
+        self.assertTrue(kwargs["strict"])
+        self.assertTrue(kwargs["validate_contract"])
+        self.assertTrue(kwargs["skip_download"])
+        self.assertTrue(kwargs["skip_extract"])
 
-    @patch("data.management.commands.import_all_data.refresh_property_readiness")
-    @patch.object(ImportAllDataCommand, "run_stage_command", autospec=True)
-    def test_import_all_data_defers_readiness_refresh_to_single_final_run(
-        self,
-        mocked_run_stage,
-        mocked_refresh,
-    ) -> None:
-        self._create_property(account_number="READYDEFER001")
-
-        call_command("import_all_data", skip_download=True, skip_property=True)
-
-        mocked_refresh.assert_called_once()
-        self.assertEqual(mocked_run_stage.call_count, 2)
-        mocked_run_stage.assert_any_call(
-            ANY,
-            "import_building_data",
-            skip_download=True,
-            no_refresh_readiness=True,
+    @patch("data.management.commands.import_all_data.ETLOrchestrator.execute")
+    def test_import_all_data_uses_property_only_scope_when_gis_is_skipped(self, mocked_execute) -> None:
+        mocked_execute.return_value = SimpleNamespace(
+            success=True,
+            status=SimpleNamespace(value="completed"),
+            duration=0.1,
+            stages={},
+            errors=[],
         )
-        mocked_run_stage.assert_any_call(
-            ANY,
-            "load_gis_data",
-            skip_download=True,
-            no_refresh_readiness=True,
-        )
+
+        call_command("import_all_data", skip_download=True, skip_gis=True)
+
+        mocked_execute.assert_called_once()
+        _, kwargs = mocked_execute.call_args
+        self.assertEqual(kwargs["scope"], "property-only")
 
 
 class ETLLoaderOptimizationTests(TestCase):

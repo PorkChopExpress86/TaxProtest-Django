@@ -4,25 +4,17 @@ from __future__ import annotations
 
 from typing import Optional
 
-# Based on var/extracted/Code_description_real/desc_r_01_state_class.txt
-# Residential-like classes are limited to property types that should resolve
-# to a residential parcel in this app. Readiness is still enforced separately.
+# Based on var/extracted/Code_description_real/desc_r_01_state_class.txt and
+# the HCAD docs under docs/hcad_docs/. HCAD uses broader residential-like
+# state classes than this app wants. For the app's house-focused workflow,
+# treat only house-style parcels as residential and exclude condo, auxiliary,
+# and multifamily classes that do not reliably satisfy building/room readiness.
 RESIDENTIAL_STATE_CLASSES = frozenset(
     {
         "A1",  # Single-family
         "A2",  # Mobile homes
-        "A3",  # Auxiliary buildings
         "A4",  # 1/2 duplex
-        "B1",  # Multi-family
-        "B2",  # Two-family
-        "B3",  # Three-family
-        "B4",  # Four-or-more-family
         "E1",  # Farm & ranch improved
-        "Z1",  # Condo - apartment conversion
-        "Z2",  # Condo - fee simple townhouse
-        "Z3",  # Condo - townhouse (2+ stories)
-        "Z4",  # Condo - apartment style
-        "Z5",  # Condo - high rise
     }
 )
 

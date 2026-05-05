@@ -1,36 +1,25 @@
-"""Management command to run complete data import: properties, buildings, and GIS data.
+"""Management command to run complete data import via the modern ETL pipeline.
 
 Usage:
     python manage.py import_all_data [--skip-download] [--skip-property] [--skip-building] [--skip-gis]
 """
 
-from django.core.management import call_command
+from __future__ import annotations
+
 from django.core.management.base import BaseCommand, CommandError
 
-from data.etl import refresh_property_readiness
-from data.tasks_new import download_and_extract_hcad
+from data.etl_pipeline import ETLConfig, ETLOrchestrator
+from data.etl_pipeline.config import DataSource, DataSourceType
 
 
 class Command(BaseCommand):
-    help = 'Run complete data import: download, property records, building details, and GIS coordinates'
-
-    def run_stage_command(self, command_name: str, **kwargs) -> None:
-        """Run a child management command."""
-        call_command(command_name, **kwargs)
-
-    def validate_import_contract(self, *, skip_building_checks: bool, skip_gis_checks: bool) -> None:
-        """Validate the requested post-import completeness contract."""
-        call_command(
-            'validate_data',
-            skip_building_checks=skip_building_checks,
-            skip_gis_checks=skip_gis_checks,
-        )
+    help = 'Run complete data import via the authoritative modern ETL pipeline'
 
     def add_arguments(self, parser):
         parser.add_argument(
             '--skip-download',
             action='store_true',
-            help='Skip downloading files (use existing)',
+            help='Skip downloading and extraction (use existing extracted files)',
         )
         parser.add_argument(
             '--skip-property',
@@ -48,113 +37,100 @@ class Command(BaseCommand):
             help='Skip GIS data import',
         )
 
+    @staticmethod
+    def _select_sources(config: ETLConfig, *, include_property: bool, include_building: bool, include_gis: bool) -> list[DataSource]:
+        selected: list[DataSource] = []
+        for source in config.get_required_sources():
+            if source.source_type == DataSourceType.GIS_DATA:
+                if include_gis:
+                    selected.append(source)
+                continue
+
+            if source.name == 'Real Account Owner':
+                if include_property:
+                    selected.append(source)
+                continue
+
+            if source.name == 'Real Building Land':
+                if include_building:
+                    selected.append(source)
+                continue
+
+        return selected
+
+    @staticmethod
+    def _resolve_scope(*, include_property: bool, include_building: bool, include_gis: bool) -> str:
+        if include_property and include_building and include_gis:
+            return 'full'
+        if include_building and not include_property and not include_gis:
+            return 'building-only'
+        if include_gis and not include_property and not include_building:
+            return 'gis-only'
+        if include_property and not include_building and not include_gis:
+            return 'property-only'
+        if include_property and include_building and not include_gis:
+            return 'property-only'
+        return 'full'
+
     def handle(self, *args, **options):
-        self.stdout.write(self.style.SUCCESS('=' * 70))
-        self.stdout.write(self.style.SUCCESS('COMPLETE DATA IMPORT'))
-        self.stdout.write(self.style.SUCCESS('=' * 70))
+        include_property = not options['skip_property']
+        include_building = not options['skip_building']
+        include_gis = not options['skip_gis']
 
-        if not options['skip_download']:
-            self.stdout.write(self.style.SUCCESS('\n[0/3] Downloading HCAD data...'))
-            self.stdout.write('-' * 70)
-            try:
-                download_and_extract_hcad.run()
-                self.stdout.write(self.style.SUCCESS('✓ Download and extraction complete.'))
-            except Exception as e:
-                raise CommandError(f'Download failed: {e}') from e
-        else:
-            self.stdout.write(self.style.WARNING('\n[0/3] Skipping download (using existing files)\n'))
+        if not any([include_property, include_building, include_gis]):
+            raise CommandError('Nothing to import: all import stages were skipped.')
 
-        if not options['skip_property']:
-            self.stdout.write(self.style.SUCCESS('\n[1/3] Importing property records...'))
-            self.stdout.write('-' * 70)
-            try:
-                self.run_stage_command(
-                    'load_hcad_real_acct',
-                    no_refresh_readiness=True,
-                )
-                self.stdout.write(self.style.SUCCESS('✓ Property records imported successfully\n'))
-            except Exception as e:
-                raise CommandError(f'Property import failed: {e}') from e
-        else:
-            self.stdout.write(self.style.WARNING('\n[1/3] Skipping property records import\n'))
+        config = ETLConfig.from_env()
+        sources = self._select_sources(
+            config,
+            include_property=include_property,
+            include_building=include_building,
+            include_gis=include_gis,
+        )
 
-        if not options['skip_building']:
-            self.stdout.write(self.style.SUCCESS('[2/3] Importing building data...'))
-            self.stdout.write('-' * 70)
-            try:
-                self.run_stage_command(
-                    'import_building_data',
-                    skip_download=True,
-                    no_refresh_readiness=True,
-                )
-                self.stdout.write(self.style.SUCCESS('✓ Building data imported successfully\n'))
-            except Exception as e:
-                raise CommandError(f'Building import failed: {e}') from e
-        else:
-            self.stdout.write(self.style.WARNING('[2/3] Skipping building data import\n'))
+        if not sources:
+            raise CommandError('No required modern ETL sources matched the selected import stages.')
 
-        if not options['skip_gis']:
-            self.stdout.write(self.style.SUCCESS('[3/3] Importing GIS coordinates...'))
-            self.stdout.write('-' * 70)
-            try:
-                self.run_stage_command(
-                    'load_gis_data',
-                    skip_download=True,
-                    no_refresh_readiness=True,
-                )
-                self.stdout.write(self.style.SUCCESS('✓ GIS data imported successfully\n'))
-            except Exception as e:
-                raise CommandError(f'GIS import failed: {e}') from e
-        else:
-            self.stdout.write(self.style.WARNING('[3/3] Skipping GIS data import\n'))
-
-        self.stdout.write(self.style.SUCCESS('[readiness] Recomputing property readiness once...'))
-        self.stdout.write('-' * 70)
-        refresh_property_readiness()
-
-        self.stdout.write(self.style.SUCCESS('[validation] Verifying residential-ready completeness...'))
-        self.stdout.write('-' * 70)
-
-        try:
-            self.validate_import_contract(
-                skip_building_checks=options['skip_building'],
-                skip_gis_checks=options['skip_gis'],
-            )
-            self.stdout.write(self.style.SUCCESS('✓ Completeness validation passed\n'))
-        except CommandError as e:
-            self.stdout.write(self.style.ERROR(f'✗ Completeness validation failed: {e}\n'))
-            raise
+        scope = self._resolve_scope(
+            include_property=include_property,
+            include_building=include_building,
+            include_gis=include_gis,
+        )
 
         self.stdout.write(self.style.SUCCESS('=' * 70))
-        self.stdout.write(self.style.SUCCESS('IMPORT COMPLETE'))
+        self.stdout.write(self.style.SUCCESS('COMPLETE DATA IMPORT (MODERN ETL)'))
         self.stdout.write(self.style.SUCCESS('=' * 70))
 
-        from data.models import BuildingDetail, ExtraFeature, PropertyRecord
+        orchestrator = ETLOrchestrator(config)
+        result = orchestrator.execute(
+            sources=sources,
+            scope=scope,
+            strict=True,
+            validate_contract=True,
+            skip_download=options['skip_download'],
+            skip_extract=options['skip_download'],
+            skip_load=False,
+        )
 
-        total_props = PropertyRecord.objects.count()
-        residential_props = PropertyRecord.objects.filter(is_residential=True).count()
-        ready_props = PropertyRecord.objects.filter(is_data_ready=True).count()
-        total_buildings = BuildingDetail.objects.filter(is_active=True).count()
-        total_features = ExtraFeature.objects.filter(is_active=True).count()
-        props_with_coords = PropertyRecord.objects.filter(
-            is_residential=True,
-            latitude__isnull=False,
-            longitude__isnull=False,
-        ).count()
+        self.stdout.write('')
+        self.stdout.write(self.style.WARNING('Pipeline Results:'))
+        self.stdout.write(f'  Status: {result.status.value}')
+        self.stdout.write(f'  Duration: {result.duration:.1f}s')
 
-        self.stdout.write('\nDatabase Statistics:')
-        self.stdout.write(f'  Properties:        {total_props:>10,}')
-        self.stdout.write(f'  Residential:       {residential_props:>10,}')
-        self.stdout.write(f'  Ready:             {ready_props:>10,}')
-        self.stdout.write(f'  Buildings:         {total_buildings:>10,}')
-        self.stdout.write(f'  Features:          {total_features:>10,}')
-        if residential_props > 0:
-            self.stdout.write(
-                f'  With coordinates:  {props_with_coords:>10,} '
-                f'({props_with_coords / residential_props * 100:.1f}% of residential)'
-            )
-        else:
-            self.stdout.write(f'  With coordinates:  {props_with_coords:>10,} (0.0%)')
+        for stage, stage_result in result.stages.items():
+            status = self.style.SUCCESS('✓') if stage_result.success else self.style.ERROR('✗')
+            self.stdout.write(f'  {status} {stage.value}: {stage_result.duration:.1f}s')
+            if stage_result.error:
+                self.stdout.write(self.style.ERROR(f'      Error: {stage_result.error}'))
 
-        self.stdout.write('\n' + '=' * 70 + '\n')
-        self.stdout.write(self.style.SUCCESS('IMPORT COMPLETE - EXITING'))
+        if result.errors:
+            self.stdout.write('')
+            self.stdout.write(self.style.ERROR('Errors:'))
+            for error in result.errors[:10]:
+                self.stdout.write(self.style.ERROR(f'  - {error}'))
+
+        if not result.success:
+            raise CommandError('Authoritative modern ETL import failed')
+
+        self.stdout.write('')
+        self.stdout.write(self.style.SUCCESS('Authoritative modern ETL import completed successfully.'))

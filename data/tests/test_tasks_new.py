@@ -9,7 +9,12 @@ import requests
 from django.test import TestCase, override_settings
 
 from data.models import DownloadRecord
-from data.tasks_new import download_and_extract_hcad
+from data.tasks_new import (
+    download_and_extract_hcad,
+    download_and_import_building_data,
+    download_and_import_gis_data,
+    run_etl_pipeline,
+)
 
 
 def make_zip_bytes(filename: str = 'payload.txt', content: str = 'ok') -> bytes:
@@ -105,3 +110,36 @@ class DownloadAndExtractHCADTests(TestCase):
                     download_and_extract_hcad.run()
 
         self.assertFalse(DownloadRecord.objects.filter(filename='Real_acct_owner.zip').exists())
+
+
+class AuthoritativeTaskDelegationTests(TestCase):
+    @patch("data.tasks_new._run_authoritative_pipeline")
+    def test_legacy_building_task_delegates_to_building_scope(self, mocked_run):
+        mocked_run.return_value = {"status": "completed"}
+
+        result = download_and_import_building_data.run()
+
+        self.assertEqual(result["status"], "completed")
+        mocked_run.assert_called_once()
+        _, kwargs = mocked_run.call_args
+        self.assertEqual(kwargs["scope"], "building-only")
+        self.assertTrue(kwargs["strict"])
+
+    @patch("data.tasks_new._run_authoritative_pipeline")
+    def test_legacy_gis_task_delegates_to_gis_scope(self, mocked_run):
+        mocked_run.return_value = {"status": "completed"}
+
+        result = download_and_import_gis_data.run()
+
+        self.assertEqual(result["status"], "completed")
+        mocked_run.assert_called_once()
+        _, kwargs = mocked_run.call_args
+        self.assertEqual(kwargs["scope"], "gis-only")
+        self.assertTrue(kwargs["strict"])
+
+    @patch("data.tasks_new._run_authoritative_pipeline")
+    def test_run_etl_pipeline_propagates_pipeline_failure(self, mocked_run):
+        mocked_run.side_effect = RuntimeError("pipeline failed")
+
+        with self.assertRaises(RuntimeError):
+            run_etl_pipeline.run()
