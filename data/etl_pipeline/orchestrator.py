@@ -1,24 +1,26 @@
 """
 ETL Pipeline Orchestrator
 
-Coordinates all ETL stages with error handling, metrics collection,
-and notification support.
+Coordinates all ETL stages with strict validation, robust error handling,
+and metrics collection.
 """
 
-import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from django.core.management import call_command
+from django.core.management.base import CommandError as DjangoCommandError
+
 from .config import ETLConfig, DataSource, DataSourceType
 from .download import DownloadManager, DownloadResult
 from .extract import ExtractManager, ExtractResult
-from .transform import DataTransformer, TransformResult, get_schema
-from .load import LoadManager, LoadResult
-from .model_loader import ModelLoader, ModelLoadResult
-from .logging import ETLLogger, ETLMetrics
+from .load import LoadManager
+from .transform import DataTransformer, get_schema
+from .model_loader import ModelLoader
+from .logging import ETLLogger
 
 
 class PipelineStage(Enum):
@@ -177,6 +179,9 @@ class ETLOrchestrator:
         skip_extract: Optional[bool] = None,
         skip_transform: Optional[bool] = None,
         skip_load: Optional[bool] = None,
+        scope: str = "full",
+        strict: bool = True,
+        validate_contract: bool = True,
     ) -> PipelineResult:
         """Execute the full ETL pipeline.
         
@@ -186,15 +191,22 @@ class ETLOrchestrator:
             skip_extract: Skip extract stage
             skip_transform: Skip transform stage
             skip_load: Skip load stage
-        
+            scope: Pipeline scope (full, building-only, gis-only, property-only)
+            strict: Fail run on required gaps/errors
+            validate_contract: Run post-load validate_data checks
+
         Returns:
             PipelineResult with execution status and metrics
         """
+        if scope not in {"full", "building-only", "gis-only", "property-only"}:
+            raise ValueError(f"Unsupported pipeline scope: {scope}")
+
         # Apply overrides
         skip_download = skip_download if skip_download is not None else self.config.skip_download
         skip_extract = skip_extract if skip_extract is not None else self.config.skip_extract
         skip_transform = skip_transform if skip_transform is not None else self.config.skip_transform
         skip_load = skip_load if skip_load is not None else self.config.skip_load
+        skip_load = bool(skip_load or self.config.dry_run)
         
         # Initialize result
         self.result = PipelineResult(
@@ -202,11 +214,11 @@ class ETLOrchestrator:
             started_at=datetime.now(),
         )
         
-        sources = sources or self.config.get_required_sources()
+        sources = self._select_sources_for_scope(scope, sources)
         
         self.logger.info(
             f"Starting ETL pipeline for {len(sources)} sources "
-            f"(year={self.config.data_year})"
+            f"(year={self.config.data_year}, scope={scope}, strict={strict}, dry_run={self.config.dry_run})"
         )
         
         try:
@@ -215,16 +227,16 @@ class ETLOrchestrator:
                 stage_result = self._execute_download(sources)
                 self.result.stages[PipelineStage.DOWNLOAD] = stage_result
                 
-                if not stage_result.success and not self.config.continue_on_error:
-                    raise Exception("Download stage failed")
+                if not stage_result.success and strict:
+                    raise RuntimeError("Download stage failed")
             
             # Extract stage
             if not skip_extract:
                 stage_result = self._execute_extract(sources)
                 self.result.stages[PipelineStage.EXTRACT] = stage_result
                 
-                if not stage_result.success and not self.config.continue_on_error:
-                    raise Exception("Extract stage failed")
+                if not stage_result.success and strict:
+                    raise RuntimeError("Extract stage failed")
             
             # Transform and Load stages (combined for efficiency)
             if not skip_transform or not skip_load:
@@ -235,13 +247,22 @@ class ETLOrchestrator:
                 )
                 self.result.stages[PipelineStage.LOAD] = stage_result
                 
-                if not stage_result.success and not self.config.continue_on_error:
-                    raise Exception("Transform/Load stage failed")
-            
-            # Determine final status
+                if not stage_result.success and strict:
+                    raise RuntimeError("Transform/Load stage failed")
+
+            wrote_data = (
+                PipelineStage.LOAD in self.result.stages
+                and not skip_load
+                and not self.config.dry_run
+            )
+            if wrote_data:
+                self._refresh_readiness_once()
+
+            if validate_contract and wrote_data:
+                self._validate_completeness_contract(scope=scope, strict=strict)
+
             all_success = all(r.success for r in self.result.stages.values())
             self.result.status = PipelineStatus.COMPLETED if all_success else PipelineStatus.PARTIAL
-            
         except Exception as e:
             self.result.status = PipelineStatus.FAILED
             self.result.errors.append(str(e))
@@ -257,6 +278,51 @@ class ETLOrchestrator:
             )
         
         return self.result
+
+    def _select_sources_for_scope(
+        self,
+        scope: str,
+        sources: Optional[List[DataSource]],
+    ) -> List[DataSource]:
+        """Return the source list for a pipeline scope."""
+        selected = list(sources or self.config.get_required_sources())
+        if scope == "full":
+            return selected
+        if scope == "building-only":
+            return [s for s in selected if s.name == "Real Building Land"]
+        if scope == "gis-only":
+            return [s for s in selected if s.source_type == DataSourceType.GIS_DATA]
+        if scope == "property-only":
+            return [
+                s for s in selected
+                if s.source_type == DataSourceType.PROPERTY_DATA
+            ]
+        return selected
+
+    def _refresh_readiness_once(self) -> None:
+        """Refresh property readiness exactly once per successful load run."""
+        from data.etl import refresh_property_readiness
+
+        self.logger.info("Refreshing property readiness once after load stage")
+        refresh_property_readiness()
+
+    def _validate_completeness_contract(self, scope: str, strict: bool) -> None:
+        """Run validate_data with scope-aware skip flags."""
+        skip_building_checks = scope in {"gis-only", "property-only"}
+        skip_gis_checks = scope in {"building-only", "property-only"}
+
+        try:
+            call_command(
+                "validate_data",
+                skip_building_checks=skip_building_checks,
+                skip_gis_checks=skip_gis_checks,
+            )
+        except DjangoCommandError as exc:
+            msg = f"Completeness validation failed: {exc}"
+            if strict:
+                raise RuntimeError(msg) from exc
+            self.result.warnings.append(msg)
+            self.logger.warning(msg)
     
     def _execute_download(self, sources: List[DataSource]) -> StageResult:
         """Execute download stage."""
@@ -395,8 +461,11 @@ class ETLOrchestrator:
         
         with self.logger.stage("transform_load") as metrics:
             total_loaded = 0
+            total_invalid = 0
+            total_skipped = 0
             total_failed = 0
             gis_loaded = 0
+            source_errors: List[str] = []
             
             # STEP 1: Pre-load fixtures for bedroom/bathroom data
             # This must happen before processing building_res.txt
@@ -408,13 +477,23 @@ class ETLOrchestrator:
                     # GIS data requires special handling
                     gis_result = self._process_gis_source(source)
                     gis_loaded += gis_result.get('loaded', 0)
+                    total_invalid += gis_result.get('invalid', 0)
+                    total_skipped += gis_result.get('skipped', 0)
                     total_failed += gis_result.get('failed', 0)
+                    if gis_result.get('source_error'):
+                        source_errors.append(str(gis_result['source_error']))
                     continue
                 
                 # Find extracted files for this source
                 extract_path = self.extract_manager.get_extract_path(source)
                 if not extract_path.exists():
-                    self.logger.warning(f"Extract path not found: {extract_path}")
+                    msg = f"Extract path not found for {source.name}: {extract_path}"
+                    if source.required:
+                        source_errors.append(msg)
+                        self.logger.error(msg)
+                    else:
+                        self.result.warnings.append(msg)
+                        self.logger.warning(msg)
                     continue
 
                 # Process each data file in deterministic order.
@@ -422,6 +501,20 @@ class ETLOrchestrator:
                 # extra_features_detail*.txt append after first load.
                 schema_loaded: Dict[str, bool] = {}
                 data_files = sorted(extract_path.rglob('*.txt'))
+
+                missing_required_files = self._missing_required_files(source, data_files)
+                if missing_required_files:
+                    msg = (
+                        f"Required files missing for {source.name}: "
+                        f"{', '.join(missing_required_files)}"
+                    )
+                    if source.required:
+                        source_errors.append(msg)
+                        self.logger.error(msg)
+                    else:
+                        self.result.warnings.append(msg)
+                        self.logger.warning(msg)
+                    continue
 
                 # Prefer detailed extra feature files when present (legacy parity).
                 if source.name == "Real Building Land":
@@ -443,20 +536,29 @@ class ETLOrchestrator:
                     result = self._process_data_file(file_path, skip_load, truncate=truncate)
                     schema_loaded[schema_name] = True
                     total_loaded += result.get('loaded', 0)
+                    total_invalid += result.get('invalid', 0)
+                    total_skipped += result.get('skipped', 0)
                     total_failed += result.get('failed', 0)
             
-            metrics.records_processed = total_loaded + total_failed
+            metrics.records_processed = total_loaded + total_invalid + total_skipped + total_failed
             metrics.records_success = total_loaded
             metrics.records_failed = total_failed
+            metrics.records_skipped = total_skipped
             
             stage_result.metrics = {
                 'records_loaded': total_loaded,
+                'records_invalid': total_invalid,
+                'records_skipped': total_skipped,
                 'records_failed': total_failed,
                 'gis_coordinates_updated': gis_loaded,
             }
             
-            if total_failed > 0:
-                stage_result.error = f"{total_failed} records failed to load"
+            if source_errors:
+                stage_result.success = False
+                stage_result.error = "; ".join(source_errors)
+            elif total_failed > 0:
+                stage_result.success = False
+                stage_result.error = f"{total_failed} source processing failure(s)"
         
         stage_result.completed_at = datetime.now()
         self._run_stage_callbacks(PipelineStage.LOAD, stage_result)
@@ -476,7 +578,7 @@ class ETLOrchestrator:
             truncate: If True, truncate the table before loading
         
         Returns:
-            Dictionary with 'loaded' and 'failed' counts
+            Dictionary with loaded/invalid/skipped/failed counts
         """
         # Determine schema based on filename
         filename = file_path.stem.lower()
@@ -484,18 +586,21 @@ class ETLOrchestrator:
         
         if not schema_name:
             self.logger.debug(f"No schema for {file_path.name}, skipping")
-            return {'loaded': 0, 'failed': 0}
+            return {'loaded': 0, 'invalid': 0, 'skipped': 0, 'failed': 0}
         
         schema = get_schema(schema_name)
         if not schema:
-            return {'loaded': 0, 'failed': 0}
+            return {'loaded': 0, 'invalid': 0, 'skipped': 0, 'failed': 0}
         
         self.logger.info(f"Processing {file_path.name} with schema {schema_name}")
         
         if skip_load:
-            # Just transform and count records without loading
-            records = list(self.transformer.iter_records(file_path, schema))
-            return {'loaded': len(records), 'failed': 0}
+            # Stream transform-only counts without materializing all rows.
+            transformed = 0
+            for record in self.transformer.iter_records(file_path, schema):
+                if record is not None:
+                    transformed += 1
+            return {'loaded': transformed, 'invalid': 0, 'skipped': 0, 'failed': 0}
         
         # Transform and load records to Django models
         # Filter out None values from the generator
@@ -514,11 +619,13 @@ class ETLOrchestrator:
                 records_gen, truncate=truncate
             )
         else:
-            return {'loaded': 0, 'failed': 0}
+            return {'loaded': 0, 'invalid': 0, 'skipped': 0, 'failed': 0}
         
         return {
             'loaded': result.records_loaded,
-            'failed': result.records_invalid + result.records_skipped,
+            'invalid': result.records_invalid,
+            'skipped': result.records_skipped,
+            'failed': 1 if result.error else 0,
         }
 
     @staticmethod
@@ -538,7 +645,7 @@ class ETLOrchestrator:
             return 'extra_features'
         return None
     
-    def _process_gis_source(self, source: DataSource) -> Dict[str, int]:
+    def _process_gis_source(self, source: DataSource) -> Dict[str, Any]:
         """Process GIS data source.
         
         Finds shapefiles in the extracted GIS data and loads coordinates
@@ -548,15 +655,16 @@ class ETLOrchestrator:
             source: The GIS data source configuration
             
         Returns:
-            Dictionary with 'loaded' and 'failed' counts
+            Dictionary with loaded/invalid/skipped/failed counts.
         """
         self.logger.info(f"Processing GIS source: {source.name}")
 
         # Get the extract path for GIS data
         extract_path = self.extract_manager.get_extract_path(source)
         if not extract_path.exists():
-            self.logger.warning(f"GIS extract path not found: {extract_path}")
-            return {'loaded': 0, 'failed': 0}
+            msg = f"GIS extract path not found: {extract_path}"
+            self.logger.error(msg)
+            return {'loaded': 0, 'invalid': 0, 'skipped': 0, 'failed': 1, 'source_error': msg}
 
         # Legacy extracts often lived under the download tree. Include that
         # location as a fallback so modern and legacy commands pick equivalent data.
@@ -570,8 +678,9 @@ class ETLOrchestrator:
         shapefile_path = self._select_preferred_gis_shapefile(candidate_roots)
         if shapefile_path is None:
             searched = ", ".join(str(root) for root in candidate_roots)
-            self.logger.warning(f"No shapefiles found in candidate roots: {searched}")
-            return {'loaded': 0, 'failed': 0}
+            msg = f"No shapefiles found in candidate roots: {searched}"
+            self.logger.error(msg)
+            return {'loaded': 0, 'invalid': 0, 'skipped': 0, 'failed': 1, 'source_error': msg}
 
         self.logger.info(f"Loading GIS data from: {shapefile_path}")
         
@@ -579,16 +688,41 @@ class ETLOrchestrator:
             # Import and call the GIS loading function
             from data.etl import load_gis_parcels
             
-            count = load_gis_parcels(str(shapefile_path))
+            count = load_gis_parcels(str(shapefile_path), refresh_readiness=False)
             self.logger.info(f"Updated {count} properties with GIS coordinates")
-            return {'loaded': count, 'failed': 0}
+            return {'loaded': count, 'invalid': 0, 'skipped': 0, 'failed': 0}
             
         except ImportError as e:
             self.logger.error(f"GIS processing requires geopandas: {e}")
-            return {'loaded': 0, 'failed': 1}
+            return {'loaded': 0, 'invalid': 0, 'skipped': 0, 'failed': 1, 'source_error': str(e)}
         except Exception as e:
             self.logger.exception(f"Error processing GIS data: {e}")
-            return {'loaded': 0, 'failed': 1}
+            return {'loaded': 0, 'invalid': 0, 'skipped': 0, 'failed': 1, 'source_error': str(e)}
+
+    @staticmethod
+    def _missing_required_files(source: DataSource, data_files: List[Path]) -> List[str]:
+        """Return missing required files for core required property sources."""
+        stems = {path.stem.lower() for path in data_files}
+        missing: List[str] = []
+
+        if source.name == "Real Account Owner":
+            if "real_acct" not in stems:
+                missing.append("real_acct.txt")
+
+        if source.name == "Real Building Land":
+            if "building_res" not in stems:
+                missing.append("building_res.txt")
+            if "fixtures" not in stems:
+                missing.append("fixtures.txt")
+
+            has_extra_features = "extra_features" in stems or any(
+                stem.startswith("extra_features_detail")
+                for stem in stems
+            )
+            if not has_extra_features:
+                missing.append("extra_features*.txt")
+
+        return missing
 
     @staticmethod
     def _select_preferred_gis_shapefile(search_roots: List[Path]) -> Optional[Path]:

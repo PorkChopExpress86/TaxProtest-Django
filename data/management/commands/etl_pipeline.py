@@ -15,7 +15,6 @@ from django.core.management.base import BaseCommand, CommandError
 from data.etl_pipeline import (
     ETLConfig, ETLOrchestrator, DownloadManager, ExtractManager
 )
-from data.etl_pipeline.config import DataSourceType
 
 
 class Command(BaseCommand):
@@ -81,17 +80,37 @@ class Command(BaseCommand):
         run_parser.add_argument(
             '--dry-run',
             action='store_true',
-            help='Show what would be done without making changes',
+            help='Transform-only feasibility run (no database writes or readiness refresh)',
+        )
+        run_parser.add_argument(
+            '--scope',
+            choices=['full', 'building-only', 'gis-only', 'property-only'],
+            default='full',
+            help='Execution scope (default: full)',
+        )
+        strict_group = run_parser.add_mutually_exclusive_group()
+        strict_group.add_argument(
+            '--strict',
+            dest='strict',
+            action='store_true',
+            default=True,
+            help='Fail the run on required source or completeness contract gaps (default)',
+        )
+        strict_group.add_argument(
+            '--allow-partial',
+            dest='strict',
+            action='store_false',
+            help='Allow partial completion for debugging',
         )
         run_parser.add_argument(
             '--property-only',
             action='store_true',
-            help='Only process property data (skip GIS)',
+            help='Deprecated alias for --scope property-only',
         )
         run_parser.add_argument(
             '--gis-only',
             action='store_true',
-            help='Only process GIS data (skip property data)',
+            help='Deprecated alias for --scope gis-only',
         )
         
         # Status command
@@ -246,28 +265,26 @@ class Command(BaseCommand):
 
     def handle_run(self, config: ETLConfig, options: dict):
         """Handle run command (full pipeline)."""
+        scope = options.get('scope', 'full')
+        if options.get('property_only'):
+            scope = 'property-only'
+        elif options.get('gis_only'):
+            scope = 'gis-only'
+
         self.stdout.write(self.style.WARNING(
             f'Starting ETL pipeline (year={config.data_year}, '
-            f'dry_run={config.dry_run})...'
+            f'dry_run={config.dry_run}, scope={scope}, strict={options.get("strict", True)})...'
         ))
-        
-        # Filter sources based on options
-        if options.get('property_only'):
-            sources = [s for s in config.get_required_sources() 
-                      if s.source_type != DataSourceType.GIS_DATA]
-        elif options.get('gis_only'):
-            sources = [s for s in config.get_all_sources() 
-                      if s.source_type == DataSourceType.GIS_DATA]
-        else:
-            sources = config.get_required_sources()
-        
+
         orchestrator = ETLOrchestrator(config)
         
         result = orchestrator.execute(
-            sources=sources,
             skip_download=options.get('skip_download', False),
             skip_extract=options.get('skip_extract', False),
             skip_load=options.get('skip_load', False),
+            scope=scope,
+            strict=options.get('strict', True),
+            validate_contract=not config.dry_run,
         )
         
         # Report results
@@ -288,11 +305,17 @@ class Command(BaseCommand):
             for error in result.errors[:5]:
                 self.stdout.write(self.style.ERROR(f'  - {error}'))
         
-        if not result.success:
+        if options.get('strict', True):
+            if not result.success:
+                raise CommandError('Pipeline execution failed')
+        elif result.status.value == 'failed':
             raise CommandError('Pipeline execution failed')
-        
+
         self.stdout.write('')
-        self.stdout.write(self.style.SUCCESS('Pipeline completed successfully!'))
+        if result.status.value == 'partial':
+            self.stdout.write(self.style.WARNING('Pipeline completed with partial results.'))
+        else:
+            self.stdout.write(self.style.SUCCESS('Pipeline completed successfully!'))
 
     def handle_status(self, config: ETLConfig, options: dict):
         """Handle status command."""

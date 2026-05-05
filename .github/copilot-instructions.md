@@ -6,6 +6,25 @@
 - Main Django project is in `taxprotest/`. All templates are in the top-level `templates/` directory.
 - The codebase is intentionally simple and extensible, with scheduled imports already implemented via Celery.
 
+## Container-only development rule
+
+This project runs in Docker. Do not assume Python, pip, pytest, ruff, mypy, Postgres, GDAL, or other dependencies are installed on the host.
+
+Use Docker Compose for all development, testing, ingestion, refresh, and app commands.
+
+Preferred commands:
+
+```bash
+docker compose build
+docker compose up -d postgres
+docker compose up -d taxprotest-dev
+docker compose run --rm ingest
+docker compose run --rm refresh
+docker compose run --rm taxprotest-dev pytest -q
+docker compose run --rm taxprotest-dev ruff check .
+docker compose run --rm taxprotest-dev black --check .
+docker compose run --rm taxprotest-dev mypy src
+
 ## Architecture & Key Components
 - `taxprotest/`: Contains Django settings, URL routing, and the main view (`views.py`).
 - `templates/`: All user-facing HTML templates. `base.html` provides the Bootstrap-based layout; `index.html` is the main entry page and extends `base.html`.
@@ -94,3 +113,20 @@ TaxProtest-Django/
 **Agents and developers should always default to Docker Compose for running, testing, and deploying the app.**
 For detailed information, consult README.md, docs/guides/SETUP.md, docs/guides/DATABASE.md, and docs/guides/GIS.md.
 If you add new conventions, workflows, or apps, update this file to keep AI agents productive.
+
+## Update prompt files
+
+Every prompt should use container commands.
+
+For example, `optimize-ingestion.prompt.md` should say:
+
+```md
+Run validation inside Docker:
+
+```bash
+docker compose build
+docker compose up -d postgres
+docker compose run --rm ingest
+docker compose run --rm taxprotest-dev pytest -q
+docker compose run --rm taxprotest-dev ruff check .
+docker compose run --rm taxprotest-dev mypy src

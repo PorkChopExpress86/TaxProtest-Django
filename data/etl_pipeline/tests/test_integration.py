@@ -12,8 +12,7 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import Mock, patch, MagicMock
-
-import pytest
+from django.core.management.base import CommandError as DjangoCommandError
 from django.test import TestCase, override_settings
 
 from data.etl_pipeline import ETLConfig, ETLOrchestrator
@@ -333,8 +332,9 @@ class TestETLOrchestratorIntegration(TestCase):
         orchestrator = ETLOrchestrator(self.config)
         result = orchestrator._process_gis_source(source)
 
-        mock_load_gis.assert_called_once_with(str(preferred_shp))
-        assert result == {'loaded': 123, 'failed': 0}
+        mock_load_gis.assert_called_once_with(str(preferred_shp), refresh_readiness=False)
+        assert result['loaded'] == 123
+        assert result['failed'] == 0
 
     def test_transform_load_prefers_extra_feature_detail_files_and_appends(self):
         """When detail feature files exist, skip fallback extra_features.txt."""
@@ -348,6 +348,7 @@ class TestETLOrchestratorIntegration(TestCase):
         extract_path = self.config.extract_dir / 'Real_building_land'
         extract_path.mkdir(parents=True, exist_ok=True)
         (extract_path / 'building_res.txt').write_text('acct\tbld_num\n')
+        (extract_path / 'fixtures.txt').write_text('acct\tbld_num\ttype\tunits\n')
         (extract_path / 'extra_features.txt').write_text('acct\tbld_num\n')
         (extract_path / 'extra_features_detail1.txt').write_text('acct\tbld_num\n')
         (extract_path / 'extra_features_detail2.txt').write_text('acct\tbld_num\n')
@@ -371,6 +372,71 @@ class TestETLOrchestratorIntegration(TestCase):
         assert result.success is True
         assert result.metrics['records_loaded'] == 3
         assert result.metrics['records_failed'] == 0
+        assert result.metrics['records_invalid'] == 0
+        assert result.metrics['records_skipped'] == 0
+
+    def test_missing_required_extract_path_fails_strict_run(self):
+        orchestrator = ETLOrchestrator(self.config)
+        result = orchestrator.execute(
+            scope='full',
+            skip_download=True,
+            skip_extract=True,
+            skip_load=False,
+            strict=True,
+            validate_contract=False,
+        )
+        assert result.status == PipelineStatus.FAILED
+
+    @patch('data.etl_pipeline.orchestrator.call_command')
+    @patch.object(ETLOrchestrator, '_execute_transform_load')
+    def test_validation_failure_propagates_when_strict(self, mocked_transform_load, mocked_call_command):
+        self.config.dry_run = False
+        mocked_transform_load.return_value = MagicMock(
+            success=True,
+            completed_at=datetime.now(),
+            duration=0.1,
+            error=None,
+            metrics={'records_loaded': 0, 'records_failed': 0},
+            stage='load',
+        )
+        mocked_call_command.side_effect = DjangoCommandError('validation failed')
+
+        orchestrator = ETLOrchestrator(self.config)
+        result = orchestrator.execute(
+            scope='full',
+            skip_download=True,
+            skip_extract=True,
+            skip_load=False,
+            strict=True,
+            validate_contract=True,
+        )
+        assert result.status == PipelineStatus.FAILED
+
+    def test_skip_load_transform_counts_do_not_materialize_list(self):
+        source = DataSource(
+            name='Real Account Owner',
+            url_template='https://example.com/Real_acct_owner.zip',
+            filename='Real_acct_owner.zip',
+            source_type=DataSourceType.PROPERTY_DATA,
+        )
+        extract_path = self.config.extract_dir / 'Real_acct_owner'
+        extract_path.mkdir(parents=True, exist_ok=True)
+        (extract_path / 'real_acct.txt').write_text('acct\\tstr_num\\tstr\\nA\\t1\\tMAIN\\n')
+
+        orchestrator = ETLOrchestrator(self.config)
+        with patch.object(
+            orchestrator.transformer,
+            'iter_records',
+            return_value=iter([{'account_number': 'A'}, {'account_number': 'B'}]),
+        ) as mocked_iter:
+            result = orchestrator._process_data_file(
+                extract_path / 'real_acct.txt',
+                skip_load=True,
+                truncate=True,
+            )
+
+        mocked_iter.assert_called_once()
+        assert result == {'loaded': 2, 'invalid': 0, 'skipped': 0, 'failed': 0}
 
     def test_resolve_schema_name_maps_extra_feature_detail_files(self):
         assert ETLOrchestrator._resolve_schema_name('extra_features_detail1') == 'extra_features'
