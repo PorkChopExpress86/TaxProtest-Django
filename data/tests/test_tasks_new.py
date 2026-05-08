@@ -17,15 +17,15 @@ from data.tasks_new import (
 )
 
 
-def make_zip_bytes(filename: str = 'payload.txt', content: str = 'ok') -> bytes:
+def make_zip_bytes(filename: str = "payload.txt", content: str = "ok") -> bytes:
     buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, 'w') as archive:
+    with zipfile.ZipFile(buffer, "w") as archive:
         archive.writestr(filename, content)
     return buffer.getvalue()
 
 
 class FakeResponse:
-    def __init__(self, *, url: str, status_code: int = 200, content: bytes = b''):
+    def __init__(self, *, url: str, status_code: int = 200, content: bytes = b""):
         self.url = url
         self.status_code = status_code
         self.raw = io.BytesIO(content)
@@ -35,7 +35,7 @@ class FakeResponse:
             response = requests.Response()
             response.status_code = self.status_code
             response.url = self.url
-            raise requests.HTTPError(f'{self.status_code} for {self.url}', response=response)
+            raise requests.HTTPError(f"{self.status_code} for {self.url}", response=response)
 
     def __enter__(self):
         return self
@@ -53,63 +53,71 @@ class DownloadAndExtractHCADTests(TestCase):
         self.mock_datetime.now.return_value = datetime(2026, 4, 12)
 
     def fake_get_with_optional_missing(self, url, stream=True, timeout=300):
-        if 'Real_acct_ownership_history.zip' in url:
+        if "Real_acct_ownership_history.zip" in url:
             return FakeResponse(url=url, status_code=404)
-        if '/CAMA/2026/' in url:
+        if "/CAMA/2026/" in url:
             return FakeResponse(url=url, status_code=404)
         return FakeResponse(url=url, content=self.zip_bytes)
 
     def fake_get_with_required_missing(self, url, stream=True, timeout=300):
-        if 'Real_acct_owner.zip' in url:
+        if "Real_acct_owner.zip" in url:
             return FakeResponse(url=url, status_code=404)
         return FakeResponse(url=url, content=self.zip_bytes)
 
     @staticmethod
     def runtime_overrides(tmpdir: str) -> dict[str, str]:
         return {
-            'BASE_DIR': tmpdir,
-            'HCAD_DOWNLOAD_DIR': str(Path(tmpdir) / 'var' / 'downloads'),
-            'HCAD_EXTRACT_DIR': str(Path(tmpdir) / 'var' / 'extracted'),
-            'HCAD_LOG_DIR': str(Path(tmpdir) / 'var' / 'logs'),
-            'PROJECT_REPORT_DIR': str(Path(tmpdir) / 'var' / 'reports'),
+            "BASE_DIR": tmpdir,
+            "HCAD_DOWNLOAD_DIR": str(Path(tmpdir) / "var" / "downloads"),
+            "HCAD_EXTRACT_DIR": str(Path(tmpdir) / "var" / "extracted"),
+            "HCAD_LOG_DIR": str(Path(tmpdir) / "var" / "logs"),
+            "PROJECT_REPORT_DIR": str(Path(tmpdir) / "var" / "reports"),
         }
 
     def test_download_and_extract_hcad_skips_missing_optional_archive(self):
-        with tempfile.TemporaryDirectory() as tmpdir, override_settings(
-            **self.runtime_overrides(tmpdir)
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            override_settings(**self.runtime_overrides(tmpdir)),
         ):
-            with patch('data.tasks_new.datetime', self.mock_datetime), patch(
-                'data.tasks_new.requests.get',
-                side_effect=self.fake_get_with_optional_missing,
+            with (
+                patch("data.tasks_new.datetime", self.mock_datetime),
+                patch(
+                    "data.tasks_new.requests.get",
+                    side_effect=self.fake_get_with_optional_missing,
+                ),
             ):
                 results = download_and_extract_hcad.run()
 
-            results_by_name = {result['filename']: result for result in results}
+            results_by_name = {result["filename"]: result for result in results}
 
-            self.assertIn('Real_acct_ownership_history.zip', results_by_name)
-            self.assertTrue(results_by_name['Real_acct_ownership_history.zip']['skipped'])
-            self.assertTrue(results_by_name['Real_acct_ownership_history.zip']['optional'])
-            self.assertIn('/CAMA/2025/', results_by_name['Real_acct_owner.zip']['url'])
-            self.assertTrue(results_by_name['Real_acct_owner.zip']['extracted'])
+            self.assertIn("Real_acct_ownership_history.zip", results_by_name)
+            self.assertTrue(results_by_name["Real_acct_ownership_history.zip"]["skipped"])
+            self.assertTrue(results_by_name["Real_acct_ownership_history.zip"]["optional"])
+            self.assertIn("/CAMA/2025/", results_by_name["Real_acct_owner.zip"]["url"])
+            self.assertTrue(results_by_name["Real_acct_owner.zip"]["extracted"])
             self.assertFalse(
-                DownloadRecord.objects.filter(filename='Real_acct_ownership_history.zip').exists()
+                DownloadRecord.objects.filter(filename="Real_acct_ownership_history.zip").exists()
             )
             self.assertTrue(
-                Path(tmpdir, 'var', 'extracted', 'Real_acct_owner', 'payload.txt').exists()
+                Path(tmpdir, "var", "extracted", "Real_acct_owner", "payload.txt").exists()
             )
 
     def test_download_and_extract_hcad_raises_for_missing_required_archive(self):
-        with tempfile.TemporaryDirectory() as tmpdir, override_settings(
-            **self.runtime_overrides(tmpdir)
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            override_settings(**self.runtime_overrides(tmpdir)),
         ):
-            with patch('data.tasks_new.datetime', self.mock_datetime), patch(
-                'data.tasks_new.requests.get',
-                side_effect=self.fake_get_with_required_missing,
+            with (
+                patch("data.tasks_new.datetime", self.mock_datetime),
+                patch(
+                    "data.tasks_new.requests.get",
+                    side_effect=self.fake_get_with_required_missing,
+                ),
             ):
                 with self.assertRaises(requests.HTTPError):
                     download_and_extract_hcad.run()
 
-        self.assertFalse(DownloadRecord.objects.filter(filename='Real_acct_owner.zip').exists())
+        self.assertFalse(DownloadRecord.objects.filter(filename="Real_acct_owner.zip").exists())
 
 
 class AuthoritativeTaskDelegationTests(TestCase):

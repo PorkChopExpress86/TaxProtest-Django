@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import os
 import shutil
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
-
 
 RUNTIME_ROOT_DIRNAME = "var"
 
@@ -51,9 +50,7 @@ def resolve_runtime_paths(
     )
 
 
-def resolve_from_base(
-    base_dir: str | os.PathLike[str], value: str | os.PathLike[str]
-) -> Path:
+def resolve_from_base(base_dir: str | os.PathLike[str], value: str | os.PathLike[str]) -> Path:
     candidate = Path(value)
     if candidate.is_absolute():
         return candidate

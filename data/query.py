@@ -1,9 +1,6 @@
-from typing import Dict
-
 from django.db.models import QuerySet
 
 from .models import PropertyRecord
-
 
 SORT_MAP = {
     "zipcode": "zipcode",
@@ -17,7 +14,7 @@ SORT_MAP = {
 }
 
 
-def build_property_search_queryset(params: Dict[str, str]) -> QuerySet:
+def build_property_search_queryset(params: dict[str, str]) -> QuerySet:
     """Return a filtered and ordered PropertyRecord queryset based on search params."""
 
     qs = PropertyRecord.objects.all()

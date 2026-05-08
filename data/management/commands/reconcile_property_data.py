@@ -20,8 +20,7 @@ from data.residential import is_residential_state_class, normalize_state_class
 
 class Command(BaseCommand):
     help = (
-        "Dry-run or apply cleanup for legacy non-residential and incomplete "
-        "PropertyRecord rows."
+        "Dry-run or apply cleanup for legacy non-residential and incomplete " "PropertyRecord rows."
     )
 
     def add_arguments(self, parser) -> None:  # type: ignore[override]
@@ -47,15 +46,33 @@ class Command(BaseCommand):
 
         preview = self._preview_cleanup(chunk_size=chunk_size)
 
-        self.stdout.write(f"\nProperties examined:                 {preview['properties_examined']:>10,}")
-        self.stdout.write(f"State classes needing normalization: {preview['state_classes_normalized']:>10,}")
-        self.stdout.write(f"Residential flags out of sync:       {preview['residential_flags_synced']:>10,}")
-        self.stdout.write(f"Ready properties after sync:         {preview['effective_ready_properties']:>10,}")
-        self.stdout.write(f"Non-residential rows to remove:      {preview['non_residential_properties']:>10,}")
-        self.stdout.write(f"Incomplete residential rows to remove:{preview['incomplete_properties']:>9,}")
-        self.stdout.write(f"Rows missing state_class:            {preview['missing_state_class']:>10,}")
-        self.stdout.write(f"Orphaned buildings currently present:{preview['orphaned_buildings']:>9,}")
-        self.stdout.write(f"Orphaned features currently present: {preview['orphaned_features']:>10,}")
+        self.stdout.write(
+            f"\nProperties examined:                 {preview['properties_examined']:>10,}"
+        )
+        self.stdout.write(
+            f"State classes needing normalization: {preview['state_classes_normalized']:>10,}"
+        )
+        self.stdout.write(
+            f"Residential flags out of sync:       {preview['residential_flags_synced']:>10,}"
+        )
+        self.stdout.write(
+            f"Ready properties after sync:         {preview['effective_ready_properties']:>10,}"
+        )
+        self.stdout.write(
+            f"Non-residential rows to remove:      {preview['non_residential_properties']:>10,}"
+        )
+        self.stdout.write(
+            f"Incomplete residential rows to remove:{preview['incomplete_properties']:>9,}"
+        )
+        self.stdout.write(
+            f"Rows missing state_class:            {preview['missing_state_class']:>10,}"
+        )
+        self.stdout.write(
+            f"Orphaned buildings currently present:{preview['orphaned_buildings']:>9,}"
+        )
+        self.stdout.write(
+            f"Orphaned features currently present: {preview['orphaned_features']:>10,}"
+        )
 
         if not apply_changes:
             self.stdout.write(
@@ -103,14 +120,30 @@ class Command(BaseCommand):
         ).count()
 
         self.stdout.write(self.style.SUCCESS("\nSynchronization and cleanup complete."))
-        self.stdout.write(f"  State classes normalized:          {sync_results['state_classes_normalized']:>10,}")
-        self.stdout.write(f"  Residential flags synchronized:    {sync_results['residential_flags_synced']:>10,}")
-        self.stdout.write(f"  Buildings relinked:                {link_results['buildings_linked']:>10,}")
-        self.stdout.write(f"  Features relinked:                 {link_results['features_linked']:>10,}")
-        self.stdout.write(f"  Ready properties recomputed:       {readiness_results['ready_properties_set']:>10,}")
-        self.stdout.write(f"  Properties deleted:                {deletion_totals.get('data.PropertyRecord', 0):>10,}")
-        self.stdout.write(f"  Buildings deleted:                 {deletion_totals.get('data.BuildingDetail', 0):>10,}")
-        self.stdout.write(f"  Features deleted:                  {deletion_totals.get('data.ExtraFeature', 0):>10,}")
+        self.stdout.write(
+            f"  State classes normalized:          {sync_results['state_classes_normalized']:>10,}"
+        )
+        self.stdout.write(
+            f"  Residential flags synchronized:    {sync_results['residential_flags_synced']:>10,}"
+        )
+        self.stdout.write(
+            f"  Buildings relinked:                {link_results['buildings_linked']:>10,}"
+        )
+        self.stdout.write(
+            f"  Features relinked:                 {link_results['features_linked']:>10,}"
+        )
+        self.stdout.write(
+            f"  Ready properties recomputed:       {readiness_results['ready_properties_set']:>10,}"
+        )
+        self.stdout.write(
+            f"  Properties deleted:                {deletion_totals.get('data.PropertyRecord', 0):>10,}"
+        )
+        self.stdout.write(
+            f"  Buildings deleted:                 {deletion_totals.get('data.BuildingDetail', 0):>10,}"
+        )
+        self.stdout.write(
+            f"  Features deleted:                  {deletion_totals.get('data.ExtraFeature', 0):>10,}"
+        )
 
         if remaining_non_residential or remaining_incomplete:
             raise CommandError(
@@ -119,7 +152,11 @@ class Command(BaseCommand):
                 f"{remaining_incomplete:,} incomplete residential properties remain."
             )
 
-        self.stdout.write(self.style.SUCCESS("\nAll remaining PropertyRecord rows are residential and data-ready."))
+        self.stdout.write(
+            self.style.SUCCESS(
+                "\nAll remaining PropertyRecord rows are residential and data-ready."
+            )
+        )
 
     def _preview_cleanup(self, *, chunk_size: int) -> dict[str, int]:
         ready_buildings = BuildingDetail.objects.filter(
@@ -129,9 +166,9 @@ class Command(BaseCommand):
             bathrooms__isnull=False,
         )
 
-        queryset = PropertyRecord.objects.annotate(
-            has_ready_building=Exists(ready_buildings)
-        ).only("pk", "state_class", "is_residential", "latitude", "longitude")
+        queryset = PropertyRecord.objects.annotate(has_ready_building=Exists(ready_buildings)).only(
+            "pk", "state_class", "is_residential", "latitude", "longitude"
+        )
 
         results = {
             "properties_examined": 0,

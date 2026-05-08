@@ -6,268 +6,337 @@ Usage:
 """
 
 from django.core.management.base import BaseCommand
+
 from data.tasks_new import download_and_import_building_data
 
 
 class Command(BaseCommand):
-    help = 'Manually trigger the building data import task'
+    help = "Manually trigger the building data import task"
 
     def add_arguments(self, parser):
         parser.add_argument(
-            '--async',
-            action='store_true',
-            help='Run the task asynchronously via Celery (default is synchronous)',
+            "--async",
+            action="store_true",
+            help="Run the task asynchronously via Celery (default is synchronous)",
         )
         parser.add_argument(
-            '--skip-download',
-            action='store_true',
-            help='Skip downloading and extracting; use existing files',
+            "--skip-download",
+            action="store_true",
+            help="Skip downloading and extracting; use existing files",
         )
         parser.add_argument(
-            '--with-gis',
-            action='store_true',
-            help='Also import GIS coordinate data after building import',
+            "--with-gis",
+            action="store_true",
+            help="Also import GIS coordinate data after building import",
         )
         parser.add_argument(
-            '--no-refresh-readiness',
-            action='store_true',
-            help='Skip readiness recomputation during building/GIS stages',
+            "--no-refresh-readiness",
+            action="store_true",
+            help="Skip readiness recomputation during building/GIS stages",
         )
 
     def handle(self, *args, **options):
-        if options['async']:
+        if options["async"]:
             # Run via Celery (asynchronous)
-            self.stdout.write(self.style.SUCCESS('Sending task to Celery worker...'))
+            self.stdout.write(self.style.SUCCESS("Sending task to Celery worker..."))
             task = download_and_import_building_data.delay()
-            self.stdout.write(self.style.SUCCESS(f'Task queued successfully!'))
-            self.stdout.write(self.style.SUCCESS(f'Task ID: {task.id}'))
-            self.stdout.write(self.style.SUCCESS(f'Monitor with: docker compose logs -f worker'))
+            self.stdout.write(self.style.SUCCESS("Task queued successfully!"))
+            self.stdout.write(self.style.SUCCESS(f"Task ID: {task.id}"))
+            self.stdout.write(self.style.SUCCESS("Monitor with: docker compose logs -f worker"))
         else:
             # Run synchronously (direct call, no Celery)
-            self.stdout.write(self.style.SUCCESS('Starting building data import (synchronous)...'))
-            no_refresh_readiness = options.get('no_refresh_readiness', False)
-            
+            self.stdout.write(self.style.SUCCESS("Starting building data import (synchronous)..."))
+            no_refresh_readiness = options.get("no_refresh_readiness", False)
+
             # Import the actual function logic without the decorator
-            import os
             import zipfile
-            from pathlib import Path
-            import requests
             from datetime import datetime
+            from pathlib import Path
+
+            import requests
             from django.conf import settings
-            from data.models import DownloadRecord, BuildingDetail, ExtraFeature
-            from data.etl import load_building_details, load_extra_features, mark_old_records_inactive, link_orphaned_records, load_fixtures_room_counts
-            
+
+            from data.etl import (
+                link_orphaned_records,
+                load_building_details,
+                load_extra_features,
+                load_fixtures_room_counts,
+                mark_old_records_inactive,
+            )
+            from data.models import DownloadRecord
+
             download_dir = Path(settings.HCAD_DOWNLOAD_DIR)
             extract_root = Path(settings.HCAD_EXTRACT_DIR)
             download_dir.mkdir(parents=True, exist_ok=True)
             extract_root.mkdir(parents=True, exist_ok=True)
-            
+
             current_year = datetime.now().year
-            url = f'https://download.hcad.org/data/CAMA/{current_year}/Real_building_land.zip'
+            url = f"https://download.hcad.org/data/CAMA/{current_year}/Real_building_land.zip"
 
             # Check if current year data is available, otherwise fallback
-            if not options.get('skip_download'):
+            if not options.get("skip_download"):
                 try:
-                    self.stdout.write(f'Checking availability for {current_year}...')
+                    self.stdout.write(f"Checking availability for {current_year}...")
                     # Fast timeout for check
                     head = requests.head(url, timeout=10)
                     if head.status_code == 404:
-                        self.stdout.write(self.style.WARNING(f'Data for {current_year} not found (404). Falling back to {current_year-1}'))
+                        self.stdout.write(
+                            self.style.WARNING(
+                                f"Data for {current_year} not found (404). Falling back to {current_year-1}"
+                            )
+                        )
                         current_year -= 1
-                        url = f'https://download.hcad.org/data/CAMA/{current_year}/Real_building_land.zip'
+                        url = f"https://download.hcad.org/data/CAMA/{current_year}/Real_building_land.zip"
                 except Exception as e:
-                    self.stdout.write(self.style.WARNING(f'Could not check URL availability: {e}. Proceeding with default.'))
-            
-            local_name = 'Real_building_land.zip'
+                    self.stdout.write(
+                        self.style.WARNING(
+                            f"Could not check URL availability: {e}. Proceeding with default."
+                        )
+                    )
+
+            local_name = "Real_building_land.zip"
             local_path = download_dir / local_name
-            extract_dir = extract_root / 'Real_building_land'
-            
-            if options.get('skip_download'):
-                self.stdout.write('Skipping download, using existing files...')
+            extract_dir = extract_root / "Real_building_land"
+
+            if options.get("skip_download"):
+                self.stdout.write("Skipping download, using existing files...")
                 if not extract_dir.exists():
-                    raise Exception(f'Extract directory not found: {extract_dir}. Remove --skip-download to download.')
+                    raise Exception(
+                        f"Extract directory not found: {extract_dir}. Remove --skip-download to download."
+                    )
             else:
-                self.stdout.write(f'Downloading {url}...')
+                self.stdout.write(f"Downloading {url}...")
                 # Custom progress download
                 with requests.get(url, stream=True, timeout=300) as r:
                     r.raise_for_status()
-                    total_length = int(r.headers.get('content-length') or 0)
+                    total_length = int(r.headers.get("content-length") or 0)
                     downloaded = 0
-                    
-                    with local_path.open('wb') as f:
+
+                    with local_path.open("wb") as f:
                         for chunk in r.iter_content(chunk_size=8192):
                             f.write(chunk)
                             downloaded += len(chunk)
                             if total_length > 0:
                                 percent = int(100 * downloaded / total_length)
                                 # Print progress every ~5% or 10MB to avoid spamming logs, but allow user to see it
-                                if downloaded % (10 * 1024 * 1024) < 8192:  # Approximate check every 10MB
-                                    self.stdout.write(f'  ... {percent}% ({downloaded//(1024*1024)} MB)', ending='\r')
+                                if (
+                                    downloaded % (10 * 1024 * 1024) < 8192
+                                ):  # Approximate check every 10MB
+                                    self.stdout.write(
+                                        f"  ... {percent}% ({downloaded//(1024*1024)} MB)",
+                                        ending="\r",
+                                    )
                                     self.stdout.flush()
-                self.stdout.write(f'\nDownloaded {downloaded//(1024*1024)} MB to {local_path}')
-                
+                self.stdout.write(f"\nDownloaded {downloaded//(1024*1024)} MB to {local_path}")
+
                 rec = DownloadRecord.objects.create(url=url, filename=local_name)
-                
+
                 extract_dir.mkdir(parents=True, exist_ok=True)
-                
-                self.stdout.write('Extracting ZIP file...')
-                with zipfile.ZipFile(local_path, 'r') as z:
+
+                self.stdout.write("Extracting ZIP file...")
+                with zipfile.ZipFile(local_path, "r") as z:
                     z.extractall(extract_dir)
                 rec.extracted = True
                 rec.save()
-                self.stdout.write(self.style.SUCCESS(f'Extracted to {extract_dir}'))
-            
-            building_file = extract_dir / 'building_res.txt'
-            features_file = extract_dir / 'extra_features.txt'
-            fixtures_file = extract_dir / 'fixtures.txt'
-            
+                self.stdout.write(self.style.SUCCESS(f"Extracted to {extract_dir}"))
+
+            building_file = extract_dir / "building_res.txt"
+            features_file = extract_dir / "extra_features.txt"
+            fixtures_file = extract_dir / "fixtures.txt"
+
             results = {
-                'download_url': url,
-                'extracted_to': extract_dir,
-                'buildings_imported': 0,
-                'buildings_invalid': 0,
-                'features_imported': 0,
-                'features_invalid': 0,
-                'buildings_deactivated': 0,
-                'features_deactivated': 0,
-                'buildings_linked': 0,
-                'features_linked': 0,
-                'rooms_updated': 0,
+                "download_url": url,
+                "extracted_to": extract_dir,
+                "buildings_imported": 0,
+                "buildings_invalid": 0,
+                "features_imported": 0,
+                "features_invalid": 0,
+                "buildings_deactivated": 0,
+                "features_deactivated": 0,
+                "buildings_linked": 0,
+                "features_linked": 0,
+                "rooms_updated": 0,
             }
-            
+
             # Generate batch ID for this import
-            batch_id = datetime.now().strftime('%Y%m%d_%H%M%S')
-            
+            batch_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+
             # Mark old data as inactive (soft delete)
-            self.stdout.write('Marking old building data as inactive...')
+            self.stdout.write("Marking old building data as inactive...")
             deactivate_results = mark_old_records_inactive()
-            results['buildings_deactivated'] = deactivate_results['buildings_deactivated']
-            results['features_deactivated'] = deactivate_results['features_deactivated']
-            self.stdout.write(f'Marked {results["buildings_deactivated"]} buildings and {results["features_deactivated"]} features as inactive')
-            
+            results["buildings_deactivated"] = deactivate_results["buildings_deactivated"]
+            results["features_deactivated"] = deactivate_results["features_deactivated"]
+            self.stdout.write(
+                f'Marked {results["buildings_deactivated"]} buildings and {results["features_deactivated"]} features as inactive'
+            )
+
             # Import building details
             if building_file.exists():
-                self.stdout.write(f'Importing building details from {building_file}...')
+                self.stdout.write(f"Importing building details from {building_file}...")
                 try:
-                    building_results = load_building_details(str(building_file), chunk_size=5000, import_batch_id=batch_id)
-                    results['buildings_imported'] = building_results['imported']
-                    results['buildings_invalid'] = building_results['invalid']
-                    self.stdout.write(self.style.SUCCESS(f'Imported {building_results["imported"]} building records'))
-                    self.stdout.write(f'Invalid: {building_results["invalid"]}, Skipped: {building_results["skipped"]}')
+                    building_results = load_building_details(
+                        str(building_file), chunk_size=5000, import_batch_id=batch_id
+                    )
+                    results["buildings_imported"] = building_results["imported"]
+                    results["buildings_invalid"] = building_results["invalid"]
+                    self.stdout.write(
+                        self.style.SUCCESS(
+                            f'Imported {building_results["imported"]} building records'
+                        )
+                    )
+                    self.stdout.write(
+                        f'Invalid: {building_results["invalid"]}, Skipped: {building_results["skipped"]}'
+                    )
                 except Exception as e:
-                    results['building_error'] = str(e)
-                    self.stdout.write(self.style.ERROR(f'Error importing buildings: {e}'))
+                    results["building_error"] = str(e)
+                    self.stdout.write(self.style.ERROR(f"Error importing buildings: {e}"))
             else:
-                results['building_error'] = 'File not found'
-                self.stdout.write(self.style.WARNING(f'Building file not found at {building_file}'))
-            
+                results["building_error"] = "File not found"
+                self.stdout.write(self.style.WARNING(f"Building file not found at {building_file}"))
+
             # Import extra features (try detail files first)
-            detail_files = [f.name for f in extract_dir.iterdir() if f.name.startswith('extra_features_detail') and f.name.endswith('.txt')]
-            detail_files.sort() # Ensure deterministic order
-            
+            detail_files = [
+                f.name
+                for f in extract_dir.iterdir()
+                if f.name.startswith("extra_features_detail") and f.name.endswith(".txt")
+            ]
+            detail_files.sort()  # Ensure deterministic order
+
             if detail_files:
-                self.stdout.write(f'Found {len(detail_files)} detailed feature files: {detail_files}')
+                self.stdout.write(
+                    f"Found {len(detail_files)} detailed feature files: {detail_files}"
+                )
                 truncate_features = True
-                
+
                 for fname in detail_files:
                     fpath = extract_dir / fname
-                    self.stdout.write(f'Importing extra features from {fpath} (truncate={truncate_features})...')
+                    self.stdout.write(
+                        f"Importing extra features from {fpath} (truncate={truncate_features})..."
+                    )
                     try:
                         feature_results = load_extra_features(
                             str(fpath),
                             chunk_size=5000,
                             import_batch_id=batch_id,
-                            truncate=truncate_features
+                            truncate=truncate_features,
                         )
-                        results['features_imported'] += feature_results['imported']
-                        results['features_invalid'] += feature_results['invalid']
-                        self.stdout.write(self.style.SUCCESS(f'Imported {feature_results["imported"]} feature records from {fname}'))
-                        
+                        results["features_imported"] += feature_results["imported"]
+                        results["features_invalid"] += feature_results["invalid"]
+                        self.stdout.write(
+                            self.style.SUCCESS(
+                                f'Imported {feature_results["imported"]} feature records from {fname}'
+                            )
+                        )
+
                         # Only truncate on the first file
                         truncate_features = False
-                        
+
                     except Exception as e:
-                        results['features_error'] = str(e)
-                        self.stdout.write(self.style.ERROR(f'Error importing features from {fname}: {e}'))
-            
+                        results["features_error"] = str(e)
+                        self.stdout.write(
+                            self.style.ERROR(f"Error importing features from {fname}: {e}")
+                        )
+
             elif features_file.exists():
                 # Fallback to old file if detailed ones missing
-                self.stdout.write(f'Importing extra features from {features_file}...')
+                self.stdout.write(f"Importing extra features from {features_file}...")
                 try:
                     feature_results = load_extra_features(
-                        str(features_file),
-                        chunk_size=5000,
-                        import_batch_id=batch_id,
-                        truncate=True
+                        str(features_file), chunk_size=5000, import_batch_id=batch_id, truncate=True
                     )
-                    results['features_imported'] = feature_results['imported']
-                    results['features_invalid'] = feature_results['invalid']
-                    self.stdout.write(self.style.SUCCESS(f'Imported {feature_results["imported"]} feature records'))
+                    results["features_imported"] = feature_results["imported"]
+                    results["features_invalid"] = feature_results["invalid"]
+                    self.stdout.write(
+                        self.style.SUCCESS(
+                            f'Imported {feature_results["imported"]} feature records'
+                        )
+                    )
                 except Exception as e:
-                    results['features_error'] = str(e)
-                    self.stdout.write(self.style.ERROR(f'Error importing features: {e}'))
+                    results["features_error"] = str(e)
+                    self.stdout.write(self.style.ERROR(f"Error importing features: {e}"))
             else:
-                results['features_error'] = 'File not found'
-                self.stdout.write(self.style.WARNING(f'No feature files found in {extract_dir}'))
-            
+                results["features_error"] = "File not found"
+                self.stdout.write(self.style.WARNING(f"No feature files found in {extract_dir}"))
+
             # Link orphaned records
-            self.stdout.write('Linking orphaned records to properties...')
+            self.stdout.write("Linking orphaned records to properties...")
             try:
                 link_results = link_orphaned_records(chunk_size=5000)
-                results['buildings_linked'] = link_results['buildings_linked']
-                results['features_linked'] = link_results['features_linked']
-                self.stdout.write(self.style.SUCCESS(f'Linked {link_results["buildings_linked"]} buildings and {link_results["features_linked"]} features'))
+                results["buildings_linked"] = link_results["buildings_linked"]
+                results["features_linked"] = link_results["features_linked"]
+                self.stdout.write(
+                    self.style.SUCCESS(
+                        f'Linked {link_results["buildings_linked"]} buildings and {link_results["features_linked"]} features'
+                    )
+                )
             except Exception as e:
-                results['linking_error'] = str(e)
-                self.stdout.write(self.style.ERROR(f'Error linking orphaned records: {e}'))
-            
+                results["linking_error"] = str(e)
+                self.stdout.write(self.style.ERROR(f"Error linking orphaned records: {e}"))
+
             # Load room counts from fixtures
             if fixtures_file.exists():
-                self.stdout.write(f'Loading bedroom/bathroom counts from {fixtures_file}...')
+                self.stdout.write(f"Loading bedroom/bathroom counts from {fixtures_file}...")
                 try:
                     fixtures_results = load_fixtures_room_counts(
                         str(fixtures_file),
                         chunk_size=5000,
                         refresh_readiness=not no_refresh_readiness,
                     )
-                    results['rooms_updated'] = fixtures_results['buildings_updated']
-                    self.stdout.write(self.style.SUCCESS(f'Updated {fixtures_results["buildings_updated"]} buildings with room counts'))
+                    results["rooms_updated"] = fixtures_results["buildings_updated"]
+                    self.stdout.write(
+                        self.style.SUCCESS(
+                            f'Updated {fixtures_results["buildings_updated"]} buildings with room counts'
+                        )
+                    )
                 except Exception as e:
-                    results['fixtures_error'] = str(e)
-                    self.stdout.write(self.style.ERROR(f'Error loading room counts: {e}'))
+                    results["fixtures_error"] = str(e)
+                    self.stdout.write(self.style.ERROR(f"Error loading room counts: {e}"))
             else:
-                self.stdout.write(self.style.WARNING(f'Fixtures file not found at {fixtures_file}'))
-            
-            self.stdout.write(self.style.SUCCESS('\n' + '='*70))
-            self.stdout.write(self.style.SUCCESS('Building data import completed!'))
-            self.stdout.write(self.style.SUCCESS(f'Batch ID: {batch_id}'))
-            self.stdout.write(self.style.SUCCESS(f'Buildings deactivated: {results["buildings_deactivated"]}'))
-            self.stdout.write(self.style.SUCCESS(f'Features deactivated: {results["features_deactivated"]}'))
-            self.stdout.write(self.style.SUCCESS(f'Buildings imported: {results["buildings_imported"]}'))
-            self.stdout.write(self.style.SUCCESS(f'Features imported: {results["features_imported"]}'))
-            self.stdout.write(self.style.SUCCESS(f'Buildings linked: {results["buildings_linked"]}'))
+                self.stdout.write(self.style.WARNING(f"Fixtures file not found at {fixtures_file}"))
+
+            self.stdout.write(self.style.SUCCESS("\n" + "=" * 70))
+            self.stdout.write(self.style.SUCCESS("Building data import completed!"))
+            self.stdout.write(self.style.SUCCESS(f"Batch ID: {batch_id}"))
+            self.stdout.write(
+                self.style.SUCCESS(f'Buildings deactivated: {results["buildings_deactivated"]}')
+            )
+            self.stdout.write(
+                self.style.SUCCESS(f'Features deactivated: {results["features_deactivated"]}')
+            )
+            self.stdout.write(
+                self.style.SUCCESS(f'Buildings imported: {results["buildings_imported"]}')
+            )
+            self.stdout.write(
+                self.style.SUCCESS(f'Features imported: {results["features_imported"]}')
+            )
+            self.stdout.write(
+                self.style.SUCCESS(f'Buildings linked: {results["buildings_linked"]}')
+            )
             self.stdout.write(self.style.SUCCESS(f'Features linked: {results["features_linked"]}'))
-            self.stdout.write(self.style.SUCCESS(f'Rooms updated: {results.get("rooms_updated", 0)}'))
-            self.stdout.write(self.style.SUCCESS('='*70))
-            
+            self.stdout.write(
+                self.style.SUCCESS(f'Rooms updated: {results.get("rooms_updated", 0)}')
+            )
+            self.stdout.write(self.style.SUCCESS("=" * 70))
+
             # Optional: Also import GIS data
-            if options.get('with_gis'):
-                self.stdout.write(self.style.SUCCESS('\n' + '='*70))
-                self.stdout.write(self.style.SUCCESS('Importing GIS coordinate data...'))
-                self.stdout.write(self.style.SUCCESS('='*70))
+            if options.get("with_gis"):
+                self.stdout.write(self.style.SUCCESS("\n" + "=" * 70))
+                self.stdout.write(self.style.SUCCESS("Importing GIS coordinate data..."))
+                self.stdout.write(self.style.SUCCESS("=" * 70))
                 from django.core.management import call_command
+
                 try:
-                    if options.get('skip_download'):
+                    if options.get("skip_download"):
                         call_command(
-                            'load_gis_data',
-                            '--skip-download',
+                            "load_gis_data",
+                            "--skip-download",
                             no_refresh_readiness=no_refresh_readiness,
                         )
                     else:
                         call_command(
-                            'load_gis_data',
+                            "load_gis_data",
                             no_refresh_readiness=no_refresh_readiness,
                         )
-                    self.stdout.write(self.style.SUCCESS('✓ GIS data import completed'))
+                    self.stdout.write(self.style.SUCCESS("✓ GIS data import completed"))
                 except Exception as e:
-                    self.stdout.write(self.style.ERROR(f'✗ GIS import failed: {e}'))
+                    self.stdout.write(self.style.ERROR(f"✗ GIS import failed: {e}"))

@@ -10,8 +10,6 @@ Usage:
 
 from __future__ import annotations
 
-from typing import List, Tuple
-
 from django.core.management.base import BaseCommand, CommandError
 from django.db.models import Count, Q
 
@@ -44,7 +42,7 @@ class Command(BaseCommand):
         verbose: bool = options["verbose"]
         skip_building_checks: bool = options["skip_building_checks"]
         skip_gis_checks: bool = options["skip_gis_checks"]
-        failures: List[Tuple[str, str]] = []
+        failures: list[tuple[str, str]] = []
 
         self.stdout.write(self.style.SUCCESS("=" * 70))
         self.stdout.write(self.style.SUCCESS("  DATABASE INTEGRITY VALIDATION"))
@@ -98,11 +96,13 @@ class Command(BaseCommand):
                 .distinct()
                 .count()
             )
-            residential_missing_gis = PropertyRecord.objects.filter(
-                is_residential=True,
-            ).filter(
-                Q(latitude__isnull=True) | Q(longitude__isnull=True)
-            ).count()
+            residential_missing_gis = (
+                PropertyRecord.objects.filter(
+                    is_residential=True,
+                )
+                .filter(Q(latitude__isnull=True) | Q(longitude__isnull=True))
+                .count()
+            )
 
             if missing_state_class == 0:
                 self._pass("All properties have an HCAD state class")
@@ -149,9 +149,7 @@ class Command(BaseCommand):
                     failures.append(("GIS", msg))
 
             if skip_building_checks or skip_gis_checks:
-                readiness_msg = (
-                    f"{ready_prop_count:,}/{residential_prop_count:,} residential properties are currently marked data-ready"
-                )
+                readiness_msg = f"{ready_prop_count:,}/{residential_prop_count:,} residential properties are currently marked data-ready"
                 if not_ready == 0:
                     self._pass(readiness_msg)
                 else:
@@ -181,9 +179,7 @@ class Command(BaseCommand):
             failures.append(("DUPLICATE", msg))
             if verbose:
                 for d in dup_props[:10]:
-                    self.stdout.write(
-                        f"    {d['account_number']}: {d['cnt']} records"
-                    )
+                    self.stdout.write(f"    {d['account_number']}: {d['cnt']} records")
 
         # ------------------------------------------------------------------
         # 4. Duplicate BuildingDetails
@@ -235,18 +231,10 @@ class Command(BaseCommand):
         if skip_building_checks:
             self._warn("Skipped building completeness percentages by request")
         elif residential_building_count > 0:
-            missing_beds = residential_buildings.filter(
-                bedrooms__isnull=True
-            ).count()
-            missing_baths = residential_buildings.filter(
-                bathrooms__isnull=True
-            ).count()
-            missing_quality = residential_buildings.filter(
-                quality_code=""
-            ).count()
-            missing_heat = residential_buildings.filter(
-                heat_area__isnull=True
-            ).count()
+            missing_beds = residential_buildings.filter(bedrooms__isnull=True).count()
+            missing_baths = residential_buildings.filter(bathrooms__isnull=True).count()
+            missing_quality = residential_buildings.filter(quality_code="").count()
+            missing_heat = residential_buildings.filter(heat_area__isnull=True).count()
 
             bed_pct = (1 - missing_beds / residential_building_count) * 100
             bath_pct = (1 - missing_baths / residential_building_count) * 100
@@ -277,9 +265,7 @@ class Command(BaseCommand):
             is_active=True, property__isnull=True
         ).count()
 
-        orphan_features = ExtraFeature.objects.filter(
-            is_active=True, property__isnull=True
-        ).count()
+        orphan_features = ExtraFeature.objects.filter(is_active=True, property__isnull=True).count()
 
         if orphan_buildings == 0:
             self._pass("No orphaned BuildingDetail records")
@@ -302,13 +288,14 @@ class Command(BaseCommand):
             self._warn("Skipped GIS coverage check by request")
         elif residential_prop_count > 0:
             with_coords = PropertyRecord.objects.filter(
-                is_residential=True,
-                latitude__isnull=False, longitude__isnull=False
+                is_residential=True, latitude__isnull=False, longitude__isnull=False
             ).count()
             coord_pct = with_coords / residential_prop_count * 100
 
             if coord_pct >= 100.0:
-                self._pass(f"{coord_pct:.1f}% of residential properties have coordinates ({with_coords:,}/{residential_prop_count:,})")
+                self._pass(
+                    f"{coord_pct:.1f}% of residential properties have coordinates ({with_coords:,}/{residential_prop_count:,})"
+                )
             else:
                 msg = f"Only {coord_pct:.1f}% of residential properties have coordinates"
                 self._fail(msg)
