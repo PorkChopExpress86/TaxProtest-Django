@@ -1,12 +1,11 @@
-from unittest.mock import MagicMock, patch
-
 import csv
 from io import StringIO
+from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
 from django.urls import reverse
 
-from data.models import BuildingDetail, ExtraFeature, PropertyRecord
+from data.models import AssessmentHistory, BuildingDetail, ExtraFeature, PropertyRecord
 
 
 class PropertySearchViewTests(TestCase):
@@ -226,6 +225,16 @@ class SimilarPropertiesViewTests(TestCase):
             bathrooms=2,
             is_active=True,
         )
+        AssessmentHistory.objects.create(
+            account_number=self.target.account_number,
+            tax_year=2026,
+            assessed_value=380000,
+        )
+        AssessmentHistory.objects.create(
+            account_number=self.target.account_number,
+            tax_year=2025,
+            assessed_value=360000,
+        )
 
         self.low_ppsf_property = PropertyRecord.objects.create(
             address="123 Value Ln",
@@ -284,9 +293,7 @@ class SimilarPropertiesViewTests(TestCase):
             },
         ]
 
-        response = self.client.get(
-            reverse("similar_properties", args=[self.target.account_number])
-        )
+        response = self.client.get(reverse("similar_properties", args=[self.target.account_number]))
 
         self.assertEqual(response.status_code, 200)
         results = response.context["results"]
@@ -334,6 +341,32 @@ class SimilarPropertiesViewTests(TestCase):
         self.assertEqual(response.context["max_distance"], 50.0)
         self.assertEqual(response.context["max_results"], 100)
         self.assertEqual(response.context["min_score"], 0.0)
+
+    @patch("taxprotest.views.find_similar_properties")
+    def test_similar_properties_includes_assessment_history(self, mock_find_similar):
+        mock_find_similar.return_value = []
+
+        response = self.client.get(reverse("similar_properties", args=[self.target.account_number]))
+
+        self.assertEqual(response.status_code, 200)
+        history = response.context["assessment_history"]
+        self.assertEqual([row["tax_year"] for row in history], [2026, 2025])
+        self.assertContains(response, "Five-Year Assessment History")
+        self.assertContains(response, "Assessed Value Trend")
+        self.assertContains(response, "$380,000")
+        self.assertIsNotNone(response.context["assessment_history_chart"])
+
+    @patch("taxprotest.views.find_similar_properties")
+    def test_similar_properties_hides_history_when_absent(self, mock_find_similar):
+        AssessmentHistory.objects.all().delete()
+        mock_find_similar.return_value = []
+
+        response = self.client.get(reverse("similar_properties", args=[self.target.account_number]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["assessment_history"], [])
+        self.assertIsNone(response.context["assessment_history_chart"])
+        self.assertNotContains(response, "Five-Year Assessment History")
 
 
 class ProtestRecommendationTests(TestCase):
@@ -440,9 +473,7 @@ class ProtestRecommendationTests(TestCase):
             },
         ]
 
-        response = self.client.get(
-            reverse("similar_properties", args=["TARGET001"])
-        )
+        response = self.client.get(reverse("similar_properties", args=["TARGET001"]))
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["protest_recommendation_level"], "strong")
@@ -477,9 +508,7 @@ class ProtestRecommendationTests(TestCase):
             },
         ]
 
-        response = self.client.get(
-            reverse("similar_properties", args=["TARGET002"])
-        )
+        response = self.client.get(reverse("similar_properties", args=["TARGET002"]))
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["protest_recommendation_level"], "neutral")
@@ -505,9 +534,7 @@ class ProtestRecommendationTests(TestCase):
             },
         ]
 
-        response = self.client.get(
-            reverse("similar_properties", args=["TARGET001"])
-        )
+        response = self.client.get(reverse("similar_properties", args=["TARGET001"]))
 
         self.assertEqual(response.status_code, 200)
         self.assertIsNone(response.context["protest_recommendation"])
@@ -568,9 +595,7 @@ class ProtestRecommendationTests(TestCase):
             },
         ]
 
-        response = self.client.get(
-            reverse("similar_properties", args=["TARGET001"])
-        )
+        response = self.client.get(reverse("similar_properties", args=["TARGET001"]))
 
         self.assertEqual(response.status_code, 200)
         # Should only count 3 properties with valid PPSF, excluding the one without assessed value
@@ -603,6 +628,16 @@ class ProtestAnalysisViewTests(TestCase):
             quality_code="B",
             year_built=2005,
             is_active=True,
+        )
+        AssessmentHistory.objects.create(
+            account_number=self.target.account_number,
+            tax_year=2026,
+            assessed_value=355000,
+        )
+        AssessmentHistory.objects.create(
+            account_number=self.target.account_number,
+            tax_year=2025,
+            assessed_value=340000,
         )
         self.comp = PropertyRecord.objects.create(
             address="100 Similar Ln",
@@ -639,17 +674,13 @@ class ProtestAnalysisViewTests(TestCase):
         }
 
     def test_404_for_unknown_account(self):
-        response = self.client.get(
-            reverse("protest_analysis", args=["DOESNOTEXIST"])
-        )
+        response = self.client.get(reverse("protest_analysis", args=["DOESNOTEXIST"]))
         self.assertEqual(response.status_code, 404)
 
     @patch("taxprotest.views.find_similar_properties")
     def test_200_and_required_context_keys_present(self, mock_find):
         mock_find.return_value = [self._similar_result(self.comp, self.comp_building)]
-        response = self.client.get(
-            reverse("protest_analysis", args=[self.target.account_number])
-        )
+        response = self.client.get(reverse("protest_analysis", args=[self.target.account_number]))
         self.assertEqual(response.status_code, 200)
         ctx = response.context
         for key in [
@@ -672,9 +703,7 @@ class ProtestAnalysisViewTests(TestCase):
         # comp:   $320,000 / 2,000 sqft = $160/sqft
         # gap: 185 - 160 = $25/sqft  |  savings: 25 * 2000 = $50,000
         mock_find.return_value = [self._similar_result(self.comp, self.comp_building)]
-        response = self.client.get(
-            reverse("protest_analysis", args=[self.target.account_number])
-        )
+        response = self.client.get(reverse("protest_analysis", args=[self.target.account_number]))
         ctx = response.context
         self.assertAlmostEqual(ctx["subject_value_per_sqft"], 185.0, places=1)
         self.assertAlmostEqual(ctx["median_comp_value_per_sqft"], 160.0, places=1)
@@ -700,9 +729,7 @@ class ProtestAnalysisViewTests(TestCase):
     @patch("taxprotest.views.find_similar_properties")
     def test_min_score_defaults_to_70_when_not_provided(self, mock_find):
         mock_find.return_value = []
-        response = self.client.get(
-            reverse("protest_analysis", args=[self.target.account_number])
-        )
+        response = self.client.get(reverse("protest_analysis", args=[self.target.account_number]))
         self.assertEqual(response.context["min_score"], 70.0)
         mock_find.assert_called_with(
             account_number=self.target.account_number,
@@ -716,9 +743,7 @@ class ProtestAnalysisViewTests(TestCase):
         self.target.assessed_value = None
         self.target.save()
         mock_find.return_value = []
-        response = self.client.get(
-            reverse("protest_analysis", args=[self.target.account_number])
-        )
+        response = self.client.get(reverse("protest_analysis", args=[self.target.account_number]))
         self.assertEqual(response.status_code, 200)
         self.assertIsNone(response.context["subject_value_per_sqft"])
         self.assertIsNone(response.context["equity_gap_per_sqft"])
@@ -729,9 +754,7 @@ class ProtestAnalysisViewTests(TestCase):
     def test_comp_delta_is_negative_when_comp_cheaper_than_subject(self, mock_find):
         # subject: $185/sqft, comp: $160/sqft → delta = -25 (comp is cheaper)
         mock_find.return_value = [self._similar_result(self.comp, self.comp_building)]
-        response = self.client.get(
-            reverse("protest_analysis", args=[self.target.account_number])
-        )
+        response = self.client.get(reverse("protest_analysis", args=[self.target.account_number]))
         comps = response.context["comps"]
         self.assertEqual(len(comps), 1)
         self.assertIn("comp_delta", comps[0])
@@ -741,10 +764,33 @@ class ProtestAnalysisViewTests(TestCase):
     def test_comps_below_subject_counted_correctly(self, mock_find):
         # 1 comp at $160/sqft < subject $185/sqft → count = 1
         mock_find.return_value = [self._similar_result(self.comp, self.comp_building)]
-        response = self.client.get(
-            reverse("protest_analysis", args=[self.target.account_number])
-        )
+        response = self.client.get(reverse("protest_analysis", args=[self.target.account_number]))
         self.assertEqual(response.context["comps_below_subject"], 1)
+
+    @patch("taxprotest.views.find_similar_properties")
+    def test_protest_analysis_includes_assessment_history(self, mock_find):
+        mock_find.return_value = []
+
+        response = self.client.get(reverse("protest_analysis", args=[self.target.account_number]))
+
+        self.assertEqual(response.status_code, 200)
+        history = response.context["assessment_history"]
+        self.assertEqual([row["tax_year"] for row in history], [2026, 2025])
+        self.assertContains(response, "Five-Year Assessment History")
+        self.assertContains(response, "Assessed Value Trend")
+        self.assertIsNotNone(response.context["assessment_history_chart"])
+
+    @patch("taxprotest.views.find_similar_properties")
+    def test_protest_analysis_hides_history_when_absent(self, mock_find):
+        AssessmentHistory.objects.all().delete()
+        mock_find.return_value = []
+
+        response = self.client.get(reverse("protest_analysis", args=[self.target.account_number]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["assessment_history"], [])
+        self.assertIsNone(response.context["assessment_history_chart"])
+        self.assertNotContains(response, "Five-Year Assessment History")
 
 
 class ProtestAnalysisExportTests(TestCase):
@@ -799,9 +845,7 @@ class ProtestAnalysisExportTests(TestCase):
         )
 
     def test_404_for_unknown_account(self):
-        response = self.client.get(
-            reverse("protest_analysis_export", args=["DOESNOTEXIST"])
-        )
+        response = self.client.get(reverse("protest_analysis_export", args=["DOESNOTEXIST"]))
         self.assertEqual(response.status_code, 404)
 
     @patch("taxprotest.views.find_similar_properties")
@@ -830,10 +874,18 @@ class ProtestAnalysisExportTests(TestCase):
         content = response.content.decode()
         header = content.splitlines()[0]
         for col in [
-            "address", "similarity_score", "similarity_label",
-            "living_area_sqft", "bedrooms", "bathrooms", "year_built",
-            "quality_code", "condition_code", "assessed_value",
-            "value_per_sqft", "delta_vs_subject_per_sqft",
+            "address",
+            "similarity_score",
+            "similarity_label",
+            "living_area_sqft",
+            "bedrooms",
+            "bathrooms",
+            "year_built",
+            "quality_code",
+            "condition_code",
+            "assessed_value",
+            "value_per_sqft",
+            "delta_vs_subject_per_sqft",
         ]:
             self.assertIn(col, header, f"Missing CSV column: {col}")
 
@@ -856,6 +908,6 @@ class ProtestAnalysisExportTests(TestCase):
         self.assertEqual(len(lines), 2)  # header + 1 data row
         # delta_vs_subject_per_sqft = comp $/sqft - subject $/sqft
         # comp: 300000/2000 = $150/sqft; subject: 350000/2000 = $175/sqft → -25.00
-        self.assertIn("201 Export Ave", lines[1])   # full address field
-        self.assertIn("150.00", lines[1])           # value_per_sqft
-        self.assertIn("-25.00", lines[1])           # delta_vs_subject_per_sqft
+        self.assertIn("201 Export Ave", lines[1])  # full address field
+        self.assertIn("150.00", lines[1])  # value_per_sqft
+        self.assertIn("-25.00", lines[1])  # delta_vs_subject_per_sqft
