@@ -7,13 +7,12 @@ using synthetic test data. These tests run against a temporary test database.
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 from django.db import IntegrityError
 from django.test import TestCase
 
 from data.models import BuildingDetail, ExtraFeature, PropertyRecord
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -23,10 +22,10 @@ from data.models import BuildingDetail, ExtraFeature, PropertyRecord
 def _create_property(
     account_number: str = "9999990000001",
     *,
-    overrides: Optional[Dict[str, Any]] = None,
+    overrides: dict[str, Any] | None = None,
 ) -> PropertyRecord:
     """Create a minimal PropertyRecord for testing."""
-    defaults: Dict[str, Any] = {
+    defaults: dict[str, Any] = {
         "address": "100 TEST ST",
         "city": "Houston",
         "zipcode": "77001",
@@ -48,10 +47,10 @@ def _create_building(
     prop: PropertyRecord,
     building_number: int = 1,
     *,
-    overrides: Optional[Dict[str, Any]] = None,
+    overrides: dict[str, Any] | None = None,
 ) -> BuildingDetail:
     """Create a minimal BuildingDetail linked to *prop*."""
-    defaults: Dict[str, Any] = {
+    defaults: dict[str, Any] = {
         "property": prop,
         "account_number": prop.account_number,
         "building_number": building_number,
@@ -75,10 +74,10 @@ def _create_feature(
     feature_code: str,
     feature_number: int = 1,
     *,
-    overrides: Optional[Dict[str, Any]] = None,
+    overrides: dict[str, Any] | None = None,
 ) -> ExtraFeature:
     """Create a minimal ExtraFeature linked to *prop*."""
-    defaults: Dict[str, Any] = {
+    defaults: dict[str, Any] = {
         "property": prop,
         "account_number": prop.account_number,
         "feature_number": feature_number,
@@ -213,15 +212,21 @@ class RoomFeatureCompletenessTest(TestCase):
         cls.prop = _create_property("6666666666666")
         cls.building = _create_building(cls.prop)
         cls.rmb = _create_feature(
-            cls.prop, "RMB", feature_number=1,
+            cls.prop,
+            "RMB",
+            feature_number=1,
             overrides={"feature_description": "Bedrooms", "quantity": Decimal("3")},
         )
         cls.rmf = _create_feature(
-            cls.prop, "RMF", feature_number=2,
+            cls.prop,
+            "RMF",
+            feature_number=2,
             overrides={"feature_description": "Full Baths", "quantity": Decimal("2")},
         )
         cls.rmh = _create_feature(
-            cls.prop, "RMH", feature_number=3,
+            cls.prop,
+            "RMH",
+            feature_number=3,
             overrides={"feature_description": "Half Baths", "quantity": Decimal("1")},
         )
 
@@ -246,7 +251,8 @@ class RoomFeatureCompletenessTest(TestCase):
         self.assertGreater(self.building.bathrooms, Decimal("0"))
         # bathrooms should be >= full baths (RMF quantity)
         self.assertGreaterEqual(
-            self.building.bathrooms, Decimal("0"),
+            self.building.bathrooms,
+            Decimal("0"),
         )
 
     def test_quantities_positive(self) -> None:
@@ -273,16 +279,12 @@ class ForeignKeyIntegrityTest(TestCase):
     def test_building_links_to_property(self) -> None:
         """BuildingDetail.property should be a valid PropertyRecord."""
         self.assertIsNotNone(self.building.property_id)
-        self.assertTrue(
-            PropertyRecord.objects.filter(pk=self.building.property_id).exists()
-        )
+        self.assertTrue(PropertyRecord.objects.filter(pk=self.building.property_id).exists())
 
     def test_feature_links_to_property(self) -> None:
         """ExtraFeature.property should be a valid PropertyRecord."""
         self.assertIsNotNone(self.feature.property_id)
-        self.assertTrue(
-            PropertyRecord.objects.filter(pk=self.feature.property_id).exists()
-        )
+        self.assertTrue(PropertyRecord.objects.filter(pk=self.feature.property_id).exists())
 
     def test_building_account_matches_property(self) -> None:
         """BuildingDetail.account_number should match its parent PropertyRecord."""

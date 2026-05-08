@@ -1,82 +1,100 @@
 """
 Management command to load building details and extra features from HCAD.
 """
+
 from pathlib import Path
 
-from django.core.management.base import BaseCommand
 from django.conf import settings
+from django.core.management.base import BaseCommand
+
 from data.etl import load_building_details, load_extra_features
 from taxprotest.runtime_paths import resolve_from_base
 
 
 class Command(BaseCommand):
-    help = 'Load building details and extra features from HCAD Real_building_land files'
+    help = "Load building details and extra features from HCAD Real_building_land files"
 
     def add_arguments(self, parser):
         parser.add_argument(
-            '--building-file',
+            "--building-file",
             type=str,
-            default=str(Path(settings.HCAD_EXTRACT_DIR) / 'Real_building_land' / 'building_res.txt'),
-            help='Path to building_res.txt file (relative to BASE_DIR)'
+            default=str(
+                Path(settings.HCAD_EXTRACT_DIR) / "Real_building_land" / "building_res.txt"
+            ),
+            help="Path to building_res.txt file (relative to BASE_DIR)",
         )
         parser.add_argument(
-            '--features-file',
+            "--features-file",
             type=str,
-            default=str(Path(settings.HCAD_EXTRACT_DIR) / 'Real_building_land' / 'extra_features.txt'),
-            help='Path to extra_features.txt file (relative to BASE_DIR)'
+            default=str(
+                Path(settings.HCAD_EXTRACT_DIR) / "Real_building_land" / "extra_features.txt"
+            ),
+            help="Path to extra_features.txt file (relative to BASE_DIR)",
         )
         parser.add_argument(
-            '--skip-buildings',
-            action='store_true',
-            help='Skip loading building details'
+            "--skip-buildings", action="store_true", help="Skip loading building details"
         )
         parser.add_argument(
-            '--skip-features',
-            action='store_true',
-            help='Skip loading extra features'
+            "--skip-features", action="store_true", help="Skip loading extra features"
         )
 
     def handle(self, *args, **options):
-        building_file = options['building_file']
-        features_file = options['features_file']
-        skip_buildings = options['skip_buildings']
-        skip_features = options['skip_features']
-        
+        building_file = options["building_file"]
+        features_file = options["features_file"]
+        skip_buildings = options["skip_buildings"]
+        skip_features = options["skip_features"]
+
         # Convert relative paths to absolute
         building_file = str(resolve_from_base(settings.BASE_DIR, building_file))
         features_file = str(resolve_from_base(settings.BASE_DIR, features_file))
-        
+
         # Load building details
         if not skip_buildings:
             if not Path(building_file).exists():
-                self.stdout.write(self.style.WARNING(
-                    f'Building file not found: {building_file}\n'
-                    f'Make sure Real_building_land.zip has been downloaded and extracted.'
-                ))
+                self.stdout.write(
+                    self.style.WARNING(
+                        f"Building file not found: {building_file}\n"
+                        f"Make sure Real_building_land.zip has been downloaded and extracted."
+                    )
+                )
             else:
-                self.stdout.write(self.style.SUCCESS(f'Loading building details from {building_file}...'))
+                self.stdout.write(
+                    self.style.SUCCESS(f"Loading building details from {building_file}...")
+                )
                 try:
                     count = load_building_details(building_file)
-                    self.stdout.write(self.style.SUCCESS(f'Successfully loaded {count} building records'))
+                    self.stdout.write(
+                        self.style.SUCCESS(f"Successfully loaded {count} building records")
+                    )
                 except Exception as e:
-                    self.stdout.write(self.style.ERROR(f'Error loading building details: {str(e)}'))
+                    self.stdout.write(self.style.ERROR(f"Error loading building details: {str(e)}"))
                     raise
-        
+
         # Load extra features
         if not skip_features:
             if not Path(features_file).exists():
-                self.stdout.write(self.style.WARNING(
-                    f'Features file not found: {features_file}\n'
-                    f'Make sure Real_building_land.zip has been downloaded and extracted.'
-                ))
+                self.stdout.write(
+                    self.style.WARNING(
+                        f"Features file not found: {features_file}\n"
+                        f"Make sure Real_building_land.zip has been downloaded and extracted."
+                    )
+                )
             else:
-                self.stdout.write(self.style.SUCCESS(f'Loading extra features from {features_file}...'))
+                self.stdout.write(
+                    self.style.SUCCESS(f"Loading extra features from {features_file}...")
+                )
                 try:
                     count = load_extra_features(features_file)
-                    self.stdout.write(self.style.SUCCESS(f'Successfully loaded {count} extra feature records'))
+                    self.stdout.write(
+                        self.style.SUCCESS(f"Successfully loaded {count} extra feature records")
+                    )
                 except Exception as e:
-                    self.stdout.write(self.style.ERROR(f'Error loading extra features: {str(e)}'))
+                    self.stdout.write(self.style.ERROR(f"Error loading extra features: {str(e)}"))
                     raise
-        
-        self.stdout.write(self.style.SUCCESS('\nImport complete!'))
-        self.stdout.write(self.style.SUCCESS('Building details and extra features are now available for similarity searches.'))
+
+        self.stdout.write(self.style.SUCCESS("\nImport complete!"))
+        self.stdout.write(
+            self.style.SUCCESS(
+                "Building details and extra features are now available for similarity searches."
+            )
+        )

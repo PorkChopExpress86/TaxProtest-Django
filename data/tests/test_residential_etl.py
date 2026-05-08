@@ -46,7 +46,9 @@ class ResidentialPropertyImportTests(TestCase):
         self.assertEqual(rows[1]["state_class"], "F1")
         self.assertFalse(rows[1]["is_residential"])
 
-    def test_house_focused_residential_classes_exclude_condo_multifamily_and_auxiliary(self) -> None:
+    def test_house_focused_residential_classes_exclude_condo_multifamily_and_auxiliary(
+        self,
+    ) -> None:
         self.assertTrue(is_residential_state_class("A1"))
         self.assertTrue(is_residential_state_class("A2"))
         self.assertTrue(is_residential_state_class("A4"))
@@ -314,7 +316,9 @@ class ImportAllDataCommandTests(TestCase):
             call_command("import_all_data", skip_download=True, skip_property=True)
 
     @patch("data.management.commands.import_all_data.ETLOrchestrator.execute")
-    def test_import_all_data_delegates_to_modern_pipeline_with_strict_mode(self, mocked_execute) -> None:
+    def test_import_all_data_delegates_to_modern_pipeline_with_strict_mode(
+        self, mocked_execute
+    ) -> None:
         mocked_execute.return_value = SimpleNamespace(
             success=True,
             status=SimpleNamespace(value="completed"),
@@ -334,7 +338,9 @@ class ImportAllDataCommandTests(TestCase):
         self.assertTrue(kwargs["skip_extract"])
 
     @patch("data.management.commands.import_all_data.ETLOrchestrator.execute")
-    def test_import_all_data_uses_property_only_scope_when_gis_is_skipped(self, mocked_execute) -> None:
+    def test_import_all_data_uses_property_only_scope_when_gis_is_skipped(
+        self, mocked_execute
+    ) -> None:
         mocked_execute.return_value = SimpleNamespace(
             success=True,
             status=SimpleNamespace(value="completed"),
@@ -348,6 +354,29 @@ class ImportAllDataCommandTests(TestCase):
         mocked_execute.assert_called_once()
         _, kwargs = mocked_execute.call_args
         self.assertEqual(kwargs["scope"], "property-only")
+
+    @patch("data.management.commands.import_all_data.ETLOrchestrator.execute")
+    def test_import_all_data_can_skip_contract_validation_for_startup_refresh(
+        self, mocked_execute
+    ) -> None:
+        mocked_execute.return_value = SimpleNamespace(
+            success=True,
+            status=SimpleNamespace(value="completed"),
+            duration=0.1,
+            stages={},
+            errors=[],
+        )
+
+        call_command(
+            "import_all_data",
+            skip_download=True,
+            skip_property=True,
+            skip_contract_validation=True,
+        )
+
+        mocked_execute.assert_called_once()
+        _, kwargs = mocked_execute.call_args
+        self.assertFalse(kwargs["validate_contract"])
 
 
 class ETLLoaderOptimizationTests(TestCase):
@@ -433,6 +462,39 @@ class ETLLoaderOptimizationTests(TestCase):
         self.assertEqual(result["skipped"], 1)
         feature = ExtraFeature.objects.get(account_number="ACC2")
         self.assertEqual(feature.property_id, prop.id)
+        self.assertEqual(feature.feature_description, "Pool")
+        self.assertEqual(feature.quantity, Decimal("1"))
+        self.assertEqual(feature.length, Decimal("20"))
+        self.assertEqual(feature.width, Decimal("10"))
+        self.assertEqual(feature.condition_code, "G")
+        self.assertEqual(feature.year_built, 2018)
+        self.assertEqual(feature.value, Decimal("5000"))
+
+    def test_load_extra_features_supports_fallback_long_description_file(self) -> None:
+        from data.etl import load_extra_features
+
+        PropertyRecord.objects.create(
+            address="4 MAIN ST",
+            city="Houston",
+            zipcode="77001",
+            account_number="ACC4",
+            state_class="A1",
+            is_residential=True,
+        )
+        path = self._create_temp_file(
+            "acct\tbld_num\tcount\tgrade\tcd\ts_dscr\tl_dscr\tcat\tdscr\tnote\tuts",
+            [
+                "ACC4\t0\t1\t4\tCPA1\tPavAsp\tPaving - Asphalt\tMS\tMiscellaneous\t\t5000.00",
+            ],
+        )
+
+        result = load_extra_features(path, chunk_size=50, import_batch_id="b3", truncate=True)
+
+        self.assertEqual(result["imported"], 1)
+        feature = ExtraFeature.objects.get(account_number="ACC4")
+        self.assertEqual(feature.feature_description, "Paving - Asphalt")
+        self.assertEqual(feature.quantity, Decimal("1"))
+        self.assertEqual(feature.value, Decimal("5000"))
 
     def test_load_fixtures_room_counts_bulk_updates_and_not_found_tracking(self) -> None:
         from data.etl import load_fixtures_room_counts

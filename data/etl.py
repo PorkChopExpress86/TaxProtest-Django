@@ -2,10 +2,10 @@ import csv
 import logging
 import math
 from collections import defaultdict
+from collections.abc import Iterable
 from decimal import Decimal
-from typing import Iterable, Dict, Optional, List
 
-from django.db import transaction, connection
+from django.db import connection, transaction
 from django.db.models import Exists, OuterRef
 
 from .models import PropertyRecord
@@ -19,6 +19,7 @@ csv.field_size_limit(10485760)  # 10MB limit
 
 try:
     import geopandas as gpd  # type: ignore
+
     GEOPANDAS_AVAILABLE = True
 except ImportError:  # pragma: no cover - optional dependency
     gpd = None  # type: ignore
@@ -51,12 +52,12 @@ def open_reader(filepath: str) -> csv.DictReader:
     delimiter = sniff_delimiter(sample)
 
     # We need to re-open as text for DictReader
-    f = open(filepath, "r", encoding=encoding, errors="ignore", newline="")
+    f = open(filepath, encoding=encoding, errors="ignore", newline="")
     # CSV may or may not have header; HCAD files generally include headers.
     return csv.DictReader(f, delimiter=delimiter)
 
 
-def parse_currency(value: Optional[str]) -> Optional[float]:
+def parse_currency(value: str | None) -> float | None:
     if value is None:
         return None
     v = value.strip()
@@ -73,7 +74,7 @@ def parse_currency(value: Optional[str]) -> Optional[float]:
 
 def load_account_property_map(
     *,
-    account_numbers: Optional[set[str]] = None,
+    account_numbers: set[str] | None = None,
     residential_only: bool = True,
 ) -> dict[str, int]:
     """Load account_number -> PropertyRecord.id mapping.
@@ -95,7 +96,7 @@ def _is_nan(value: object) -> bool:
         return False
 
 
-def iter_property_rows(reader: csv.DictReader) -> Iterable[Dict]:
+def iter_property_rows(reader: csv.DictReader) -> Iterable[dict]:
     """Yield normalized property rows from a Real Account file.
 
     This expects columns typically present in real_acct.txt such as:
@@ -108,7 +109,7 @@ def iter_property_rows(reader: csv.DictReader) -> Iterable[Dict]:
     lower_fieldnames = [fn.lower() for fn in (reader.fieldnames or [])]
     fieldmap = {fn.lower(): fn for fn in (reader.fieldnames or [])}
 
-    def get(row: Dict, *names: str) -> str:
+    def get(row: dict, *names: str) -> str:
         for n in names:
             key = fieldmap.get(n.lower())
             if key and key in row:
@@ -117,9 +118,7 @@ def iter_property_rows(reader: csv.DictReader) -> Iterable[Dict]:
 
     for row in reader:
         # Address components (HCAD specific: str_num/str/str_sfx; or site_addr_1 as full)
-        addr_num = get(
-            row, "str_num", "site_addr_num", "situs_addr_num", "address_number"
-        )
+        addr_num = get(row, "str_num", "site_addr_num", "situs_addr_num", "address_number")
         addr_num_sfx = get(row, "str_num_sfx")
         street_name = get(row, "str", "site_addr_street", "situs_street", "street_name")
         street_pfx = get(row, "str_pfx")
@@ -136,9 +135,7 @@ def iter_property_rows(reader: csv.DictReader) -> Iterable[Dict]:
             or parse_currency(get(row, "mkt_val"))
             or parse_currency(get(row, "appr_bldg_val"))
         )
-        assessed_value = parse_currency(
-            get(row, "assessed_val", "assessed_val", "tot_appr_val")
-        )
+        assessed_value = parse_currency(get(row, "assessed_val", "assessed_val", "tot_appr_val"))
         building_area = parse_currency(get(row, "bld_ar", "bldg_ar", "bld_area"))
         land_area = parse_currency(get(row, "land_ar", "land_area"))
         state_class = normalize_state_class(get(row, "state_class"))
@@ -174,7 +171,7 @@ def iter_property_rows(reader: csv.DictReader) -> Iterable[Dict]:
 def bulk_load_properties(
     filepath: str,
     chunk_size: int = 5000,
-    limit: Optional[int] = None,
+    limit: int | None = None,
     truncate: bool = True,
     refresh_readiness: bool = True,
 ) -> int:
@@ -190,11 +187,11 @@ def bulk_load_properties(
     Returns number of rows inserted.
     """
     reader = open_reader(filepath)
-    buf: List[PropertyRecord] = []
+    buf: list[PropertyRecord] = []
     total = 0
     skipped_duplicates = 0
     skipped_non_residential = 0
-    
+
     # Truncate table for clean import if requested
     if truncate:
         logger.info("Truncating PropertyRecord table for clean import...")
@@ -205,7 +202,7 @@ def bulk_load_properties(
     else:
         # Pre-fetch existing account numbers to prevent duplicates
         # This is memory efficient enough for ~2M records (approx 30-50MB RAM)
-        existing_accounts = set(PropertyRecord.objects.values_list('account_number', flat=True))
+        existing_accounts = set(PropertyRecord.objects.values_list("account_number", flat=True))
         logger.info(f"Loaded {len(existing_accounts)} existing accounts for deduplication.")
 
     with transaction.atomic():
@@ -217,17 +214,17 @@ def bulk_load_properties(
             if not data.get("is_residential", False):
                 skipped_non_residential += 1
                 continue
-                
+
             acct = data.get("account_number", "")[:20]
-            
+
             # Skip if account already exists
             if acct in existing_accounts:
                 skipped_duplicates += 1
                 continue
-                
+
             # Add to local set to prevent duplicates within the same file/batch
             existing_accounts.add(acct)
-            
+
             buf.append(
                 PropertyRecord(
                     address=data.get("address", "")[:255],
@@ -257,7 +254,7 @@ def bulk_load_properties(
         if buf:
             PropertyRecord.objects.bulk_create(buf, ignore_conflicts=True)
             total += len(buf)
-            
+
     if skipped_duplicates > 0:
         logger.info(f"Skipped {skipped_duplicates} duplicate records.")
     if skipped_non_residential > 0:
@@ -265,7 +262,7 @@ def bulk_load_properties(
 
     if refresh_readiness:
         refresh_property_readiness()
-        
+
     return total
 
 
@@ -286,9 +283,9 @@ def refresh_property_readiness() -> dict:
         "residential_properties": residential_properties.count(),
     }
 
-    results["ready_properties_cleared"] = PropertyRecord.objects.filter(
-        is_data_ready=True
-    ).update(is_data_ready=False)
+    results["ready_properties_cleared"] = PropertyRecord.objects.filter(is_data_ready=True).update(
+        is_data_ready=False
+    )
 
     results["ready_properties_set"] = (
         residential_properties.filter(
@@ -363,7 +360,7 @@ def load_gis_parcels(
     updates_by_account: dict[str, tuple[float, float, str]] = {}
     total_updated = 0
 
-    logger.info(f"Processing %s parcel records from %s", len(gdf), shapefile_path)
+    logger.info("Processing %s parcel records from %s", len(gdf), shapefile_path)
 
     for row in gdf.itertuples(index=False):
         account_num = str(getattr(row, account_col)).strip() if account_col else ""
@@ -427,7 +424,7 @@ def load_gis_parcels(
 
 
 def load_building_details(
-    filepath: str, chunk_size: int = 5000, import_batch_id: Optional[str] = None
+    filepath: str, chunk_size: int = 5000, import_batch_id: str | None = None
 ) -> dict:
     """Load residential building details from building_res.txt.
 
@@ -449,8 +446,9 @@ def load_building_details(
             'skipped': int,       # Records skipped (no account)
         }
     """
-    from .models import BuildingDetail
     from django.utils import timezone
+
+    from .models import BuildingDetail
 
     reader = open_reader(filepath)
     buf = []
@@ -579,14 +577,11 @@ def load_building_details(
 
 
 def load_extra_features(
-    filepath: str, 
-    chunk_size: int = 5000, 
-    import_batch_id: Optional[str] = None,
-    truncate: bool = True
+    filepath: str, chunk_size: int = 5000, import_batch_id: str | None = None, truncate: bool = True
 ) -> dict:
     """Load extra features from extra_features_detail files.
 
-    Expected columns in detail files: 
+    Expected columns in detail files:
     acct, cd, dscr, grade, cond_cd, bld_num, length, width, units, unit_price, etc.
 
     Args:
@@ -598,8 +593,9 @@ def load_extra_features(
     Returns:
         Dictionary with import statistics
     """
-    from .models import ExtraFeature
     from django.utils import timezone
+
+    from .models import ExtraFeature
 
     reader = open_reader(filepath)
     buf = []
@@ -617,11 +613,11 @@ def load_extra_features(
 
     # Cache property mapping for validation and FK assignment
     if truncate:
-         logger.info("Preparing to load extra features...")
+        logger.info("Preparing to load extra features...")
 
     account_to_property = load_account_property_map()
     valid_accounts = set(account_to_property.keys())
-    
+
     logger.info("Loading extra features from %s", filepath)
 
     if truncate:
@@ -670,21 +666,42 @@ def load_extra_features(
             def get_str(field, maxlen=10):
                 return (row.get(field) or "").strip()[:maxlen]
 
+            def get_first_str(fields, maxlen=10):
+                for field in fields:
+                    value = (row.get(field) or "").strip()
+                    if value:
+                        return value[:maxlen]
+                return ""
+
+            def get_first_int(fields):
+                for field in fields:
+                    value = get_int(field)
+                    if value is not None:
+                        return value
+                return None
+
+            def get_first_decimal(fields):
+                for field in fields:
+                    value = get_decimal(field)
+                    if value is not None:
+                        return value
+                return None
+
             # Mapping for extra_features_detail*.txt
             feature = ExtraFeature(
                 property_id=property_id,
                 account_number=acct,
-                feature_number=get_int("bld_num"), 
+                feature_number=get_int("bld_num"),
                 feature_code=get_str("cd", maxlen=10),
-                feature_description=(row.get("dscr") or "").strip()[:255],
-                quantity=get_decimal("units"),
-                area=None, 
+                feature_description=get_first_str(["l_dscr", "dscr"], maxlen=255),
+                quantity=get_first_decimal(["count", "units"]),
+                area=None,
                 length=get_decimal("length"),
                 width=get_decimal("width"),
                 quality_code=get_str("grade", maxlen=10),
                 condition_code=get_str("cond_cd", maxlen=10),
-                year_built=get_int("act_yr"),
-                value=get_decimal("asd_val"), 
+                year_built=get_first_int(["act_yr"]),
+                value=get_first_decimal(["uts", "asd_val"]),
                 # Import metadata
                 is_active=True,
                 import_date=import_date,
@@ -696,10 +713,7 @@ def load_extra_features(
             if len(buf) >= chunk_size:
                 ExtraFeature.objects.bulk_create(buf, ignore_conflicts=True)
                 results["imported"] += len(buf)
-                logger.info(
-                    "Loaded %s extra feature records...",
-                    results["imported"]
-                )
+                logger.info("Loaded %s extra feature records...", results["imported"])
                 buf.clear()
 
         if buf:
@@ -812,7 +826,7 @@ def link_orphaned_records(chunk_size: int = 5000) -> dict:
     return results
 
 
-def mark_old_records_inactive(exclude_batch_id: Optional[str] = None) -> dict:
+def mark_old_records_inactive(exclude_batch_id: str | None = None) -> dict:
     """
     Mark old BuildingDetail and ExtraFeature records as inactive (soft delete).
 
@@ -826,8 +840,8 @@ def mark_old_records_inactive(exclude_batch_id: Optional[str] = None) -> dict:
     Returns:
         Dictionary with counts of deactivated records
     """
+
     from .models import BuildingDetail, ExtraFeature
-    from django.utils import timezone
 
     results = {
         "buildings_deactivated": 0,
@@ -840,9 +854,7 @@ def mark_old_records_inactive(exclude_batch_id: Optional[str] = None) -> dict:
         query = query.exclude(import_batch_id=exclude_batch_id)
 
     results["buildings_deactivated"] = query.update(is_active=False)
-    logger.info(
-        "Marked %s building records as inactive", results["buildings_deactivated"]
-    )
+    logger.info("Marked %s building records as inactive", results["buildings_deactivated"])
 
     # Mark old features as inactive
     query = ExtraFeature.objects.filter(is_active=True)
@@ -850,9 +862,7 @@ def mark_old_records_inactive(exclude_batch_id: Optional[str] = None) -> dict:
         query = query.exclude(import_batch_id=exclude_batch_id)
 
     results["features_deactivated"] = query.update(is_active=False)
-    logger.info(
-        "Marked %s feature records as inactive", results["features_deactivated"]
-    )
+    logger.info("Marked %s feature records as inactive", results["features_deactivated"])
 
     return results
 
@@ -1021,9 +1031,7 @@ def load_fixtures_room_counts(
         "BuildingDetail records updated: %s",
         f"{results['buildings_updated']:,}",
     )
-    logger.info(
-        "Buildings not found in DB: %s", f"{results['buildings_not_found']:,}"
-    )
+    logger.info("Buildings not found in DB: %s", f"{results['buildings_not_found']:,}")
 
     if refresh_readiness:
         refresh_property_readiness()

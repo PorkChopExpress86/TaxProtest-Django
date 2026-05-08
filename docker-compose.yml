@@ -1,5 +1,5 @@
 services:
-  db:
+  postgres:
     image: postgres:15
     restart: unless-stopped
     environment:
@@ -11,7 +11,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U taxprotest" ]
+      test: [ "CMD-SHELL", "pg_isready -U $$POSTGRES_USER" ]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -31,16 +31,17 @@ services:
     build:
       context: .
       args:
-        # Set SKIP_DATA_DOWNLOAD=1 in .env for faster dev/CI builds.
-        # Leave at 0 (default) for production so data is baked into the image.
-        SKIP_DATA_DOWNLOAD: ${SKIP_DATA_DOWNLOAD:-0}
+        # Default 1 = skip data download (fast dev/CI builds).
+        # Set SKIP_DATA_DOWNLOAD=0 to bake HCAD data into the image (production).
+        SKIP_DATA_DOWNLOAD: ${SKIP_DATA_DOWNLOAD:-1}
     restart: unless-stopped
+    user: "${UID:-1000}:${GID:-1000}"
     ports:
-      - "127.0.0.1:8020:8000"
+      - "8020:8000"
     env_file:
       - .env
     environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-taxprotest}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-taxprotest}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-taxprotest}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-taxprotest}
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - DEBUG=${DEBUG:-0}
@@ -56,7 +57,7 @@ services:
       - HCAD_LOG_DIR=${HCAD_LOG_DIR:-/app/var/logs}
       - PROJECT_REPORT_DIR=${PROJECT_REPORT_DIR:-/app/var/reports}
     depends_on:
-      db:
+      postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -70,12 +71,13 @@ services:
     build:
       context: .
       args:
-        SKIP_DATA_DOWNLOAD: ${SKIP_DATA_DOWNLOAD:-0}
+        SKIP_DATA_DOWNLOAD: ${SKIP_DATA_DOWNLOAD:-1}
     restart: unless-stopped
+    user: "${UID:-1000}:${GID:-1000}"
     env_file:
       - .env
     environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-taxprotest}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-taxprotest}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-taxprotest}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-taxprotest}
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - DEBUG=${DEBUG:-0}
@@ -85,7 +87,7 @@ services:
       - HCAD_LOG_DIR=${HCAD_LOG_DIR:-/app/var/logs}
       - PROJECT_REPORT_DIR=${PROJECT_REPORT_DIR:-/app/var/reports}
     depends_on:
-      db:
+      postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -98,12 +100,13 @@ services:
     build:
       context: .
       args:
-        SKIP_DATA_DOWNLOAD: ${SKIP_DATA_DOWNLOAD:-0}
+        SKIP_DATA_DOWNLOAD: ${SKIP_DATA_DOWNLOAD:-1}
     restart: unless-stopped
+    user: "${UID:-1000}:${GID:-1000}"
     env_file:
       - .env
     environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-taxprotest}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-taxprotest}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-taxprotest}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-taxprotest}
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - DEBUG=${DEBUG:-0}
@@ -113,13 +116,95 @@ services:
       - HCAD_LOG_DIR=${HCAD_LOG_DIR:-/app/var/logs}
       - PROJECT_REPORT_DIR=${PROJECT_REPORT_DIR:-/app/var/reports}
     depends_on:
-      db:
+      postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     volumes:
       - .:/app
     command: celery -A taxprotest beat --loglevel=info
+
+  # Lightweight dev service for linting, type checking, and testing.
+  # Never downloads HCAD data. Bypasses the entrypoint so commands run directly.
+  taxprotest-dev:
+    build:
+      context: .
+      args:
+        SKIP_DATA_DOWNLOAD: "1"
+    profiles: ["devtools"]
+    user: "${UID:-1000}:${GID:-1000}"
+    entrypoint: []
+    volumes:
+      - .:/app
+    environment:
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:-dev-only-change-this-in-production}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-taxprotest}:${POSTGRES_PASSWORD:-taxprotest}@postgres:5432/${POSTGRES_DB:-taxprotest}
+      - DEBUG=1
+      - XDG_CACHE_HOME=/tmp/.cache
+      - RUFF_CACHE_DIR=/tmp/.ruff_cache
+      - MYPY_CACHE_DIR=/tmp/.mypy_cache
+      - PYTEST_ADDOPTS=-o cache_dir=/tmp/.pytest_cache
+      - HCAD_DOWNLOAD_DIR=${HCAD_DOWNLOAD_DIR:-/app/var/downloads}
+      - HCAD_EXTRACT_DIR=${HCAD_EXTRACT_DIR:-/app/var/extracted}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # One-off ingestion service for full import workflows.
+  ingest:
+    build:
+      context: .
+      args:
+        SKIP_DATA_DOWNLOAD: ${SKIP_DATA_DOWNLOAD:-1}
+    profiles: ["jobs"]
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-taxprotest}:${POSTGRES_PASSWORD:-taxprotest}@postgres:5432/${POSTGRES_DB:-taxprotest}
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - DEBUG=${DEBUG:-0}
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:-dev-only-change-this-in-production}
+      - HCAD_DOWNLOAD_DIR=${HCAD_DOWNLOAD_DIR:-/app/var/downloads}
+      - HCAD_EXTRACT_DIR=${HCAD_EXTRACT_DIR:-/app/var/extracted}
+      - HCAD_LOG_DIR=${HCAD_LOG_DIR:-/app/var/logs}
+      - PROJECT_REPORT_DIR=${PROJECT_REPORT_DIR:-/app/var/reports}
+    volumes:
+      - .:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: python manage.py import_all_data
+
+  # One-off refresh orchestration service.
+  refresh:
+    build:
+      context: .
+      args:
+        SKIP_DATA_DOWNLOAD: ${SKIP_DATA_DOWNLOAD:-1}
+    profiles: ["jobs"]
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-taxprotest}:${POSTGRES_PASSWORD:-taxprotest}@postgres:5432/${POSTGRES_DB:-taxprotest}
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - DEBUG=${DEBUG:-0}
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:-dev-only-change-this-in-production}
+      - HCAD_DOWNLOAD_DIR=${HCAD_DOWNLOAD_DIR:-/app/var/downloads}
+      - HCAD_EXTRACT_DIR=${HCAD_EXTRACT_DIR:-/app/var/extracted}
+      - HCAD_LOG_DIR=${HCAD_LOG_DIR:-/app/var/logs}
+      - PROJECT_REPORT_DIR=${PROJECT_REPORT_DIR:-/app/var/reports}
+    volumes:
+      - .:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: python manage.py check_and_import_data
 
 volumes:
   pgdata:

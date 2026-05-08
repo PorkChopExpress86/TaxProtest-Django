@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 # Based on var/extracted/Code_description_real/desc_r_01_state_class.txt and
 # the HCAD docs under docs/hcad_docs/. HCAD uses broader residential-like
 # state classes than this app wants. For the app's house-focused workflow,
@@ -19,12 +17,11 @@ RESIDENTIAL_STATE_CLASSES = frozenset(
 )
 
 
-def normalize_state_class(value: Optional[str]) -> str:
+def normalize_state_class(value: str | None) -> str:
     """Normalize a raw HCAD state class code for comparison."""
     return str(value or "").strip().upper()
 
 
-
-def is_residential_state_class(value: Optional[str]) -> bool:
+def is_residential_state_class(value: str | None) -> bool:
     """Return True when the HCAD state class should be treated as residential."""
     return normalize_state_class(value) in RESIDENTIAL_STATE_CLASSES

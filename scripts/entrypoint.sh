@@ -28,11 +28,15 @@ SYNCED_STAMP=$(cat "$HCAD_DOWNLOAD_DIR/.synced_stamp" 2>/dev/null || echo "")
 if [ -n "$BAKED_STAMP" ] && [ "$BAKED_STAMP" != "$SYNCED_STAMP" ]; then
     echo "Fresh build detected (stamp: $BAKED_STAMP) — syncing to $HCAD_DOWNLOAD_DIR..."
     mkdir -p "$HCAD_DOWNLOAD_DIR"
-    cp -a "$BAKED_DIR/." "$HCAD_DOWNLOAD_DIR/"
-    echo "$BAKED_STAMP" > "$HCAD_DOWNLOAD_DIR/.synced_stamp"
-
-    echo "Importing data (full overwrite of existing database records)..."
-    python manage.py import_all_data --skip-download
+    if cp -a "$BAKED_DIR/." "$HCAD_DOWNLOAD_DIR/"; then
+        echo "Importing data (full overwrite of existing database records)..."
+        python manage.py import_all_data --skip-download --skip-contract-validation
+        echo "$BAKED_STAMP" > "$HCAD_DOWNLOAD_DIR/.synced_stamp"
+    else
+        echo "WARNING: Could not sync baked downloads to $HCAD_DOWNLOAD_DIR (likely permission issue)."
+        echo "WARNING: Continuing startup and falling back to runtime data check/import path."
+        python manage.py check_and_import_data
+    fi
 else
     # Same build as last start, or SKIP_DATA_DOWNLOAD=1 — only import if DB is empty.
     echo "Checking data..."

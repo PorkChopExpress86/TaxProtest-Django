@@ -1,6 +1,7 @@
 from pathlib import Path
-from django.core.management.base import BaseCommand, CommandError
+
 from django.conf import settings
+from django.core.management.base import BaseCommand, CommandError
 
 from data.etl import bulk_load_properties
 
@@ -15,7 +16,9 @@ class Command(BaseCommand):
             help="Path to real_acct.txt (default: var/extracted/Real_acct_owner/real_acct.txt)",
         )
         parser.add_argument("--chunk", type=int, default=5000, help="Bulk insert chunk size")
-        parser.add_argument("--limit", type=int, default=None, help="Limit number of rows to insert (for testing)")
+        parser.add_argument(
+            "--limit", type=int, default=None, help="Limit number of rows to insert (for testing)"
+        )
         parser.add_argument(
             "--truncate",
             action="store_true",
@@ -42,15 +45,15 @@ class Command(BaseCommand):
             filepath = Path(settings.BASE_DIR) / filepath
         if not filepath.exists():
             raise CommandError(f"File not found: {filepath}")
-        
+
         # Handle truncate flag (--no-truncate overrides --truncate)
         truncate = not options.get("no_truncate", False)
-        
+
         if truncate:
             self.stdout.write(self.style.WARNING("Table will be TRUNCATED before import."))
         else:
             self.stdout.write(self.style.WARNING("Appending to existing data (no truncate)."))
-        
+
         self.stdout.write(self.style.WARNING(f"Loading properties from: {filepath}"))
         count = bulk_load_properties(
             str(filepath),

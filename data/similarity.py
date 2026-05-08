@@ -3,14 +3,16 @@ Similarity search algorithm for finding comparable properties.
 Uses location (lat/long), size, age, and features to find similar properties.
 """
 
-from math import radians, cos, sin, asin, sqrt
-from typing import List, Dict, Optional, TYPE_CHECKING, Tuple
-from django.db.models import F, Value, FloatField, ExpressionWrapper
-from django.db.models.functions import ACos, Cos, Radians, Sin, Least, Greatest
-from .models import PropertyRecord, BuildingDetail, ExtraFeature
+from math import asin, cos, radians, sin, sqrt
+from typing import TYPE_CHECKING, Optional
+
+from django.db.models import ExpressionWrapper, F, FloatField, Value
+from django.db.models.functions import ACos, Cos, Greatest, Least, Radians, Sin
+
+from .models import BuildingDetail, ExtraFeature, PropertyRecord
 
 if TYPE_CHECKING:
-    from decimal import Decimal
+    pass
 
 
 QUALITY_RANK = {"X": 7, "A": 6, "B": 5, "C": 4, "D": 3, "E": 2, "F": 1}
@@ -40,7 +42,7 @@ def _clamp(value: float, lower: float = 0.0, upper: float = 1.0) -> float:
     return max(lower, min(upper, value))
 
 
-def _interpolate_curve(value: float, curve: List[Tuple[float, float]]) -> float:
+def _interpolate_curve(value: float, curve: list[tuple[float, float]]) -> float:
     """Return a smoothed similarity value from a piecewise linear curve."""
     if not curve:
         return 0.0
@@ -59,7 +61,7 @@ def _interpolate_curve(value: float, curve: List[Tuple[float, float]]) -> float:
     return curve[-1][1]
 
 
-def _safe_float(value: object) -> Optional[float]:
+def _safe_float(value: object) -> float | None:
     if value is None:
         return None
 
@@ -76,8 +78,8 @@ def _normalized_code(value: object) -> str:
 def _percentage_similarity(
     target_value: object,
     candidate_value: object,
-    curve: List[Tuple[float, float]],
-) -> Optional[float]:
+    curve: list[tuple[float, float]],
+) -> float | None:
     target_num = _safe_float(target_value)
     candidate_num = _safe_float(candidate_value)
 
@@ -91,8 +93,8 @@ def _percentage_similarity(
 def _difference_similarity(
     target_value: object,
     candidate_value: object,
-    curve: List[Tuple[float, float]],
-) -> Optional[float]:
+    curve: list[tuple[float, float]],
+) -> float | None:
     target_num = _safe_float(target_value)
     candidate_num = _safe_float(candidate_value)
 
@@ -105,8 +107,8 @@ def _difference_similarity(
 def _ranked_code_similarity(
     target_code: object,
     candidate_code: object,
-    rank_map: Dict[str, int],
-) -> Optional[float]:
+    rank_map: dict[str, int],
+) -> float | None:
     normalized_target = _normalized_code(target_code)
     normalized_candidate = _normalized_code(candidate_code)
 
@@ -130,7 +132,7 @@ def _ranked_code_similarity(
     )
 
 
-def _categorical_similarity(target_code: object, candidate_code: object) -> Optional[float]:
+def _categorical_similarity(target_code: object, candidate_code: object) -> float | None:
     normalized_target = _normalized_code(target_code)
     normalized_candidate = _normalized_code(candidate_code)
 
@@ -150,7 +152,7 @@ def _categorical_similarity(target_code: object, candidate_code: object) -> Opti
     return 0.0
 
 
-def _condition_similarity(target_code: object, candidate_code: object) -> Optional[float]:
+def _condition_similarity(target_code: object, candidate_code: object) -> float | None:
     ranked_similarity = _ranked_code_similarity(target_code, candidate_code, QUALITY_RANK)
     if ranked_similarity is not None:
         return ranked_similarity
@@ -161,7 +163,7 @@ def _condition_similarity(target_code: object, candidate_code: object) -> Option
 def _building_character_similarity(
     target_building: "BuildingDetail",
     candidate_building: "BuildingDetail",
-) -> Optional[float]:
+) -> float | None:
     for attr_name in ("building_style", "building_type", "building_class"):
         similarity = _categorical_similarity(
             getattr(target_building, attr_name, None),
@@ -173,7 +175,7 @@ def _building_character_similarity(
     return None
 
 
-def _effective_year(building: Optional["BuildingDetail"]) -> Optional[int]:
+def _effective_year(building: Optional["BuildingDetail"]) -> int | None:
     if building is None:
         return None
 
@@ -186,9 +188,9 @@ def _effective_year(building: Optional["BuildingDetail"]) -> Optional[int]:
 
 
 def _feature_similarity(
-    target_features: Optional[List[ExtraFeature]],
-    candidate_features: Optional[List[ExtraFeature]],
-) -> Optional[float]:
+    target_features: list[ExtraFeature] | None,
+    candidate_features: list[ExtraFeature] | None,
+) -> float | None:
     if target_features is None or candidate_features is None:
         return None
 
@@ -206,7 +208,7 @@ def _feature_similarity(
     return intersection / union
 
 
-def _distance_similarity(distance: float, max_distance_miles: float) -> Optional[float]:
+def _distance_similarity(distance: float, max_distance_miles: float) -> float | None:
     if max_distance_miles <= 0:
         return None
 
@@ -260,10 +262,10 @@ def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> fl
 def calculate_similarity_score(
     target_prop: PropertyRecord,
     candidate_prop: PropertyRecord,
-    target_building: Optional[BuildingDetail] = None,
-    candidate_building: Optional[BuildingDetail] = None,
-    target_features: Optional[List[ExtraFeature]] = None,
-    candidate_features: Optional[List[ExtraFeature]] = None,
+    target_building: BuildingDetail | None = None,
+    candidate_building: BuildingDetail | None = None,
+    target_features: list[ExtraFeature] | None = None,
+    candidate_features: list[ExtraFeature] | None = None,
     distance: float = 0.0,
     max_distance_miles: float = 10.0,
 ) -> float:
@@ -280,12 +282,12 @@ def calculate_similarity_score(
     - Quality match: 12 points (same quality grade)
     - Feature match: 10 points (matching amenities)
     - Age match: 5 points (±5 years tolerance)
-    
+
     Note: Distance is used to filter candidates (max_distance_miles parameter)
     but does not affect the similarity score. This allows comparison of
     properties with similar attributes regardless of distance.
     """
-    components: List[Tuple[str, float, Optional[float]]] = []
+    components: list[tuple[str, float, float | None]] = []
     is_land_only = target_building is None and candidate_building is None
 
     if not is_land_only and target_building and candidate_building:
@@ -350,7 +352,15 @@ def calculate_similarity_score(
                     _difference_similarity(
                         _effective_year(target_building),
                         _effective_year(candidate_building),
-                        [(0.0, 1.0), (2.0, 0.95), (5.0, 0.82), (10.0, 0.60), (15.0, 0.38), (25.0, 0.12), (40.0, 0.0)],
+                        [
+                            (0.0, 1.0),
+                            (2.0, 0.95),
+                            (5.0, 0.82),
+                            (10.0, 0.60),
+                            (15.0, 0.38),
+                            (25.0, 0.12),
+                            (40.0, 0.0),
+                        ],
                     ),
                 ),
                 (
@@ -370,9 +380,15 @@ def calculate_similarity_score(
             ]
         )
 
-    land_weight = LAND_ONLY_WEIGHTS["land_size"] if is_land_only else RESIDENTIAL_WEIGHTS["land_size"]
-    feature_weight = LAND_ONLY_WEIGHTS["features"] if is_land_only else RESIDENTIAL_WEIGHTS["features"]
-    distance_weight = LAND_ONLY_WEIGHTS["distance"] if is_land_only else RESIDENTIAL_WEIGHTS["distance"]
+    land_weight = (
+        LAND_ONLY_WEIGHTS["land_size"] if is_land_only else RESIDENTIAL_WEIGHTS["land_size"]
+    )
+    feature_weight = (
+        LAND_ONLY_WEIGHTS["features"] if is_land_only else RESIDENTIAL_WEIGHTS["features"]
+    )
+    distance_weight = (
+        LAND_ONLY_WEIGHTS["distance"] if is_land_only else RESIDENTIAL_WEIGHTS["distance"]
+    )
 
     components.extend(
         [
@@ -404,9 +420,7 @@ def calculate_similarity_score(
 
     total_possible_weight = sum(weight for _, weight, _ in components)
     available_components = [
-        (weight, similarity)
-        for _, weight, similarity in components
-        if similarity is not None
+        (weight, similarity) for _, weight, similarity in components if similarity is not None
     ]
 
     if not available_components or total_possible_weight <= 0:
@@ -428,7 +442,7 @@ def find_similar_properties(
     max_distance_miles: float = 10.0,
     max_results: int = 50,
     min_score: float = 30.0,
-) -> List[Dict]:
+) -> list[dict]:
     """
     Find properties similar to the given account number.
     Optimized to perform distance calculation in the database.
@@ -464,7 +478,7 @@ def find_similar_properties(
 
     # Query for nearby properties using Django ORM with annotations
     # This avoids raw SQL issues and "GROUP BY" errors while still being efficient
-    
+
     # 1. Base filter by bounding box (uses database index)
     candidates = PropertyRecord.objects.filter(
         latitude__gte=min_lat,
@@ -479,74 +493,81 @@ def find_similar_properties(
     if target_building and target_building.heat_area:
         min_area = float(target_building.heat_area) * 0.5
         max_area = float(target_building.heat_area) * 1.5
-        
+
         # Use subquery to filter efficiently
         matching_buildings = BuildingDetail.objects.filter(
-            is_active=True,
-            heat_area__gte=min_area,
-            heat_area__lte=max_area
-        ).values('account_number')
-        
+            is_active=True, heat_area__gte=min_area, heat_area__lte=max_area
+        ).values("account_number")
+
         candidates = candidates.filter(account_number__in=matching_buildings)
 
     # 3. Annotate with distance calculation and filter
     # Formula: 3959 * acos(cos(radians(lat1)) * cos(radians(lat2)) * cos(radians(long2) - radians(long1)) + sin(radians(lat1)) * sin(radians(lat2)))
-    
+
     # We use Value() for constants (target lat/lon) and F() for DB fields
     # Ensure float conversion for constants to avoid type issues
     target_lat_rad = radians(target_lat)
     target_lon_rad = radians(target_lon)
-    
-    candidates = candidates.annotate(
-        distance=ExpressionWrapper(
-            3959.0 * ACos(
-                Least(1.0, Greatest(-1.0,
-                    Cos(Value(target_lat_rad)) * Cos(Radians(F('latitude'))) *
-                    Cos(Radians(F('longitude')) - Value(target_lon_rad)) +
-                    Sin(Value(target_lat_rad)) * Sin(Radians(F('latitude')))
-                ))
-            ),
-            output_field=FloatField()
+
+    candidates = (
+        candidates.annotate(
+            distance=ExpressionWrapper(
+                3959.0
+                * ACos(
+                    Least(
+                        1.0,
+                        Greatest(
+                            -1.0,
+                            Cos(Value(target_lat_rad))
+                            * Cos(Radians(F("latitude")))
+                            * Cos(Radians(F("longitude")) - Value(target_lon_rad))
+                            + Sin(Value(target_lat_rad)) * Sin(Radians(F("latitude"))),
+                        ),
+                    )
+                ),
+                output_field=FloatField(),
+            )
         )
-    ).filter(
-        distance__lte=max_distance_miles
-    ).order_by('distance')
-    
+        .filter(distance__lte=max_distance_miles)
+        .order_by("distance")
+    )
+
     # Limit the number of candidates we process in Python
     # We fetch more than max_results to allow for filtering by similarity score
     candidates = candidates[:2000]
 
     # Process candidates
     results = []
-    
+
     # Fetch related data efficiently
     # Since we sliced the queryset, we need to evaluate it to get the list of objects
     # and then fetch related data for those specific objects
     candidate_list = list(candidates)
-    
+
     if not candidate_list:
         return []
-        
+
     candidate_accts = [c.account_number for c in candidate_list]
-    
+
     # Bulk fetch buildings
     buildings_map = {}
     for b in BuildingDetail.objects.filter(account_number__in=candidate_accts, is_active=True):
         buildings_map[b.account_number] = b
-        
+
     # Bulk fetch features
     from collections import defaultdict
+
     features_map = defaultdict(list)
     for f in ExtraFeature.objects.filter(account_number__in=candidate_accts, is_active=True):
         features_map[f.account_number].append(f)
-        
+
     # Calculate scores
     for candidate in candidate_list:
-        dist = getattr(candidate, 'distance', 0.0)
-        
+        dist = getattr(candidate, "distance", 0.0)
+
         c_building = buildings_map.get(candidate.account_number)
         c_features = features_map.get(candidate.account_number, [])
-        
+
         # Calculate score
         score = calculate_similarity_score(
             target,
@@ -558,16 +579,18 @@ def find_similar_properties(
             dist,
             max_distance_miles=max_distance_miles,
         )
-        
+
         if score >= min_score:
-            results.append({
-                "property": candidate,
-                "building": c_building,
-                "features": c_features,
-                "distance": round(dist, 2),
-                "similarity_score": score,
-            })
-            
+            results.append(
+                {
+                    "property": candidate,
+                    "building": c_building,
+                    "features": c_features,
+                    "distance": round(dist, 2),
+                    "similarity_score": score,
+                }
+            )
+
     # Sort and limit
     results.sort(
         key=lambda x: (
@@ -579,7 +602,7 @@ def find_similar_properties(
     return results[:max_results]
 
 
-def get_feature_summary(features: List[ExtraFeature]) -> Dict[str, int]:
+def get_feature_summary(features: list[ExtraFeature]) -> dict[str, int]:
     """
     Get a summary of features by category.
 
@@ -594,7 +617,7 @@ def get_feature_summary(features: List[ExtraFeature]) -> Dict[str, int]:
     return summary
 
 
-def format_feature_list(features: List[ExtraFeature], max_features: int = 10) -> str:
+def format_feature_list(features: list[ExtraFeature], max_features: int = 10) -> str:
     """
     Format a list of features into a readable string using feature descriptions.
 

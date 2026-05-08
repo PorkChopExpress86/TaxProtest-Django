@@ -49,9 +49,7 @@ class MigrateRuntimeArtifactsTests(SimpleTestCase):
             self.assertTrue(result["moved"])
             self.assertFalse(legacy_downloads.exists())
             self.assertFalse(legacy_logs.exists())
-            self.assertEqual(
-                (root / "var" / "downloads" / "sample.txt").read_text(), "payload"
-            )
+            self.assertEqual((root / "var" / "downloads" / "sample.txt").read_text(), "payload")
             self.assertEqual((root / "var" / "logs" / "etl.log").read_text(), "log")
 
     def test_noops_when_runtime_directories_are_already_migrated(self) -> None:

@@ -13,7 +13,7 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 import os
 from pathlib import Path
 from urllib.parse import urlparse
-import logging
+
 from dotenv import load_dotenv
 
 from taxprotest.runtime_paths import resolve_runtime_paths
@@ -28,7 +28,13 @@ PROJECT_REPORT_DIR = PROJECT_PATHS.report_dir
 
 # Load .env from project root when present (development convenience)
 env_path = os.path.join(BASE_DIR, ".env")
-load_dotenv(env_path)
+try:
+    load_dotenv(env_path)
+except PermissionError:
+    # In containerized dev/test environments the bind-mounted .env may be
+    # unreadable to the non-root runtime user. Environment variables are
+    # still provided via docker-compose, so continue without raising.
+    pass
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -46,9 +52,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
 SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY")
 if not SECRET_KEY:
     # Provide a very explicit error to prevent accidental deployment without a proper key.
-    raise RuntimeError(
-        "DJANGO_SECRET_KEY environment variable is required but not set."
-    )
+    raise RuntimeError("DJANGO_SECRET_KEY environment variable is required but not set.")
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = _env_bool("DEBUG", default=False)
@@ -62,9 +66,7 @@ if not ALLOWED_HOSTS:
     ALLOWED_HOSTS = ["localhost", "127.0.0.1", "[::1]", "property.ohmygoshwhatever.com"]
 
 _raw_csrf = os.environ.get("CSRF_TRUSTED_ORIGINS", "")
-CSRF_TRUSTED_ORIGINS = [
-    origin.strip() for origin in _raw_csrf.split(",") if origin.strip()
-]
+CSRF_TRUSTED_ORIGINS = [origin.strip() for origin in _raw_csrf.split(",") if origin.strip()]
 if not CSRF_TRUSTED_ORIGINS:
     # default to the reverse-proxy origin so CSRF checks succeed when using the proxy
     CSRF_TRUSTED_ORIGINS = ["https://property.ohmygoshwhatever.com"]
@@ -79,10 +81,7 @@ if _reverse_host:
     # ensure CSRF origins include scheme; prefer https
     https_origin = f"https://{_reverse_host}"
     http_origin = f"http://{_reverse_host}"
-    if (
-        https_origin not in CSRF_TRUSTED_ORIGINS
-        and http_origin not in CSRF_TRUSTED_ORIGINS
-    ):
+    if https_origin not in CSRF_TRUSTED_ORIGINS and http_origin not in CSRF_TRUSTED_ORIGINS:
         CSRF_TRUSTED_ORIGINS.append(https_origin)
 
 
@@ -195,9 +194,7 @@ if _env_bool("ENABLE_SECURE_SETTINGS", default=False):
     SECURE_SSL_REDIRECT = True
     # A conservative default for HSTS when enabling: 1 week. Increase to 31536000 after testing.
     SECURE_HSTS_SECONDS = int(os.environ.get("SECURE_HSTS_SECONDS", "604800"))
-    SECURE_HSTS_INCLUDE_SUBDOMAINS = _env_bool(
-        "SECURE_HSTS_INCLUDE_SUBDOMAINS", default=False
-    )
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = _env_bool("SECURE_HSTS_INCLUDE_SUBDOMAINS", default=False)
     SECURE_HSTS_PRELOAD = _env_bool("SECURE_HSTS_PRELOAD", default=False)
 
 # Additional recommended security settings (can be overridden via environment)
@@ -212,9 +209,7 @@ SESSION_COOKIE_HTTPONLY = _env_bool("SESSION_COOKIE_HTTPONLY", default=True)
 # CSRF cookie HttpOnly defaults to False because some JS may need access; allow override
 CSRF_COOKIE_HTTPONLY = _env_bool("CSRF_COOKIE_HTTPONLY", default=False)
 # Referrer policy
-SECURE_REFERRER_POLICY = os.environ.get(
-    "SECURE_REFERRER_POLICY", "same-origin"
-)
+SECURE_REFERRER_POLICY = os.environ.get("SECURE_REFERRER_POLICY", "same-origin")
 
 # Whitenoise
 STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"

@@ -1,4 +1,5 @@
 import json
+
 from django.core.management.base import BaseCommand
 
 from data.tasks_new import download_and_extract_hcad
