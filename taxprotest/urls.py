@@ -25,6 +25,7 @@ from .views import (
     index,
     protest_analysis,
     protest_analysis_export,
+    protest_analysis_pdf,
     readiness,
     similar_properties,
 )
@@ -41,6 +42,11 @@ urlpatterns = [
         "protest/<str:account_number>/export/",
         protest_analysis_export,
         name="protest_analysis_export",
+    ),
+    path(
+        "protest/<str:account_number>/pdf/",
+        protest_analysis_pdf,
+        name="protest_analysis_pdf",
     ),
     path("about/", about, name="about"),
     path("healthz/", healthz, name="healthz"),

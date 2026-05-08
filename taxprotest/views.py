@@ -3,6 +3,7 @@
 import csv
 import statistics
 from collections import defaultdict
+from decimal import ROUND_HALF_UP, Decimal
 
 import redis
 from django.conf import settings
@@ -10,7 +11,9 @@ from django.core.paginator import Paginator
 from django.db import connection
 from django.http import Http404, HttpResponse, HttpResponseBadRequest, JsonResponse
 from django.shortcuts import render
+from django.urls import reverse
 
+from data.assessment_history import evaluate_cap_status
 from data.models import AssessmentHistory, BuildingDetail, ExtraFeature, PropertyRecord
 from data.query import build_property_search_queryset
 from data.similarity import find_similar_properties, format_feature_list, get_similarity_label
@@ -27,6 +30,8 @@ SIMILAR_MAX_MAX_RESULTS = 100
 SIMILAR_DEFAULT_MIN_SCORE = 30.0
 SIMILAR_MIN_MIN_SCORE = 0.0
 SIMILAR_MAX_MIN_SCORE = 100.0
+ONE_HUNDRED = Decimal("100")
+PERCENT = Decimal("0.01")
 
 
 def _has_meaningful_export_filter(params):
@@ -87,17 +92,38 @@ def _active_related_maps(properties):
 
 def _assessment_history_rows(prop: PropertyRecord, limit: int = 5) -> list[dict[str, object]]:
     history = list(
-        AssessmentHistory.objects.filter(account_number=prop.account_number).order_by("-tax_year")[:limit]
+        AssessmentHistory.objects.filter(account_number=prop.account_number).order_by("-tax_year")[
+            :limit
+        ]
     )
     rows = []
-    for entry in history:
+    for index, entry in enumerate(history):
+        prior = history[index + 1] if index + 1 < len(history) else None
+        increase_percent = None
+        if entry.assessed_value is not None and prior and prior.assessed_value:
+            increase_percent = (
+                (entry.assessed_value - prior.assessed_value) / prior.assessed_value * ONE_HUNDRED
+            ).quantize(PERCENT, rounding=ROUND_HALF_UP)
         rows.append(
             {
                 "tax_year": entry.tax_year,
                 "assessed_value": entry.assessed_value,
+                "appraised_value": entry.appraised_value,
+                "market_value": entry.market_value,
+                "increase_percent": increase_percent,
+                "cap_status": evaluate_cap_status(entry, prior),
             }
         )
     return rows
+
+
+def _score_breakdown_summary(components: list[dict[str, object]]) -> str:
+    parts = []
+    for component in components:
+        if component.get("points") is None:
+            continue
+        parts.append(f"{component['label']}: {component['points']}/{component['weight']}")
+    return "; ".join(parts)
 
 
 def _assessment_history_chart(rows: list[dict[str, object]]) -> dict[str, object] | None:
@@ -444,6 +470,7 @@ def similar_properties(request, account_number):
             "quality_code": target_building.quality_code if target_building else None,
             "features": format_feature_list(target_features, max_features=5),
             "match_label": "Your property",
+            "score_breakdown": [],
             "is_target": True,
         }
     )
@@ -482,6 +509,7 @@ def similar_properties(request, account_number):
                 "quality_code": building.quality_code if building else None,
                 "features": format_feature_list(features, max_features=5),
                 "match_label": get_similarity_label(result["similarity_score"]),
+                "score_breakdown": result.get("score_breakdown", []),
                 "is_target": False,
             }
         )
@@ -725,6 +753,10 @@ def protest_analysis(request, account_number):
                 "quality_code": building.quality_code if building else None,
                 "condition_code": building.condition_code if building else None,
                 "features": format_feature_list(features, max_features=5),
+                "score_breakdown": result.get("score_breakdown", []),
+                "score_breakdown_summary": _score_breakdown_summary(
+                    result.get("score_breakdown", [])
+                ),
             }
         )
 
@@ -761,6 +793,7 @@ def protest_analysis(request, account_number):
         "comps_below_subject": comps_below_subject,
         "qualifying_comp_count": len(qualifying_ppsf),
         "min_score": min_score,
+        "pdf_export_url": reverse("protest_analysis_pdf", args=[target_property.account_number]),
     }
 
     return render(request, "protest_analysis.html", context)
@@ -817,6 +850,7 @@ def protest_analysis_export(request, account_number):
             "assessed_value",
             "value_per_sqft",
             "delta_vs_subject_per_sqft",
+            "score_breakdown",
         ]
     )
 
@@ -853,9 +887,121 @@ def protest_analysis_export(request, account_number):
                 f"{float(comp_assessed):.2f}" if comp_assessed else "",
                 f"{comp_value_per_sqft:.2f}" if comp_value_per_sqft is not None else "",
                 f"{comp_delta:.2f}" if comp_delta is not None else "",
+                _score_breakdown_summary(result.get("score_breakdown", [])),
             ]
         )
 
+    return response
+
+
+def _pdf_escape(text):
+    return str(text or "").replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+
+
+def _simple_pdf(lines):
+    text_commands = ["BT", "/F1 12 Tf", "72 760 Td"]
+    for index, line in enumerate(lines):
+        if index:
+            text_commands.append("0 -18 Td")
+        text_commands.append(f"({_pdf_escape(line)}) Tj")
+    text_commands.append("ET")
+    stream = "\n".join(text_commands).encode("latin-1", errors="replace")
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+        b"/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        b"<< /Length "
+        + str(len(stream)).encode("ascii")
+        + b" >>\nstream\n"
+        + stream
+        + b"\nendstream",
+    ]
+    output = bytearray(b"%PDF-1.4\n")
+    offsets = [0]
+    for number, payload in enumerate(objects, start=1):
+        offsets.append(len(output))
+        output.extend(f"{number} 0 obj\n".encode("ascii"))
+        output.extend(payload)
+        output.extend(b"\nendobj\n")
+    xref_offset = len(output)
+    output.extend(f"xref\n0 {len(objects) + 1}\n".encode("ascii"))
+    output.extend(b"0000000000 65535 f \n")
+    for offset in offsets[1:]:
+        output.extend(f"{offset:010d} 00000 n \n".encode("ascii"))
+    output.extend(
+        f"trailer << /Size {len(objects) + 1} /Root 1 0 R >>\n"
+        f"startxref\n{xref_offset}\n%%EOF\n".encode("ascii")
+    )
+    return bytes(output)
+
+
+def protest_analysis_pdf(request, account_number):
+    """PDF export of the protest evidence report."""
+    target_property = PropertyRecord.objects.filter(account_number=account_number).first()
+    if not target_property:
+        raise Http404("Property not found")
+
+    target_building = target_property.buildings.filter(is_active=True).first()
+    assessed = target_property.assessed_value or target_property.value
+    try:
+        min_score = float(request.GET.get("min_score", "70.0"))
+    except (ValueError, TypeError):
+        min_score = 70.0
+    min_score = max(52.0, min(100.0, min_score))
+
+    lines = [
+        "Harris County Property Tax Protest Evidence Report",
+        f"Account: {target_property.account_number}",
+        f"Property: {target_property.street_number} {target_property.street_name}",
+        f"Assessed Value: ${float(assessed):,.0f}" if assessed else "Assessed Value: unavailable",
+    ]
+    if target_building and target_building.heat_area:
+        lines.append(f"Living Area: {float(target_building.heat_area):,.0f} sqft")
+        if assessed:
+            ppsf = float(assessed) / float(target_building.heat_area)
+            lines.append(f"Subject Value/Sqft: ${ppsf:,.2f}")
+
+    history_rows = _assessment_history_rows(target_property)
+    if history_rows:
+        lines.append("")
+        lines.append("Assessment History")
+        for row in history_rows:
+            assessed_text = (
+                f"${float(row['assessed_value']):,.0f}" if row.get("assessed_value") else "-"
+            )
+            change_text = (
+                f"{row['increase_percent']}%" if row.get("increase_percent") is not None else "-"
+            )
+            cap_status = row["cap_status"]["label"] if row.get("cap_status") else "Needs review"
+            lines.append(f"{row['tax_year']}: {assessed_text}, YoY {change_text}, {cap_status}")
+
+    similar = find_similar_properties(
+        account_number=account_number,
+        max_distance_miles=10.0,
+        max_results=10,
+        min_score=min_score,
+    )
+    if similar:
+        lines.append("")
+        lines.append("Comparable Evidence")
+        for result in similar:
+            prop = result["property"]
+            building = result["building"]
+            comp_assessed = prop.assessed_value or prop.value
+            comp_ppsf = None
+            if comp_assessed and building and building.heat_area:
+                comp_ppsf = float(comp_assessed) / float(building.heat_area)
+            ppsf_text = f", ${comp_ppsf:,.2f}/sqft" if comp_ppsf is not None else ""
+            lines.append(
+                f"{prop.street_number} {prop.street_name}: "
+                f"score {float(result['similarity_score']):.1f}{ppsf_text}"
+            )
+
+    response = HttpResponse(_simple_pdf(lines), content_type="application/pdf")
+    safe_account = account_number.replace('"', "").replace("\\", "")
+    response["Content-Disposition"] = f'attachment; filename="protest_analysis_{safe_account}.pdf"'
     return response
 
 

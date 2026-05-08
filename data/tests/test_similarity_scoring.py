@@ -3,7 +3,11 @@ from decimal import Decimal
 from django.test import TestCase
 
 from data.models import BuildingDetail, PropertyRecord
-from data.similarity import calculate_similarity_score, get_similarity_label
+from data.similarity import (
+    calculate_similarity_details,
+    calculate_similarity_score,
+    get_similarity_label,
+)
 
 
 class SimilarityScoringTests(TestCase):
@@ -158,6 +162,57 @@ class SimilarityScoringTests(TestCase):
 
         self.assertGreater(aligned_score, weaker_score)
         self.assertGreater(aligned_score - weaker_score, 8)
+
+    def test_near_but_not_identical_match_no_longer_clusters_at_97(self) -> None:
+        target, target_building = self.create_property_with_building("TARGET0000007")
+        candidate, candidate_building = self.create_property_with_building(
+            "CAND00000007",
+            property_overrides={"land_area": Decimal("9700")},
+            building_overrides={
+                "heat_area": Decimal("2320"),
+                "bedrooms": 5,
+                "bathrooms": Decimal("3.0"),
+                "effective_year": 2012,
+            },
+        )
+
+        score = calculate_similarity_score(
+            target,
+            candidate,
+            target_building,
+            candidate_building,
+            distance=1.5,
+            max_distance_miles=10.0,
+        )
+
+        self.assertGreaterEqual(score, 84)
+        self.assertLess(score, 95)
+
+    def test_similarity_details_explain_component_scores(self) -> None:
+        target, target_building = self.create_property_with_building("TARGET0000008")
+        candidate, candidate_building = self.create_property_with_building(
+            "CAND00000008",
+            building_overrides={"bedrooms": 3, "bathrooms": Decimal("3.0")},
+        )
+
+        details = calculate_similarity_details(
+            target,
+            candidate,
+            target_building,
+            candidate_building,
+            distance=2.0,
+            max_distance_miles=10.0,
+        )
+
+        self.assertIn("score", details)
+        self.assertIn("components", details)
+        component_names = {component["name"] for component in details["components"]}
+        self.assertIn("living_area", component_names)
+        self.assertIn("bedrooms", component_names)
+        bedrooms = next(c for c in details["components"] if c["name"] == "bedrooms")
+        self.assertEqual(bedrooms["label"], "Bedrooms")
+        self.assertLess(bedrooms["similarity"], 1.0)
+        self.assertGreater(bedrooms["points"], 0)
 
     def test_match_labels_cover_all_user_facing_tiers(self) -> None:
         self.assertEqual(get_similarity_label(90), "Best match")

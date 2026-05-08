@@ -175,6 +175,16 @@ class AssessmentHistory(models.Model):
     account_number = models.CharField(max_length=20, db_index=True)
     tax_year = models.IntegerField(db_index=True)
     assessed_value = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    appraised_value = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    market_value = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    prior_appraised_value = models.DecimalField(
+        max_digits=14, decimal_places=2, null=True, blank=True
+    )
+    prior_market_value = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    new_construction_value = models.DecimalField(
+        max_digits=14, decimal_places=2, null=True, blank=True
+    )
+    cap_account = models.CharField(max_length=20, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

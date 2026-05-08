@@ -1,4 +1,5 @@
 import csv
+from decimal import Decimal
 from io import StringIO
 from unittest.mock import MagicMock, patch
 
@@ -633,11 +634,19 @@ class ProtestAnalysisViewTests(TestCase):
             account_number=self.target.account_number,
             tax_year=2026,
             assessed_value=355000,
+            appraised_value=355000,
+            market_value=390000,
+            prior_appraised_value=340000,
+            prior_market_value=360000,
+            new_construction_value=0,
+            cap_account="Y",
         )
         AssessmentHistory.objects.create(
             account_number=self.target.account_number,
             tax_year=2025,
             assessed_value=340000,
+            appraised_value=340000,
+            market_value=360000,
         )
         self.comp = PropertyRecord.objects.create(
             address="100 Similar Ln",
@@ -671,6 +680,15 @@ class ProtestAnalysisViewTests(TestCase):
             "features": [],
             "distance": distance,
             "similarity_score": score,
+            "score_breakdown": [
+                {
+                    "name": "living_area",
+                    "label": "Living Area",
+                    "similarity": 1.0,
+                    "points": 24.0,
+                    "weight": 24.0,
+                }
+            ],
         }
 
     def test_404_for_unknown_account(self):
@@ -694,6 +712,7 @@ class ProtestAnalysisViewTests(TestCase):
             "comps_below_subject",
             "qualifying_comp_count",
             "min_score",
+            "pdf_export_url",
         ]:
             self.assertIn(key, ctx, f"Missing context key: {key}")
 
@@ -776,9 +795,25 @@ class ProtestAnalysisViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         history = response.context["assessment_history"]
         self.assertEqual([row["tax_year"] for row in history], [2026, 2025])
+        self.assertEqual(history[0]["increase_percent"], Decimal("4.41"))
+        self.assertEqual(history[0]["cap_status"]["status"], "within_limit")
         self.assertContains(response, "Five-Year Assessment History")
+        self.assertContains(response, "YoY Change")
+        self.assertContains(response, "Cap Status")
         self.assertContains(response, "Assessed Value Trend")
         self.assertIsNotNone(response.context["assessment_history_chart"])
+
+    @patch("taxprotest.views.find_similar_properties")
+    def test_protest_analysis_displays_score_breakdown(self, mock_find):
+        mock_find.return_value = [self._similar_result(self.comp, self.comp_building, score=87.4)]
+
+        response = self.client.get(reverse("protest_analysis", args=[self.target.account_number]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["comps"][0]["similarity_score"], 87.4)
+        self.assertEqual(response.context["comps"][0]["score_breakdown"][0]["label"], "Living Area")
+        self.assertContains(response, "87.4")
+        self.assertContains(response, "Score Details")
 
     @patch("taxprotest.views.find_similar_properties")
     def test_protest_analysis_hides_history_when_absent(self, mock_find):
@@ -844,6 +879,24 @@ class ProtestAnalysisExportTests(TestCase):
             is_active=True,
         )
 
+    def _similar_result(self):
+        return {
+            "property": self.comp,
+            "building": self.comp_building,
+            "features": [],
+            "distance": 0.5,
+            "similarity_score": 76.0,
+            "score_breakdown": [
+                {
+                    "name": "living_area",
+                    "label": "Living Area",
+                    "similarity": 1.0,
+                    "points": 24.0,
+                    "weight": 24.0,
+                }
+            ],
+        }
+
     def test_404_for_unknown_account(self):
         response = self.client.get(reverse("protest_analysis_export", args=["DOESNOTEXIST"]))
         self.assertEqual(response.status_code, 404)
@@ -886,20 +939,13 @@ class ProtestAnalysisExportTests(TestCase):
             "assessed_value",
             "value_per_sqft",
             "delta_vs_subject_per_sqft",
+            "score_breakdown",
         ]:
             self.assertIn(col, header, f"Missing CSV column: {col}")
 
     @patch("taxprotest.views.find_similar_properties")
     def test_csv_data_row_contains_comp_values(self, mock_find):
-        mock_find.return_value = [
-            {
-                "property": self.comp,
-                "building": self.comp_building,
-                "features": [],
-                "distance": 0.5,
-                "similarity_score": 76.0,
-            }
-        ]
+        mock_find.return_value = [self._similar_result()]
         response = self.client.get(
             reverse("protest_analysis_export", args=[self.target.account_number])
         )
@@ -911,3 +957,17 @@ class ProtestAnalysisExportTests(TestCase):
         self.assertIn("201 Export Ave", lines[1])  # full address field
         self.assertIn("150.00", lines[1])  # value_per_sqft
         self.assertIn("-25.00", lines[1])  # delta_vs_subject_per_sqft
+        self.assertIn("Living Area", lines[1])
+
+    @patch("taxprotest.views.find_similar_properties")
+    def test_pdf_export_returns_pdf(self, mock_find):
+        mock_find.return_value = [self._similar_result()]
+
+        response = self.client.get(
+            reverse("protest_analysis_pdf", args=[self.target.account_number])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "application/pdf")
+        self.assertTrue(response.content.startswith(b"%PDF"))
+        self.assertIn(self.target.account_number, response["Content-Disposition"])

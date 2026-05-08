@@ -5,8 +5,10 @@ from decimal import Decimal
 from pathlib import Path
 
 from django.core.management import call_command
+from django.db import IntegrityError
 from django.test import TestCase
 
+from data.assessment_history import evaluate_cap_status
 from data.models import AssessmentHistory, PropertyRecord
 
 
@@ -38,12 +40,66 @@ class AssessmentHistoryModelTests(TestCase):
             assessed_value=Decimal("260000"),
         )
 
-        with self.assertRaises(Exception):
+        with self.assertRaises(IntegrityError):
             AssessmentHistory.objects.create(
                 account_number="HIST002",
                 tax_year=2026,
                 assessed_value=Decimal("255000"),
             )
+
+    def test_cap_status_homestead_uses_ten_percent_plus_new_construction(self):
+        prior = AssessmentHistory.objects.create(
+            account_number="HIST003",
+            tax_year=2025,
+            assessed_value=Decimal("300000"),
+            appraised_value=Decimal("300000"),
+            market_value=Decimal("330000"),
+        )
+        current = AssessmentHistory.objects.create(
+            account_number="HIST003",
+            tax_year=2026,
+            assessed_value=Decimal("341000"),
+            appraised_value=Decimal("341000"),
+            market_value=Decimal("380000"),
+            prior_appraised_value=Decimal("300000"),
+            new_construction_value=Decimal("10000"),
+            cap_account="Y",
+        )
+
+        status = evaluate_cap_status(current, prior)
+
+        self.assertEqual(status["cap_type"], "homestead")
+        self.assertEqual(status["limit_percent"], Decimal("10"))
+        self.assertEqual(status["allowed_value"], Decimal("340000.00"))
+        self.assertEqual(status["status"], "over_limit")
+        self.assertEqual(status["increase_percent"], Decimal("13.67"))
+
+    def test_cap_status_non_homestead_circuit_breaker_uses_twenty_percent(self):
+        prior = AssessmentHistory.objects.create(
+            account_number="HIST004",
+            tax_year=2025,
+            assessed_value=Decimal("400000"),
+            appraised_value=Decimal("400000"),
+            market_value=Decimal("430000"),
+        )
+        current = AssessmentHistory.objects.create(
+            account_number="HIST004",
+            tax_year=2026,
+            assessed_value=Decimal("470000"),
+            appraised_value=Decimal("470000"),
+            market_value=Decimal("600000"),
+            prior_appraised_value=Decimal("400000"),
+            new_construction_value=Decimal("0"),
+            cap_account="",
+        )
+
+        status = evaluate_cap_status(current, prior)
+
+        self.assertEqual(status["cap_type"], "circuit_breaker")
+        self.assertEqual(status["limit_percent"], Decimal("20"))
+        self.assertEqual(status["allowed_value"], Decimal("480000.00"))
+        self.assertEqual(status["status"], "within_limit")
+        self.assertEqual(status["increase_percent"], Decimal("17.50"))
 
 
 class ImportAssessmentHistoryCommandTests(TestCase):
@@ -74,7 +130,7 @@ class ImportAssessmentHistoryCommandTests(TestCase):
         real_dir = self.extract_root / str(year) / "Real_acct_owner"
         real_dir.mkdir(parents=True, exist_ok=True)
         (real_dir / "real_acct.txt").write_text(
-            "acct\tyr\tassessed_val\ttot_mkt_val\tprotested\n"
+            "acct\tyr\tassessed_val\ttot_appr_val\ttot_mkt_val\tprior_tot_appr_val\tprior_tot_mkt_val\tnew_construction_val\tCap_acct\tprotested\n"
             + "\n".join(real_rows)
             + "\n",
             encoding="utf-8",
@@ -93,7 +149,7 @@ class ImportAssessmentHistoryCommandTests(TestCase):
     def test_import_command_prefers_hearing_final_value(self):
         self._write_year_files(
             2026,
-            real_rows=["HIST300\t2026\t310000\t325000\tY"],
+            real_rows=["HIST300\t2026\t310000\t320000\t325000\t280000\t300000\t5000\tY\tY"],
             hearing_rows=["HIST300\t2026\tI\t04/09/2026\t04/08/2026\t04/15/2026\t310000\t295000"],
         )
 
@@ -113,11 +169,17 @@ class ImportAssessmentHistoryCommandTests(TestCase):
 
         history = AssessmentHistory.objects.get(account_number="HIST300", tax_year=2026)
         self.assertEqual(history.assessed_value, Decimal("295000"))
+        self.assertEqual(history.appraised_value, Decimal("320000"))
+        self.assertEqual(history.market_value, Decimal("325000"))
+        self.assertEqual(history.prior_appraised_value, Decimal("280000"))
+        self.assertEqual(history.prior_market_value, Decimal("300000"))
+        self.assertEqual(history.new_construction_value, Decimal("5000"))
+        self.assertEqual(history.cap_account, "Y")
 
     def test_import_command_keeps_real_acct_value_when_hearing_final_blank(self):
         self._write_year_files(
             2025,
-            real_rows=["HIST300\t2025\t280000\t290000\tN"],
+            real_rows=["HIST300\t2025\t280000\t285000\t290000\t260000\t270000\t0\t\tN"],
             hearing_rows=["HIST300\t2025\tI\t04/09/2025\t04/08/2025\t04/15/2025\t280000\t"],
         )
 
@@ -149,7 +211,7 @@ class ImportAssessmentHistoryCommandTests(TestCase):
         )
         self._write_year_files(
             2024,
-            real_rows=["HIST300\t2024\t260000\t270000\tN"],
+            real_rows=["HIST300\t2024\t260000\t265000\t270000\t240000\t250000\t0\t\tN"],
             hearing_rows=["HIST301\t2024\tI\t04/09/2024\t04/08/2024\t04/15/2024\t230000\t210000"],
         )
 
@@ -173,7 +235,7 @@ class ImportAssessmentHistoryCommandTests(TestCase):
     def test_import_command_is_idempotent_for_same_year_range(self):
         self._write_year_files(
             2026,
-            real_rows=["HIST300\t2026\t310000\t325000\tY"],
+            real_rows=["HIST300\t2026\t310000\t320000\t325000\t280000\t300000\t5000\tY\tY"],
             hearing_rows=["HIST300\t2026\tI\t04/09/2026\t04/08/2026\t04/15/2026\t310000\t295000"],
         )
 
@@ -200,12 +262,12 @@ class ImportAssessmentHistoryCommandTests(TestCase):
     def test_import_command_only_rebuilds_requested_years(self):
         self._write_year_files(
             2025,
-            real_rows=["HIST300\t2025\t280000\t290000\tN"],
+            real_rows=["HIST300\t2025\t280000\t285000\t290000\t260000\t270000\t0\t\tN"],
             hearing_rows=[],
         )
         self._write_year_files(
             2026,
-            real_rows=["HIST300\t2026\t310000\t325000\tY"],
+            real_rows=["HIST300\t2026\t310000\t320000\t325000\t280000\t300000\t5000\tY\tY"],
             hearing_rows=["HIST300\t2026\tI\t04/09/2026\t04/08/2026\t04/15/2026\t310000\t295000"],
         )
 
