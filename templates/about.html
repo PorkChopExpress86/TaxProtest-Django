@@ -38,7 +38,7 @@
                     </svg>
                 </div>
                 <h3 class="font-semibold text-gray-900 mb-2">Find Comparable Properties</h3>
-                <p class="text-gray-600 text-sm">A multi-factor similarity algorithm ranks nearby properties by how closely they match yours in size, age, quality, bedrooms, bathrooms, lot size, and amenities.</p>
+                <p class="text-gray-600 text-sm">A multi-factor similarity algorithm ranks nearby properties by how closely they match yours in living area, lot size, bed/bath count, quality, condition, age, building type, features, stories, and distance.</p>
             </div>
             <div class="bg-white rounded-xl shadow-sm border border-blue-100 p-6">
                 <div class="w-10 h-10 bg-green-50 rounded-lg flex items-center justify-center mb-4">
@@ -55,8 +55,8 @@
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
                     </svg>
                 </div>
-                <h3 class="font-semibold text-gray-900 mb-2">Export to CSV</h3>
-                <p class="text-gray-600 text-sm">Download your search results as a spreadsheet to attach to a protest filing or share with a property tax consultant.</p>
+                <h3 class="font-semibold text-gray-900 mb-2">Export Evidence</h3>
+                <p class="text-gray-600 text-sm">Download your evidence report as PDF or export the comparable table to CSV, including match scores and score breakdowns.</p>
             </div>
         </div>
     </section>
@@ -77,14 +77,14 @@
                     <span class="flex-shrink-0 w-8 h-8 bg-gradient-to-r from-blue-500 to-indigo-600 text-white rounded-full flex items-center justify-center font-bold text-sm">2</span>
                     <div>
                         <p class="font-semibold text-gray-900">Open the similar properties view</p>
-                        <p class="text-gray-600 text-sm mt-1">Click "Find Similar" next to your property. The algorithm searches within 10 miles for properties that match yours across 11 weighted factors.</p>
+                        <p class="text-gray-600 text-sm mt-1">Click "Find Similar" next to your property. The algorithm searches within the selected radius for properties that match yours across 11 weighted factors.</p>
                     </div>
                 </li>
                 <li class="flex gap-4">
                     <span class="flex-shrink-0 w-8 h-8 bg-gradient-to-r from-blue-500 to-indigo-600 text-white rounded-full flex items-center justify-center font-bold text-sm">3</span>
                     <div>
                         <p class="font-semibold text-gray-900">Review your comparables</p>
-                        <p class="text-gray-600 text-sm mt-1">Properties are ranked by match score (0–100). Each row shows PPSF, distance, bedrooms, bathrooms, year built, quality grade, and extra features so you can judge relevance.</p>
+                        <p class="text-gray-600 text-sm mt-1">Properties are ranked by match score (0–100 with one decimal). Score Details shows how each factor contributed, so a 91.4 match can be distinguished from an 87.2 or 96.8 match.</p>
                     </div>
                 </li>
                 <li class="flex gap-4">
@@ -98,7 +98,7 @@
                     <span class="flex-shrink-0 w-8 h-8 bg-gradient-to-r from-blue-500 to-indigo-600 text-white rounded-full flex items-center justify-center font-bold text-sm">5</span>
                     <div>
                         <p class="font-semibold text-gray-900">Export your evidence</p>
-                        <p class="text-gray-600 text-sm mt-1">Use the CSV export to download your comparable list. Bring it to your HCAD protest hearing as supporting evidence for an unequal appraisal argument.</p>
+                        <p class="text-gray-600 text-sm mt-1">Use the Evidence Report, PDF export, or CSV export to download your comparable list and score details. Bring it to your HCAD protest hearing as supporting evidence for an unequal appraisal argument.</p>
                     </div>
                 </li>
             </ol>
@@ -134,7 +134,7 @@
     <!-- Similarity Score -->
     <section class="mb-14">
         <h2 class="text-2xl font-bold text-gray-900 mb-2">How the similarity score works</h2>
-        <p class="text-gray-600 mb-6">Each candidate property is scored 0–100 across up to 11 factors. Missing data reduces the available weight pool but does not penalize the score — properties with incomplete records are scored on what is available, then multiplied by a completeness factor (0.80–1.00).</p>
+        <p class="text-gray-600 mb-6">Each candidate property is scored 0–100 across up to 11 factors. Scores are shown with one decimal place, and each comparable includes Score Details so you can see which physical traits helped or hurt the match. Missing data reduces the available weight pool, then the score is multiplied by a completeness factor (0.80–1.00).</p>
 
         <div class="bg-white rounded-xl shadow-sm border border-blue-100 overflow-hidden mb-6">
             <table class="w-full text-sm">
@@ -149,22 +149,22 @@
                     <tr class="hover:bg-blue-50 transition-colors">
                         <td class="px-5 py-3 font-medium text-gray-900">Heated / Living Area</td>
                         <td class="px-4 py-3 text-center font-bold text-blue-700">24</td>
-                        <td class="px-5 py-3 text-gray-600">% size difference: ±5% → 0.97, ±20% → 0.72, ±50% → 0.18, &gt;75% → 0</td>
+                        <td class="px-5 py-3 text-gray-600">% size difference: exact → full credit, ±5% → strong credit, ±20% → moderate credit, ±50% → minimal credit, &gt;75% → 0</td>
                     </tr>
                     <tr class="hover:bg-blue-50 transition-colors">
                         <td class="px-5 py-3 font-medium text-gray-900">Bedrooms</td>
                         <td class="px-4 py-3 text-center font-bold text-blue-700">14</td>
-                        <td class="px-5 py-3 text-gray-600">Count difference: 0 → 1.0, ±1 bed → 0.68, ±2 beds → 0.35, ±3+ → 0</td>
+                        <td class="px-5 py-3 text-gray-600">Count difference: exact → full credit, ±1 bed → partial credit, ±2 beds → low credit, ±4+ → 0</td>
                     </tr>
                     <tr class="hover:bg-blue-50 transition-colors">
                         <td class="px-5 py-3 font-medium text-gray-900">Bathrooms</td>
                         <td class="px-4 py-3 text-center font-bold text-blue-700">12</td>
-                        <td class="px-5 py-3 text-gray-600">Count difference: ±0.5 → 0.82, ±1.0 → 0.54, ±2.5+ → 0</td>
+                        <td class="px-5 py-3 text-gray-600">Count difference: exact → full credit, ±0.5 bath → strong partial credit, ±1.0 bath → low partial credit, ±2.5+ → 0</td>
                     </tr>
                     <tr class="hover:bg-blue-50 transition-colors">
                         <td class="px-5 py-3 font-medium text-gray-900">Land / Lot Size</td>
                         <td class="px-4 py-3 text-center font-bold text-blue-700">10</td>
-                        <td class="px-5 py-3 text-gray-600">% lot size difference: ±5% → 0.95, ±35% → 0.42, &gt;80% → 0</td>
+                        <td class="px-5 py-3 text-gray-600">% lot size difference: exact → full credit, ±5% → strong credit, ±20% → moderate credit, ±50% → low credit, &gt;80% → 0</td>
                     </tr>
                     <tr class="hover:bg-blue-50 transition-colors">
                         <td class="px-5 py-3 font-medium text-gray-900">Quality Grade</td>
@@ -174,7 +174,7 @@
                     <tr class="hover:bg-blue-50 transition-colors">
                         <td class="px-5 py-3 font-medium text-gray-900">Age (Year Built)</td>
                         <td class="px-4 py-3 text-center font-bold text-blue-700">8</td>
-                        <td class="px-5 py-3 text-gray-600">Year difference: ±2 yrs → 0.95, ±10 yrs → 0.60, ±25 yrs → 0.12, 40+ yrs → 0</td>
+                        <td class="px-5 py-3 text-gray-600">Effective-year difference: exact → full credit, ±5 yrs → strong partial credit, ±10 yrs → moderate credit, ±25 yrs → low credit, 40+ yrs → 0</td>
                     </tr>
                     <tr class="hover:bg-blue-50 transition-colors">
                         <td class="px-5 py-3 font-medium text-gray-900">Condition Code</td>
@@ -199,12 +199,12 @@
                     <tr class="hover:bg-blue-50 transition-colors">
                         <td class="px-5 py-3 font-medium text-gray-900">Distance</td>
                         <td class="px-4 py-3 text-center font-bold text-blue-700">4</td>
-                        <td class="px-5 py-3 text-gray-600">Miles from target: 0 mi → 1.0, 0.25 mi → 0.78, 0.5 mi → 0.52, 0.75 mi → 0.24, 1.0+ mi → 0.05</td>
+                        <td class="px-5 py-3 text-gray-600">Distance relative to search radius: same location → full credit, 10% of radius → high credit, 50% → moderate credit, full radius → minimal credit</td>
                     </tr>
                     <tr class="bg-gray-50 font-semibold">
                         <td class="px-5 py-3 text-gray-900">Total</td>
                         <td class="px-4 py-3 text-center text-blue-700">100</td>
-                        <td class="px-5 py-3 text-gray-500 text-xs">Score = (weighted sum ÷ available weight) × completeness (0.80–1.00) × 100</td>
+                        <td class="px-5 py-3 text-gray-500 text-xs">Score = (weighted similarity points ÷ available weight) × completeness (0.80–1.00) × 100. High-90s now require nearly identical attributes, not just broadly similar homes.</td>
                     </tr>
                 </tbody>
             </table>
@@ -214,23 +214,23 @@
         <h3 class="font-semibold text-gray-900 mb-3">Score labels</h3>
         <div class="grid grid-cols-2 sm:grid-cols-5 gap-3">
             <div class="bg-green-50 border border-green-200 rounded-lg px-4 py-3 text-center">
-                <p class="font-bold text-green-800 text-lg">84–100</p>
+                <p class="font-bold text-green-800 text-lg">84.0–100</p>
                 <p class="text-green-700 text-xs mt-1">Best Match</p>
             </div>
             <div class="bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 text-center">
-                <p class="font-bold text-blue-800 text-lg">70–83</p>
+                <p class="font-bold text-blue-800 text-lg">70.0–83.9</p>
                 <p class="text-blue-700 text-xs mt-1">Highly Similar</p>
             </div>
             <div class="bg-indigo-50 border border-indigo-200 rounded-lg px-4 py-3 text-center">
-                <p class="font-bold text-indigo-800 text-lg">52–69</p>
+                <p class="font-bold text-indigo-800 text-lg">52.0–69.9</p>
                 <p class="text-indigo-700 text-xs mt-1">Good Match</p>
             </div>
             <div class="bg-yellow-50 border border-yellow-200 rounded-lg px-4 py-3 text-center">
-                <p class="font-bold text-yellow-800 text-lg">36–51</p>
+                <p class="font-bold text-yellow-800 text-lg">36.0–51.9</p>
                 <p class="text-yellow-700 text-xs mt-1">OK Match</p>
             </div>
             <div class="bg-gray-50 border border-gray-200 rounded-lg px-4 py-3 text-center">
-                <p class="font-bold text-gray-700 text-lg">0–35</p>
+                <p class="font-bold text-gray-700 text-lg">0–35.9</p>
                 <p class="text-gray-500 text-xs mt-1">Broad Match</p>
             </div>
         </div>

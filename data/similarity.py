@@ -37,6 +37,20 @@ LAND_ONLY_WEIGHTS = {
     "distance": 10.0,
 }
 
+COMPONENT_LABELS = {
+    "living_area": "Living Area",
+    "land_size": "Land Size",
+    "bedrooms": "Bedrooms",
+    "bathrooms": "Bathrooms",
+    "quality": "Quality",
+    "condition": "Condition",
+    "age": "Age",
+    "stories": "Stories",
+    "building_character": "Building Type",
+    "features": "Features",
+    "distance": "Distance",
+}
+
 
 def _clamp(value: float, lower: float = 0.0, upper: float = 1.0) -> float:
     return max(lower, min(upper, value))
@@ -259,7 +273,47 @@ def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> fl
     return miles
 
 
-def calculate_similarity_score(
+def _component(name: str, weight: float, similarity: float | None) -> dict[str, object]:
+    return {
+        "name": name,
+        "label": COMPONENT_LABELS.get(name, name.replace("_", " ").title()),
+        "weight": weight,
+        "similarity": None if similarity is None else round(similarity, 3),
+        "points": None if similarity is None else round(weight * similarity, 1),
+        "available": similarity is not None,
+    }
+
+
+def _score_from_components(
+    components: list[dict[str, object]],
+    *,
+    is_land_only: bool,
+) -> dict[str, object]:
+    total_possible_weight = sum(float(component["weight"]) for component in components)
+    available_components = [
+        (float(component["weight"]), float(component["similarity"]))
+        for component in components
+        if component["similarity"] is not None
+    ]
+
+    if not available_components or total_possible_weight <= 0:
+        return {"score": 0.0, "components": components, "available_weight": 0.0}
+
+    available_weight = sum(weight for weight, _ in available_components)
+    weighted_sum = sum(weight * similarity for weight, similarity in available_components)
+    base_score = weighted_sum / available_weight
+    coverage_ratio = 1.0 if is_land_only else (available_weight / total_possible_weight)
+    completeness_multiplier = 1.0 if is_land_only else (0.8 + (0.2 * coverage_ratio))
+    final_score = base_score * completeness_multiplier * 100.0
+
+    return {
+        "score": round(_clamp(final_score, lower=0.0, upper=100.0), 1),
+        "components": components,
+        "available_weight": round(available_weight, 1),
+    }
+
+
+def calculate_similarity_details(
     target_prop: PropertyRecord,
     candidate_prop: PropertyRecord,
     target_building: BuildingDetail | None = None,
@@ -268,32 +322,15 @@ def calculate_similarity_score(
     candidate_features: list[ExtraFeature] | None = None,
     distance: float = 0.0,
     max_distance_miles: float = 10.0,
-) -> float:
-    """
-    Calculate a similarity score between two properties (0-100).
-
-    Higher score = more similar
-
-    Scoring weights (distance removed - used only for filtering):
-    - Heated Size match: 22 points (±20% tolerance)
-    - Lot Size match: 15 points (±20% tolerance)
-    - Bedroom match: 18 points (exact match important)
-    - Bathroom match: 18 points (exact match important)
-    - Quality match: 12 points (same quality grade)
-    - Feature match: 10 points (matching amenities)
-    - Age match: 5 points (±5 years tolerance)
-
-    Note: Distance is used to filter candidates (max_distance_miles parameter)
-    but does not affect the similarity score. This allows comparison of
-    properties with similar attributes regardless of distance.
-    """
-    components: list[tuple[str, float, float | None]] = []
+) -> dict[str, object]:
+    """Calculate an explainable similarity score and component breakdown."""
+    components: list[dict[str, object]] = []
     is_land_only = target_building is None and candidate_building is None
 
     if not is_land_only and target_building and candidate_building:
         components.extend(
             [
-                (
+                _component(
                     "living_area",
                     RESIDENTIAL_WEIGHTS["living_area"],
                     _percentage_similarity(
@@ -301,35 +338,36 @@ def calculate_similarity_score(
                         candidate_building.heat_area,
                         [
                             (0.0, 1.0),
-                            (0.05, 0.97),
-                            (0.10, 0.90),
-                            (0.20, 0.72),
-                            (0.30, 0.52),
-                            (0.40, 0.34),
-                            (0.50, 0.18),
+                            (0.03, 0.96),
+                            (0.05, 0.90),
+                            (0.10, 0.78),
+                            (0.20, 0.55),
+                            (0.30, 0.32),
+                            (0.40, 0.16),
+                            (0.50, 0.06),
                             (0.75, 0.0),
                         ],
                     ),
                 ),
-                (
+                _component(
                     "bedrooms",
                     RESIDENTIAL_WEIGHTS["bedrooms"],
                     _difference_similarity(
                         target_building.bedrooms,
                         candidate_building.bedrooms,
-                        [(0.0, 1.0), (1.0, 0.68), (2.0, 0.35), (3.0, 0.12), (4.0, 0.0)],
+                        [(0.0, 1.0), (1.0, 0.62), (2.0, 0.22), (3.0, 0.06), (4.0, 0.0)],
                     ),
                 ),
-                (
+                _component(
                     "bathrooms",
                     RESIDENTIAL_WEIGHTS["bathrooms"],
                     _difference_similarity(
                         target_building.bathrooms,
                         candidate_building.bathrooms,
-                        [(0.0, 1.0), (0.5, 0.82), (1.0, 0.54), (1.5, 0.26), (2.5, 0.0)],
+                        [(0.0, 1.0), (0.5, 0.76), (1.0, 0.40), (1.5, 0.14), (2.5, 0.0)],
                     ),
                 ),
-                (
+                _component(
                     "quality",
                     RESIDENTIAL_WEIGHTS["quality"],
                     _ranked_code_similarity(
@@ -338,7 +376,7 @@ def calculate_similarity_score(
                         QUALITY_RANK,
                     ),
                 ),
-                (
+                _component(
                     "condition",
                     RESIDENTIAL_WEIGHTS["condition"],
                     _condition_similarity(
@@ -346,7 +384,7 @@ def calculate_similarity_score(
                         candidate_building.condition_code,
                     ),
                 ),
-                (
+                _component(
                     "age",
                     RESIDENTIAL_WEIGHTS["age"],
                     _difference_similarity(
@@ -354,16 +392,16 @@ def calculate_similarity_score(
                         _effective_year(candidate_building),
                         [
                             (0.0, 1.0),
-                            (2.0, 0.95),
-                            (5.0, 0.82),
-                            (10.0, 0.60),
-                            (15.0, 0.38),
-                            (25.0, 0.12),
+                            (2.0, 0.90),
+                            (5.0, 0.76),
+                            (10.0, 0.42),
+                            (15.0, 0.22),
+                            (25.0, 0.08),
                             (40.0, 0.0),
                         ],
                     ),
                 ),
-                (
+                _component(
                     "stories",
                     RESIDENTIAL_WEIGHTS["stories"],
                     _difference_similarity(
@@ -372,7 +410,7 @@ def calculate_similarity_score(
                         [(0.0, 1.0), (0.5, 0.70), (1.0, 0.35), (2.0, 0.0)],
                     ),
                 ),
-                (
+                _component(
                     "building_character",
                     RESIDENTIAL_WEIGHTS["building_character"],
                     _building_character_similarity(target_building, candidate_building),
@@ -392,7 +430,7 @@ def calculate_similarity_score(
 
     components.extend(
         [
-            (
+            _component(
                 "land_size",
                 land_weight,
                 _percentage_similarity(
@@ -400,17 +438,19 @@ def calculate_similarity_score(
                     candidate_prop.land_area,
                     [
                         (0.0, 1.0),
-                        (0.05, 0.95),
-                        (0.10, 0.87),
-                        (0.20, 0.70),
-                        (0.35, 0.42),
-                        (0.50, 0.24),
+                        (0.05, 0.90),
+                        (0.10, 0.76),
+                        (0.20, 0.54),
+                        (0.35, 0.28),
+                        (0.50, 0.12),
                         (0.80, 0.0),
                     ],
                 ),
             ),
-            ("features", feature_weight, _feature_similarity(target_features, candidate_features)),
-            (
+            _component(
+                "features", feature_weight, _feature_similarity(target_features, candidate_features)
+            ),
+            _component(
                 "distance",
                 distance_weight,
                 _distance_similarity(distance, max_distance_miles),
@@ -418,23 +458,31 @@ def calculate_similarity_score(
         ]
     )
 
-    total_possible_weight = sum(weight for _, weight, _ in components)
-    available_components = [
-        (weight, similarity) for _, weight, similarity in components if similarity is not None
-    ]
+    return _score_from_components(components, is_land_only=is_land_only)
 
-    if not available_components or total_possible_weight <= 0:
-        return 0.0
 
-    available_weight = sum(weight for weight, _ in available_components)
-    weighted_sum = sum(weight * similarity for weight, similarity in available_components)
-
-    base_score = weighted_sum / available_weight
-    coverage_ratio = 1.0 if is_land_only else (available_weight / total_possible_weight)
-    completeness_multiplier = 1.0 if is_land_only else (0.8 + (0.2 * coverage_ratio))
-    final_score = base_score * completeness_multiplier * 100.0
-
-    return round(_clamp(final_score, lower=0.0, upper=100.0), 1)
+def calculate_similarity_score(
+    target_prop: PropertyRecord,
+    candidate_prop: PropertyRecord,
+    target_building: BuildingDetail | None = None,
+    candidate_building: BuildingDetail | None = None,
+    target_features: list[ExtraFeature] | None = None,
+    candidate_features: list[ExtraFeature] | None = None,
+    distance: float = 0.0,
+    max_distance_miles: float = 10.0,
+) -> float:
+    """Calculate a similarity score between two properties (0-100)."""
+    details = calculate_similarity_details(
+        target_prop,
+        candidate_prop,
+        target_building,
+        candidate_building,
+        target_features,
+        candidate_features,
+        distance,
+        max_distance_miles,
+    )
+    return float(details["score"])
 
 
 def find_similar_properties(
@@ -568,8 +616,7 @@ def find_similar_properties(
         c_building = buildings_map.get(candidate.account_number)
         c_features = features_map.get(candidate.account_number, [])
 
-        # Calculate score
-        score = calculate_similarity_score(
+        details = calculate_similarity_details(
             target,
             candidate,
             target_building,
@@ -579,6 +626,7 @@ def find_similar_properties(
             dist,
             max_distance_miles=max_distance_miles,
         )
+        score = float(details["score"])
 
         if score >= min_score:
             results.append(
@@ -588,6 +636,7 @@ def find_similar_properties(
                     "features": c_features,
                     "distance": round(dist, 2),
                     "similarity_score": score,
+                    "score_breakdown": details["components"],
                 }
             )
 

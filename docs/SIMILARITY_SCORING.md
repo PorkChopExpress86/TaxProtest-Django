@@ -1,425 +1,62 @@
-# Property Similarity Scoring Algorithm
+# Property Similarity Scoring
 
-## Overview
-The similarity search algorithm finds properties comparable to a target property based on location, size, age, and features. Each similar property receives a **similarity score from 0 to 100**, where higher scores indicate more similar properties.
+Last updated: May 8, 2026
 
-## How It Works
+The similarity score ranks Harris County properties from `0.0` to `100.0` based on physical comparability. Scores are shown with one decimal place so close matches can be separated more clearly; a `96.8` is meaningfully stronger than an `87.2`.
 
-### 1. Initial Filtering
-Before scoring, the algorithm filters candidate properties to ensure efficient processing:
+The report and CSV export include a score breakdown for each comparable. The breakdown shows each factor's label, available weight, earned points, and normalized similarity.
 
-- **Location Filter**: Only properties within the specified radius (default: 5 miles)
-- **Coordinate Requirement**: Both target and candidate must have valid latitude/longitude
-- **Size Filter**: If building data is available, only considers properties within 50-150% of target size
-- **Active Records Only**: Only uses current/active building details and features
-- **Excludes Self**: The target property is never included in results
+## Weighted Factors
 
-### 2. Similarity Score Components
+| Factor | Max Points | Data Source | How It Contributes |
+| --- | ---: | --- | --- |
+| Living area | 24 | `BuildingDetail.heat_area` | Percent difference in heated/living area. High-90 scores require very small size differences. |
+| Bedrooms | 14 | `BuildingDetail.bedrooms` | Exact match receives full credit; one-bedroom differences receive partial credit; larger gaps fall quickly. |
+| Bathrooms | 12 | `BuildingDetail.bathrooms` | Exact match receives full credit; half-bath differences are treated as closer than full-bath differences. |
+| Land size | 10 | `PropertyRecord.land_area` | Percent difference in parcel size. |
+| Quality | 10 | `BuildingDetail.quality_code` | HCAD quality ranks: `X=7`, `A=6`, `B=5`, `C=4`, `D=3`, `E=2`, `F=1`. |
+| Age | 8 | effective year, remodel year, or year built | Compares the best available effective construction year. |
+| Condition | 6 | `BuildingDetail.condition_code` | Uses the same ranked-code behavior as quality where possible. |
+| Stories | 4 | `BuildingDetail.stories` | Penalizes story-count differences. |
+| Building type | 4 | style, type, or class | Exact building-character matches receive full credit; related codes receive partial credit. |
+| Features | 4 | active `ExtraFeature.feature_code` rows | Jaccard similarity: shared feature codes divided by all unique feature codes. |
+| Distance | 4 | GIS coordinates | Distance contributes lightly after candidates are filtered to the selected radius. |
 
-The similarity score is calculated based on **6 weighted factors**:
+Total residential weight is 100 points. Land-only comparisons use land size, features, and distance.
 
-| Factor | Weight | Description |
-|--------|--------|-------------|
-| **Distance** | 30 points | How close the property is to the target |
-| **Size Match** | 25 points | How similar the building square footage is |
-| **Age Match** | 15 points | How close the year built is |
-| **Feature Match** | 20 points | How many amenities (pool, garage, etc.) match |
-| **Bedroom Match** | 5 points | How similar the bedroom count is |
-| **Bathroom Match** | 5 points | How similar the bathroom count is |
+## Score Formula
 
-**Total Possible Score: 100 points**
+For each available factor:
 
----
-
-## Detailed Scoring Rules
-
-### Distance (30 points max)
-Closer properties score higher. Distance is calculated using the Haversine formula (great circle distance).
-
-```
-Within 1 mile:  30 points  ⭐⭐⭐
-Within 2 miles: 20 points  ⭐⭐
-Within 3 miles: 10 points  ⭐
-Within 5 miles:  5 points
-Over 5 miles:    0 points  (filtered out)
+```text
+factor_points = factor_weight * factor_similarity
+base_score = sum(factor_points) / sum(available_factor_weights)
+final_score = base_score * completeness_multiplier * 100
 ```
 
-**Example:**
-- Target at (29.7648, -95.3605)
-- Candidate at (29.7550, -95.3600) = 0.68 miles away
-- **Score: 30 points**
+The completeness multiplier is `0.80` to `1.00` for residential properties. A property with incomplete HCAD data can still be compared, but a fully documented comparable gets more confidence.
 
----
+## Why Scores Became More Granular
 
-### Size Match (25 points max)
-Based on heated area (living space square footage). Penalizes large size differences.
+Earlier scoring allowed many broadly similar properties to cluster in the high 90s. The current curves are intentionally steeper:
 
-```
-Within 10% of target:  25 points  ⭐⭐⭐⭐⭐
-Within 20% of target:  20 points  ⭐⭐⭐⭐
-Within 30% of target:  10 points  ⭐⭐
-Within 50% of target:   5 points  ⭐
-Over 50% different:     0 points
-```
+- living-area, lot-size, bedroom, bathroom, and age differences separate close matches more aggressively;
+- distance now contributes a small amount to break otherwise similar ties;
+- reports show one-decimal scores rather than rounded whole numbers;
+- each comparable exposes score details so users can see why it ranked where it did.
 
-**Calculation:**
-```
-diff_percent = |target_sqft - candidate_sqft| / target_sqft
-```
+The goal is not to punish useful comparables. The goal is to reserve scores above roughly `95` for properties that are nearly identical across the major physical attributes.
 
-**Example:**
-- Target: 2,000 sq ft
-- Candidate: 2,200 sq ft
-- Difference: 200 / 2,000 = 10%
-- **Score: 25 points** (within 10%)
+## Score Labels
 
-**Size Tolerance Examples:**
-| Target | 10% (25pts) | 20% (20pts) | 30% (10pts) | 50% (5pts) |
-|--------|-------------|-------------|-------------|------------|
-| 1,500 | 1,350-1,650 | 1,200-1,800 | 1,050-1,950 | 750-2,250 |
-| 2,000 | 1,800-2,200 | 1,600-2,400 | 1,400-2,600 | 1,000-3,000 |
-| 3,000 | 2,700-3,300 | 2,400-3,600 | 2,100-3,900 | 1,500-4,500 |
+| Range | Label | Meaning |
+| --- | --- | --- |
+| `84.0-100.0` | Best match | Strongest physical comparables. |
+| `70.0-83.9` | Highly similar | Useful comparables with some visible differences. |
+| `52.0-69.9` | Good match | Supportive context; review score details before relying on it. |
+| `36.0-51.9` | OK match | Broad comparison only. |
+| `0.0-35.9` | Broad match | Usually too different for primary evidence. |
 
----
+## Report Outputs
 
-### Age Match (15 points max)
-Based on year built. Properties from the same era score higher.
-
-```
-Within  2 years: 15 points  ⭐⭐⭐
-Within  5 years: 12 points  ⭐⭐
-Within 10 years:  8 points  ⭐
-Within 15 years:  4 points
-Over 15 years:    0 points
-```
-
-**Example:**
-- Target: Built 2005
-- Candidate: Built 2007
-- Difference: 2 years
-- **Score: 15 points**
-
----
-
-### Feature Match (20 points max)
-Compares amenities like pools, garages, patios, etc. Uses [Jaccard similarity](https://en.wikipedia.org/wiki/Jaccard_index).
-
-```
-Score = (matching_features / total_unique_features) × 20
-```
-
-**Jaccard Similarity Formula:**
-```
-similarity = |A ∩ B| / |A ∪ B|
-
-Where:
-  A ∩ B = features in both properties
-  A ∪ B = all unique features across both properties
-```
-
-**Common Feature Codes:**
-- `POOL` - Swimming Pool
-- `SPA` - Spa/Hot Tub
-- `DETGAR` - Detached Garage
-- `CARPORT` - Carport
-- `PATIO` - Covered Patio
-- `SPRNK` - Sprinkler System
-- `FENCE` - Fence
-- `GAZEBO` - Gazebo
-- `TENNCT` - Tennis Court
-- `POOLHTR` - Pool Heater
-
-**Examples:**
-
-**Example 1: Identical Features**
-```
-Target:    [POOL, SPA, DETGAR]
-Candidate: [POOL, SPA, DETGAR]
-
-Intersection: 3 (all match)
-Union:        3 (total unique)
-Similarity:   3/3 = 100%
-Score:        20 points ⭐⭐⭐⭐⭐
-```
-
-**Example 2: Partial Match**
-```
-Target:    [POOL, SPA, DETGAR, PATIO]
-Candidate: [POOL, DETGAR, FENCE]
-
-Intersection: 2 (POOL, DETGAR)
-Union:        5 (POOL, SPA, DETGAR, PATIO, FENCE)
-Similarity:   2/5 = 40%
-Score:        8 points ⭐⭐
-```
-
-**Example 3: No Overlap**
-```
-Target:    [POOL, SPA]
-Candidate: [FENCE, SPRNK]
-
-Intersection: 0 (no match)
-Union:        4 (all different)
-Similarity:   0/4 = 0%
-Score:        0 points
-```
-
----
-
-### Bedroom Match (5 points max)
-Simple comparison of bedroom counts.
-
-```
-Exact match:        5 points  ⭐
-Off by 1 bedroom:   3 points
-Off by 2+ bedrooms: 0 points
-```
-
-**Example:**
-- Target: 3 bedrooms
-- Candidate: 3 bedrooms
-- **Score: 5 points**
-
----
-
-### Bathroom Match (5 points max)
-Allows for half-bath differences.
-
-```
-Within 0.5 bathrooms: 5 points  ⭐
-Within 1.0 bathrooms: 3 points
-Over 1.0 difference:  0 points
-```
-
-**Example:**
-- Target: 2.5 bathrooms
-- Candidate: 2.0 bathrooms
-- Difference: 0.5
-- **Score: 5 points**
-
----
-
-## Complete Scoring Example
-
-### Target Property
-```
-Address:   123 Main St, Houston, TX 77002
-Location:  29.7648, -95.3605
-Size:      2,000 sq ft
-Built:     2005
-Bedrooms:  3
-Bathrooms: 2.5
-Features:  Pool, Spa, Detached Garage
-```
-
-### Candidate Property #1 (Excellent Match)
-```
-Address:   456 Oak Ave, Houston, TX 77002
-Location:  29.7650, -95.3610
-Distance:  0.3 miles
-Size:      2,100 sq ft (5% diff)
-Built:     2006 (1 year diff)
-Bedrooms:  3 (exact match)
-Bathrooms: 2.5 (exact match)
-Features:  Pool, Spa, Detached Garage (all match)
-```
-
-**Score Breakdown:**
-```
-Distance:   30 pts  (< 1 mile)
-Size:       25 pts  (5% difference, within 10%)
-Age:        15 pts  (1 year difference, within 2)
-Features:   20 pts  (3/3 match = 100%)
-Bedrooms:    5 pts  (exact match)
-Bathrooms:   5 pts  (exact match)
-─────────────────
-TOTAL:     100 pts ⭐⭐⭐⭐⭐ (Perfect match!)
-```
-
-### Candidate Property #2 (Good Match)
-```
-Address:   789 Elm St, Houston, TX 77003
-Location:  29.7500, -95.3550
-Distance:  1.2 miles
-Size:      2,300 sq ft (15% diff)
-Built:     2008 (3 years diff)
-Bedrooms:  4 (1 more)
-Bathrooms: 2.0 (0.5 less)
-Features:  Pool, Detached Garage (2 of 3 match)
-```
-
-**Score Breakdown:**
-```
-Distance:   20 pts  (1-2 miles)
-Size:       20 pts  (15% difference, within 20%)
-Age:        12 pts  (3 years difference, within 5)
-Features:   13 pts  (2/4 features = 50% similarity)
-Bedrooms:    3 pts  (off by 1)
-Bathrooms:   5 pts  (0.5 difference)
-─────────────────
-TOTAL:      73 pts ⭐⭐⭐⭐ (Good match)
-```
-
-### Candidate Property #3 (Fair Match)
-```
-Address:   321 Pine Rd, Houston, TX 77004
-Location:  29.7400, -95.3500
-Distance:  2.5 miles
-Size:      2,600 sq ft (30% diff)
-Built:     1998 (7 years diff)
-Bedrooms:  4 (1 more)
-Bathrooms: 3.0 (0.5 more)
-Features:  Pool, Fence, Patio (1 of 3 match)
-```
-
-**Score Breakdown:**
-```
-Distance:   10 pts  (2-3 miles)
-Size:       10 pts  (30% difference, within 30%)
-Age:         8 pts  (7 years difference, within 10)
-Features:    7 pts  (1/5 features = 20% similarity)
-Bedrooms:    3 pts  (off by 1)
-Bathrooms:   5 pts  (0.5 difference)
-─────────────────
-TOTAL:      43 pts ⭐⭐ (Fair match)
-```
-
----
-
-## Understanding the Results
-
-### Score Ranges
-```
-90-100: Exceptional match  ⭐⭐⭐⭐⭐ (Very rare, nearly identical)
-70-89:  Excellent match    ⭐⭐⭐⭐   (Highly comparable)
-50-69:  Good match         ⭐⭐⭐     (Reasonably comparable)
-30-49:  Fair match         ⭐⭐       (Somewhat similar)
-0-29:   Poor match         ⭐         (Not very comparable)
-```
-
-### Default Filters
-By default, the search only returns properties with:
-- **Minimum score:** 30 points (Fair match or better)
-- **Maximum distance:** 5 miles
-- **Maximum results:** 50 properties (sorted by score)
-
-These can be adjusted via URL parameters:
-```
-/similar/0123456789012/?max_distance=3&min_score=50&max_results=20
-```
-
----
-
-## Use Cases
-
-### Tax Protest / Appeals
-Properties with scores **70+** are typically strong comparables for:
-- Property tax protests
-- Appraisal appeals
-- Market value analysis
-
-### Market Research
-Properties with scores **50+** provide:
-- Neighborhood market trends
-- Price per square foot comparisons
-- Feature value analysis
-
-### General Interest
-Properties with scores **30+** show:
-- Nearby properties
-- Similar home styles in area
-- Neighborhood characteristics
-
----
-
-## Technical Implementation
-
-### Distance Calculation
-Uses the **Haversine formula** to calculate great circle distance between two points on Earth:
-
-```python
-def haversine_distance(lat1, lon1, lat2, lon2):
-    # Convert to radians
-    lon1, lat1, lon2, lat2 = map(radians, [lon1, lat1, lon2, lat2])
-    
-    # Haversine formula
-    dlon = lon2 - lon1
-    dlat = lat2 - lat1
-    a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
-    c = 2 * asin(sqrt(a))
-    
-    # Earth radius in miles
-    return 3959 * c
-```
-
-### Performance Optimizations
-1. **Bounding box pre-filter**: Only evaluates properties within a rough square around the target
-2. **Database prefetch**: Loads related building and feature data efficiently
-3. **Candidate limit**: Processes maximum 500 candidates before scoring
-4. **Result limit**: Returns only top N results (default: 50)
-
-### Data Requirements
-For accurate scoring, properties should have:
-- ✅ Latitude/Longitude (required)
-- ✅ Building details (size, year, beds, baths)
-- ✅ Extra features (pool, garage, etc.)
-
-Properties missing data receive partial scores based on available information.
-
----
-
-## API Reference
-
-### Function: `find_similar_properties()`
-
-```python
-from data.similarity import find_similar_properties
-
-results = find_similar_properties(
-    account_number='0123456789012',
-    max_distance_miles=5.0,      # Search radius
-    max_results=50,              # Number of results
-    min_score=30.0              # Minimum similarity score
-)
-```
-
-### Returns
-```python
-[
-    {
-        'property': PropertyRecord,           # Django model instance
-        'building': BuildingDetail,           # Building data (or None)
-        'features': [ExtraFeature, ...],     # List of features
-        'distance': 1.23,                     # Miles from target
-        'similarity_score': 85.5,            # Calculated score
-    },
-    ...
-]
-```
-
-### Web Endpoint
-```
-GET /similar/<account_number>/
-GET /similar/<account_number>/?max_distance=3&min_score=50&max_results=20
-```
-
----
-
-## Future Enhancements
-
-Potential improvements to the algorithm:
-
-1. **Market Value Factor**: Compare assessed values (±20% tolerance)
-2. **Neighborhood Preference**: Bonus points for same ZIP code or subdivision
-3. **Lot Size Factor**: Compare land area for properties with large lots
-4. **Building Type**: Prefer same building style (ranch, two-story, etc.)
-5. **Recent Sales**: Prioritize properties with recent sale dates
-6. **Custom Weights**: Allow users to adjust factor weights
-7. **Machine Learning**: Train model on actual comparable sales data
-
----
-
-## See Also
-- [GIS.md](guides/GIS.md) - Location data and coordinate handling
-- [DATABASE.md](guides/DATABASE.md) - Data sources and import process
-- [data/similarity.py](../data/similarity.py) - Source code implementation
+The Similar Properties page and Evidence Report both display one-decimal scores and expandable score details. The Evidence Report CSV includes a `score_breakdown` column. The PDF export includes the subject summary, assessment history, cap status summary, and top comparable evidence.

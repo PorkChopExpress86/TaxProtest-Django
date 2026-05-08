@@ -378,9 +378,21 @@
                                     {% if r.similarity_score >= 84 %}bg-green-100 text-green-800
                                     {% elif r.similarity_score >= 52 %}bg-yellow-100 text-yellow-800
                                     {% else %}bg-blue-100 text-blue-800{% endif %}">
-                                    Score {{ r.similarity_score|floatformat:0 }}
+                                    Score {{ r.similarity_score|floatformat:1 }}
                                 </span>
                                 <span class="text-[11px] font-medium text-gray-600">{{ r.match_label }}</span>
+                                {% if r.score_breakdown %}
+                                <details class="text-[11px] text-gray-600">
+                                    <summary class="cursor-pointer font-semibold">Score Details</summary>
+                                    <div class="mt-1 space-y-0.5">
+                                        {% for component in r.score_breakdown %}
+                                        {% if component.points is not None %}
+                                        <div>{{ component.label }}: {{ component.points|floatformat:1 }}/{{ component.weight|floatformat:1 }}</div>
+                                        {% endif %}
+                                        {% endfor %}
+                                    </div>
+                                </details>
+                                {% endif %}
                                 </div>
                                 {% endif %}
                             </td>
