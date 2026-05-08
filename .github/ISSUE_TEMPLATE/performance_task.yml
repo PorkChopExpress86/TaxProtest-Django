@@ -1,0 +1,55 @@
+name: Performance task
+description: Track ingestion, query, or app performance work
+title: "[Perf]: "
+labels:
+  - performance
+body:
+  - type: textarea
+    id: bottleneck
+    attributes:
+      label: Bottleneck
+      description: What is currently slow or resource-intensive?
+      placeholder: Ingestion step / query / endpoint and where it hurts.
+    validations:
+      required: true
+  - type: textarea
+    id: current_measurement
+    attributes:
+      label: Current measurement
+      description: Baseline metrics (time, memory, CPU, etc.).
+      placeholder: "Example: import_all_data takes 42m on dev machine."
+    validations:
+      required: true
+  - type: textarea
+    id: desired_outcome
+    attributes:
+      label: Desired outcome
+      description: Target performance change.
+      placeholder: "Example: reduce runtime to under 25m."
+    validations:
+      required: true
+  - type: textarea
+    id: guardrails
+    attributes:
+      label: Guardrails
+      description: Constraints that must remain true.
+      placeholder: Preserve hash-based skipping, keep SQLite fallback, avoid full-file memory loads.
+  - type: textarea
+    id: validation_commands
+    attributes:
+      label: Validation commands
+      description: Docker Compose validation commands used.
+      value: |
+        docker compose build
+        docker compose up -d postgres
+        docker compose run --rm taxprotest-dev ruff check .
+        docker compose run --rm taxprotest-dev black --check .
+        docker compose run --rm taxprotest-dev mypy taxprotest data
+        docker compose run --rm taxprotest-dev pytest -q
+        docker compose run --rm ingest
+        docker compose run --rm refresh
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Links, traces, benchmarks, or implementation notes.
