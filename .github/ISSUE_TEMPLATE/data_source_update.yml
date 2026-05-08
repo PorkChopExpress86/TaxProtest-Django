@@ -1,0 +1,40 @@
+name: Data source update
+description: Track HCAD or GIS source URL/path and schema changes
+title: "[Data]: "
+labels:
+  - data-source
+body:
+  - type: input
+    id: data_source_affected
+    attributes:
+      label: Data source affected
+      placeholder: HCAD real account data, Real_building_land, Parcels GIS, etc.
+    validations:
+      required: true
+  - type: input
+    id: current_url_path
+    attributes:
+      label: Current URL/path
+      placeholder: https://... or local path currently used
+  - type: input
+    id: new_url_path
+    attributes:
+      label: New URL/path
+      placeholder: https://... or new source path
+  - type: textarea
+    id: expected_schema_changes
+    attributes:
+      label: Expected schema/file changes
+      placeholder: New columns, renamed fields, encoding changes, file naming changes.
+  - type: textarea
+    id: refresh_behavior
+    attributes:
+      label: Refresh behavior affected
+      placeholder: Hashing, extraction order, scheduling, skip behavior, etc.
+  - type: textarea
+    id: validation_plan
+    attributes:
+      label: Validation plan
+      placeholder: Docker Compose commands and checks to run.
+    validations:
+      required: true

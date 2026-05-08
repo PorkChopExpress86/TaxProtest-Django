@@ -1,0 +1,50 @@
+name: Feature request
+description: Propose a new capability or workflow improvement
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: feature_summary
+    attributes:
+      label: Feature summary
+      description: Briefly describe the requested feature.
+    validations:
+      required: true
+  - type: textarea
+    id: user_workflow
+    attributes:
+      label: User workflow
+      description: Who uses this and how?
+  - type: textarea
+    id: proposed_behavior
+    attributes:
+      label: Proposed behavior
+      description: What should happen?
+    validations:
+      required: true
+  - type: textarea
+    id: data_needed
+    attributes:
+      label: Data needed
+      description: Required data inputs, fields, or exports.
+  - type: dropdown
+    id: affected_area
+    attributes:
+      label: Affected area
+      options:
+        - web UI
+        - comparables
+        - ingestion
+        - database
+        - export
+        - Docker/dev workflow
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: Acceptance criteria
+      description: Bullet list of conditions for completion.
+    validations:
+      required: true

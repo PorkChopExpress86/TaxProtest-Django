@@ -1,15 +1,22 @@
 ---
 name: create-tests
-description: Describe when to use this prompt
+description: Add focused pytest coverage for a TaxProtest module, bug, or feature.
 ---
 
-<!-- Tip: Use /create-prompt in chat to generate content with agent assistance -->
+Use pytest with small fixtures and keep tests fast.
 
+Guidelines:
 
-```md
-Run tests inside the dev container:
+- Do not require full HCAD data downloads.
+- Cover SQLite fallback where practical.
+- If testing Postgres-specific code, isolate it and skip when unavailable.
+- Prefer testing pure functions under `src/taxprotest/` over route-level tests unless route behavior is the feature.
+- Run tests inside Docker only.
+
+Validation:
 
 ```bash
 docker compose run --rm taxprotest-dev pytest -q
 docker compose run --rm taxprotest-dev ruff check .
-docker compose run --rm taxprotest-dev mypy src
+docker compose run --rm taxprotest-dev mypy taxprotest data
+```

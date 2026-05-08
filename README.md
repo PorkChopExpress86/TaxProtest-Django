@@ -74,6 +74,8 @@ docker compose exec web python manage.py import_building_data
 docker compose exec web python manage.py load_room_counts
 ```
 
+For feature-specific repair and validation steps, see `docs/guides/FEATURE_IMPORT.md`.
+
 If upgrading an older database that may contain mixed or incomplete rows, preview and apply cleanup with:
 
 ```bash
@@ -169,6 +171,12 @@ docker compose exec web python manage.py test
 - `docs/SIMILARITY_SCORING.md` — similarity algorithm details
 - `docs/ETL_PIPELINE.md` — ETL pipeline architecture
 - `docs/REVERSE_PROXY.md` — reverse proxy / production deployment notes
+
+## AI workflows
+
+- `docs/ai-workflows.md` — practical guide for AI/Copilot workflows in this repo
+- `.github/copilot-instructions.md` — repository-wide Copilot guardrails
+- `.github/prompts/` — reusable prompt files for ingestion, comparables, Docker/dev workflow, and test creation
 
 ## Data sources
 

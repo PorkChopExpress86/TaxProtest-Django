@@ -1,0 +1,61 @@
+name: Bug report
+description: Report a reproducible bug in TaxProtest
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What is broken?
+    validations:
+      required: true
+  - type: textarea
+    id: steps_to_reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Provide minimal reproducible steps.
+      placeholder: |
+        1. Start services...
+        2. Run command...
+        3. Visit page...
+    validations:
+      required: true
+  - type: textarea
+    id: expected_behavior
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual_behavior
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: input
+    id: docker_service_affected
+    attributes:
+      label: Docker service affected
+      placeholder: taxprotest-dev, postgres, ingest, refresh, worker, beat, etc.
+  - type: textarea
+    id: logs_output
+    attributes:
+      label: Logs/output
+      description: Paste relevant logs, errors, or traceback.
+  - type: dropdown
+    id: data_scope
+    attributes:
+      label: Data scope
+      options:
+        - Full HCAD dataset
+        - Fixture data only
+        - SQLite
+        - Postgres
+        - Not sure
+  - type: textarea
+    id: validation_attempted
+    attributes:
+      label: Validation attempted
+      description: What Docker commands/checks did you run?
