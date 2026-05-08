@@ -10,12 +10,10 @@ from django.core.paginator import Paginator
 from django.db import connection
 from django.http import Http404, HttpResponse, HttpResponseBadRequest, JsonResponse
 from django.shortcuts import render
-from django.utils.http import urlencode
 
-from data.models import BuildingDetail, ExtraFeature, PropertyRecord
-from data.similarity import find_similar_properties, format_feature_list, get_similarity_label
+from data.models import AssessmentHistory, BuildingDetail, ExtraFeature, PropertyRecord
 from data.query import build_property_search_queryset
-
+from data.similarity import find_similar_properties, format_feature_list, get_similarity_label
 
 EXPORT_CSV_MAX_ROWS = 1000
 EXPORT_MIN_TEXT_FILTER_LENGTH = 3
@@ -87,6 +85,84 @@ def _active_related_maps(properties):
     return buildings_by_account, features_by_account
 
 
+def _assessment_history_rows(prop: PropertyRecord, limit: int = 5) -> list[dict[str, object]]:
+    history = list(
+        AssessmentHistory.objects.filter(account_number=prop.account_number).order_by("-tax_year")[:limit]
+    )
+    rows = []
+    for entry in history:
+        rows.append(
+            {
+                "tax_year": entry.tax_year,
+                "assessed_value": entry.assessed_value,
+            }
+        )
+    return rows
+
+
+def _assessment_history_chart(rows: list[dict[str, object]]) -> dict[str, object] | None:
+    values = [
+        (int(row["tax_year"]), float(row["assessed_value"]))
+        for row in rows
+        if row.get("assessed_value") is not None
+    ]
+    if not values:
+        return None
+
+    values.sort(key=lambda item: item[0])
+    width = 520.0
+    height = 180.0
+    left = 40.0
+    right = 16.0
+    top = 16.0
+    bottom = 28.0
+    plot_width = width - left - right
+    plot_height = height - top - bottom
+
+    years = [year for year, _ in values]
+    amounts = [amount for _, amount in values]
+    min_amount = min(amounts)
+    max_amount = max(amounts)
+    amount_span = max(max_amount - min_amount, 1.0)
+    year_span = max(len(values) - 1, 1)
+
+    points = []
+    for index, (year, amount) in enumerate(values):
+        x = left + (plot_width * index / year_span)
+        y = top + plot_height - (((amount - min_amount) / amount_span) * plot_height)
+        points.append(
+            {
+                "year": year,
+                "amount": amount,
+                "x": round(x, 2),
+                "y": round(y, 2),
+            }
+        )
+
+    if len(points) == 1:
+        path = f"M {points[0]['x']} {points[0]['y']}"
+    else:
+        path = "M " + " L ".join(f"{point['x']} {point['y']}" for point in points)
+
+    y_ticks = []
+    for idx in range(3):
+        ratio = idx / 2
+        amount = max_amount - (amount_span * ratio)
+        y = top + (plot_height * ratio)
+        y_ticks.append({"amount": amount, "y": round(y, 2)})
+
+    return {
+        "width": round(width),
+        "height": round(height),
+        "path": path,
+        "points": points,
+        "y_ticks": y_ticks,
+        "baseline_y": round(top + plot_height, 2),
+        "left": round(left, 2),
+        "right": round(width - right, 2),
+    }
+
+
 def index(request):
     results = []
     page_obj = None
@@ -141,9 +217,7 @@ def index(request):
 
             # Get extra features (pool, garage, etc.)
             features = features_by_account.get(prop.account_number, [])
-            features_text = (
-                format_feature_list(features, max_features=5) if features else None
-            )
+            features_text = format_feature_list(features, max_features=5) if features else None
 
             formatted.append(
                 {
@@ -253,18 +327,12 @@ def export_csv(request):
         # Get building details
         building = buildings_by_account.get(prop.account_number)
         bedrooms = building.bedrooms if building else ""
-        bathrooms = (
-            f"{float(building.bathrooms):.1f}"
-            if building and building.bathrooms
-            else ""
-        )
+        bathrooms = f"{float(building.bathrooms):.1f}" if building and building.bathrooms else ""
         quality_code = building.quality_code if building else ""
 
         # Get extra features
         features = features_by_account.get(prop.account_number, [])
-        features_text = (
-            format_feature_list(features, max_features=10) if features else ""
-        )
+        features_text = format_feature_list(features, max_features=10) if features else ""
 
         writer.writerow(
             [
@@ -289,9 +357,7 @@ def export_csv(request):
 def similar_properties(request, account_number):
     """Find and display properties similar to the given account."""
     # Use filter().first() to handle potential duplicates
-    target_property = PropertyRecord.objects.filter(
-        account_number=account_number
-    ).first()
+    target_property = PropertyRecord.objects.filter(account_number=account_number).first()
 
     if not target_property:
         return render(
@@ -346,17 +412,19 @@ def similar_properties(request, account_number):
 
     # Format results for template
     formatted_results = []
-    
+
     # First, add the target property to the results
     target_assessed = target_property.assessed_value or target_property.value
-    target_bldg_area = target_building.heat_area if target_building else (target_property.building_area or 0)
+    target_bldg_area = (
+        target_building.heat_area if target_building else (target_property.building_area or 0)
+    )
     target_ppsf = None
     if target_assessed and target_bldg_area and target_bldg_area > 0:
         try:
             target_ppsf = float(target_assessed) / float(target_bldg_area)
         except Exception:
             target_ppsf = None
-    
+
     formatted_results.append(
         {
             "account_number": target_property.account_number,
@@ -379,7 +447,7 @@ def similar_properties(request, account_number):
             "is_target": True,
         }
     )
-    
+
     # Then add similar properties
     for result in similar:
         prop = result["property"]
@@ -417,7 +485,7 @@ def similar_properties(request, account_number):
                 "is_target": False,
             }
         )
-    
+
     # Calculate percentile for target property's price per sqft
     ppsf_values = [r["ppsf"] for r in formatted_results if r["ppsf"] is not None]
     target_ppsf_percentile = None
@@ -480,8 +548,7 @@ def similar_properties(request, account_number):
                 ppsf_median = comparable_ppsf_values_sorted[mid]
             else:
                 ppsf_median = (
-                    comparable_ppsf_values_sorted[mid - 1]
-                    + comparable_ppsf_values_sorted[mid]
+                    comparable_ppsf_values_sorted[mid - 1] + comparable_ppsf_values_sorted[mid]
                 ) / 2.0
 
             # Calculate average
@@ -496,7 +563,9 @@ def similar_properties(request, account_number):
             comparable_avg_score = sum(comparable_scores) / len(comparable_scores)
 
             # Calculate percentage difference from median
-            over_percentage = ((float(target_ppsf) - float(ppsf_median)) / float(ppsf_median)) * 100.0
+            over_percentage = (
+                (float(target_ppsf) - float(ppsf_median)) / float(ppsf_median)
+            ) * 100.0
 
             # Generate recommendation based on thresholds
             if over_percentage >= 20:
@@ -530,20 +599,20 @@ def similar_properties(request, account_number):
                     f"of {comparable_count} similar properties."
                 )
 
+    assessment_history = _assessment_history_rows(target_property)
+
     context = {
         "target_property": target_property,
         "target_building": target_building,
         "target_features": format_feature_list(target_features),
+        "assessment_history": assessment_history,
+        "assessment_history_chart": _assessment_history_chart(assessment_history),
         "target_year_built": target_building.year_built if target_building else None,
         "target_bedrooms": target_building.bedrooms if target_building else None,
         "target_bathrooms": target_building.bathrooms if target_building else None,
-        "target_quality_code": (
-            target_building.quality_code if target_building else None
-        ),
+        "target_quality_code": (target_building.quality_code if target_building else None),
         "target_area": (
-            target_building.heat_area
-            if target_building
-            else target_property.building_area
+            target_building.heat_area if target_building else target_property.building_area
         ),
         "target_ppsf": target_ppsf,
         "target_ppsf_percentile": target_ppsf_percentile,
@@ -598,7 +667,9 @@ def protest_analysis(request, account_number):
     min_score = max(52.0, min(100.0, min_score))
 
     # Compute subject $/sqft
-    subject_heat_area = float(target_building.heat_area) if target_building and target_building.heat_area else None
+    subject_heat_area = (
+        float(target_building.heat_area) if target_building and target_building.heat_area else None
+    )
     subject_assessed = target_property.assessed_value or target_property.value
     subject_value_per_sqft = None
     if subject_assessed and subject_heat_area and subject_heat_area > 0:
@@ -635,25 +706,27 @@ def protest_analysis(request, account_number):
             except Exception:
                 pass
 
-        comps.append({
-            "account_number": prop.account_number,
-            "address": prop.street_number,
-            "street_name": prop.street_name,
-            "zip_code": prop.zipcode,
-            "assessed_value": comp_assessed,
-            "heat_area": comp_heat_area,
-            "comp_value_per_sqft": comp_value_per_sqft,
-            "comp_delta": comp_delta,
-            "distance": result["distance"],
-            "similarity_score": result["similarity_score"],
-            "match_label": get_similarity_label(result["similarity_score"]),
-            "year_built": building.year_built if building else None,
-            "bedrooms": building.bedrooms if building else None,
-            "bathrooms": building.bathrooms if building else None,
-            "quality_code": building.quality_code if building else None,
-            "condition_code": building.condition_code if building else None,
-            "features": format_feature_list(features, max_features=5),
-        })
+        comps.append(
+            {
+                "account_number": prop.account_number,
+                "address": prop.street_number,
+                "street_name": prop.street_name,
+                "zip_code": prop.zipcode,
+                "assessed_value": comp_assessed,
+                "heat_area": comp_heat_area,
+                "comp_value_per_sqft": comp_value_per_sqft,
+                "comp_delta": comp_delta,
+                "distance": result["distance"],
+                "similarity_score": result["similarity_score"],
+                "match_label": get_similarity_label(result["similarity_score"]),
+                "year_built": building.year_built if building else None,
+                "bedrooms": building.bedrooms if building else None,
+                "bathrooms": building.bathrooms if building else None,
+                "quality_code": building.quality_code if building else None,
+                "condition_code": building.condition_code if building else None,
+                "features": format_feature_list(features, max_features=5),
+            }
+        )
 
     # Compute equity summary
     median_comp_value_per_sqft = None
@@ -661,7 +734,9 @@ def protest_analysis(request, account_number):
     estimated_savings = None
     comps_below_subject = 0
 
-    qualifying_ppsf = [c["comp_value_per_sqft"] for c in comps if c["comp_value_per_sqft"] is not None]
+    qualifying_ppsf = [
+        c["comp_value_per_sqft"] for c in comps if c["comp_value_per_sqft"] is not None
+    ]
     if subject_value_per_sqft is not None and qualifying_ppsf:
         median_comp_value_per_sqft = statistics.median(qualifying_ppsf)
         equity_gap_per_sqft = subject_value_per_sqft - median_comp_value_per_sqft
@@ -669,10 +744,14 @@ def protest_analysis(request, account_number):
             estimated_savings = max(0.0, equity_gap_per_sqft * subject_heat_area)
         comps_below_subject = sum(1 for p in qualifying_ppsf if p < subject_value_per_sqft)
 
+    assessment_history = _assessment_history_rows(target_property)
+
     context = {
         "target_property": target_property,
         "target_building": target_building,
         "target_features": format_feature_list(target_features),
+        "assessment_history": assessment_history,
+        "assessment_history_chart": _assessment_history_chart(assessment_history),
         "subject_heat_area": subject_heat_area,
         "subject_value_per_sqft": subject_value_per_sqft,
         "comps": comps,
@@ -701,7 +780,9 @@ def protest_analysis_export(request, account_number):
         min_score = 70.0
     min_score = max(52.0, min(100.0, min_score))
 
-    subject_heat_area = float(target_building.heat_area) if target_building and target_building.heat_area else None
+    subject_heat_area = (
+        float(target_building.heat_area) if target_building and target_building.heat_area else None
+    )
     subject_assessed = target_property.assessed_value or target_property.value
     subject_value_per_sqft = None
     if subject_assessed and subject_heat_area and subject_heat_area > 0:
@@ -719,25 +800,25 @@ def protest_analysis_export(request, account_number):
 
     response = HttpResponse(content_type="text/csv")
     safe_account = account_number.replace('"', "").replace("\\", "")
-    response["Content-Disposition"] = (
-        f'attachment; filename="protest_analysis_{safe_account}.csv"'
-    )
+    response["Content-Disposition"] = f'attachment; filename="protest_analysis_{safe_account}.csv"'
 
     writer = csv.writer(response)
-    writer.writerow([
-        "address",
-        "similarity_score",
-        "similarity_label",
-        "living_area_sqft",
-        "bedrooms",
-        "bathrooms",
-        "year_built",
-        "quality_code",
-        "condition_code",
-        "assessed_value",
-        "value_per_sqft",
-        "delta_vs_subject_per_sqft",
-    ])
+    writer.writerow(
+        [
+            "address",
+            "similarity_score",
+            "similarity_label",
+            "living_area_sqft",
+            "bedrooms",
+            "bathrooms",
+            "year_built",
+            "quality_code",
+            "condition_code",
+            "assessed_value",
+            "value_per_sqft",
+            "delta_vs_subject_per_sqft",
+        ]
+    )
 
     for result in similar:
         prop = result["property"]
@@ -758,20 +839,22 @@ def protest_analysis_export(request, account_number):
 
         full_address = f"{prop.street_number} {prop.street_name}".strip()
 
-        writer.writerow([
-            full_address,
-            f"{result['similarity_score']:.1f}",
-            get_similarity_label(result["similarity_score"]),
-            f"{comp_heat_area:.0f}" if comp_heat_area else "",
-            building.bedrooms if building else "",
-            f"{float(building.bathrooms):.1f}" if building and building.bathrooms else "",
-            building.year_built if building else "",
-            building.quality_code if building else "",
-            building.condition_code if building else "",
-            f"{float(comp_assessed):.2f}" if comp_assessed else "",
-            f"{comp_value_per_sqft:.2f}" if comp_value_per_sqft is not None else "",
-            f"{comp_delta:.2f}" if comp_delta is not None else "",
-        ])
+        writer.writerow(
+            [
+                full_address,
+                f"{result['similarity_score']:.1f}",
+                get_similarity_label(result["similarity_score"]),
+                f"{comp_heat_area:.0f}" if comp_heat_area else "",
+                building.bedrooms if building else "",
+                f"{float(building.bathrooms):.1f}" if building and building.bathrooms else "",
+                building.year_built if building else "",
+                building.quality_code if building else "",
+                building.condition_code if building else "",
+                f"{float(comp_assessed):.2f}" if comp_assessed else "",
+                f"{comp_value_per_sqft:.2f}" if comp_value_per_sqft is not None else "",
+                f"{comp_delta:.2f}" if comp_delta is not None else "",
+            ]
+        )
 
     return response
 

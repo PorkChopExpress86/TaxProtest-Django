@@ -203,6 +203,8 @@ docker compose exec web python manage.py import_building_data
 docker compose exec web python manage.py import_building_data --async
 ```
 
+For extra feature repair and validation, including `Gunite Pool` and `Frame Detached Garage` checks, see [FEATURE_IMPORT.md](FEATURE_IMPORT.md).
+
 **Room Counts (Bedrooms/Bathrooms):**
 ```bash
 docker compose exec web python manage.py load_room_counts

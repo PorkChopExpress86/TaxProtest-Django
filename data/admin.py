@@ -55,10 +55,26 @@ class DownloadRecordAdmin(admin.ModelAdmin):
             return f"{app}_{model}_{suffix}"
 
         custom_urls = [
-            path("etl-pipeline/",           self.admin_site.admin_view(self.etl_pipeline_view),          name=n("etl_pipeline")),
-            path("trigger-gis-import/",     self.admin_site.admin_view(self.trigger_gis_import_view),    name=n("trigger_gis_import")),
-            path("trigger-building-import/",self.admin_site.admin_view(self.trigger_building_import_view),name=n("trigger_building_import")),
-            path("task-status/<str:task_id>/",self.admin_site.admin_view(self.task_status_view),         name=n("task_status")),
+            path(
+                "etl-pipeline/",
+                self.admin_site.admin_view(self.etl_pipeline_view),
+                name=n("etl_pipeline"),
+            ),
+            path(
+                "trigger-gis-import/",
+                self.admin_site.admin_view(self.trigger_gis_import_view),
+                name=n("trigger_gis_import"),
+            ),
+            path(
+                "trigger-building-import/",
+                self.admin_site.admin_view(self.trigger_building_import_view),
+                name=n("trigger_building_import"),
+            ),
+            path(
+                "task-status/<str:task_id>/",
+                self.admin_site.admin_view(self.task_status_view),
+                name=n("task_status"),
+            ),
         ]
         return custom_urls + super().get_urls()
 
@@ -83,10 +99,14 @@ class DownloadRecordAdmin(admin.ModelAdmin):
         return HttpResponseRedirect(changelist_url)
 
     def trigger_gis_import_view(self, request: HttpRequest) -> HttpResponse:
-        return self._trigger_import_task(request, download_and_import_gis_data, "GIS Import", "30+ minutes")
+        return self._trigger_import_task(
+            request, download_and_import_gis_data, "GIS Import", "30+ minutes"
+        )
 
     def trigger_building_import_view(self, request: HttpRequest) -> HttpResponse:
-        return self._trigger_import_task(request, download_and_import_building_data, "Building Import", "15+ minutes")
+        return self._trigger_import_task(
+            request, download_and_import_building_data, "Building Import", "15+ minutes"
+        )
 
     def task_status_view(self, request: HttpRequest, task_id: str) -> JsonResponse:
         """Return JSON Celery task state for frontend polling."""
@@ -198,66 +218,90 @@ class BuildingDetailAdmin(admin.ModelAdmin):
     def get_queryset(self, request):
         qs = super().get_queryset(request)
         return qs.select_related("property")
-    
+
     fieldsets = (
-        ("Property Link", {
-            "fields": ("property", "account_number"),
-        }),
-        ("Building Information", {
-            "fields": (
-                "building_number",
-                "building_type",
-                "building_style",
-                "building_class",
-            ),
-        }),
-        ("Quality & Condition", {
-            "fields": (
-                "quality_code",
-                "condition_code",
-            ),
-        }),
-        ("Age", {
-            "fields": (
-                "year_built",
-                "year_remodeled",
-                "effective_year",
-            ),
-        }),
-        ("Areas & Stories", {
-            "fields": (
-                "heat_area",
-                "base_area",
-                "gross_area",
-                "stories",
-            ),
-        }),
-        ("Construction", {
-            "fields": (
-                "foundation_type",
-                "exterior_wall",
-                "roof_cover",
-                "roof_type",
-            ),
-        }),
-        ("Rooms", {
-            "fields": (
-                "bedrooms",
-                "bathrooms",
-                "half_baths",
-                "fireplaces",
-            ),
-        }),
-        ("Import Metadata", {
-            "fields": (
-                "is_active",
-                "import_date",
-                "import_batch_id",
-                "created_at",
-                "updated_at",
-            ),
-            "classes": ("collapse",),
-        }),
+        (
+            "Property Link",
+            {
+                "fields": ("property", "account_number"),
+            },
+        ),
+        (
+            "Building Information",
+            {
+                "fields": (
+                    "building_number",
+                    "building_type",
+                    "building_style",
+                    "building_class",
+                ),
+            },
+        ),
+        (
+            "Quality & Condition",
+            {
+                "fields": (
+                    "quality_code",
+                    "condition_code",
+                ),
+            },
+        ),
+        (
+            "Age",
+            {
+                "fields": (
+                    "year_built",
+                    "year_remodeled",
+                    "effective_year",
+                ),
+            },
+        ),
+        (
+            "Areas & Stories",
+            {
+                "fields": (
+                    "heat_area",
+                    "base_area",
+                    "gross_area",
+                    "stories",
+                ),
+            },
+        ),
+        (
+            "Construction",
+            {
+                "fields": (
+                    "foundation_type",
+                    "exterior_wall",
+                    "roof_cover",
+                    "roof_type",
+                ),
+            },
+        ),
+        (
+            "Rooms",
+            {
+                "fields": (
+                    "bedrooms",
+                    "bathrooms",
+                    "half_baths",
+                    "fireplaces",
+                ),
+            },
+        ),
+        (
+            "Import Metadata",
+            {
+                "fields": (
+                    "is_active",
+                    "import_date",
+                    "import_batch_id",
+                    "created_at",
+                    "updated_at",
+                ),
+                "classes": ("collapse",),
+            },
+        ),
     )
 
 
@@ -297,44 +341,62 @@ class ExtraFeatureAdmin(admin.ModelAdmin):
     def get_queryset(self, request):
         qs = super().get_queryset(request)
         return qs.select_related("property")
-    
+
     fieldsets = (
-        ("Property Link", {
-            "fields": ("property", "account_number"),
-        }),
-        ("Feature Information", {
-            "fields": (
-                "feature_number",
-                "feature_code",
-                "feature_description",
-            ),
-        }),
-        ("Measurements", {
-            "fields": (
-                "quantity",
-                "area",
-                "length",
-                "width",
-            ),
-        }),
-        ("Quality & Condition", {
-            "fields": (
-                "quality_code",
-                "condition_code",
-                "year_built",
-            ),
-        }),
-        ("Value", {
-            "fields": ("value",),
-        }),
-        ("Import Metadata", {
-            "fields": (
-                "is_active",
-                "import_date",
-                "import_batch_id",
-                "created_at",
-                "updated_at",
-            ),
-            "classes": ("collapse",),
-        }),
+        (
+            "Property Link",
+            {
+                "fields": ("property", "account_number"),
+            },
+        ),
+        (
+            "Feature Information",
+            {
+                "fields": (
+                    "feature_number",
+                    "feature_code",
+                    "feature_description",
+                ),
+            },
+        ),
+        (
+            "Measurements",
+            {
+                "fields": (
+                    "quantity",
+                    "area",
+                    "length",
+                    "width",
+                ),
+            },
+        ),
+        (
+            "Quality & Condition",
+            {
+                "fields": (
+                    "quality_code",
+                    "condition_code",
+                    "year_built",
+                ),
+            },
+        ),
+        (
+            "Value",
+            {
+                "fields": ("value",),
+            },
+        ),
+        (
+            "Import Metadata",
+            {
+                "fields": (
+                    "is_active",
+                    "import_date",
+                    "import_batch_id",
+                    "created_at",
+                    "updated_at",
+                ),
+                "classes": ("collapse",),
+            },
+        ),
     )
