@@ -182,3 +182,6 @@ celerybeat-schedule-shm
 
 # Django collectstatic output (regenerated at container build time)
 staticfiles/
+
+# Claude Code local settings and runtime files (no shared skills/commands here)
+.claude/

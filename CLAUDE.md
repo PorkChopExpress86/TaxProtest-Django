@@ -1,6 +1,8 @@
-# CLAUDE.md — TaxProtest-Django
+# CLAUDE.md
 
-Django web application for property tax protest analysis in Harris County, Texas. Uses HCAD data to search properties, find comparable properties via similarity scoring, and display building/feature details.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+Django web application for property tax protest analysis in Harris County, Texas. Uses HCAD data to search properties, find comparable properties via similarity scoring, and generate ARB hearing evidence reports with tax impact estimates.
 
 ---
 
@@ -22,13 +24,19 @@ Django web application for property tax protest analysis in Harris County, Texas
 - `PropertyRecord` — core property record; key flags: `is_residential`, `is_data_ready`
 - `BuildingDetail` — building specs (sqft, bedrooms, bathrooms, quality, condition, etc.)
 - `ExtraFeature` — pools, garages, patios, etc.
+- `AssessmentHistory` — per-year assessed/appraised/market values with cap fields
+- `TaxUnitRate` — annual adopted tax rate per taxing unit code
+- `PropertyJurisdictionExemption` — per-account jurisdiction/exemption rows used for tax impact calculations
 - `DownloadRecord` — tracks ETL download history
 
-### ETL (`data/`)
+### ETL & Analysis (`data/`)
 - `etl.py` — shared ETL helpers (bulk upsert, data-ready marking)
 - `residential.py` — `is_residential_state_class()`, `normalize_state_class()`
 - `tasks_new.py` — Celery tasks: `download_and_import_building_data`, `download_and_import_gis_data`
 - `similarity.py` — similarity scoring algorithm (see Similarity section below)
+- `tax_impact.py` — `calculate_tax_impact(account_number, tax_year, median_assessed_value)` → `TaxImpactResult`; requires `TaxUnitRate` and `PropertyJurisdictionExemption` rows to be populated
+- `assessment_history.py` — `evaluate_cap_status(entry, prior)` for cap analysis display
+- `query.py` — `build_property_search_queryset(params)` for the main search view
 
 ### Management Commands (`data/management/commands/`)
 | Command | Purpose |
@@ -41,6 +49,8 @@ Django web application for property tax protest analysis in Harris County, Texas
 | `import_building_data` | Building details, features, room counts |
 | `load_room_counts` | Room counts only (fixtures.txt) |
 | `download_hcad` | Download HCAD source files |
+| `import_jur_exemptions` | Upsert jurisdiction/exemption rows from TSV (`--path`, `--tax-year`) |
+| `import_tax_unit_rates` | Upsert per-unit adopted tax rates from TSV (`--path`, `--tax-year`) |
 
 ### Admin (`data/admin.py`)
 Custom `DownloadRecordAdmin` with an ETL pipeline panel at `/admin/data/downloadrecord/`. Exposes:
@@ -52,8 +62,11 @@ Custom `DownloadRecordAdmin` with an ETL pipeline panel at `/admin/data/download
 | URL | View | Purpose |
 |---|---|---|
 | `/` | `index` | Property search |
-| `/similar/<account_number>/` | `similar_properties` | Comparable properties |
+| `/similar/<account_number>/` | `similar_properties` | Comparable properties with protest recommendation |
 | `/export/` | `export_csv` | CSV export of search results |
+| `/protest/<account_number>/` | `protest_analysis` | ARB hearing evidence report with equity analysis and tax impact |
+| `/protest/<account_number>/export/` | `protest_analysis_export` | CSV export of protest comps + tax impact |
+| `/protest/<account_number>/pdf/` | `protest_analysis_pdf` | PDF export of protest evidence report |
 | `/about/` | `about` | About page |
 | `/healthz/` | `healthz` | Liveness probe |
 | `/readiness/` | `readiness` | Readiness probe |
@@ -126,17 +139,30 @@ docker compose logs -f beat
 ## Running Tests
 
 ```bash
+# Full suite
 docker compose exec web python manage.py test
+
+# Single test module
+docker compose exec web python manage.py test data.tests.test_tax_impact
+
+# Single test case or method
+docker compose exec web python manage.py test data.tests.test_similarity_scoring.SimilarityScoringTest.test_score_label
 ```
 
 Test files live in `data/tests/`:
 - `test_admin.py` — admin views and ETL trigger endpoints
+- `test_assessment_history.py` — cap status evaluation
+- `test_bedroom_bathroom_data.py` — room count data validation
+- `test_data_integrity.py` — data integrity checks
 - `test_load_gis_data.py` — GIS import command
 - `test_residential_etl.py` — residential classification and ETL helpers
+- `test_runtime_paths.py` — runtime path resolution
 - `test_similarity_scoring.py` — similarity score calculations
 - `test_tasks_new.py` — Celery task logic
-- `test_data_integrity.py` — data integrity checks
-- `test_bedroom_bathroom_data.py` — room count data validation
+- `test_tax_impact.py` — `calculate_tax_impact()` logic
+- `test_tax_import_commands.py` — `import_jur_exemptions` and `import_tax_unit_rates` commands
+
+View tests live in `taxprotest/tests/`.
 
 ---
 
@@ -167,6 +193,7 @@ templates/
 ├── base.html                  # Bootstrap 5 layout, navbar, footer
 ├── index.html                 # Property search page
 ├── similar_properties.html    # Comparable properties view
+├── protest_analysis.html      # ARB evidence report (equity + tax impact)
 ├── about.html                 # About page
 ├── includes/
 │   ├── navbar.html
@@ -237,3 +264,4 @@ Downloaded at build time via `scripts/build_time_download.py`. Re-download targe
 - `is_residential=True` and `is_data_ready=True` are the contract for queryable properties
 - All ETL helper logic goes in `data/etl.py` or `data/residential.py`, not inline in management commands
 - Celery tasks import from `data.tasks_new` — `data.tasks` (if it exists) is legacy
+- Tax impact calculations (`data/tax_impact.py`) require `TaxUnitRate` and `PropertyJurisdictionExemption` rows to be populated via `import_tax_unit_rates` and `import_jur_exemptions` before the protest analysis views will show meaningful results; missing data degrades gracefully to `completeness="missing"`
