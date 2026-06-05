@@ -19,7 +19,12 @@ class Command(BaseCommand):
         parser.add_argument(
             "--skip-download",
             action="store_true",
-            help="Skip downloading and extraction (use existing extracted files)",
+            help="Skip downloading (use already-downloaded archives)",
+        )
+        parser.add_argument(
+            "--skip-extract",
+            action="store_true",
+            help="Skip archive extraction (use already-extracted files)",
         )
         parser.add_argument(
             "--skip-property",
@@ -118,7 +123,7 @@ class Command(BaseCommand):
             strict=True,
             validate_contract=not options["skip_contract_validation"],
             skip_download=options["skip_download"],
-            skip_extract=options["skip_download"],
+            skip_extract=options["skip_extract"],
             skip_load=False,
         )
 

@@ -51,8 +51,13 @@ class Command(BaseCommand):
 
             import_options = {}
             if has_files:
-                self.stdout.write(self.style.SUCCESS("Local data files found. Skipping download."))
+                self.stdout.write(
+                    self.style.SUCCESS("Local extracted files found. Skipping download & extract.")
+                )
+                # has_files verifies the extracted directories exist, so we can
+                # skip both download and extraction and load them directly.
                 import_options["skip_download"] = True
+                import_options["skip_extract"] = True
             else:
                 self.stdout.write(
                     self.style.WARNING("Local data files NOT found. Will attempt download.")

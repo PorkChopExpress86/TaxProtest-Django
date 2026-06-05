@@ -18,7 +18,6 @@ from django.core.management.base import CommandError as DjangoCommandError
 from .config import DataSource, DataSourceType, ETLConfig
 from .download import DownloadManager, DownloadResult
 from .extract import ExtractManager, ExtractResult
-from .load import LoadManager
 from .logging import ETLLogger
 from .model_loader import ModelLoader
 from .transform import DataTransformer, get_schema
@@ -133,7 +132,6 @@ class ETLOrchestrator:
         self.download_manager = DownloadManager(self.config, self.logger)
         self.extract_manager = ExtractManager(self.config, self.logger)
         self.transformer = DataTransformer(self.config, self.logger)
-        self.load_manager = LoadManager(self.config, self.logger)
         self.model_loader = ModelLoader(self.config, self.logger)
 
         # Pipeline state
