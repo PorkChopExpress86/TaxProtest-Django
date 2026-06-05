@@ -17,6 +17,7 @@ from data.assessment_history import evaluate_cap_status
 from data.models import AssessmentHistory, BuildingDetail, ExtraFeature, PropertyRecord
 from data.query import build_property_search_queryset
 from data.similarity import find_similar_properties, format_feature_list, get_similarity_label
+from data.tax_impact import calculate_tax_impact
 
 EXPORT_CSV_MAX_ROWS = 1000
 EXPORT_MIN_TEXT_FILTER_LENGTH = 3
@@ -186,6 +187,95 @@ def _assessment_history_chart(rows: list[dict[str, object]]) -> dict[str, object
         "baseline_y": round(top + plot_height, 2),
         "left": round(left, 2),
         "right": round(width - right, 2),
+    }
+
+
+def _ppsf_distribution_chart(
+    comp_values: list[float], subject_value: float | None, bins: int = 10
+) -> dict[str, object] | None:
+    if not comp_values:
+        return None
+
+    values = sorted(comp_values)
+    min_value = values[0]
+    max_value = values[-1]
+
+    if max_value == min_value:
+        max_value = min_value + 1.0
+
+    bin_count = max(4, min(12, bins))
+    bin_size = (max_value - min_value) / bin_count
+    counts = [0] * bin_count
+
+    for value in values:
+        index = int((value - min_value) / bin_size)
+        if index >= bin_count:
+            index = bin_count - 1
+        counts[index] += 1
+
+    max_count = max(counts) if counts else 1
+    bar_width = 32
+    bar_gap = 6
+    chart_height = 170
+    chart_top = 20
+    chart_bottom = 34
+    axis_y = chart_top + chart_height
+
+    bars: list[dict[str, object]] = []
+    for idx, count in enumerate(counts):
+        x = idx * (bar_width + bar_gap)
+        height = (count / max_count) * chart_height if max_count else 0
+        y = axis_y - height
+        low = min_value + (idx * bin_size)
+        high = low + bin_size
+        bars.append(
+            {
+                "x": round(x, 2),
+                "y": round(y, 2),
+                "width": bar_width,
+                "height": round(height, 2),
+                "count": count,
+                "low": round(low, 2),
+                "high": round(high, 2),
+            }
+        )
+
+    width = (bin_count * bar_width) + ((bin_count - 1) * bar_gap)
+
+    average_value = statistics.mean(values)
+    average_ratio = (average_value - min_value) / (max_value - min_value)
+    average_ratio = max(0.0, min(1.0, average_ratio))
+    average_x = round(average_ratio * width, 2)
+
+    subject_x = None
+    if subject_value is not None:
+        ratio = (subject_value - min_value) / (max_value - min_value)
+        ratio = max(0.0, min(1.0, ratio))
+        subject_x = round(ratio * width, 2)
+
+    tick_indices = sorted({0, max(0, bin_count // 2), bin_count - 1})
+    x_ticks: list[dict[str, object]] = []
+    for idx in tick_indices:
+        bar = bars[idx]
+        x_ticks.append(
+            {
+                "x": round(float(bar["x"]) + (bar_width / 2), 2),
+                "label": f"${bar['low']:.0f}-${bar['high']:.0f}",
+            }
+        )
+
+    return {
+        "bars": bars,
+        "width": width,
+        "height": chart_top + chart_height + chart_bottom,
+        "axis_y": axis_y,
+        "min_value": round(min_value, 2),
+        "max_value": round(max_value, 2),
+        "average_value": round(average_value, 2),
+        "average_x": average_x,
+        "max_count": max_count,
+        "subject_x": subject_x,
+        "x_ticks": x_ticks,
     }
 
 
@@ -777,6 +867,16 @@ def protest_analysis(request, account_number):
         comps_below_subject = sum(1 for p in qualifying_ppsf if p < subject_value_per_sqft)
 
     assessment_history = _assessment_history_rows(target_property)
+    median_assessed_value = None
+    if median_comp_value_per_sqft is not None and subject_heat_area:
+        median_assessed_value = Decimal(str(median_comp_value_per_sqft)) * Decimal(
+            str(subject_heat_area)
+        )
+    tax_impact = calculate_tax_impact(
+        account_number=target_property.account_number,
+        tax_year=assessment_history[0]["tax_year"] if assessment_history else None,
+        median_assessed_value=median_assessed_value,
+    )
 
     context = {
         "target_property": target_property,
@@ -792,8 +892,12 @@ def protest_analysis(request, account_number):
         "estimated_savings": estimated_savings,
         "comps_below_subject": comps_below_subject,
         "qualifying_comp_count": len(qualifying_ppsf),
+        "ppsf_distribution_chart": _ppsf_distribution_chart(
+            qualifying_ppsf, subject_value_per_sqft
+        ),
         "min_score": min_score,
         "pdf_export_url": reverse("protest_analysis_pdf", args=[target_property.account_number]),
+        "tax_impact": tax_impact,
     }
 
     return render(request, "protest_analysis.html", context)
@@ -836,6 +940,25 @@ def protest_analysis_export(request, account_number):
     response["Content-Disposition"] = f'attachment; filename="protest_analysis_{safe_account}.csv"'
 
     writer = csv.writer(response)
+    qualifying_ppsf = []
+    for result in similar:
+        prop = result["property"]
+        building = result["building"]
+        comp_assessed = prop.assessed_value or prop.value
+        comp_heat_area = float(building.heat_area) if building and building.heat_area else None
+        if comp_assessed and comp_heat_area and comp_heat_area > 0:
+            qualifying_ppsf.append(float(comp_assessed) / comp_heat_area)
+
+    median_assessed_value = None
+    if subject_heat_area and qualifying_ppsf:
+        median_comp_ppsf = statistics.median(qualifying_ppsf)
+        median_assessed_value = Decimal(str(median_comp_ppsf)) * Decimal(str(subject_heat_area))
+    tax_impact = calculate_tax_impact(
+        account_number=target_property.account_number,
+        tax_year=None,
+        median_assessed_value=median_assessed_value,
+    )
+
     writer.writerow(
         [
             "address",
@@ -851,6 +974,12 @@ def protest_analysis_export(request, account_number):
             "value_per_sqft",
             "delta_vs_subject_per_sqft",
             "score_breakdown",
+            "tax_year_used",
+            "tax_impact_completeness",
+            "current_tax_owed",
+            "median_tax_owed",
+            "estimated_tax_savings",
+            "tax_impact_warnings",
         ]
     )
 
@@ -888,6 +1017,12 @@ def protest_analysis_export(request, account_number):
                 f"{comp_value_per_sqft:.2f}" if comp_value_per_sqft is not None else "",
                 f"{comp_delta:.2f}" if comp_delta is not None else "",
                 _score_breakdown_summary(result.get("score_breakdown", [])),
+                tax_impact.tax_year or "",
+                tax_impact.completeness,
+                f"{float(tax_impact.current_tax_owed):.2f}",
+                f"{float(tax_impact.median_tax_owed):.2f}",
+                f"{float(tax_impact.estimated_savings):.2f}",
+                " | ".join(tax_impact.warnings),
             ]
         )
 
@@ -998,6 +1133,38 @@ def protest_analysis_pdf(request, account_number):
                 f"{prop.street_number} {prop.street_name}: "
                 f"score {float(result['similarity_score']):.1f}{ppsf_text}"
             )
+
+    median_assessed_value = None
+    if target_building and target_building.heat_area and similar:
+        qualifying_ppsf = []
+        for result in similar:
+            prop = result["property"]
+            building = result["building"]
+            comp_assessed = prop.assessed_value or prop.value
+            if comp_assessed and building and building.heat_area:
+                qualifying_ppsf.append(float(comp_assessed) / float(building.heat_area))
+        if qualifying_ppsf:
+            median_assessed_value = Decimal(str(statistics.median(qualifying_ppsf))) * Decimal(
+                str(float(target_building.heat_area))
+            )
+
+    tax_impact = calculate_tax_impact(
+        account_number=target_property.account_number,
+        tax_year=history_rows[0]["tax_year"] if history_rows else None,
+        median_assessed_value=median_assessed_value,
+    )
+    lines.extend(
+        [
+            "",
+            "Tax Impact (Estimated)",
+            f"Tax Year Used: {tax_impact.tax_year or '-'} ({tax_impact.completeness})",
+            f"Current Taxes Owed: ${float(tax_impact.current_tax_owed):,.2f}",
+            f"Median-Scenario Taxes Owed: ${float(tax_impact.median_tax_owed):,.2f}",
+            f"Estimated Annual Savings: ${float(tax_impact.estimated_savings):,.2f}",
+        ]
+    )
+    if tax_impact.warnings:
+        lines.append(f"Warnings: {' | '.join(tax_impact.warnings)}")
 
     response = HttpResponse(_simple_pdf(lines), content_type="application/pdf")
     safe_account = account_number.replace('"', "").replace("\\", "")

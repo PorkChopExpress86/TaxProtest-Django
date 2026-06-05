@@ -231,6 +231,96 @@
     </div>
     {% endif %}
 
+    {% if tax_impact %}
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden mb-6">
+      <div class="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+        <h2 class="text-sm font-bold text-gray-900 uppercase tracking-wider">Tax Impact</h2>
+        <span class="text-xs px-2 py-1 rounded-full {% if tax_impact.completeness == 'complete' %}bg-green-100 text-green-800{% elif tax_impact.completeness == 'partial' %}bg-amber-100 text-amber-800{% else %}bg-red-100 text-red-800{% endif %}">
+          {{ tax_impact.completeness|title }}
+        </span>
+      </div>
+      <div class="px-6 py-5 grid grid-cols-1 md:grid-cols-3 gap-4 border-b border-gray-100">
+        <div>
+          <p class="text-xs text-gray-500 uppercase font-medium">Current Taxes Owed</p>
+          <p class="text-lg font-semibold text-gray-900">${{ tax_impact.current_tax_owed|floatformat:2|intcomma }}</p>
+        </div>
+        <div>
+          <p class="text-xs text-gray-500 uppercase font-medium">Taxes at Median Assessed Value</p>
+          <p class="text-lg font-semibold text-gray-900">${{ tax_impact.median_tax_owed|floatformat:2|intcomma }}</p>
+        </div>
+        <div>
+          <p class="text-xs text-gray-500 uppercase font-medium">Estimated Annual Savings</p>
+          <p class="text-lg font-semibold text-emerald-700">${{ tax_impact.estimated_savings|floatformat:2|intcomma }}</p>
+          <p class="text-[11px] text-gray-500 mt-1">Year {{ tax_impact.tax_year|default:"-" }} • Avg rate {{ tax_impact.effective_rate|floatformat:6 }}</p>
+        </div>
+      </div>
+      {% if tax_impact.warnings %}
+      <div class="px-6 py-3 border-b border-gray-100 bg-amber-50">
+        {% for warning in tax_impact.warnings %}
+        <p class="text-xs text-amber-900">⚠ {{ warning }}</p>
+        {% endfor %}
+      </div>
+      {% endif %}
+      <div class="overflow-x-auto">
+        <table class="min-w-full divide-y divide-gray-200 text-xs lg:text-sm">
+          <thead class="bg-gray-50">
+            <tr>
+              <th class="px-4 py-3 text-left font-semibold text-gray-700">Tax Unit</th>
+              <th class="px-4 py-3 text-left font-semibold text-gray-700">Rate</th>
+              <th class="px-4 py-3 text-left font-semibold text-gray-700">Current Taxable Value</th>
+              <th class="px-4 py-3 text-left font-semibold text-gray-700">Median Taxable Value</th>
+              <th class="px-4 py-3 text-left font-semibold text-gray-700">Current Tax</th>
+              <th class="px-4 py-3 text-left font-semibold text-gray-700">Median Tax</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-gray-100">
+            {% for row in tax_impact.per_unit_breakdown %}
+            <tr>
+              <td class="px-4 py-3 text-gray-900">{{ row.tax_unit_name|default:row.tax_unit_code }} ({{ row.tax_unit_code }})</td>
+              <td class="px-4 py-3 text-gray-900">{% if row.rate is not None %}{{ row.rate|floatformat:6 }}{% else %}&ndash;{% endif %}</td>
+              <td class="px-4 py-3 text-gray-900">{% if row.current_taxable_value is not None %}${{ row.current_taxable_value|floatformat:2|intcomma }}{% else %}&ndash;{% endif %}</td>
+              <td class="px-4 py-3 text-gray-900">{% if row.median_taxable_value is not None %}${{ row.median_taxable_value|floatformat:2|intcomma }}{% else %}&ndash;{% endif %}</td>
+              <td class="px-4 py-3 text-gray-900">{% if row.current_tax_amount is not None %}${{ row.current_tax_amount|floatformat:2|intcomma }}{% else %}&ndash;{% endif %}</td>
+              <td class="px-4 py-3 text-gray-900">{% if row.median_tax_amount is not None %}${{ row.median_tax_amount|floatformat:2|intcomma }}{% else %}&ndash;{% endif %}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    {% endif %}
+
+    {% if ppsf_distribution_chart %}
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden mb-6">
+      <div class="px-6 py-4 border-b border-gray-100">
+        <h2 class="text-sm font-bold text-gray-900 uppercase tracking-wider">Comparable $/Sqft Distribution</h2>
+        <p class="text-xs text-gray-500 mt-1">
+          Bars show how many similar homes fall into each assessed-value-per-sqft range.
+          Average comparable $/sqft: <span class="font-semibold text-blue-700">${{ ppsf_distribution_chart.average_value|floatformat:2 }}</span>
+        </p>
+      </div>
+      <div class="px-6 py-5">
+        <svg viewBox="0 0 {{ ppsf_distribution_chart.width }} {{ ppsf_distribution_chart.height }}" class="w-full h-56">
+          <line x1="0" y1="{{ ppsf_distribution_chart.axis_y }}" x2="{{ ppsf_distribution_chart.width }}" y2="{{ ppsf_distribution_chart.axis_y }}" stroke="#cbd5e1" stroke-width="1.5" />
+          {% for bar in ppsf_distribution_chart.bars %}
+          <rect x="{{ bar.x }}" y="{{ bar.y }}" width="{{ bar.width }}" height="{{ bar.height }}" fill="#93c5fd" rx="3" ry="3"></rect>
+          <title>${{ bar.low }} - ${{ bar.high }}: {{ bar.count }} homes</title>
+          {% endfor %}
+          <line x1="{{ ppsf_distribution_chart.average_x }}" y1="6" x2="{{ ppsf_distribution_chart.average_x }}" y2="{{ ppsf_distribution_chart.axis_y }}" stroke="#2563eb" stroke-width="2" stroke-dasharray="3 3" />
+          <text x="{{ ppsf_distribution_chart.average_x }}" y="12" text-anchor="middle" font-size="11" fill="#1d4ed8">Avg</text>
+          {% if ppsf_distribution_chart.subject_x is not None %}
+          <line x1="{{ ppsf_distribution_chart.subject_x }}" y1="6" x2="{{ ppsf_distribution_chart.subject_x }}" y2="{{ ppsf_distribution_chart.axis_y }}" stroke="#dc2626" stroke-width="2" stroke-dasharray="4 3" />
+          <text x="{{ ppsf_distribution_chart.subject_x }}" y="12" text-anchor="middle" font-size="11" fill="#b91c1c">Your Home</text>
+          {% endif %}
+          {% for tick in ppsf_distribution_chart.x_ticks %}
+          <line x1="{{ tick.x }}" y1="{{ ppsf_distribution_chart.axis_y }}" x2="{{ tick.x }}" y2="{{ ppsf_distribution_chart.axis_y|add:5 }}" stroke="#94a3b8" stroke-width="1" />
+          <text x="{{ tick.x }}" y="{{ ppsf_distribution_chart.height|add:-6 }}" text-anchor="middle" font-size="10" fill="#6b7280">{{ tick.label }}</text>
+          {% endfor %}
+        </svg>
+      </div>
+    </div>
+    {% endif %}
+
     <!-- ── How to Use This Analysis ── -->
     <div class="mb-6 no-print">
       <details class="bg-white border border-gray-200 rounded-xl shadow-sm">
