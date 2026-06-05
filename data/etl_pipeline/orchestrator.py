@@ -595,6 +595,39 @@ class ETLOrchestrator:
                     transformed += 1
             return {"loaded": transformed, "invalid": 0, "skipped": 0, "failed": 0}
 
+        # Fast path: real_acct/building_res stream straight into PostgreSQL via
+        # COPY, skipping the generic DictReader/transform_row + bulk_create path.
+        from .fast_loader import (
+            copy_load_building_details,
+            copy_load_property_records,
+            postgres_backend,
+        )
+
+        if postgres_backend() and schema_name in ("real_acct", "building_res"):
+            if schema_name == "real_acct":
+                fast = copy_load_property_records(file_path, truncate=truncate)
+                # PropertyRecord ids changed; rebuild the account caches that the
+                # building/extra-feature loaders depend on.
+                self.model_loader.reset_cache()
+                return {
+                    "loaded": fast["loaded"],
+                    "invalid": 0,
+                    "skipped": fast["skipped"],
+                    "failed": 0,
+                }
+            fast = copy_load_building_details(
+                file_path,
+                account_map=self.model_loader._get_account_to_property_map(),
+                fixtures_aggregator=self.model_loader.fixtures_aggregator,
+                truncate=truncate,
+            )
+            return {
+                "loaded": fast["loaded"],
+                "invalid": fast["invalid"],
+                "skipped": fast["skipped"],
+                "failed": 0,
+            }
+
         # Transform and load records to Django models
         # Filter out None values from the generator
         records_gen = (r for r in self.transformer.iter_records(file_path, schema) if r is not None)

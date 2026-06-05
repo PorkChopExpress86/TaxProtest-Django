@@ -1,4 +1,5 @@
 import csv
+import io
 import logging
 import math
 from collections import defaultdict
@@ -380,42 +381,51 @@ def load_gis_parcels(
         logger.info("No valid GIS rows found in %s", shapefile_path)
         return 0
 
-    batch: list[PropertyRecord] = []
-    properties = PropertyRecord.objects.filter(
-        account_number__in=updates_by_account.keys(),
-        is_residential=True,
-    ).only("id", "account_number", "latitude", "longitude", "parcel_id")
+    # Set-based update: stage the parsed coordinates into a TEMP table via COPY,
+    # then apply them with a single UPDATE ... FROM join on account_number.
+    # This replaces a per-chunk bulk_update loop over ~1.2M rows (which emitted a
+    # giant CASE statement per batch and maintained the lat/long/parcel_id indexes
+    # row-by-row); the join-based update is roughly an order of magnitude faster.
+    logger.info("Staging %s GIS updates for set-based apply", len(updates_by_account))
 
-    with transaction.atomic():
-        for prop in properties.iterator(chunk_size=chunk_size):
-            update = updates_by_account.get(prop.account_number)
-            if not update:
-                continue
-            lat, lon, parcel_id = update
+    with transaction.atomic(), connection.cursor() as cursor:
+        cursor.execute(
+            """
+            CREATE TEMP TABLE _gis_staging (
+                account_number varchar(20) PRIMARY KEY,
+                latitude numeric,
+                longitude numeric,
+                parcel_id varchar(50)
+            ) ON COMMIT DROP
+            """
+        )
 
-            prop.latitude = lat
-            prop.longitude = lon
-            if parcel_id:
-                prop.parcel_id = parcel_id
-            batch.append(prop)
+        def _copy_rows() -> Iterable[str]:
+            for account_num, (lat, lon, parcel_id) in updates_by_account.items():
+                # Tab-delimited COPY; account numbers/parcel ids never contain tabs.
+                yield f"{account_num}\t{lat}\t{lon}\t{parcel_id}\n"
 
-            if len(batch) >= chunk_size:
-                PropertyRecord.objects.bulk_update(
-                    batch,
-                    ["latitude", "longitude", "parcel_id"],
-                    batch_size=chunk_size,
-                )
-                total_updated += len(batch)
-                logger.info("Updated %s properties with GIS data...", total_updated)
-                batch.clear()
+        copy_buffer = io.StringIO("".join(_copy_rows()))
+        cursor.copy_expert(
+            "COPY _gis_staging (account_number, latitude, longitude, parcel_id) "
+            "FROM STDIN WITH (FORMAT text)",
+            copy_buffer,
+        )
 
-        if batch:
-            PropertyRecord.objects.bulk_update(
-                batch,
-                ["latitude", "longitude", "parcel_id"],
-                batch_size=chunk_size,
-            )
-            total_updated += len(batch)
+        # Only overwrite parcel_id when the staged value is non-empty, preserving the
+        # prior behavior where a blank shapefile parcel id did not clobber existing data.
+        cursor.execute(
+            """
+            UPDATE data_propertyrecord AS p
+            SET latitude = s.latitude,
+                longitude = s.longitude,
+                parcel_id = CASE WHEN s.parcel_id <> '' THEN s.parcel_id ELSE p.parcel_id END
+            FROM _gis_staging AS s
+            WHERE p.account_number = s.account_number
+              AND p.is_residential
+            """
+        )
+        total_updated = cursor.rowcount
 
     logger.info("Completed: Updated %s properties with GIS coordinates", total_updated)
     if refresh_readiness:

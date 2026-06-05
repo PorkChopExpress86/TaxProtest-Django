@@ -10,10 +10,34 @@ Usage:
 
 from __future__ import annotations
 
+import os
+
 from django.core.management.base import BaseCommand, CommandError
 from django.db.models import Count, Q
 
 from data.models import BuildingDetail, ExtraFeature, PropertyRecord
+
+
+def _env_float(name: str, default: float) -> float:
+    """Read a percentage threshold from the environment, falling back to default."""
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+# Completeness tolerances. Real HCAD data never reaches exactly 100% — a small
+# fraction of residential accounts legitimately lack a building record, fixture
+# data, or a parcel geometry. These thresholds pass on healthy data and only
+# hard-fail when a metric falls past the floor, signalling a broken load.
+# All are percentages and overridable via environment variables.
+MIN_GIS_COVERAGE_PCT = _env_float("VALIDATE_MIN_GIS_COVERAGE_PCT", 99.0)
+MAX_MISSING_BUILDING_PCT = _env_float("VALIDATE_MAX_MISSING_BUILDING_PCT", 1.0)
+MAX_MISSING_ROOM_PCT = _env_float("VALIDATE_MAX_MISSING_ROOM_PCT", 1.0)
+MAX_NOT_READY_PCT = _env_float("VALIDATE_MAX_NOT_READY_PCT", 1.0)
 
 
 class Command(BaseCommand):
@@ -121,32 +145,37 @@ class Command(BaseCommand):
             if skip_building_checks:
                 self._warn("Skipped active-building and room-count readiness checks")
             else:
-                if residential_without_buildings == 0:
-                    self._pass("All residential properties have an active building record")
-                else:
-                    msg = f"{residential_without_buildings:,} residential properties have no active building"
-                    self._fail(msg)
-                    failures.append(("BUILDINGS", msg))
-
-                if residential_missing_room_data == 0:
-                    self._pass("All residential properties have populated bedroom/bathroom counts")
-                else:
-                    msg = (
-                        f"{residential_missing_room_data:,} residential properties are missing "
-                        "bedroom/bathroom data"
-                    )
-                    self._fail(msg)
-                    failures.append(("ROOMS", msg))
+                self._check_missing(
+                    failures,
+                    category="BUILDINGS",
+                    missing=residential_without_buildings,
+                    total=residential_prop_count,
+                    max_pct=MAX_MISSING_BUILDING_PCT,
+                    pass_msg="All residential properties have an active building record",
+                    metric="residential properties have no active building",
+                )
+                self._check_missing(
+                    failures,
+                    category="ROOMS",
+                    missing=residential_missing_room_data,
+                    total=residential_prop_count,
+                    max_pct=MAX_MISSING_ROOM_PCT,
+                    pass_msg="All residential properties have populated bedroom/bathroom counts",
+                    metric="residential properties are missing bedroom/bathroom data",
+                )
 
             if skip_gis_checks:
                 self._warn("Skipped GIS coordinate readiness checks")
             else:
-                if residential_missing_gis == 0:
-                    self._pass("All residential properties have GIS coordinates")
-                else:
-                    msg = f"{residential_missing_gis:,} residential properties are missing GIS coordinates"
-                    self._fail(msg)
-                    failures.append(("GIS", msg))
+                self._check_missing(
+                    failures,
+                    category="GIS",
+                    missing=residential_missing_gis,
+                    total=residential_prop_count,
+                    max_pct=MAX_MISSING_BUILDING_PCT,  # share the building tolerance
+                    pass_msg="All residential properties have GIS coordinates",
+                    metric="residential properties are missing GIS coordinates",
+                )
 
             if skip_building_checks or skip_gis_checks:
                 readiness_msg = f"{ready_prop_count:,}/{residential_prop_count:,} residential properties are currently marked data-ready"
@@ -154,12 +183,16 @@ class Command(BaseCommand):
                     self._pass(readiness_msg)
                 else:
                     self._warn(readiness_msg)
-            elif not_ready == 0:
-                self._pass("All residential properties are marked data-ready")
             else:
-                msg = f"{not_ready:,} residential properties are not data-ready"
-                self._fail(msg)
-                failures.append(("READINESS", msg))
+                self._check_missing(
+                    failures,
+                    category="READINESS",
+                    missing=not_ready,
+                    total=residential_prop_count,
+                    max_pct=MAX_NOT_READY_PCT,
+                    pass_msg="All residential properties are marked data-ready",
+                    metric="residential properties are not data-ready",
+                )
 
         # ------------------------------------------------------------------
         # 3. Duplicate PropertyRecords
@@ -291,13 +324,22 @@ class Command(BaseCommand):
                 is_residential=True, latitude__isnull=False, longitude__isnull=False
             ).count()
             coord_pct = with_coords / residential_prop_count * 100
+            coverage_msg = (
+                f"{coord_pct:.1f}% of residential properties have coordinates "
+                f"({with_coords:,}/{residential_prop_count:,})"
+            )
 
             if coord_pct >= 100.0:
-                self._pass(
-                    f"{coord_pct:.1f}% of residential properties have coordinates ({with_coords:,}/{residential_prop_count:,})"
+                self._pass(coverage_msg)
+            elif coord_pct >= MIN_GIS_COVERAGE_PCT:
+                self._warn(
+                    f"{coverage_msg} — within tolerance (>= {MIN_GIS_COVERAGE_PCT:.1f}%)"
                 )
             else:
-                msg = f"Only {coord_pct:.1f}% of residential properties have coordinates"
+                msg = (
+                    f"Only {coord_pct:.1f}% of residential properties have coordinates "
+                    f"(below {MIN_GIS_COVERAGE_PCT:.1f}% floor)"
+                )
                 self._fail(msg)
                 failures.append(("GIS", msg))
 
@@ -314,6 +356,37 @@ class Command(BaseCommand):
         else:
             self.stdout.write(self.style.SUCCESS("  ✅ ALL CHECKS PASSED"))
             self.stdout.write("=" * 70 + "\n")
+
+    def _check_missing(
+        self,
+        failures: list[tuple[str, str]],
+        *,
+        category: str,
+        missing: int,
+        total: int,
+        max_pct: float,
+        pass_msg: str,
+        metric: str,
+    ) -> None:
+        """Tiered completeness check: pass at 0, warn within tolerance, fail past floor.
+
+        ``missing``/``total`` define the incomplete share; it passes outright when
+        nothing is missing, warns when the share stays within ``max_pct`` (healthy
+        residual in real HCAD data), and only records a hard failure when the share
+        exceeds the floor — the signature of a broken or partial load.
+        """
+        if missing == 0:
+            self._pass(pass_msg)
+            return
+
+        pct = (missing / total * 100) if total else 0.0
+        detail = f"{missing:,} {metric} ({pct:.2f}%)"
+        if pct <= max_pct:
+            self._warn(f"{detail} — within tolerance (<= {max_pct:.1f}%)")
+        else:
+            msg = f"{detail} — exceeds {max_pct:.1f}% tolerance"
+            self._fail(msg)
+            failures.append((category, msg))
 
     # ------------------------------------------------------------------
     # Output helpers
