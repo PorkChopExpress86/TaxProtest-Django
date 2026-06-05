@@ -198,3 +198,61 @@ class AssessmentHistory(models.Model):
 
     def __str__(self):
         return f"{self.account_number} ({self.tax_year})"
+
+
+class TaxUnitRate(models.Model):
+    """Annual tax rate by taxing unit code."""
+
+    tax_year = models.IntegerField(db_index=True)
+    tax_unit_code = models.CharField(max_length=32, db_index=True)
+    tax_unit_name = models.CharField(max_length=255, blank=True)
+    adopted_rate = models.DecimalField(max_digits=12, decimal_places=8)
+    source = models.CharField(max_length=64, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["tax_year", "tax_unit_code"], name="unique_tax_rate_per_unit_year"
+            )
+        ]
+        indexes = [
+            models.Index(fields=["tax_year", "tax_unit_code"]),
+        ]
+
+    def __str__(self):
+        return f"{self.tax_unit_code} {self.tax_year}: {self.adopted_rate}"
+
+
+class PropertyJurisdictionExemption(models.Model):
+    """HCAD jurisdiction/exemption row linked to an account and year."""
+
+    account_number = models.CharField(max_length=20, db_index=True)
+    tax_year = models.IntegerField(db_index=True)
+    tax_unit_code = models.CharField(max_length=32, db_index=True)
+    tax_unit_name = models.CharField(max_length=255, blank=True)
+    exemption_code = models.CharField(max_length=32, blank=True)
+    exemption_description = models.CharField(max_length=255, blank=True)
+    exemption_amount = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    exemption_percent = models.DecimalField(max_digits=8, decimal_places=4, null=True, blank=True)
+    taxable_value = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    assessed_value = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    source = models.CharField(max_length=64, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["account_number", "tax_year", "tax_unit_code", "exemption_code"],
+                name="unique_jur_exemption_per_unit_code_year",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["account_number", "tax_year"]),
+            models.Index(fields=["tax_year", "tax_unit_code"]),
+        ]
+
+    def __str__(self):
+        return f"{self.account_number} {self.tax_year} {self.tax_unit_code}"

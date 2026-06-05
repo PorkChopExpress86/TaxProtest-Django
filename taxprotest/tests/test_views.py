@@ -713,8 +713,10 @@ class ProtestAnalysisViewTests(TestCase):
             "qualifying_comp_count",
             "min_score",
             "pdf_export_url",
+            "tax_impact",
         ]:
             self.assertIn(key, ctx, f"Missing context key: {key}")
+        self.assertContains(response, "Tax Impact")
 
     @patch("taxprotest.views.find_similar_properties")
     def test_equity_gap_and_savings_computed_correctly(self, mock_find):
@@ -940,6 +942,12 @@ class ProtestAnalysisExportTests(TestCase):
             "value_per_sqft",
             "delta_vs_subject_per_sqft",
             "score_breakdown",
+            "tax_year_used",
+            "tax_impact_completeness",
+            "current_tax_owed",
+            "median_tax_owed",
+            "estimated_tax_savings",
+            "tax_impact_warnings",
         ]:
             self.assertIn(col, header, f"Missing CSV column: {col}")
 
@@ -971,3 +979,6 @@ class ProtestAnalysisExportTests(TestCase):
         self.assertEqual(response["Content-Type"], "application/pdf")
         self.assertTrue(response.content.startswith(b"%PDF"))
         self.assertIn(self.target.account_number, response["Content-Disposition"])
+        self.assertIn(
+            "Tax Impact \\(Estimated\\)", response.content.decode("latin-1", errors="ignore")
+        )
