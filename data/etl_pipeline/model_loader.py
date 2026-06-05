@@ -141,12 +141,14 @@ class ModelLoader:
             valid_accounts = self._get_valid_accounts()
             account_map = self._get_account_to_property_map()
 
-            if truncate:
-                self._truncate_table(BuildingDetail)
-
             buf: list[BuildingDetail] = []
 
+            # Truncate and reload run in ONE transaction so a mid-load failure
+            # rolls the truncate back instead of leaving the table empty.
             with transaction.atomic():
+                if truncate:
+                    self._truncate_table(BuildingDetail)
+
                 for record in records:
                     acct = record.get("account_number", "").strip()
                     if not acct:
@@ -252,12 +254,14 @@ class ModelLoader:
             valid_accounts = self._get_valid_accounts()
             account_map = self._get_account_to_property_map()
 
-            if truncate:
-                self._truncate_table(ExtraFeature)
-
             buf: list[ExtraFeature] = []
 
+            # Truncate and reload run in ONE transaction so a mid-load failure
+            # rolls the truncate back instead of leaving the table empty.
             with transaction.atomic():
+                if truncate:
+                    self._truncate_table(ExtraFeature)
+
                 for record in records:
                     acct = record.get("account_number", "").strip()
                     if not acct:
@@ -347,14 +351,16 @@ class ModelLoader:
         )
 
         try:
-            if truncate:
-                self._truncate_table(PropertyRecord)
-                # Clear cached account data since we're truncating
-                self.reset_cache()
-
             buf: list[PropertyRecord] = []
 
+            # Truncate and reload run in ONE transaction so a mid-load failure
+            # rolls the truncate back instead of leaving the table empty.
             with transaction.atomic():
+                if truncate:
+                    self._truncate_table(PropertyRecord)
+                    # Clear cached account data since we're truncating
+                    self.reset_cache()
+
                 for record in records:
                     acct = record.get("account_number", "").strip()
                     if not acct:

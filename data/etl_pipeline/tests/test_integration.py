@@ -348,7 +348,7 @@ class TestETLOrchestratorIntegration(TestCase):
         assert orchestrator.download_manager is not None
         assert orchestrator.extract_manager is not None
         assert orchestrator.transformer is not None
-        assert orchestrator.load_manager is not None
+        assert orchestrator.model_loader is not None
 
     @patch("data.etl_pipeline.download.DownloadManager.download_batch")
     @patch("data.etl_pipeline.extract.ExtractManager.extract_batch")

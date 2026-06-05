@@ -335,6 +335,32 @@ class ImportAllDataCommandTests(TestCase):
         self.assertTrue(kwargs["strict"])
         self.assertTrue(kwargs["validate_contract"])
         self.assertTrue(kwargs["skip_download"])
+        # Extract is decoupled from download: skipping the download of
+        # already-present archives must still extract them at runtime.
+        self.assertFalse(kwargs["skip_extract"])
+
+    @patch("data.management.commands.import_all_data.ETLOrchestrator.execute")
+    def test_import_all_data_skip_extract_is_independent_of_skip_download(
+        self, mocked_execute
+    ) -> None:
+        mocked_execute.return_value = SimpleNamespace(
+            success=True,
+            status=SimpleNamespace(value="completed"),
+            duration=0.1,
+            stages={},
+            errors=[],
+        )
+
+        call_command(
+            "import_all_data",
+            skip_download=True,
+            skip_extract=True,
+            skip_property=True,
+        )
+
+        mocked_execute.assert_called_once()
+        _, kwargs = mocked_execute.call_args
+        self.assertTrue(kwargs["skip_download"])
         self.assertTrue(kwargs["skip_extract"])
 
     @patch("data.management.commands.import_all_data.ETLOrchestrator.execute")

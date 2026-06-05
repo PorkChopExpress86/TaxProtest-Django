@@ -5,7 +5,9 @@ Provides robust file downloading with retry logic, checksum validation,
 progress tracking, and parallel download support.
 """
 
+import email.utils
 import hashlib
+import os
 import random
 import time
 from collections.abc import Callable
@@ -122,6 +124,64 @@ class DownloadManager:
         actual_hash = self._get_file_hash(filepath)
         return actual_hash.lower() == expected_hash.lower()
 
+    @staticmethod
+    def _parse_last_modified(value: str | None) -> float | None:
+        """Parse an HTTP Last-Modified header into a POSIX timestamp."""
+        if not value:
+            return None
+        try:
+            dt = email.utils.parsedate_to_datetime(value)
+        except (TypeError, ValueError):
+            return None
+        return dt.timestamp() if dt is not None else None
+
+    def _cached_result_if_unchanged(
+        self,
+        url: str,
+        dest_path: Path,
+        source: DataSource,
+        start_time: float,
+    ) -> DownloadResult | None:
+        """Return a cached DownloadResult when the remote file matches the local copy.
+
+        Uses a HEAD request and compares the remote Content-Length and
+        Last-Modified against the local file's size and mtime (stamped from the
+        previous download's Last-Modified). Returns None — meaning "download" —
+        whenever anything is missing or does not match, so this is always safe.
+        """
+        try:
+            head = self.session.head(url, timeout=15, allow_redirects=True)
+        except requests.RequestException as exc:
+            self.logger.debug(f"HEAD check failed for {source.name}, will download: {exc}")
+            return None
+
+        if head.status_code != 200:
+            return None
+
+        remote_len = int(head.headers.get("content-length", 0) or 0)
+        remote_mtime = self._parse_last_modified(head.headers.get("last-modified"))
+        if not remote_len or remote_mtime is None:
+            return None
+
+        stat = dest_path.stat()
+        if stat.st_size != remote_len:
+            return None
+        if abs(stat.st_mtime - remote_mtime) > 1.0:
+            return None
+
+        self.logger.info(
+            f"{source.name} unchanged (size + Last-Modified match local copy); skipping download"
+        )
+        return DownloadResult(
+            source=source,
+            success=True,
+            local_path=dest_path,
+            bytes_downloaded=stat.st_size,
+            duration=time.time() - start_time,
+            checksum_verified=False,
+            attempts=0,
+        )
+
     def download_file(
         self,
         source: DataSource,
@@ -157,9 +217,18 @@ class DownloadManager:
 
         dest_path = dest_path or (self.download_dir / source.filename)
 
+        start_time = time.time()
+
+        # Skip the transfer entirely when the local copy already matches the
+        # remote (same size + Last-Modified). Big speed/bandwidth win for the
+        # large archives that rarely change between scheduled runs.
+        if self.download_config.skip_if_unchanged and dest_path.exists():
+            cached = self._cached_result_if_unchanged(url, dest_path, source, start_time)
+            if cached is not None:
+                return cached
+
         self.logger.info(f"Downloading {source.name} from {url}")
 
-        start_time = time.time()
         last_error: str | None = None
         attempts = 0
 
@@ -223,6 +292,7 @@ class DownloadManager:
             response.raise_for_status()
 
             total_size = int(response.headers.get("content-length", 0))
+            last_modified = response.headers.get("last-modified")
             bytes_downloaded = 0
 
             with open(dest_path, "wb") as f:
@@ -240,6 +310,15 @@ class DownloadManager:
                             expected_time = bytes_downloaded / self.download_config.bandwidth_limit
                             if expected_time > elapsed:
                                 time.sleep(expected_time - elapsed)
+
+        # Stamp the file mtime with the server's Last-Modified so a later run can
+        # detect "unchanged" and skip re-downloading (see _cached_result_if_unchanged).
+        remote_mtime = self._parse_last_modified(last_modified)
+        if remote_mtime is not None:
+            try:
+                os.utime(dest_path, (remote_mtime, remote_mtime))
+            except OSError:
+                pass
 
         # Verify checksum if provided
         checksum_verified = False

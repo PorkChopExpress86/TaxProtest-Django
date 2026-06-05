@@ -2,10 +2,14 @@
 Unit tests for ETL Pipeline components.
 """
 
+import os
 import tempfile
+import unittest
 import zipfile
 from datetime import datetime
+from email.utils import formatdate
 from pathlib import Path
+from unittest.mock import MagicMock
 
 from data.etl_pipeline.config import (
     DataSource,
@@ -14,7 +18,7 @@ from data.etl_pipeline.config import (
     LoadConfig,
     RetryConfig,
 )
-from data.etl_pipeline.download import DownloadResult
+from data.etl_pipeline.download import DownloadManager, DownloadResult
 from data.etl_pipeline.extract import ExtractManager, ExtractResult
 from data.etl_pipeline.logging import ETLLogger, ETLMetrics
 from data.etl_pipeline.transform import (
@@ -432,3 +436,90 @@ class TestLoadConfig:
         assert config.use_transactions is True
         assert config.truncate_before_load is True
         assert config.low_memory_mode is False
+
+
+class TestConditionalDownload(unittest.TestCase):
+    """Tests for skip-if-unchanged download behavior."""
+
+    @staticmethod
+    def _manager(tmp: str) -> DownloadManager:
+        config = ETLConfig(
+            download_dir=Path(tmp),
+            extract_dir=Path(tmp) / "extracted",
+            log_dir=Path(tmp) / "logs",
+        )
+        return DownloadManager(config)
+
+    @staticmethod
+    def _source() -> DataSource:
+        return DataSource(
+            name="Test",
+            url_template="https://example.com/test.zip",
+            filename="test.zip",
+            source_type=DataSourceType.PROPERTY_DATA,
+        )
+
+    def test_parse_last_modified_roundtrip(self):
+        ts = 1_700_000_000
+        parsed = DownloadManager._parse_last_modified(formatdate(ts, usegmt=True))
+        self.assertIsNotNone(parsed)
+        self.assertLess(abs(parsed - ts), 1.0)
+
+    def test_parse_last_modified_invalid(self):
+        self.assertIsNone(DownloadManager._parse_last_modified("not a date"))
+        self.assertIsNone(DownloadManager._parse_last_modified(None))
+
+    def test_skips_download_when_size_and_mtime_match(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = self._manager(tmp)
+            source = self._source()
+
+            dest = Path(tmp) / "test.zip"
+            dest.write_bytes(b"x" * 100)
+            ts = 1_700_000_000
+            os.utime(dest, (ts, ts))
+
+            manager.session = MagicMock()
+            head = MagicMock()
+            head.status_code = 200
+            head.headers = {"content-length": "100", "last-modified": formatdate(ts, usegmt=True)}
+            manager.session.head.return_value = head
+
+            result = manager.download_file(source)
+
+            self.assertTrue(result.success)
+            self.assertEqual(result.attempts, 0)  # served from local cache
+            manager.session.get.assert_not_called()
+
+    def test_downloads_when_remote_size_differs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = self._manager(tmp)
+            source = self._source()
+
+            dest = Path(tmp) / "test.zip"
+            dest.write_bytes(b"x" * 100)
+            ts = 1_700_000_000
+            os.utime(dest, (ts, ts))
+
+            manager.session = MagicMock()
+            head = MagicMock()
+            head.status_code = 200
+            head.headers = {"content-length": "999", "last-modified": formatdate(ts, usegmt=True)}
+            manager.session.head.return_value = head
+
+            # Stub the actual transfer so the test never touches the network.
+            sentinel = DownloadResult(source=source, success=True, attempts=1)
+            manager._download_with_progress = MagicMock(return_value=sentinel)
+
+            result = manager.download_file(source)
+
+            self.assertEqual(result.attempts, 1)  # fell through to a real download
+            manager._download_with_progress.assert_called_once()
+
+    def test_force_download_env_disables_skip(self):
+        os.environ["ETL_FORCE_DOWNLOAD"] = "1"
+        try:
+            cfg = ETLConfig.from_env()
+            self.assertFalse(cfg.download.skip_if_unchanged)
+        finally:
+            del os.environ["ETL_FORCE_DOWNLOAD"]

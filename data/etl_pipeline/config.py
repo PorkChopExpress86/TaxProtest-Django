@@ -180,11 +180,14 @@ class DownloadConfig:
     """Configuration for download operations."""
 
     timeout: int = 300  # seconds
-    chunk_size: int = 8192  # bytes
+    chunk_size: int = 1 << 20  # 1 MiB — fewer write syscalls on multi-GB archives
     max_parallel: int = 3
     verify_ssl: bool = True
     retry: RetryConfig = field(default_factory=RetryConfig)
     bandwidth_limit: int | None = None  # bytes per second
+    # Skip re-downloading a file when the remote size + Last-Modified match the
+    # local copy. Avoids re-pulling unchanged multi-GB archives every run.
+    skip_if_unchanged: bool = True
 
 
 @dataclass
@@ -306,6 +309,9 @@ class ETLConfig:
 
         if os.getenv("ETL_DRY_RUN", "").lower() in ("true", "1", "yes"):
             config.dry_run = True
+
+        if os.getenv("ETL_FORCE_DOWNLOAD", "").lower() in ("true", "1", "yes"):
+            config.download.skip_if_unchanged = False
 
         batch_size = os.getenv("ETL_BATCH_SIZE")
         if batch_size:
