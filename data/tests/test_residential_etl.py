@@ -257,6 +257,29 @@ class ResidentialValidationCommandTests(TestCase):
 
         call_command("validate_data", skip_gis_checks=True)
 
+    def test_validate_data_passes_within_gis_tolerance(self) -> None:
+        # 199 complete + 1 missing GIS = 99.5% coverage, above the 99.0% floor.
+        for i in range(199):
+            self._create_ready_property(account_number=f"OK{i:04d}")
+        missing = self._create_ready_property(account_number="NOGIS")
+        missing.latitude = None
+        missing.longitude = None
+        missing.save(update_fields=["latitude", "longitude"])
+
+        # Should pass: the single missing-GIS row is within tolerance.
+        call_command("validate_data")
+
+    def test_validate_data_fails_when_gis_below_floor(self) -> None:
+        # 1 complete + 1 missing GIS = 50% coverage, well below the floor.
+        self._create_ready_property(account_number="OK0001")
+        missing = self._create_ready_property(account_number="NOGIS")
+        missing.latitude = None
+        missing.longitude = None
+        missing.save(update_fields=["latitude", "longitude"])
+
+        with self.assertRaises(CommandError):
+            call_command("validate_data")
+
 
 class ImportAllDataCommandTests(TestCase):
     def _create_property(
