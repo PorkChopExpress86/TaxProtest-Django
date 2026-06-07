@@ -3,9 +3,10 @@ set -e
 
 echo "Starting TaxProtest-Django..."
 
-# Run migrations (idempotent — safe for all services)
-echo "Running migrations..."
-python manage.py migrate --noinput
+# Migrations are NOT run here. A dedicated one-shot `migrate` compose service
+# owns schema migrations, and every other service depends on it completing
+# (condition: service_completed_successfully). Running migrate from each
+# service raced multiple migrators against the same DDL.
 
 # Worker, beat, or any other custom command — skip data loading and run it directly.
 if [ $# -gt 0 ]; then

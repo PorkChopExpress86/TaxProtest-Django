@@ -19,13 +19,37 @@ services:
   redis:
     image: redis:7
     restart: unless-stopped
+    command: [ "redis-server", "--requirepass", "${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}", "--save", "" ]
+    environment:
+      REDIS_PASSWORD: "${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}"
     ports:
       - "127.0.0.1:6379:6379"
     healthcheck:
-      test: [ "CMD", "redis-cli", "ping" ]
+      test: [ "CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping" ]
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # One-shot migrator. The single owner of schema migrations — every long-running
+  # service waits for this to complete successfully, so migrate never races.
+  migrate:
+    build:
+      context: .
+      args:
+        SKIP_DATA_DOWNLOAD: ${SKIP_DATA_DOWNLOAD:-1}
+    user: "${UID:-1000}:${GID:-1000}"
+    restart: "no"
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-taxprotest}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-taxprotest}
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - .:/app
+    command: python manage.py migrate --noinput
 
   web:
     build:
@@ -34,19 +58,29 @@ services:
         # Default 1 = skip data download (fast dev/CI builds).
         # Set SKIP_DATA_DOWNLOAD=0 to bake HCAD data into the image (production).
         SKIP_DATA_DOWNLOAD: ${SKIP_DATA_DOWNLOAD:-1}
+    # Stable container name so the reverse proxy upstream (web:8000 on the
+    # shared `proxy` network) doesn't depend on Compose's auto -1 suffix.
+    container_name: taxprotest-web
     restart: unless-stopped
     user: "${UID:-1000}:${GID:-1000}"
     ports:
-      - "8020:8000"
+      # Loopback-only host mapping for local debugging (curl 127.0.0.1:8020).
+      # The reverse proxy does NOT use this — it reaches the app over the shared
+      # `proxy` network by container name (web:8000), so the app is never
+      # published on the LAN.
+      - "127.0.0.1:8020:8000"
+    networks:
+      - default
+      - proxy
     env_file:
       - .env
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-taxprotest}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-taxprotest}
-      - CELERY_BROKER_URL=redis://redis:6379/0
-      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://:${REDIS_PASSWORD}@redis:6379/0
       - DEBUG=${DEBUG:-0}
-      - ALLOWED_HOSTS=${ALLOWED_HOSTS:-localhost,127.0.0.1,property.ohmygoshwhatever.com}
-      - CSRF_TRUSTED_ORIGINS=${CSRF_TRUSTED_ORIGINS:-https://property.ohmygoshwhatever.com}
+      - ALLOWED_HOSTS=${ALLOWED_HOSTS:-localhost,127.0.0.1}
+      - CSRF_TRUSTED_ORIGINS=${CSRF_TRUSTED_ORIGINS:-}
       - USE_X_FORWARDED_HOST=${USE_X_FORWARDED_HOST:-1}
       - ENABLE_SECURE_PROXY_SSL_HEADER=${ENABLE_SECURE_PROXY_SSL_HEADER:-1}
       - FORCE_SECURE_COOKIES=${FORCE_SECURE_COOKIES:-1}
@@ -61,6 +95,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     volumes:
       - .:/app
       # /hcad_downloads_baked lives outside /app in the image so the .:/app
@@ -78,8 +114,8 @@ services:
       - .env
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-taxprotest}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-taxprotest}
-      - CELERY_BROKER_URL=redis://redis:6379/0
-      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://:${REDIS_PASSWORD}@redis:6379/0
       - DEBUG=${DEBUG:-0}
       - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
       - HCAD_DOWNLOAD_DIR=${HCAD_DOWNLOAD_DIR:-/app/var/downloads}
@@ -91,6 +127,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     volumes:
       - .:/app
     command: celery -A taxprotest worker --loglevel=info
@@ -107,8 +145,8 @@ services:
       - .env
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-taxprotest}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-taxprotest}
-      - CELERY_BROKER_URL=redis://redis:6379/0
-      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://:${REDIS_PASSWORD}@redis:6379/0
       - DEBUG=${DEBUG:-0}
       - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
       - HCAD_DOWNLOAD_DIR=${HCAD_DOWNLOAD_DIR:-/app/var/downloads}
@@ -120,6 +158,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     volumes:
       - .:/app
     command: celery -A taxprotest beat --loglevel=info
@@ -129,6 +169,7 @@ services:
   taxprotest-dev:
     build:
       context: .
+      target: dev          # includes lint/test tooling (requirements-dev.txt)
       args:
         SKIP_DATA_DOWNLOAD: "1"
     profiles: ["devtools"]
@@ -161,8 +202,8 @@ services:
       - .env
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-taxprotest}:${POSTGRES_PASSWORD:-taxprotest}@postgres:5432/${POSTGRES_DB:-taxprotest}
-      - CELERY_BROKER_URL=redis://redis:6379/0
-      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://:${REDIS_PASSWORD}@redis:6379/0
       - DEBUG=${DEBUG:-0}
       - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:-dev-only-change-this-in-production}
       - HCAD_DOWNLOAD_DIR=${HCAD_DOWNLOAD_DIR:-/app/var/downloads}
@@ -176,6 +217,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     command: python manage.py import_all_data
 
   # One-off refresh orchestration service.
@@ -189,8 +232,8 @@ services:
       - .env
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-taxprotest}:${POSTGRES_PASSWORD:-taxprotest}@postgres:5432/${POSTGRES_DB:-taxprotest}
-      - CELERY_BROKER_URL=redis://redis:6379/0
-      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://:${REDIS_PASSWORD}@redis:6379/0
       - DEBUG=${DEBUG:-0}
       - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:-dev-only-change-this-in-production}
       - HCAD_DOWNLOAD_DIR=${HCAD_DOWNLOAD_DIR:-/app/var/downloads}
@@ -204,8 +247,21 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     command: python manage.py check_and_import_data
 
 volumes:
   pgdata:
     driver: local
+
+networks:
+  # Default project network for inter-service traffic (db, redis, web, worker…).
+  default:
+  # Shared bridge network owned by the reverse proxy (Nginx Proxy Manager).
+  # `web` joins it so the proxy can forward to web:8000 directly, without the
+  # app being published on the host LAN. Declared external because the proxy's
+  # own compose creates it.
+  proxy:
+    external: true
+    name: media_proxy

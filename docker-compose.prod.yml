@@ -18,12 +18,30 @@ services:
   redis:
     image: redis:7
     restart: unless-stopped
+    command: [ "redis-server", "--requirepass", "${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}", "--save", "" ]
+    environment:
+      REDIS_PASSWORD: "${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}"
     # No ports exposed to host in production
     healthcheck:
-      test: [ "CMD", "redis-cli", "ping" ]
+      test: [ "CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping" ]
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # One-shot migrator. The single owner of schema migrations — web/worker/beat
+  # all wait for this to complete successfully, so migrate never races.
+  migrate:
+    build: .
+    restart: "no"
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-taxprotest}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-taxprotest}
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
+    depends_on:
+      db:
+        condition: service_healthy
+    command: python manage.py migrate --noinput
 
   web:
     build: .
@@ -34,11 +52,11 @@ services:
       - .env
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-taxprotest}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-taxprotest}
-      - CELERY_BROKER_URL=redis://redis:6379/0
-      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://:${REDIS_PASSWORD}@redis:6379/0
       - DEBUG=0
-      - ALLOWED_HOSTS=${ALLOWED_HOSTS:-localhost,127.0.0.1,property.ohmygoshwhatever.com}
-      - CSRF_TRUSTED_ORIGINS=${CSRF_TRUSTED_ORIGINS:-https://property.ohmygoshwhatever.com}
+      - ALLOWED_HOSTS=${ALLOWED_HOSTS:-localhost,127.0.0.1}
+      - CSRF_TRUSTED_ORIGINS=${CSRF_TRUSTED_ORIGINS:-}
       - USE_X_FORWARDED_HOST=${USE_X_FORWARDED_HOST:-1}
       - ENABLE_SECURE_PROXY_SSL_HEADER=${ENABLE_SECURE_PROXY_SSL_HEADER:-1}
       - FORCE_SECURE_COOKIES=${FORCE_SECURE_COOKIES:-1}
@@ -53,6 +71,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     # No code bind mount in production, but the runtime data under /app/var persists.
     volumes:
       - ./var:/app/var
@@ -64,8 +84,8 @@ services:
       - .env
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-taxprotest}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-taxprotest}
-      - CELERY_BROKER_URL=redis://redis:6379/0
-      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://:${REDIS_PASSWORD}@redis:6379/0
       - DEBUG=0
       - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
       - HCAD_DOWNLOAD_DIR=${HCAD_DOWNLOAD_DIR:-/app/var/downloads}
@@ -77,6 +97,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     command: celery -A taxprotest worker --loglevel=info
 
   # Celery beat for scheduled tasks (runs monthly imports)
@@ -87,8 +109,8 @@ services:
       - .env
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-taxprotest}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-taxprotest}
-      - CELERY_BROKER_URL=redis://redis:6379/0
-      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://:${REDIS_PASSWORD}@redis:6379/0
       - DEBUG=0
       - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
       - HCAD_DOWNLOAD_DIR=${HCAD_DOWNLOAD_DIR:-/app/var/downloads}
@@ -100,6 +122,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     command: celery -A taxprotest beat --loglevel=info
 
 volumes:
