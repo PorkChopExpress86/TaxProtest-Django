@@ -62,19 +62,19 @@ REQUEST_LOG_SAMPLE = float(os.environ.get("REQUEST_LOG_SAMPLE", "1.0") or "0")
 _raw_hosts = os.environ.get("ALLOWED_HOSTS", "")
 ALLOWED_HOSTS = [host.strip() for host in _raw_hosts.split(",") if host.strip()]
 if not ALLOWED_HOSTS:
-    # include the reverse-proxy domain by default so local compose + reverse proxy works
-    ALLOWED_HOSTS = ["localhost", "127.0.0.1", "[::1]", "property.ohmygoshwhatever.com"]
+    # Safe localhost-only default. Each deployment must set ALLOWED_HOSTS (and,
+    # for a reverse proxy, REVERSE_PROXY_HOST) to its own host(s). No external
+    # domain is trusted by default.
+    ALLOWED_HOSTS = ["localhost", "127.0.0.1", "[::1]"]
 
 _raw_csrf = os.environ.get("CSRF_TRUSTED_ORIGINS", "")
 CSRF_TRUSTED_ORIGINS = [origin.strip() for origin in _raw_csrf.split(",") if origin.strip()]
-if not CSRF_TRUSTED_ORIGINS:
-    # default to the reverse-proxy origin so CSRF checks succeed when using the proxy
-    CSRF_TRUSTED_ORIGINS = ["https://property.ohmygoshwhatever.com"]
 
-# Ensure the configured reverse proxy host is present even if ALLOWED_HOSTS/CSRF_TRUSTED_ORIGINS
-# were provided via environment but omitted the proxy domain. You can override the proxy
-# host by setting REVERSE_PROXY_HOST in the environment.
-_reverse_host = os.environ.get("REVERSE_PROXY_HOST", "property.ohmygoshwhatever.com")
+# Append the reverse-proxy host to ALLOWED_HOSTS/CSRF_TRUSTED_ORIGINS only when an
+# operator explicitly opts in via REVERSE_PROXY_HOST. There is intentionally no
+# built-in default host — trusting a hardcoded external domain would let anyone
+# controlling it pass host validation on every deployment.
+_reverse_host = os.environ.get("REVERSE_PROXY_HOST", "").strip()
 if _reverse_host:
     if _reverse_host not in ALLOWED_HOSTS:
         ALLOWED_HOSTS.append(_reverse_host)
@@ -238,6 +238,13 @@ if DATABASE_URL:
 # Celery settings (dev-friendly; override via env)
 CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://redis:6379/0")
 CELERY_RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND", CELERY_BROKER_URL)
+
+# Forbid pickle deserialization on the broker/result backend. Even if an
+# attacker reaches Redis, task/result payloads are restricted to JSON so a
+# forged message cannot trigger arbitrary-object deserialization.
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
 
 # Standardized logging across Django and Celery
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
