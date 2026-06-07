@@ -20,6 +20,7 @@ from django.urls import path
 
 from .views import (
     about,
+    contact,
     export_csv,
     healthz,
     index,
@@ -49,6 +50,7 @@ urlpatterns = [
         name="protest_analysis_pdf",
     ),
     path("about/", about, name="about"),
+    path("contact/", contact, name="contact"),
     path("healthz/", healthz, name="healthz"),
     path("readiness/", readiness, name="readiness"),
 ]

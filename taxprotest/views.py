@@ -7,11 +7,14 @@ from decimal import ROUND_HALF_UP, Decimal
 
 import redis
 from django.conf import settings
+from django.core.mail import send_mail
 from django.core.paginator import Paginator
 from django.db import connection
 from django.http import Http404, HttpResponse, HttpResponseBadRequest, JsonResponse
 from django.shortcuts import render
 from django.urls import reverse
+
+from .forms import ContactForm
 
 from data.assessment_history import evaluate_cap_status
 from data.models import AssessmentHistory, BuildingDetail, ExtraFeature, PropertyRecord
@@ -1174,6 +1177,32 @@ def protest_analysis_pdf(request, account_number):
 
 def about(request):
     return render(request, "about.html")
+
+
+def contact(request):
+    if request.method == "POST":
+        form = ContactForm(request.POST)
+        if form.is_valid():
+            name = form.cleaned_data["name"]
+            sender = form.cleaned_data["email"]
+            subject = form.cleaned_data["subject"]
+            message = form.cleaned_data["message"]
+            body = f"From: {name} <{sender}>\n\n{message}"
+            try:
+                send_mail(
+                    subject=f"[Home Values] {subject}",
+                    message=body,
+                    from_email=settings.CONTACT_EMAIL,
+                    recipient_list=[settings.CONTACT_EMAIL],
+                    reply_to=[f"{name} <{sender}>"],
+                    fail_silently=False,
+                )
+                return render(request, "contact.html", {"form": ContactForm(), "sent": True})
+            except Exception:
+                return render(request, "contact.html", {"form": form, "send_error": True})
+    else:
+        form = ContactForm()
+    return render(request, "contact.html", {"form": form})
 
 
 def healthz(request):

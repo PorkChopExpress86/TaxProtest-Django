@@ -1,0 +1,183 @@
+{% extends "base.html" %}
+
+{% block title %}Contact — Home Values{% endblock %}
+
+{% block content %}
+<div class="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
+
+    <!-- Hero -->
+    <div class="text-center mb-14">
+        <div class="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-r from-blue-500 to-indigo-600 rounded-2xl mb-6 shadow-lg">
+            <svg class="w-9 h-9 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
+            </svg>
+        </div>
+        <h1 class="text-4xl font-bold text-gray-900 mb-4">Contact</h1>
+        <p class="text-xl text-gray-600 max-w-xl mx-auto">
+            Questions, feedback, or found a bug? Reach out — this project is built and maintained by one person.
+        </p>
+    </div>
+
+    <!-- Quick links -->
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-10">
+
+        <!-- Email direct -->
+        <a href="mailto:blake.b.8726@gmail.com"
+           class="bg-white rounded-xl shadow-sm border border-blue-100 p-5 flex gap-4 items-center hover:border-blue-300 hover:shadow-md transition-all group">
+            <div class="w-10 h-10 bg-blue-50 rounded-lg flex items-center justify-center flex-shrink-0 group-hover:bg-blue-100 transition-colors">
+                <svg class="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
+                </svg>
+            </div>
+            <div>
+                <p class="font-semibold text-gray-900 text-sm">Email directly</p>
+                <p class="text-blue-600 text-sm">Send an email</p>
+            </div>
+        </a>
+
+        <!-- GitHub -->
+        <a href="https://github.com/PorkChopExpress86/TaxProtest-Django" target="_blank" rel="noopener noreferrer"
+           class="bg-white rounded-xl shadow-sm border border-blue-100 p-5 flex gap-4 items-center hover:border-blue-300 hover:shadow-md transition-all group">
+            <div class="w-10 h-10 bg-gray-100 rounded-lg flex items-center justify-center flex-shrink-0 group-hover:bg-gray-200 transition-colors">
+                <svg class="w-5 h-5 text-gray-700" fill="currentColor" viewBox="0 0 24 24">
+                    <path fill-rule="evenodd" clip-rule="evenodd" d="M12 2C6.477 2 2 6.477 2 12c0 4.418 2.865 8.166 6.839 9.489.5.092.682-.217.682-.483 0-.237-.009-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844a9.59 9.59 0 012.504.337c1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12c0-5.523-4.477-10-10-10z"/>
+                </svg>
+            </div>
+            <div>
+                <p class="font-semibold text-gray-900 text-sm">GitHub project</p>
+                <p class="text-gray-500 text-sm">View source &amp; open issues</p>
+            </div>
+        </a>
+
+    </div>
+
+    <!-- Contact form -->
+    <div class="bg-white rounded-xl shadow-sm border border-blue-100 p-8 mb-10">
+        <h2 class="text-xl font-bold text-gray-900 mb-6">Send a message</h2>
+
+        {% if sent %}
+        <div class="flex items-start gap-3 bg-green-50 border border-green-200 rounded-lg px-5 py-4 mb-6">
+            <svg class="w-5 h-5 text-green-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            </svg>
+            <div>
+                <p class="font-semibold text-green-800">Message sent</p>
+                <p class="text-green-700 text-sm">Thanks for reaching out — I'll get back to you in a few days.</p>
+            </div>
+        </div>
+        {% endif %}
+
+        {% if send_error %}
+        <div class="flex items-start gap-3 bg-red-50 border border-red-200 rounded-lg px-5 py-4 mb-6">
+            <svg class="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+            </svg>
+            <div>
+                <p class="font-semibold text-red-800">Failed to send</p>
+                <p class="text-red-700 text-sm">Something went wrong. Please <a href="mailto:blake.b.8726@gmail.com" class="underline">email me directly</a>.</p>
+            </div>
+        </div>
+        {% endif %}
+
+        <form method="post" novalidate>
+            {% csrf_token %}
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-5 mb-5">
+                <!-- Name -->
+                <div>
+                    <label for="{{ form.name.id_for_label }}" class="block text-sm font-medium text-gray-700 mb-1">
+                        {{ form.name.label }}
+                    </label>
+                    <input
+                        type="text"
+                        name="{{ form.name.html_name }}"
+                        id="{{ form.name.id_for_label }}"
+                        value="{{ form.name.value|default:'' }}"
+                        maxlength="100"
+                        class="w-full rounded-lg border {% if form.name.errors %}border-red-400 bg-red-50{% else %}border-gray-300{% endif %} px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                        placeholder="Jane Smith"
+                    >
+                    {% for error in form.name.errors %}
+                    <p class="mt-1 text-xs text-red-600">{{ error }}</p>
+                    {% endfor %}
+                </div>
+
+                <!-- Email -->
+                <div>
+                    <label for="{{ form.email.id_for_label }}" class="block text-sm font-medium text-gray-700 mb-1">
+                        {{ form.email.label }}
+                    </label>
+                    <input
+                        type="email"
+                        name="{{ form.email.html_name }}"
+                        id="{{ form.email.id_for_label }}"
+                        value="{{ form.email.value|default:'' }}"
+                        class="w-full rounded-lg border {% if form.email.errors %}border-red-400 bg-red-50{% else %}border-gray-300{% endif %} px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                        placeholder="jane@example.com"
+                    >
+                    {% for error in form.email.errors %}
+                    <p class="mt-1 text-xs text-red-600">{{ error }}</p>
+                    {% endfor %}
+                </div>
+            </div>
+
+            <!-- Subject -->
+            <div class="mb-5">
+                <label for="{{ form.subject.id_for_label }}" class="block text-sm font-medium text-gray-700 mb-1">
+                    {{ form.subject.label }}
+                </label>
+                <input
+                    type="text"
+                    name="{{ form.subject.html_name }}"
+                    id="{{ form.subject.id_for_label }}"
+                    value="{{ form.subject.value|default:'' }}"
+                    maxlength="150"
+                    class="w-full rounded-lg border {% if form.subject.errors %}border-red-400 bg-red-50{% else %}border-gray-300{% endif %} px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                    placeholder="e.g. Question about similarity scores"
+                >
+                {% for error in form.subject.errors %}
+                <p class="mt-1 text-xs text-red-600">{{ error }}</p>
+                {% endfor %}
+            </div>
+
+            <!-- Message -->
+            <div class="mb-6">
+                <label for="{{ form.message.id_for_label }}" class="block text-sm font-medium text-gray-700 mb-1">
+                    {{ form.message.label }}
+                </label>
+                <textarea
+                    name="{{ form.message.html_name }}"
+                    id="{{ form.message.id_for_label }}"
+                    rows="6"
+                    class="w-full rounded-lg border {% if form.message.errors %}border-red-400 bg-red-50{% else %}border-gray-300{% endif %} px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition resize-y"
+                    placeholder="Include your account number if this is about a specific property."
+                >{{ form.message.value|default:'' }}</textarea>
+                {% for error in form.message.errors %}
+                <p class="mt-1 text-xs text-red-600">{{ error }}</p>
+                {% endfor %}
+            </div>
+
+            <button type="submit"
+                    class="inline-flex items-center gap-2 bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-600 hover:to-indigo-700 text-white font-semibold px-6 py-2.5 rounded-lg text-sm transition-all shadow-sm hover:shadow-md">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/>
+                </svg>
+                Send message
+            </button>
+        </form>
+    </div>
+
+    <!-- Scope note -->
+    <div class="bg-yellow-50 border border-yellow-200 rounded-xl p-5 flex gap-4 items-start">
+        <svg class="w-5 h-5 text-yellow-600 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M12 2a10 10 0 100 20A10 10 0 0012 2z"/>
+        </svg>
+        <p class="text-yellow-800 text-sm">
+            This tool does not file protests or communicate with HCAD. For the protest process itself, visit
+            <a href="https://www.hcad.org" target="_blank" rel="noopener noreferrer" class="font-medium underline hover:text-yellow-900 transition-colors">hcad.org</a>.
+            Responses may take a few days, especially during protest season (April–May).
+        </p>
+    </div>
+
+</div>
+{% endblock %}
