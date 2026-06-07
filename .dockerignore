@@ -50,3 +50,9 @@ node_modules
 # Temporary files
 *.tmp
 *.temp
+
+# Runtime data — HCAD downloads, extracted files, logs (generated at runtime, not needed at build)
+var/
+
+# Collected static files (generated during build by collectstatic, not needed as input)
+staticfiles/
