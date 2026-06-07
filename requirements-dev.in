@@ -1,0 +1,17 @@
+# Development / CI dependencies: linting, type-checking, testing.
+# Installed in the `taxprotest-dev` compose service (Dockerfile `dev` target)
+# and CI — NOT in the production image. Includes the runtime deps via -r so dev
+# environments are a superset of production. Regenerate the lock with:
+#   docker compose run --rm -e PYTHONUSERBASE=/tmp/pipx -e PIP_USER=1 taxprotest-dev \
+#     sh -c 'pip install -q pip-tools && \
+#            python -m piptools compile --generate-hashes \
+#              --output-file=requirements-dev.txt requirements-dev.in'
+-r requirements.in
+pre-commit==4.6.0
+black==26.5.1
+ruff==0.15.16
+mypy==2.1.0
+django-stubs==6.0.5
+django-stubs-ext==6.0.5
+pytest==9.0.3
+pytest-django==4.12.0

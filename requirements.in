@@ -1,0 +1,19 @@
+# Runtime dependencies (production image). Edit this file, then regenerate the
+# hash-pinned lock (requirements.txt). pip-tools is not installed in any image,
+# so install it ephemerally in the dev container and run pip-compile:
+#   docker compose run --rm -e PYTHONUSERBASE=/tmp/pipx -e PIP_USER=1 taxprotest-dev \
+#     sh -c 'pip install -q pip-tools && \
+#            python -m piptools compile --generate-hashes \
+#              --output-file=requirements.txt requirements.in'
+# Versions are exact-pinned to what the image was built and tested against.
+Django==5.2.15
+celery[redis]==5.6.3
+redis==6.4.0
+requests==2.34.2
+dj-database-url==3.1.2
+psycopg2-binary==2.9.12
+python-dotenv==1.2.2
+geopandas==1.1.3
+pyogrio==0.12.1
+gunicorn==26.0.0
+whitenoise==6.12.0
