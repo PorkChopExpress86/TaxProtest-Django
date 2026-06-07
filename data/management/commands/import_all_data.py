@@ -6,6 +6,7 @@ Usage:
 
 from __future__ import annotations
 
+from django.core.management import call_command
 from django.core.management.base import BaseCommand, CommandError
 
 from data.etl_pipeline import ETLConfig, ETLOrchestrator
@@ -147,7 +148,81 @@ class Command(BaseCommand):
         if not result.success:
             raise CommandError("Authoritative modern ETL import failed")
 
+        self._load_jur_exemptions(
+            config,
+            skip_download=options["skip_download"],
+            skip_extract=options["skip_extract"],
+        )
+
         self.stdout.write("")
         self.stdout.write(
             self.style.SUCCESS("Authoritative modern ETL import completed successfully.")
+        )
+
+    def _load_jur_exemptions(
+        self, config: ETLConfig, *, skip_download: bool, skip_extract: bool
+    ) -> None:
+        """Download, extract, and import jurisdiction/exemption data if available.
+
+        Non-fatal: missing or failed downloads are logged as warnings so the
+        main ETL result is not affected when HCAD doesn't publish the file.
+        """
+        from data.etl_pipeline.config import DataSourceType, FileFormat
+        from data.etl_pipeline.download import DownloadManager
+        from data.etl_pipeline.extract import ExtractManager
+
+        source = DataSource(
+            name="Real Jur Exempt",
+            url_template="https://download.hcad.org/data/CAMA/{year}/Real_jur_exempt.zip",
+            filename="Real_jur_exempt.zip",
+            source_type=DataSourceType.PROPERTY_DATA,
+            file_format=FileFormat.ZIP,
+            required=False,
+            priority=80,
+        )
+
+        self.stdout.write("")
+        self.stdout.write("Loading jurisdiction/exemption data...")
+
+        archive_path = config.download_dir / source.filename
+
+        if not skip_download:
+            dl_result = DownloadManager(config).download_file(source)
+            if not dl_result.success:
+                self.stdout.write(
+                    self.style.WARNING(
+                        f"  Jur/exempt download skipped (not available): {dl_result.error}"
+                    )
+                )
+                return
+
+        if not archive_path.exists():
+            self.stdout.write(
+                self.style.WARNING("  Real_jur_exempt.zip not found — skipping exemptions.")
+            )
+            return
+
+        if not skip_extract:
+            ex_result = ExtractManager(config).extract_archive(source, archive_path)
+            if not ex_result.success:
+                self.stdout.write(
+                    self.style.WARNING(f"  Jur/exempt extraction failed: {ex_result.error}")
+                )
+                return
+
+        extract_path = config.extract_dir / "Real_jur_exempt"
+        txt_files = sorted(extract_path.rglob("*.txt")) if extract_path.exists() else []
+        if not txt_files:
+            self.stdout.write(
+                self.style.WARNING("  No .txt files found in Real_jur_exempt extract — skipping.")
+            )
+            return
+
+        jur_file = txt_files[0]
+        self.stdout.write(f"  Importing {jur_file.name} for tax year {config.data_year}...")
+        call_command(
+            "import_jur_exemptions",
+            path=str(jur_file),
+            tax_year=config.data_year,
+            stdout=self.stdout,
         )
