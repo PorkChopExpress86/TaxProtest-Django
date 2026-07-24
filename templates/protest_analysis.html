@@ -231,6 +231,80 @@
     </div>
     {% endif %}
 
+    {% if cap_gap and cap_gap.scenario != 'missing' %}
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden mb-6">
+      <div class="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+        <h2 class="text-sm font-bold text-gray-900 uppercase tracking-wider">Cap Gap — Will a Protest Lower This Year's Bill?</h2>
+        <span class="text-xs px-2 py-1 rounded-full {% if cap_gap.scenario == 'direct' or cap_gap.scenario == 'effective' %}bg-green-100 text-green-800{% elif cap_gap.scenario == 'blocked' %}bg-amber-100 text-amber-800{% elif cap_gap.scenario == 'cosmetic' %}bg-red-100 text-red-800{% else %}bg-gray-100 text-gray-700{% endif %}">
+          {% if cap_gap.scenario == 'direct' %}Direct Savings
+          {% elif cap_gap.scenario == 'effective' %}Savings Despite Cap
+          {% elif cap_gap.scenario == 'blocked' %}Future Benefit Only
+          {% elif cap_gap.scenario == 'cosmetic' %}No Expected Benefit
+          {% elif cap_gap.scenario == 'already_below' %}Protest Unlikely to Help
+          {% else %}No Target Value{% endif %}
+        </span>
+      </div>
+      <div class="px-6 py-5 grid grid-cols-1 md:grid-cols-3 gap-4 border-b border-gray-100">
+        <div>
+          <p class="text-xs text-gray-500 uppercase font-medium">Market Value ({{ cap_gap.tax_year }})</p>
+          <p class="text-lg font-semibold text-gray-900">${{ cap_gap.market_value|floatformat:0|intcomma }}</p>
+        </div>
+        <div>
+          <p class="text-xs text-gray-500 uppercase font-medium">Taxable (Capped) Value</p>
+          <p class="text-lg font-semibold text-gray-900">${{ cap_gap.capped_value|floatformat:0|intcomma }}</p>
+          <p class="text-[11px] text-gray-500 mt-1">{% if cap_gap.cap_type == 'homestead' %}Homestead 10%/yr cap{% else %}Circuit-breaker 20%/yr limit{% endif %}</p>
+        </div>
+        <div>
+          <p class="text-xs text-gray-500 uppercase font-medium">Cap Gap</p>
+          <p class="text-lg font-semibold {% if cap_gap.cap_engaged %}text-amber-700{% else %}text-gray-900{% endif %}">${{ cap_gap.cap_gap|floatformat:0|intcomma }}</p>
+          {% if cap_gap.cap_engaged %}
+          <p class="text-[11px] text-gray-500 mt-1">A protest must cut market value by more than this before this year's bill changes.</p>
+          {% endif %}
+        </div>
+      </div>
+      <div class="px-6 py-4 text-sm {% if cap_gap.scenario == 'direct' or cap_gap.scenario == 'effective' %}bg-green-50 text-green-900{% elif cap_gap.scenario == 'blocked' %}bg-amber-50 text-amber-900{% elif cap_gap.scenario == 'cosmetic' %}bg-red-50 text-red-900{% else %}bg-gray-50 text-gray-700{% endif %}">
+        {% if cap_gap.scenario == 'direct' %}
+          There is no cap gap on this property — every dollar a protest removes from market value
+          lowers this year's taxable value. Winning at the comparable-based target of
+          <strong>${{ cap_gap.target_market_value|floatformat:0|intcomma }}</strong> would cut this year's taxable value by
+          <strong>${{ cap_gap.current_year_taxable_reduction|floatformat:0|intcomma }}</strong>{% if cap_gap.estimated_current_savings %}
+          — roughly <strong>${{ cap_gap.estimated_current_savings|floatformat:0|intcomma }}/year</strong> in taxes at this property's combined rate{% endif %}.
+        {% elif cap_gap.scenario == 'effective' %}
+          Even with the cap engaged, the comparable-based target of
+          <strong>${{ cap_gap.target_market_value|floatformat:0|intcomma }}</strong> sits below your capped value —
+          a successful protest would cut this year's taxable value by
+          <strong>${{ cap_gap.current_year_taxable_reduction|floatformat:0|intcomma }}</strong>{% if cap_gap.estimated_current_savings %}
+          — roughly <strong>${{ cap_gap.estimated_current_savings|floatformat:0|intcomma }}/year</strong> in taxes{% endif %}.
+        {% elif cap_gap.scenario == 'blocked' %}
+          Your cap is already doing the work this year: the comparable-based target of
+          <strong>${{ cap_gap.target_market_value|floatformat:0|intcomma }}</strong> is above your capped value, so winning
+          at that level would <strong>not</strong> change this year's bill. It would, however, hold next year's
+          cap ceiling down from <strong>${{ cap_gap.next_year_ceiling|floatformat:0|intcomma }}</strong> to the protested value —
+          about <strong>${{ cap_gap.future_year_taxable_reduction|floatformat:0|intcomma }}</strong> less taxable value next year{% if cap_gap.estimated_future_savings %}
+          (~<strong>${{ cap_gap.estimated_future_savings|floatformat:0|intcomma }}</strong> in next-year taxes){% endif %}.
+        {% elif cap_gap.scenario == 'cosmetic' %}
+          The comparable-based target of <strong>${{ cap_gap.target_market_value|floatformat:0|intcomma }}</strong> is above even
+          next year's cap ceiling (<strong>${{ cap_gap.next_year_ceiling|floatformat:0|intcomma }}</strong>) — a protest win at that
+          level would not change this year's or next year's taxable value.
+        {% elif cap_gap.scenario == 'already_below' %}
+          Comparable properties suggest a value at or above your current market value, so a market-value
+          protest is unlikely to lower your bill.
+        {% else %}
+          No comparable-based target value is available at the current similarity threshold, so only the
+          gap itself is shown. {% if cap_gap.cap_engaged %}A protest must cut market value by more than
+          <strong>${{ cap_gap.required_reduction_for_current_savings|floatformat:0|intcomma }}</strong> to lower this year's bill.{% endif %}
+        {% endif %}
+      </div>
+      {% if cap_gap.notes %}
+      <div class="px-6 py-3 border-t border-gray-100">
+        {% for note in cap_gap.notes %}
+        <p class="text-xs text-gray-500">• {{ note }}</p>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+    {% endif %}
+
     {% if tax_impact %}
     <div class="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden mb-6">
       <div class="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
@@ -242,16 +316,31 @@
       <div class="px-6 py-5 grid grid-cols-1 md:grid-cols-3 gap-4 border-b border-gray-100">
         <div>
           <p class="text-xs text-gray-500 uppercase font-medium">Current Taxes Owed</p>
+          {% if tax_impact.current_tax_owed is not None %}
           <p class="text-lg font-semibold text-gray-900">${{ tax_impact.current_tax_owed|floatformat:2|intcomma }}</p>
+          {% else %}
+          <p class="text-lg font-semibold text-gray-400">Not available</p>
+          {% endif %}
         </div>
         <div>
           <p class="text-xs text-gray-500 uppercase font-medium">Taxes at Median Assessed Value</p>
+          {% if tax_impact.median_tax_owed is not None %}
           <p class="text-lg font-semibold text-gray-900">${{ tax_impact.median_tax_owed|floatformat:2|intcomma }}</p>
+          {% else %}
+          <p class="text-lg font-semibold text-gray-400">Not available</p>
+          {% endif %}
         </div>
         <div>
           <p class="text-xs text-gray-500 uppercase font-medium">Estimated Annual Savings</p>
+          {% if tax_impact.estimated_savings is not None %}
           <p class="text-lg font-semibold text-emerald-700">${{ tax_impact.estimated_savings|floatformat:2|intcomma }}</p>
-          <p class="text-[11px] text-gray-500 mt-1">Year {{ tax_impact.tax_year|default:"-" }} • Avg rate {{ tax_impact.effective_rate|floatformat:6 }}</p>
+          {% else %}
+          <p class="text-lg font-semibold text-gray-400">Not available</p>
+          {% endif %}
+          <p class="text-[11px] text-gray-500 mt-1">
+            Year {{ tax_impact.tax_year|default:"-" }}
+            {% if tax_impact.effective_rate is not None %}• Avg rate {{ tax_impact.effective_rate|floatformat:6 }}{% endif %}
+          </p>
         </div>
       </div>
       {% if tax_impact.warnings %}
@@ -261,6 +350,7 @@
         {% endfor %}
       </div>
       {% endif %}
+      {% if tax_impact.per_unit_breakdown %}
       <div class="overflow-x-auto">
         <table class="min-w-full divide-y divide-gray-200 text-xs lg:text-sm">
           <thead class="bg-gray-50">
@@ -295,6 +385,11 @@
           </tbody>
         </table>
       </div>
+      {% else %}
+      <div class="px-6 py-5 text-sm text-gray-500">
+        No per-unit tax data is available for {{ tax_impact.tax_year|default:"this year" }} yet.
+      </div>
+      {% endif %}
     </div>
     {% endif %}
 

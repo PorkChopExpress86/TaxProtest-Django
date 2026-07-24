@@ -47,7 +47,8 @@ def _percent_change(current: Decimal | None, prior: Decimal | None) -> Decimal |
 
 
 def _has_cap_account(entry: AssessmentHistory) -> bool:
-    return bool(str(entry.cap_account or "").strip())
+    # HCAD's Cap_acct column is "Y"/"N" — a bare truthiness check would treat "N" as capped.
+    return str(entry.cap_account or "").strip().upper() in {"Y", "YES", "1", "TRUE"}
 
 
 def evaluate_cap_status(

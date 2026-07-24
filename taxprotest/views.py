@@ -17,8 +17,9 @@ from django.urls import reverse
 from .forms import ContactForm
 
 from data.assessment_history import evaluate_cap_status
+from data.cap_analysis import evaluate_cap_gap
 from data.models import AssessmentHistory, BuildingDetail, ExtraFeature, PropertyRecord
-from data.query import build_property_search_queryset
+from data.query import ADVANCED_SEARCH_FIELDS, build_property_search_queryset
 from data.similarity import find_similar_properties, format_feature_list, get_similarity_label
 from data.tax_impact import calculate_tax_impact
 
@@ -39,13 +40,20 @@ PERCENT = Decimal("0.01")
 
 
 def _has_meaningful_export_filter(params):
+    if params.get("account_number", "").strip():
+        return True
+
     zip_code = params.get("zip_code", "").strip()
     if len(zip_code) == 5 and zip_code.isdigit():
         return True
 
-    for field in ("first_name", "last_name", "address", "street_name"):
+    for field in ("owner_name", "street_address"):
         value = params.get(field, "")
         if len("".join(str(value).split())) >= EXPORT_MIN_TEXT_FILTER_LENGTH:
+            return True
+
+    for field in ADVANCED_SEARCH_FIELDS:
+        if params.get(field, "").strip():
             return True
 
     return False
@@ -119,6 +127,14 @@ def _assessment_history_rows(prop: PropertyRecord, limit: int = 5) -> list[dict[
             }
         )
     return rows
+
+
+def _combined_tax_rate(tax_impact) -> Decimal | None:
+    """Sum the known per-unit adopted rates — the total tax per dollar of taxable value."""
+    rates = [row["rate"] for row in tax_impact.per_unit_breakdown if row.get("rate") is not None]
+    if not rates:
+        return None
+    return sum(rates, Decimal("0"))
 
 
 def _score_breakdown_summary(components: list[dict[str, object]]) -> str:
@@ -288,25 +304,31 @@ def index(request):
 
     query_source = request.GET if request.method == "GET" else request.POST
 
-    first_name = query_source.get("first_name", "").strip()
-    last_name = query_source.get("last_name", "").strip()
-    address = query_source.get("address", "").strip()
-    street_name = query_source.get("street_name", "").strip()
+    account_number = query_source.get("account_number", "").strip()
+    owner_name = query_source.get("owner_name", "").strip()
+    street_address = query_source.get("street_address", "").strip()
     zip_code = query_source.get("zip_code", "").strip()
     page_number = query_source.get("page", "1")
     sort = query_source.get("sort", "zipcode")
     direction = query_source.get("dir", "asc")
 
-    filters_applied = any([first_name, last_name, address, street_name, zip_code])
+    advanced_values = {
+        field: query_source.get(field, "").strip() for field in ADVANCED_SEARCH_FIELDS
+    }
+    advanced_filters_applied = any(advanced_values.values())
+
+    filters_applied = any(
+        [account_number, owner_name, street_address, zip_code, advanced_filters_applied]
+    )
 
     params = {
-        "first_name": first_name,
-        "last_name": last_name,
-        "address": address,
-        "street_name": street_name,
+        "account_number": account_number,
+        "owner_name": owner_name,
+        "street_address": street_address,
         "zip_code": zip_code,
         "sort": sort,
         "dir": direction,
+        **advanced_values,
     }
 
     if filters_applied:
@@ -374,6 +396,7 @@ def index(request):
         "sort_query": sort_query,
         "form_values": params,
         "filters_applied": filters_applied,
+        "advanced_filters_applied": advanced_filters_applied,
         "sort": sort,
         "dir": direction,
     }
@@ -383,22 +406,21 @@ def index(request):
 
 def export_csv(request):
     """Export all search results to CSV."""
-    first_name = request.GET.get("first_name", "").strip()
-    last_name = request.GET.get("last_name", "").strip()
-    address = request.GET.get("address", "").strip()
-    street_name = request.GET.get("street_name", "").strip()
+    account_number = request.GET.get("account_number", "").strip()
+    owner_name = request.GET.get("owner_name", "").strip()
+    street_address = request.GET.get("street_address", "").strip()
     zip_code = request.GET.get("zip_code", "").strip()
     sort = request.GET.get("sort", "zipcode")
     direction = request.GET.get("dir", "asc")
 
     params = {
-        "first_name": first_name,
-        "last_name": last_name,
-        "address": address,
-        "street_name": street_name,
+        "account_number": account_number,
+        "owner_name": owner_name,
+        "street_address": street_address,
         "zip_code": zip_code,
         "sort": sort,
         "dir": direction,
+        **{field: request.GET.get(field, "").strip() for field in ADVANCED_SEARCH_FIELDS},
     }
 
     if not _has_meaningful_export_filter(params):
@@ -881,6 +903,17 @@ def protest_analysis(request, account_number):
         median_assessed_value=median_assessed_value,
     )
 
+    latest_assessment = (
+        AssessmentHistory.objects.filter(account_number=target_property.account_number)
+        .order_by("-tax_year")
+        .first()
+    )
+    cap_gap = evaluate_cap_gap(
+        latest_assessment,
+        median_assessed_value,
+        combined_rate=_combined_tax_rate(tax_impact),
+    )
+
     context = {
         "target_property": target_property,
         "target_building": target_building,
@@ -901,6 +934,7 @@ def protest_analysis(request, account_number):
         "min_score": min_score,
         "pdf_export_url": reverse("protest_analysis_pdf", args=[target_property.account_number]),
         "tax_impact": tax_impact,
+        "cap_gap": cap_gap,
     }
 
     return render(request, "protest_analysis.html", context)
@@ -1022,9 +1056,21 @@ def protest_analysis_export(request, account_number):
                 _score_breakdown_summary(result.get("score_breakdown", [])),
                 tax_impact.tax_year or "",
                 tax_impact.completeness,
-                f"{float(tax_impact.current_tax_owed):.2f}",
-                f"{float(tax_impact.median_tax_owed):.2f}",
-                f"{float(tax_impact.estimated_savings):.2f}",
+                (
+                    f"{float(tax_impact.current_tax_owed):.2f}"
+                    if tax_impact.current_tax_owed is not None
+                    else ""
+                ),
+                (
+                    f"{float(tax_impact.median_tax_owed):.2f}"
+                    if tax_impact.median_tax_owed is not None
+                    else ""
+                ),
+                (
+                    f"{float(tax_impact.estimated_savings):.2f}"
+                    if tax_impact.estimated_savings is not None
+                    else ""
+                ),
                 " | ".join(tax_impact.warnings),
             ]
         )
@@ -1156,18 +1202,62 @@ def protest_analysis_pdf(request, account_number):
         tax_year=history_rows[0]["tax_year"] if history_rows else None,
         median_assessed_value=median_assessed_value,
     )
+
+    def _fmt_money_or_na(value):
+        return f"${float(value):,.2f}" if value is not None else "Not available"
+
     lines.extend(
         [
             "",
             "Tax Impact (Estimated)",
             f"Tax Year Used: {tax_impact.tax_year or '-'} ({tax_impact.completeness})",
-            f"Current Taxes Owed: ${float(tax_impact.current_tax_owed):,.2f}",
-            f"Median-Scenario Taxes Owed: ${float(tax_impact.median_tax_owed):,.2f}",
-            f"Estimated Annual Savings: ${float(tax_impact.estimated_savings):,.2f}",
+            f"Current Taxes Owed: {_fmt_money_or_na(tax_impact.current_tax_owed)}",
+            f"Median-Scenario Taxes Owed: {_fmt_money_or_na(tax_impact.median_tax_owed)}",
+            f"Estimated Annual Savings: {_fmt_money_or_na(tax_impact.estimated_savings)}",
         ]
     )
     if tax_impact.warnings:
         lines.append(f"Warnings: {' | '.join(tax_impact.warnings)}")
+
+    latest_assessment = (
+        AssessmentHistory.objects.filter(account_number=target_property.account_number)
+        .order_by("-tax_year")
+        .first()
+    )
+    cap_gap = evaluate_cap_gap(
+        latest_assessment,
+        median_assessed_value,
+        combined_rate=_combined_tax_rate(tax_impact),
+    )
+    if cap_gap.scenario != "missing":
+        scenario_lines = {
+            "direct": "No cap gap: a reduction to the target lowers this year's taxable value.",
+            "effective": "Target is below the capped value: protest lowers this year's taxable value.",
+            "blocked": "Cap gap blocks current-year savings; win would slow next year's cap growth.",
+            "cosmetic": "Target is above next year's cap ceiling; no benefit this year or next.",
+            "already_below": "Comparables suggest a value at/above market; protest unlikely to help.",
+            "no_target": "No comparable-based target available at this threshold.",
+        }
+        lines.extend(
+            [
+                "",
+                "Cap Gap Analysis",
+                f"Market Value: {_fmt_money_or_na(cap_gap.market_value)}",
+                f"Taxable (Capped) Value: {_fmt_money_or_na(cap_gap.capped_value)}",
+                f"Cap Gap: {_fmt_money_or_na(cap_gap.cap_gap)}",
+                scenario_lines.get(cap_gap.scenario, cap_gap.scenario),
+            ]
+        )
+        if cap_gap.current_year_taxable_reduction is not None:
+            lines.append(
+                f"Current-Year Taxable Reduction at Target: "
+                f"{_fmt_money_or_na(cap_gap.current_year_taxable_reduction)}"
+            )
+        if cap_gap.future_year_taxable_reduction is not None:
+            lines.append(
+                f"Next-Year Taxable Reduction at Target: "
+                f"{_fmt_money_or_na(cap_gap.future_year_taxable_reduction)}"
+            )
 
     response = HttpResponse(_simple_pdf(lines), content_type="application/pdf")
     safe_account = account_number.replace('"', "").replace("\\", "")

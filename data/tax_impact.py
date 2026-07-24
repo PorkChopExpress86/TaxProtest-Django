@@ -8,15 +8,18 @@ from data.models import AssessmentHistory, PropertyJurisdictionExemption, TaxUni
 MONEY_QUANT = Decimal("0.01")
 ZERO = Decimal("0")
 ONE_HUNDRED = Decimal("100")
+FALLBACK_YEAR_LOOKBACK = 5
+
+NO_SCOPE_IMPACT = "This does not affect the comparable-property evidence above."
 
 
 @dataclass
 class TaxImpactResult:
     tax_year: int | None
-    current_tax_owed: Decimal
-    median_tax_owed: Decimal
-    estimated_savings: Decimal
-    effective_rate: Decimal
+    current_tax_owed: Decimal | None
+    median_tax_owed: Decimal | None
+    estimated_savings: Decimal | None
+    effective_rate: Decimal | None
     current_assessed_value: Decimal | None
     taxable_value_used: Decimal | None
     completeness: str
@@ -48,6 +51,46 @@ def _latest_assessment_year(account_number: str) -> int | None:
     return int(row) if row is not None else None
 
 
+def _has_usable_tax_data(account_number: str, year: int) -> bool:
+    """True if this year has jurisdiction/exemption rows AND at least one matching adopted rate."""
+    unit_codes = list(
+        PropertyJurisdictionExemption.objects.filter(
+            account_number=account_number, tax_year=year
+        ).values_list("tax_unit_code", flat=True)
+    )
+    if not unit_codes:
+        return False
+    return TaxUnitRate.objects.filter(tax_year=year, tax_unit_code__in=unit_codes).exists()
+
+
+def _resolve_usable_tax_year(account_number: str, preferred_year: int) -> tuple[int, bool]:
+    """Return (year_to_use, used_fallback).
+
+    County appraisal rolls certify for the new tax year before taxing units formally
+    adopt rates (typically Sept/Oct), so the newest assessment year can briefly have
+    jurisdiction/exemption rows imported but no matching rate data yet. Fall back to the
+    most recent earlier year that has both, rather than reporting the whole feature missing.
+    """
+    if _has_usable_tax_data(account_number, preferred_year):
+        return preferred_year, False
+
+    candidate_years = (
+        PropertyJurisdictionExemption.objects.filter(
+            account_number=account_number,
+            tax_year__lt=preferred_year,
+            tax_year__gte=preferred_year - FALLBACK_YEAR_LOOKBACK,
+        )
+        .order_by("-tax_year")
+        .values_list("tax_year", flat=True)
+        .distinct()
+    )
+    for year in candidate_years:
+        if _has_usable_tax_data(account_number, int(year)):
+            return int(year), True
+
+    return preferred_year, False
+
+
 def _dedupe_units(rows: list[PropertyJurisdictionExemption]) -> list[PropertyJurisdictionExemption]:
     seen: set[str] = set()
     out: list[PropertyJurisdictionExemption] = []
@@ -67,7 +110,12 @@ def calculate_tax_impact(
 ) -> TaxImpactResult:
     """Compute current-vs-median annual tax impact from imported HCAD tax data."""
 
-    resolved_year = tax_year or _latest_assessment_year(account_number)
+    requested_year = tax_year or _latest_assessment_year(account_number)
+    resolved_year, used_fallback_year = (
+        (None, False)
+        if requested_year is None
+        else _resolve_usable_tax_year(account_number, requested_year)
+    )
     warnings: list[str] = []
     breakdown: list[dict[str, object]] = []
     exemptions_summary: list[dict[str, object]] = []
@@ -75,21 +123,27 @@ def calculate_tax_impact(
     if resolved_year is None:
         return TaxImpactResult(
             tax_year=None,
-            current_tax_owed=ZERO,
-            median_tax_owed=ZERO,
-            estimated_savings=ZERO,
-            effective_rate=ZERO,
+            current_tax_owed=None,
+            median_tax_owed=None,
+            estimated_savings=None,
+            effective_rate=None,
             current_assessed_value=None,
             taxable_value_used=None,
             completeness="missing",
-            warnings=["No assessment year is available for this account."],
+            warnings=[
+                f"We don't have an assessment year on file for this account yet. {NO_SCOPE_IMPACT}"
+            ],
             exemptions_summary=[],
             per_unit_breakdown=[],
         )
 
     median_value = _to_decimal(median_assessed_value)
-    if median_value is None or median_value < ZERO:
-        warnings.append("Median assessed value is missing; median tax scenario was not computed.")
+    median_available = median_value is not None and median_value >= ZERO
+    if not median_available:
+        median_value = None
+        warnings.append(
+            f"We don't have a comparable median value to estimate savings against yet. {NO_SCOPE_IMPACT}"
+        )
 
     unit_rows = list(
         PropertyJurisdictionExemption.objects.filter(
@@ -101,14 +155,17 @@ def calculate_tax_impact(
     if not unit_rows:
         return TaxImpactResult(
             tax_year=resolved_year,
-            current_tax_owed=ZERO,
-            median_tax_owed=ZERO,
-            estimated_savings=ZERO,
-            effective_rate=ZERO,
+            current_tax_owed=None,
+            median_tax_owed=None,
+            estimated_savings=None,
+            effective_rate=None,
             current_assessed_value=None,
             taxable_value_used=None,
             completeness="missing",
-            warnings=["No jurisdiction/exemption rows were found for this account and year."],
+            warnings=[
+                "We don't yet have county tax rate/exemption data for this account and year, "
+                f"so we can't estimate your tax bill in dollars right now. {NO_SCOPE_IMPACT}"
+            ],
             exemptions_summary=[],
             per_unit_breakdown=[],
         )
@@ -131,7 +188,9 @@ def calculate_tax_impact(
     unit_bases = _dedupe_units(unit_rows)
 
     if len(rate_map) < len(unit_bases):
-        warnings.append("One or more jurisdiction rates are missing for this tax year.")
+        warnings.append(
+            f"County tax rates aren't published yet for one or more taxing units this year. {NO_SCOPE_IMPACT}"
+        )
 
     known_units = 0
     missing_units = 0
@@ -170,7 +229,9 @@ def calculate_tax_impact(
 
         if taxable_base is None:
             missing_units += 1
-            warnings.append("One or more units are missing current taxable/assessed value.")
+            warnings.append(
+                f"We're missing the taxable value for one or more taxing units. {NO_SCOPE_IMPACT}"
+            )
             breakdown.append(
                 {
                     "tax_unit_code": unit.tax_unit_code,
@@ -236,9 +297,11 @@ def calculate_tax_impact(
                 "tax_unit_name": unit.tax_unit_name,
                 "rate": rate,
                 "current_taxable_value": _money(current_taxable),
-                "median_taxable_value": _money(median_taxable) if median_taxable is not None else None,
+                "median_taxable_value": (
+                    _money(median_taxable) if median_taxable is not None else None
+                ),
                 "current_tax_amount": _money(current_tax),
-                "median_tax_amount": _money(median_tax),
+                "median_tax_amount": _money(median_tax) if median_taxable is not None else None,
                 "warning": None,
             }
         )
@@ -246,20 +309,35 @@ def calculate_tax_impact(
 
     if known_units == 0:
         completeness = "missing"
-    elif missing_units > 0 or len(rate_map) < len(unit_bases):
+    elif missing_units > 0 or len(rate_map) < len(unit_bases) or not median_available:
         completeness = "partial"
     else:
         completeness = "complete"
 
-    if completeness != "complete":
-        warnings.append("Tax impact is partial because one or more required inputs were missing.")
+    if used_fallback_year:
+        warnings.insert(
+            0,
+            f"County tax rate/exemption data for {requested_year} isn't published yet, so this "
+            f"estimate uses the most recent available year ({resolved_year}) instead. {NO_SCOPE_IMPACT}",
+        )
 
-    current_total = _money(current_total)
-    median_total = _money(median_total)
-    savings = _money(max(ZERO, current_total - median_total))
-    effective_rate = (total_rate / Decimal(max(known_units, 1))).quantize(
-        Decimal("0.000001"), rounding=ROUND_HALF_UP
-    )
+    if known_units == 0:
+        # No rate matched any unit: neither current nor median totals were actually computed.
+        current_total = None
+        median_total = None
+        savings = None
+        effective_rate = None
+    else:
+        current_total = _money(current_total)
+        effective_rate = (total_rate / Decimal(known_units)).quantize(
+            Decimal("0.000001"), rounding=ROUND_HALF_UP
+        )
+        if median_available:
+            median_total = _money(median_total)
+            savings = _money(max(ZERO, current_total - median_total))
+        else:
+            median_total = None
+            savings = None
 
     return TaxImpactResult(
         tax_year=resolved_year,

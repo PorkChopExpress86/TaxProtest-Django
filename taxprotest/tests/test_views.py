@@ -92,7 +92,7 @@ class PropertySearchViewTests(TestCase):
         self.assertIn("meaningful search criteria", response.content.decode())
 
     def test_export_csv_rejects_short_text_filters(self):
-        response = self.client.get(reverse("export_csv"), {"last_name": "Al"})
+        response = self.client.get(reverse("export_csv"), {"owner_name": "Al"})
         self.assertEqual(response.status_code, 400)
         self.assertIn("meaningful search criteria", response.content.decode())
 
@@ -828,6 +828,50 @@ class ProtestAnalysisViewTests(TestCase):
         self.assertEqual(response.context["assessment_history"], [])
         self.assertIsNone(response.context["assessment_history_chart"])
         self.assertNotContains(response, "Five-Year Assessment History")
+
+    @patch("taxprotest.views.find_similar_properties")
+    def test_cap_gap_effective_scenario_rendered(self, mock_find):
+        # Fixture: market $390k, capped $355k (cap_account=Y), comp target
+        # $160/sqft x 2000 sqft = $320k, which is below the capped value.
+        mock_find.return_value = [self._similar_result(self.comp, self.comp_building)]
+
+        response = self.client.get(reverse("protest_analysis", args=[self.target.account_number]))
+
+        self.assertEqual(response.status_code, 200)
+        cap_gap = response.context["cap_gap"]
+        self.assertEqual(cap_gap.scenario, "effective")
+        self.assertEqual(cap_gap.cap_gap, Decimal("35000.00"))
+        self.assertEqual(cap_gap.current_year_taxable_reduction, Decimal("35000.00"))
+        self.assertEqual(cap_gap.cap_type, "homestead")
+        self.assertContains(response, "Cap Gap")
+        self.assertContains(response, "Savings Despite Cap")
+
+    @patch("taxprotest.views.find_similar_properties")
+    def test_cap_gap_blocked_scenario_when_target_inside_gap(self, mock_find):
+        # Push the comp value up so the target ($185/sqft x 2000 = $370k) lands
+        # between the capped value ($355k) and market ($390k) — inside the gap,
+        # below next year's ceiling ($390,500) -> "blocked".
+        self.comp.assessed_value = 370000
+        self.comp.save()
+        mock_find.return_value = [self._similar_result(self.comp, self.comp_building)]
+
+        response = self.client.get(reverse("protest_analysis", args=[self.target.account_number]))
+
+        cap_gap = response.context["cap_gap"]
+        self.assertEqual(cap_gap.scenario, "blocked")
+        self.assertEqual(cap_gap.next_year_ceiling, Decimal("390500.00"))
+        self.assertEqual(cap_gap.future_year_taxable_reduction, Decimal("20500.00"))
+        self.assertContains(response, "Future Benefit Only")
+
+    @patch("taxprotest.views.find_similar_properties")
+    def test_cap_gap_hidden_when_no_assessment_history(self, mock_find):
+        AssessmentHistory.objects.all().delete()
+        mock_find.return_value = []
+
+        response = self.client.get(reverse("protest_analysis", args=[self.target.account_number]))
+
+        self.assertEqual(response.context["cap_gap"].scenario, "missing")
+        self.assertNotContains(response, "Cap Gap")
 
 
 class ProtestAnalysisExportTests(TestCase):

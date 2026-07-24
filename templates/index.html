@@ -45,74 +45,62 @@
                         <!-- Persist sorting across submissions -->
                         <input type="hidden" name="sort" value="{{ sort }}" />
                         <input type="hidden" name="dir" value="{{ dir }}" />
-                        
-                        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 lg:gap-6">
-                            <!-- First Name -->
+
+                        <!-- Account Number — fastest lookup -->
+                        <div>
+                            <label for="account_number" class="block text-xs lg:text-sm font-semibold text-gray-700 mb-1 lg:mb-2">
+                                Account Number
+                                <span class="ml-1 text-xs font-normal text-gray-500">(from your HCAD appraisal notice)</span>
+                            </label>
+                            <input
+                                type="text"
+                                id="account_number"
+                                name="account_number"
+                                class="w-full px-3 lg:px-4 py-2 lg:py-3 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors placeholder-gray-400 font-mono"
+                                placeholder="0650090070006"
+                                value="{{ form_values.account_number }}"
+                                autocomplete="off"
+                            >
+                        </div>
+
+                        <!-- Divider -->
+                        <div class="flex items-center gap-3 text-gray-400">
+                            <div class="flex-1 border-t border-gray-200"></div>
+                            <span class="text-xs font-medium uppercase tracking-wide">or search by address / owner</span>
+                            <div class="flex-1 border-t border-gray-200"></div>
+                        </div>
+
+                        <!-- Detail fields -->
+                        <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 lg:gap-6">
+                            <!-- Owner Name -->
                             <div>
-                                <label for="first_name" class="block text-xs lg:text-sm font-semibold text-gray-700 mb-1 lg:mb-2">
-                                    First Name
+                                <label for="owner_name" class="block text-xs lg:text-sm font-semibold text-gray-700 mb-1 lg:mb-2">
+                                    Owner Name
+                                    <span class="ml-1 text-xs font-normal text-gray-500">Last First</span>
                                 </label>
-                                <div class="relative">
-                                    <input 
-                                        type="text" 
-                                        id="first_name" 
-                                        name="first_name" 
-                                        class="w-full px-3 lg:px-4 py-2 lg:py-3 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors placeholder-gray-400"
-                                        placeholder="John"
-                                        value="{{ form_values.first_name }}"
-                                    >
-                                </div>
+                                <input
+                                    type="text"
+                                    id="owner_name"
+                                    name="owner_name"
+                                    class="w-full px-3 lg:px-4 py-2 lg:py-3 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors placeholder-gray-400"
+                                    placeholder="SMITH JOHN"
+                                    value="{{ form_values.owner_name }}"
+                                >
                             </div>
 
-                            <!-- Last Name -->
+                            <!-- Street Address -->
                             <div>
-                                <label for="last_name" class="block text-xs lg:text-sm font-semibold text-gray-700 mb-1 lg:mb-2">
-                                    Last Name
+                                <label for="street_address" class="block text-xs lg:text-sm font-semibold text-gray-700 mb-1 lg:mb-2">
+                                    Street Address
                                 </label>
-                                <div class="relative">
-                                    <input 
-                                        type="text" 
-                                        id="last_name" 
-                                        name="last_name" 
-                                        class="w-full px-3 lg:px-4 py-2 lg:py-3 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors placeholder-gray-400"
-                                        placeholder="Smith"
-                                        value="{{ form_values.last_name }}"
-                                    >
-                                </div>
-                            </div>
-
-                            <!-- Address -->
-                            <div>
-                                <label for="address" class="block text-xs lg:text-sm font-semibold text-gray-700 mb-1 lg:mb-2">
-                                    Address
-                                </label>
-                                <div class="relative">
-                                    <input 
-                                        type="text" 
-                                        id="address" 
-                                        name="address" 
-                                        class="w-full px-3 lg:px-4 py-2 lg:py-3 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors placeholder-gray-400"
-                                        placeholder="123"
-                                        value="{{ form_values.address }}"
-                                    >
-                                </div>
-                            </div>
-
-                            <!-- Street Name -->
-                            <div>
-                                <label for="street_name" class="block text-xs lg:text-sm font-semibold text-gray-700 mb-1 lg:mb-2">
-                                    Street Name
-                                </label>
-                                <div class="relative">
-                                    <input 
-                                        type="text" 
-                                        id="street_name" 
-                                        name="street_name" 
-                                        class="w-full px-3 lg:px-4 py-2 lg:py-3 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors placeholder-gray-400"
-                                        placeholder="Main Street"
-                                        value="{{ form_values.street_name }}"
-                                    >
-                                </div>
+                                <input
+                                    type="text"
+                                    id="street_address"
+                                    name="street_address"
+                                    class="w-full px-3 lg:px-4 py-2 lg:py-3 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors placeholder-gray-400"
+                                    placeholder="5712 Main St"
+                                    value="{{ form_values.street_address }}"
+                                >
                             </div>
 
                             <!-- Zip Code -->
@@ -120,20 +108,168 @@
                                 <label for="zip_code" class="block text-xs lg:text-sm font-semibold text-gray-700 mb-1 lg:mb-2">
                                     Zip Code
                                 </label>
-                                <div class="relative">
-                                    <input 
-                                        type="text" 
-                                        id="zip_code" 
-                                        name="zip_code" 
-                                        class="w-full px-3 lg:px-4 py-2 lg:py-3 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors placeholder-gray-400"
-                                        placeholder="77001"
-                                        maxlength="5"
-                                        pattern="[0-9]{5}"
-                                        value="{{ form_values.zip_code }}"
-                                    >
-                                </div>
+                                <input
+                                    type="text"
+                                    id="zip_code"
+                                    name="zip_code"
+                                    class="w-full px-3 lg:px-4 py-2 lg:py-3 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors placeholder-gray-400"
+                                    placeholder="77001"
+                                    maxlength="5"
+                                    pattern="[0-9]{5}"
+                                    value="{{ form_values.zip_code }}"
+                                >
                             </div>
                         </div>
+
+                        <!-- Advanced Search -->
+                        <details class="group rounded-lg border border-gray-200" {% if advanced_filters_applied %}open{% endif %}>
+                            <summary class="cursor-pointer select-none list-none [&::-webkit-details-marker]:hidden px-4 py-3 flex items-center justify-between text-sm font-semibold text-gray-700 hover:bg-gray-50 rounded-lg">
+                                <span class="flex items-center gap-2">
+                                    <svg class="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path>
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                                    </svg>
+                                    Advanced Search
+                                    <span class="text-xs font-normal text-gray-400">(price, size, beds/baths, year built)</span>
+                                </span>
+                                <svg class="w-4 h-4 text-gray-400 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                                </svg>
+                            </summary>
+                            <div class="px-4 pb-4 pt-2 border-t border-gray-100">
+                                <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 lg:gap-6">
+                                    <!-- Assessed Value Range -->
+                                    <div>
+                                        <label for="min_value" class="block text-xs lg:text-sm font-semibold text-gray-700 mb-1 lg:mb-2">
+                                            Min Value ($)
+                                        </label>
+                                        <input
+                                            type="number"
+                                            id="min_value"
+                                            name="min_value"
+                                            min="0"
+                                            step="1000"
+                                            class="w-full px-3 lg:px-4 py-2 lg:py-3 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors placeholder-gray-400"
+                                            placeholder="100000"
+                                            value="{{ form_values.min_value }}"
+                                        >
+                                    </div>
+                                    <div>
+                                        <label for="max_value" class="block text-xs lg:text-sm font-semibold text-gray-700 mb-1 lg:mb-2">
+                                            Max Value ($)
+                                        </label>
+                                        <input
+                                            type="number"
+                                            id="max_value"
+                                            name="max_value"
+                                            min="0"
+                                            step="1000"
+                                            class="w-full px-3 lg:px-4 py-2 lg:py-3 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors placeholder-gray-400"
+                                            placeholder="500000"
+                                            value="{{ form_values.max_value }}"
+                                        >
+                                    </div>
+
+                                    <!-- Living Area Range -->
+                                    <div>
+                                        <label for="min_sqft" class="block text-xs lg:text-sm font-semibold text-gray-700 mb-1 lg:mb-2">
+                                            Min Sqft
+                                        </label>
+                                        <input
+                                            type="number"
+                                            id="min_sqft"
+                                            name="min_sqft"
+                                            min="0"
+                                            step="100"
+                                            class="w-full px-3 lg:px-4 py-2 lg:py-3 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors placeholder-gray-400"
+                                            placeholder="1200"
+                                            value="{{ form_values.min_sqft }}"
+                                        >
+                                    </div>
+                                    <div>
+                                        <label for="max_sqft" class="block text-xs lg:text-sm font-semibold text-gray-700 mb-1 lg:mb-2">
+                                            Max Sqft
+                                        </label>
+                                        <input
+                                            type="number"
+                                            id="max_sqft"
+                                            name="max_sqft"
+                                            min="0"
+                                            step="100"
+                                            class="w-full px-3 lg:px-4 py-2 lg:py-3 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors placeholder-gray-400"
+                                            placeholder="4000"
+                                            value="{{ form_values.max_sqft }}"
+                                        >
+                                    </div>
+
+                                    <!-- Bed / Bath -->
+                                    <div>
+                                        <label for="min_bedrooms" class="block text-xs lg:text-sm font-semibold text-gray-700 mb-1 lg:mb-2">
+                                            Min Bedrooms
+                                        </label>
+                                        <input
+                                            type="number"
+                                            id="min_bedrooms"
+                                            name="min_bedrooms"
+                                            min="0"
+                                            step="1"
+                                            class="w-full px-3 lg:px-4 py-2 lg:py-3 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors placeholder-gray-400"
+                                            placeholder="3"
+                                            value="{{ form_values.min_bedrooms }}"
+                                        >
+                                    </div>
+                                    <div>
+                                        <label for="min_bathrooms" class="block text-xs lg:text-sm font-semibold text-gray-700 mb-1 lg:mb-2">
+                                            Min Bathrooms
+                                        </label>
+                                        <input
+                                            type="number"
+                                            id="min_bathrooms"
+                                            name="min_bathrooms"
+                                            min="0"
+                                            step="0.5"
+                                            class="w-full px-3 lg:px-4 py-2 lg:py-3 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors placeholder-gray-400"
+                                            placeholder="2"
+                                            value="{{ form_values.min_bathrooms }}"
+                                        >
+                                    </div>
+
+                                    <!-- Year Built Range -->
+                                    <div>
+                                        <label for="min_year_built" class="block text-xs lg:text-sm font-semibold text-gray-700 mb-1 lg:mb-2">
+                                            Min Year Built
+                                        </label>
+                                        <input
+                                            type="number"
+                                            id="min_year_built"
+                                            name="min_year_built"
+                                            min="1800"
+                                            max="2100"
+                                            step="1"
+                                            class="w-full px-3 lg:px-4 py-2 lg:py-3 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors placeholder-gray-400"
+                                            placeholder="1990"
+                                            value="{{ form_values.min_year_built }}"
+                                        >
+                                    </div>
+                                    <div>
+                                        <label for="max_year_built" class="block text-xs lg:text-sm font-semibold text-gray-700 mb-1 lg:mb-2">
+                                            Max Year Built
+                                        </label>
+                                        <input
+                                            type="number"
+                                            id="max_year_built"
+                                            name="max_year_built"
+                                            min="1800"
+                                            max="2100"
+                                            step="1"
+                                            class="w-full px-3 lg:px-4 py-2 lg:py-3 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors placeholder-gray-400"
+                                            placeholder="2020"
+                                            value="{{ form_values.max_year_built }}"
+                                        >
+                                    </div>
+                                </div>
+                            </div>
+                        </details>
 
                         <!-- Info Message -->
                         <div class="bg-blue-50 border border-blue-200 rounded-lg p-4">
@@ -145,17 +281,17 @@
                                 </div>
                                 <div class="ml-3">
                                     <p class="text-sm text-blue-700">
-                                        <strong>Search tip:</strong> Fill in at least one field to search for property information. You can search by owner name, address details, or zip code.
+                                        <strong>Tip:</strong> Account number is the fastest lookup. For address searches, you can type a house number ("5712"), a street name ("Main St"), or both ("5712 Main St"). Combine with Zip to narrow results. Owner name is stored as <em>Last First</em> (e.g., SMITH JOHN).
                                     </p>
                                 </div>
                             </div>
                         </div>
 
-                        <!-- Submit Button -->
-                        <div class="pt-4">
-                            <button 
-                                type="submit" 
-                                class="w-full bg-gradient-to-r from-blue-500 to-indigo-600 text-white font-semibold py-4 px-6 rounded-lg hover:from-blue-600 hover:to-indigo-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transform transition-all duration-200 hover:scale-105 shadow-lg"
+                        <!-- Submit + Clear -->
+                        <div class="flex items-center gap-4 pt-4">
+                            <button
+                                type="submit"
+                                class="flex-1 bg-gradient-to-r from-blue-500 to-indigo-600 text-white font-semibold py-4 px-6 rounded-lg hover:from-blue-600 hover:to-indigo-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transform transition-all duration-200 hover:scale-105 shadow-lg"
                             >
                                 <span class="flex items-center justify-center">
                                     <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -164,6 +300,12 @@
                                     Search Properties
                                 </span>
                             </button>
+                            {% if filters_applied %}
+                            <a href="/"
+                               class="px-5 py-4 rounded-lg border border-gray-300 text-sm font-medium text-gray-600 hover:bg-gray-100 transition-colors whitespace-nowrap">
+                                Clear
+                            </a>
+                            {% endif %}
                         </div>
                     </form>
                 </div>
