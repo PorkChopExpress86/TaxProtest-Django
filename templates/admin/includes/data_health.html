@@ -1,0 +1,63 @@
+{% load i18n %}
+<div class="module etl-dashboard-module">
+    <table>
+        <caption>{% trans "Data Health" %}</caption>
+        <tbody>
+            <tr>
+                <th scope="row">Tax rates ({{ current_year }})</th>
+                <td>
+                    {% if tax_unit_rate_count %}
+                    <span class="etl-badge etl-badge-success">{{ tax_unit_rate_count }} row{{ tax_unit_rate_count|pluralize }}</span>
+                    {% else %}
+                    <span class="etl-badge etl-badge-failure">0 rows</span>
+                    &nbsp;Run <code>import_tax_unit_rates</code> &mdash; tax impact reports degrade without this.
+                    {% endif %}
+                </td>
+            </tr>
+            <tr>
+                <th scope="row">Jurisdiction/exemptions ({{ current_year }})</th>
+                <td>
+                    {% if jurisdiction_exemption_count %}
+                    <span class="etl-badge etl-badge-success">{{ jurisdiction_exemption_count }} row{{ jurisdiction_exemption_count|pluralize }}</span>
+                    {% else %}
+                    <span class="etl-badge etl-badge-failure">0 rows</span>
+                    &nbsp;Run <code>import_jur_exemptions</code> &mdash; tax impact reports degrade without this.
+                    {% endif %}
+                </td>
+            </tr>
+            <tr>
+                <th scope="row">Residential rows not data-ready</th>
+                <td>
+                    {% if not_ready_residential_count %}
+                    <span class="etl-badge etl-badge-pending">{{ not_ready_residential_count }}</span>
+                    {% else %}
+                    <span class="etl-badge etl-badge-success">0 &mdash; all ready</span>
+                    {% endif %}
+                </td>
+            </tr>
+            <tr>
+                <th scope="row">Latest assessment history year</th>
+                <td>
+                    {% if latest_assessment_history_year %}
+                    <span class="etl-badge etl-badge-success">{{ latest_assessment_history_year }}</span>
+                    {% else %}
+                    <span class="etl-badge etl-badge-failure">None imported</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% for download in downloads %}
+            <tr>
+                <th scope="row">{{ download.filename }}</th>
+                <td>
+                    {% if download.extracted %}
+                    <span class="etl-badge etl-badge-success">Extracted</span>
+                    {% else %}
+                    <span class="etl-badge etl-badge-pending">Downloaded, not extracted</span>
+                    {% endif %}
+                    &nbsp;{{ download.downloaded_at }}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>

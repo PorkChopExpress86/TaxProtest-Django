@@ -11,6 +11,16 @@
 
 {% block content %}
 <div id="content-main">
+    {% if current_run %}
+    <div class="module aligned">
+        <p class="help">
+            <span class="etl-badge etl-badge-progress">Running</span>
+            An ETL pipeline run (scope: {{ current_run.scope }}) is currently in progress
+            &mdash; new runs will be rejected until it finishes.
+        </p>
+    </div>
+    {% endif %}
+
     <div class="module aligned">
         <h1>Re-download and run ETL pipeline</h1>
         <p>
@@ -94,7 +104,7 @@
                 </tr>
                 <tr>
                     <th scope="row">State</th>
-                    <td><strong id="etl-task-state">Loading&hellip;</strong></td>
+                    <td><span id="etl-task-state" class="etl-badge etl-badge-unknown">Loading&hellip;</span></td>
                 </tr>
                 <tr>
                     <th scope="row">Step</th>
@@ -102,11 +112,11 @@
                 </tr>
                 <tr id="etl-task-error-row" style="display:none;">
                     <th scope="row">Error</th>
-                    <td><span id="etl-task-error" style="color:var(--error-fg,#ba2121);"></span></td>
+                    <td><span id="etl-task-error" class="etl-error-text"></span></td>
                 </tr>
                 <tr id="etl-task-result-row" style="display:none;">
                     <th scope="row">Result</th>
-                    <td><pre id="etl-task-result" style="margin:0;white-space:pre-wrap;"></pre></td>
+                    <td><pre id="etl-task-result" class="etl-result-pre"></pre></td>
                 </tr>
             </tbody>
         </table>
@@ -124,7 +134,21 @@
         var resultRow = document.getElementById("etl-task-result-row");
         var resultEl = document.getElementById("etl-task-result");
         var terminalStates = {"SUCCESS": true, "FAILURE": true, "REVOKED": true};
+        var badgeClasses = {
+            "PENDING": "etl-badge-pending",
+            "STARTED": "etl-badge-progress",
+            "PROGRESS": "etl-badge-progress",
+            "RETRY": "etl-badge-progress",
+            "SUCCESS": "etl-badge-success",
+            "FAILURE": "etl-badge-failure",
+            "REVOKED": "etl-badge-failure"
+        };
         var pollInterval = null;
+
+        function setState(state, text) {
+            stateEl.textContent = text;
+            stateEl.className = "etl-badge " + (badgeClasses[state] || "etl-badge-unknown");
+        }
         // Track when PENDING state began so expiry is based on elapsed wall time,
         // not tick count (which resets on transient non-PENDING responses).
         var pendingStartTime = null;
@@ -142,7 +166,7 @@
                     if (state === "PENDING") {
                         if (!pendingStartTime) { pendingStartTime = Date.now(); }
                         if (Date.now() - pendingStartTime >= maxPendingMs) {
-                            stateEl.textContent = "PENDING (task may have expired or not yet started)";
+                            setState(state, "PENDING (task may have expired or not yet started)");
                             clearInterval(pollInterval);
                             return;
                         }
@@ -150,7 +174,7 @@
                         pendingStartTime = null;
                     }
 
-                    stateEl.textContent = state;
+                    setState(state, state);
                     stepEl.textContent = data.step || "";
 
                     if (data.error) {
@@ -168,7 +192,7 @@
                     }
                 })
                 .catch(function () {
-                    stateEl.textContent = "Error fetching status";
+                    setState("UNKNOWN", "Error fetching status");
                 });
         }
 

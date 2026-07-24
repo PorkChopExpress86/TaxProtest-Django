@@ -260,6 +260,7 @@ def _run_authoritative_pipeline(
         scope=scope,
         strict=strict,
         validate_contract=not config.dry_run,
+        task_id=task_instance.request.id if task_instance is not None else None,
     )
 
     result_dict = result.to_dict()

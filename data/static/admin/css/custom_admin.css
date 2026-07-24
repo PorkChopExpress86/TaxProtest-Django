@@ -1,0 +1,92 @@
+/*
+Home Values admin theme.
+
+Mirrors django.contrib.admin's own three selector groups (light/:root, prefers-color-scheme
+dark, and explicit data-theme="dark") from base.css/dark_mode.css, at matching specificity for
+each. Loaded after base.css/dark_mode.css via templates/admin/base_site.html, so equal-specificity
+ties resolve to this file; the explicit-dark-attribute rule wins on specificity regardless of
+load order (0,1,1 beats the bare :root selector's 0,1,0 used inside the OS-preference media query).
+*/
+html[data-theme="light"],
+:root {
+    --primary: #2563eb;
+    --secondary: #1e40af;
+    --accent: #60a5fa;
+    --header-branding-color: #ffffff;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --primary: #3b82f6;
+        --secondary: #1e3a8a;
+        --accent: #60a5fa;
+        --header-branding-color: #ffffff;
+    }
+}
+
+html[data-theme="dark"] {
+    --primary: #3b82f6;
+    --secondary: #1e3a8a;
+    --accent: #60a5fa;
+    --header-branding-color: #ffffff;
+}
+
+/* ETL dashboard module on the admin index page */
+.etl-dashboard-module {
+    margin-top: 1.5em;
+}
+
+.etl-dashboard-module th {
+    width: 180px;
+}
+
+.etl-inline-form {
+    display: inline;
+    margin: 0;
+}
+
+/* Task status badges (data/admin.py etl_pipeline_view + the polling JS in
+   templates/admin/data/downloadrecord/etl_pipeline.html) */
+.etl-badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+}
+
+.etl-badge-pending {
+    background: var(--message-warning-bg);
+    color: var(--body-loud-color);
+}
+
+.etl-badge-progress {
+    background: var(--primary);
+    color: var(--primary-fg);
+}
+
+.etl-badge-success {
+    background: var(--message-success-bg);
+    color: var(--body-loud-color);
+}
+
+.etl-badge-failure {
+    background: var(--message-error-bg);
+    color: var(--error-fg);
+}
+
+.etl-badge-unknown {
+    background: var(--darkened-bg);
+    color: var(--body-quiet-color);
+}
+
+.etl-error-text {
+    color: var(--error-fg);
+}
+
+.etl-result-pre {
+    margin: 0;
+    white-space: pre-wrap;
+}

@@ -1,22 +1,24 @@
 {% extends "admin/change_list.html" %}
 
 {% block object-tools-items %}
+{% if request.user.is_superuser %}
 <li>
     <a href="{% url 'admin:data_downloadrecord_etl_pipeline' %}" class="addlink">
         Re-download &amp; run ETL pipeline
     </a>
 </li>
 <li>
-    <form method="post" action="{% url 'admin:data_downloadrecord_trigger_gis_import' %}" style="display:inline;margin:0;">
+    <form method="post" action="{% url 'admin:data_downloadrecord_trigger_gis_import' %}" class="etl-inline-form">
         {% csrf_token %}
         <button type="submit" class="button">Trigger GIS import</button>
     </form>
 </li>
 <li>
-    <form method="post" action="{% url 'admin:data_downloadrecord_trigger_building_import' %}" style="display:inline;margin:0;">
+    <form method="post" action="{% url 'admin:data_downloadrecord_trigger_building_import' %}" class="etl-inline-form">
         {% csrf_token %}
         <button type="submit" class="button">Trigger building import</button>
     </form>
 </li>
+{% endif %}
 {{ block.super }}
 {% endblock %}

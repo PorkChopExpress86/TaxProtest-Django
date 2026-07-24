@@ -4,17 +4,31 @@ from typing import Any, cast
 
 from django import forms
 from django.contrib import admin, messages
+from django.core.exceptions import PermissionDenied
 from django.http import HttpRequest, HttpResponse, HttpResponseRedirect, JsonResponse
 from django.template.response import TemplateResponse
 from django.urls import path, reverse
 from django.utils import timezone
 
-from .models import BuildingDetail, DownloadRecord, ExtraFeature, PropertyRecord
+from .etl_pipeline import lock as pipeline_lock
+from .models import (
+    AssessmentHistory,
+    BuildingDetail,
+    DownloadRecord,
+    ExtraFeature,
+    PropertyJurisdictionExemption,
+    PropertyRecord,
+    TaxUnitRate,
+)
 from .tasks_new import (
     download_and_import_building_data,
     download_and_import_gis_data,
     run_etl_pipeline,
 )
+
+admin.site.site_header = "Home Values Admin"
+admin.site.site_title = "Home Values Admin"
+admin.site.index_title = "ETL & Data Administration"
 
 
 class ETLPipelineAdminForm(forms.Form):
@@ -45,6 +59,9 @@ class ETLPipelineAdminForm(forms.Form):
 @admin.register(DownloadRecord)
 class DownloadRecordAdmin(admin.ModelAdmin):
     list_display = ("filename", "url", "downloaded_at", "extracted")
+    list_filter = ("extracted",)
+    search_fields = ("filename", "url")
+    ordering = ("-downloaded_at",)
     readonly_fields = ("downloaded_at",)
     change_list_template = "admin/data/downloadrecord/change_list.html"
 
@@ -86,9 +103,22 @@ class DownloadRecordAdmin(admin.ModelAdmin):
         duration_estimate: str,
     ) -> HttpResponse:
         """Queue an import Celery task and redirect back to the changelist."""
+        if not request.user.is_superuser:
+            raise PermissionDenied("Only superusers may trigger ETL pipeline runs.")
+
         changelist_url = reverse("admin:data_downloadrecord_changelist")
         if request.method != "POST":
             return HttpResponseRedirect(changelist_url)
+
+        running = pipeline_lock.current_run()
+        if running:
+            messages.warning(
+                request,
+                f"An ETL pipeline run (scope={running['scope']}) is already in progress; "
+                "please wait for it to finish before starting another.",
+            )
+            return HttpResponseRedirect(changelist_url)
+
         task = cast(Any, task_func).delay()
         request.session["etl_last_task_id"] = task.id
         request.session["etl_last_task_type"] = task_type
@@ -110,6 +140,9 @@ class DownloadRecordAdmin(admin.ModelAdmin):
 
     def task_status_view(self, request: HttpRequest, task_id: str) -> JsonResponse:
         """Return JSON Celery task state for frontend polling."""
+        if not request.user.is_superuser:
+            raise PermissionDenied("Only superusers may view ETL task status.")
+
         from celery.result import AsyncResult
 
         result = AsyncResult(task_id)
@@ -124,12 +157,24 @@ class DownloadRecordAdmin(admin.ModelAdmin):
 
     def etl_pipeline_view(self, request: HttpRequest) -> HttpResponse:
         """Admin-only page to queue a full ETL pipeline run."""
+        if not request.user.is_superuser:
+            raise PermissionDenied("Only superusers may trigger or view ETL pipeline runs.")
+
         pipeline_url = reverse("admin:data_downloadrecord_etl_pipeline")
         changelist_url = reverse("admin:data_downloadrecord_changelist")
 
         if request.method == "POST":
             form = ETLPipelineAdminForm(request.POST)
             if form.is_valid():
+                running = pipeline_lock.current_run()
+                if running:
+                    messages.warning(
+                        request,
+                        f"An ETL pipeline run (scope={running['scope']}) is already in progress; "
+                        "please wait for it to finish before starting another.",
+                    )
+                    return HttpResponseRedirect(changelist_url)
+
                 data_year = form.cleaned_data.get("data_year") or None
                 skip_download = form.cleaned_data.get("skip_download", False)
                 skip_extract = form.cleaned_data.get("skip_extract", False)
@@ -167,6 +212,7 @@ class DownloadRecordAdmin(admin.ModelAdmin):
             "last_task_id": request.session.get("etl_last_task_id"),
             "last_task_type": request.session.get("etl_last_task_type"),
             "task_status_url_template": task_status_url_template,
+            "current_run": pipeline_lock.current_run(),
         }
         return TemplateResponse(
             request,
@@ -177,9 +223,27 @@ class DownloadRecordAdmin(admin.ModelAdmin):
 
 @admin.register(PropertyRecord)
 class PropertyRecordAdmin(admin.ModelAdmin):
-    list_display = ("address", "zipcode", "value", "updated_at")
-    search_fields = ("address", "zipcode", "account_number")
-    list_filter = ("city", "zipcode")
+    list_display = (
+        "account_number",
+        "address",
+        "city",
+        "zipcode",
+        "value",
+        "is_residential",
+        "is_data_ready",
+        "updated_at",
+    )
+    # address/zipcode/owner_name use plain icontains: they're pg_trgm GIN-indexed
+    # (see migration 0011_propertyrecord_trigram_search_indexes), so an unanchored
+    # search is cheap and mid-string matches (e.g. "Main St") stay searchable.
+    # account_number has no trigram index, only a B-tree one, which an unanchored
+    # LIKE '%...%' can't use — anchor it like AssessmentHistoryAdmin does below.
+    search_fields = ("address", "zipcode", "^account_number", "owner_name")
+    list_filter = ("is_residential", "is_data_ready", "state_class", "city", "zipcode")
+    readonly_fields = ("created_at", "updated_at")
+    date_hierarchy = "updated_at"
+    # ~1.6M rows (see docs/guides/DATABASE.md) — skip the COUNT(*) query for pagination.
+    show_full_result_count = False
 
 
 @admin.register(BuildingDetail)
@@ -214,6 +278,7 @@ class BuildingDetailAdmin(admin.ModelAdmin):
     )
     date_hierarchy = "import_date"
     list_select_related = ("property",)
+    show_full_result_count = False
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
@@ -337,6 +402,7 @@ class ExtraFeatureAdmin(admin.ModelAdmin):
     )
     date_hierarchy = "import_date"
     list_select_related = ("property",)
+    show_full_result_count = False
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
@@ -400,3 +466,82 @@ class ExtraFeatureAdmin(admin.ModelAdmin):
             },
         ),
     )
+
+
+class ReadOnlyImportedDataAdminMixin:
+    """Blocks add/change/delete through the admin UI.
+
+    These two models are only ever populated by `import_tax_unit_rates` / `import_jur_exemptions`
+    and feed directly into ARB hearing evidence numbers — a hand-edit or delete through the admin
+    would silently diverge from the source TSV with no audit trail. Corrections must go through
+    re-running the import command, not admin editing.
+    """
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(AssessmentHistory)
+class AssessmentHistoryAdmin(ReadOnlyImportedDataAdminMixin, admin.ModelAdmin):
+    """Read-only visibility into per-year assessed/appraised/market value history — this is
+    the genuine history of record (BuildingDetail/ExtraFeature are snapshot-only and get
+    truncated/reloaded on every ETL run). Populated only by `import_assessment_history`;
+    corrections must go through re-running that command, not admin editing."""
+
+    list_display = (
+        "account_number",
+        "tax_year",
+        "assessed_value",
+        "appraised_value",
+        "market_value",
+        "cap_account",
+        "updated_at",
+    )
+    list_filter = ("tax_year",)
+    # "^" (startswith) avoids an icontains full-table scan on this multi-million-row history table.
+    search_fields = ("^account_number", "^cap_account")
+    ordering = ("-tax_year", "account_number")
+    show_full_result_count = False
+
+
+@admin.register(TaxUnitRate)
+class TaxUnitRateAdmin(ReadOnlyImportedDataAdminMixin, admin.ModelAdmin):
+    """Read-only visibility into adopted tax rates — there is no automated source for this
+    data (HCAD doesn't publish it), so an operator needs to be able to see at a glance which
+    tax years have rates on file before trusting a protest report's tax-impact numbers."""
+
+    list_display = (
+        "tax_unit_code",
+        "tax_unit_name",
+        "tax_year",
+        "adopted_rate",
+        "source",
+        "updated_at",
+    )
+    list_filter = ("tax_year",)
+    search_fields = ("tax_unit_code", "tax_unit_name")
+
+
+@admin.register(PropertyJurisdictionExemption)
+class PropertyJurisdictionExemptionAdmin(ReadOnlyImportedDataAdminMixin, admin.ModelAdmin):
+    """Read-only visibility into imported jurisdiction/exemption rows, for the same reason
+    as TaxUnitRateAdmin — this table is only refreshed on a manual/best-effort basis."""
+
+    list_display = (
+        "account_number",
+        "tax_year",
+        "tax_unit_code",
+        "exemption_code",
+        "taxable_value",
+        "source",
+        "updated_at",
+    )
+    list_filter = ("tax_year", "source")
+    search_fields = ("account_number", "tax_unit_code")
+    show_full_result_count = False

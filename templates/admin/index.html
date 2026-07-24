@@ -1,9 +1,12 @@
 {% extends "admin/index.html" %}
 {% load i18n %}
+{% load admin_extras %}
 
 {% block content %}
 {{ block.super }}
-<div class="module" style="margin-top:1.5em;">
+{% data_health_summary %}
+{% if request.user.is_superuser %}
+<div class="module etl-dashboard-module">
     <table>
         <caption>
             <a href="{% url 'admin:data_downloadrecord_etl_pipeline' %}" class="section">
@@ -12,7 +15,7 @@
         </caption>
         <tbody>
             <tr>
-                <th scope="row" style="width:180px;">
+                <th scope="row">
                     <a href="{% url 'admin:data_downloadrecord_etl_pipeline' %}">Full ETL Pipeline</a>
                 </th>
                 <td>Re-download, extract, and load all HCAD data sources for a given year</td>
@@ -20,7 +23,7 @@
             <tr>
                 <th scope="row">GIS Import</th>
                 <td>
-                    <form method="post" action="{% url 'admin:data_downloadrecord_trigger_gis_import' %}" style="display:inline;margin:0;">
+                    <form method="post" action="{% url 'admin:data_downloadrecord_trigger_gis_import' %}" class="etl-inline-form">
                         {% csrf_token %}
                         <button type="submit" class="button">Trigger now</button>
                     </form>
@@ -30,7 +33,7 @@
             <tr>
                 <th scope="row">Building Import</th>
                 <td>
-                    <form method="post" action="{% url 'admin:data_downloadrecord_trigger_building_import' %}" style="display:inline;margin:0;">
+                    <form method="post" action="{% url 'admin:data_downloadrecord_trigger_building_import' %}" class="etl-inline-form">
                         {% csrf_token %}
                         <button type="submit" class="button">Trigger now</button>
                     </form>
@@ -40,4 +43,5 @@
         </tbody>
     </table>
 </div>
+{% endif %}
 {% endblock %}

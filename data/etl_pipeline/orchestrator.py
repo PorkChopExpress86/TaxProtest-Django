@@ -15,6 +15,7 @@ from typing import Any
 from django.core.management import call_command
 from django.core.management.base import CommandError as DjangoCommandError
 
+from . import lock as pipeline_lock
 from .config import DataSource, DataSourceType, ETLConfig
 from .download import DownloadManager, DownloadResult
 from .extract import ExtractManager, ExtractResult
@@ -185,6 +186,7 @@ class ETLOrchestrator:
         scope: str = "full",
         strict: bool = True,
         validate_contract: bool = True,
+        task_id: str | None = None,
     ) -> PipelineResult:
         """Execute the full ETL pipeline.
 
@@ -197,9 +199,13 @@ class ETLOrchestrator:
             scope: Pipeline scope (full, building-only, gis-only, property-only)
             strict: Fail run on required gaps/errors
             validate_contract: Run post-load validate_data checks
+            task_id: Celery task id, if invoked from a task, surfaced via the pipeline lock
 
         Returns:
             PipelineResult with execution status and metrics
+
+        Raises:
+            pipeline_lock.PipelineAlreadyRunningError: another run is already in progress
         """
         if scope not in {"full", "building-only", "gis-only", "property-only"}:
             raise ValueError(f"Unsupported pipeline scope: {scope}")
@@ -226,6 +232,7 @@ class ETLOrchestrator:
             f"(year={self.config.data_year}, scope={scope}, strict={strict}, dry_run={self.config.dry_run})"
         )
 
+        pipeline_lock.acquire(scope=scope, task_id=task_id)
         try:
             # Download stage
             if not skip_download:
@@ -274,6 +281,7 @@ class ETLOrchestrator:
             self.logger.exception("Pipeline execution failed")
 
         finally:
+            pipeline_lock.release()
             self.result.completed_at = datetime.now()
             self._run_completion_callbacks(self.result)
 

@@ -337,6 +337,12 @@ class TestETLOrchestratorIntegration(TestCase):
             log_dir=Path(self.tmpdir) / "logs",
             dry_run=True,  # Don't actually modify database
         )
+        # execute() acquires/releases a real Redis-backed lock (see
+        # data/etl_pipeline/lock.py); these tests exercise pipeline logic in
+        # isolation and shouldn't depend on a reachable Redis instance.
+        lock_patcher = patch("data.etl_pipeline.orchestrator.pipeline_lock")
+        self.mock_lock = lock_patcher.start()
+        self.addCleanup(lock_patcher.stop)
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
@@ -475,6 +481,22 @@ class TestETLOrchestratorIntegration(TestCase):
             validate_contract=False,
         )
         assert result.status == PipelineStatus.FAILED
+
+    def test_lock_is_acquired_and_released_even_when_a_stage_fails(self):
+        """A failing run must still release the lock, or every later run stays blocked."""
+        orchestrator = ETLOrchestrator(self.config)
+        orchestrator.execute(
+            scope="gis-only",
+            skip_download=True,
+            skip_extract=True,
+            skip_load=False,
+            strict=True,
+            validate_contract=False,
+            task_id="task-789",
+        )
+
+        self.mock_lock.acquire.assert_called_once_with(scope="gis-only", task_id="task-789")
+        self.mock_lock.release.assert_called_once()
 
     @patch("data.etl_pipeline.orchestrator.call_command")
     @patch.object(ETLOrchestrator, "_execute_transform_load")
