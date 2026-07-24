@@ -443,6 +443,42 @@ docker compose exec worker celery -A taxprotest inspect registered
 3. Click **"Trigger Building Import"** or **"Trigger GIS Import"**
 4. Monitor in worker logs: `docker compose logs -f worker`
 
+### Annual Tax Rate / Exemption Refresh (Manual — Not Scheduled)
+
+Unlike Building and GIS data above, **`TaxUnitRate` and `PropertyJurisdictionExemption` have no
+Celery beat schedule and no admin trigger button.** The protest analysis page's "Tax Impact"
+section reports `completeness="missing"` or `"partial"` whenever these are stale or empty for
+the current tax year — this is expected, not a bug, until an operator re-imports them.
+
+**`TaxUnitRate` (adopted per-jurisdiction tax rates):**
+- Has **no automated source at all** — HCAD's bulk downloads do not include adopted rates.
+  Taxing units (county, cities, school districts, MUDs, etc.) publish their own adopted rate
+  each year, typically after formal adoption in Sept/Oct, often via the Texas Comptroller's
+  Truth-in-Taxation site or the individual taxing unit.
+- An operator must source a TSV of `tax_unit_code`, `tax_unit_name`, `adopted_rate` and run:
+  ```bash
+  docker compose run --rm taxprotest-dev python manage.py import_tax_unit_rates \
+      --path /path/to/rates.tsv --tax-year 2026
+  ```
+- Re-run this once per tax year, after rates are adopted, or whenever a correction is published.
+
+**`PropertyJurisdictionExemption` (per-account exemptions/taxable values per unit):**
+- Partially automated: `import_all_data` (i.e. `make ingest`) attempts a best-effort download of
+  `Real_jur_exempt.zip` from HCAD and imports it automatically — but this only runs when an
+  operator manually runs a full ingest, not on any recurring schedule, and fails silently
+  (logs a warning, does not fail the overall import) if HCAD hasn't published the file yet for
+  the current tax year.
+- To import it directly:
+  ```bash
+  docker compose run --rm taxprotest-dev python manage.py import_jur_exemptions \
+      --path /path/to/jur_exempt.txt --tax-year 2026
+  ```
+
+**Checking current coverage:** the `TaxUnitRate` and `PropertyJurisdictionExemption` models are
+registered in Django admin (read-only visibility) at `/admin/data/taxunitrate/` and
+`/admin/data/propertyjurisdictionexemption/` — filter by tax year there to see what's on file
+before trusting a protest report's dollar figures.
+
 ## Data Management
 
 ### Data Validation
