@@ -114,3 +114,61 @@ class FastLoaderTests(TestCase):
         self.assertEqual(b.half_baths, 1)
         self.assertTrue(b.is_active)
         self.assertIsNotNone(b.created_at)
+
+    def test_copy_load_building_details_survives_embedded_quote(self) -> None:
+        """A stray '"' in a free-text-style field must not merge/eat the next row.
+
+        Regression test: building_res.txt is raw TSV, not RFC4180 CSV. HCAD
+        appraiser notes routinely contain literal, unescaped double quotes
+        (e.g. `NC: BANNER ON FENCE "OFFICE SPACE FOR LEASE"`). Without
+        quoting=csv.QUOTE_NONE, csv.reader's default dialect treats an odd
+        quote as opening a multi-line quoted field, silently swallowing the
+        following physical line(s) into one oversized row.
+        """
+        from data.etl_pipeline.fast_loader import copy_load_building_details
+
+        prop1 = PropertyRecord.objects.create(
+            address="1 MAIN ST",
+            city="Houston",
+            zipcode="77001",
+            account_number="Q1",
+            state_class="A1",
+            is_residential=True,
+        )
+        prop2 = PropertyRecord.objects.create(
+            address="2 MAIN ST",
+            city="Houston",
+            zipcode="77001",
+            account_number="Q2",
+            state_class="A1",
+            is_residential=True,
+        )
+        account_map = {"Q1": prop1.id, "Q2": prop2.id}
+
+        class _EmptyFixtures:
+            def get_bedroom_count(self, acct, bnum):
+                return None
+
+            def get_bathroom_count(self, acct, bnum):
+                return None
+
+            def get_fixtures(self, acct, bnum):
+                return {"half_baths": None}
+
+        with TemporaryDirectory() as d:
+            path = self._write(
+                d,
+                "building_res.txt",
+                [
+                    "acct\tbld_num\timprv_type\tbldg_class\tqa_cd\tcndtn_cd\tdate_erected\theat_ar\tsty\tbed_rm\tfull_bath\thalf_bath",
+                    'Q1\t1\tA1\tR3\tA\t"G\t1995\t1800\t1\t3\t2\t0',
+                    "Q2\t1\tA1\tR3\tA\tG\t2001\t1600\t1\t3\t2\t0",
+                ],
+            )
+            result = copy_load_building_details(
+                path, account_map=account_map, fixtures_aggregator=_EmptyFixtures(), truncate=True
+            )
+
+        self.assertEqual(result["loaded"], 2)
+        self.assertEqual(BuildingDetail.objects.count(), 2)
+        self.assertTrue(BuildingDetail.objects.filter(account_number="Q2").exists())

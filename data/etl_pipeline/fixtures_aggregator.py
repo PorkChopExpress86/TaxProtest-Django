@@ -39,8 +39,11 @@ class FixturesAggregator:
         """
         logger.info(f"Loading fixtures from {file_path}")
 
-        # Use defaultdict to accumulate fixture counts
-        fixtures_data = defaultdict(lambda: {"bedrooms": 0.0, "full_baths": 0.0, "half_baths": 0.0})
+        # Use defaultdict to accumulate fixture counts. Fields start as None
+        # (no fixture row seen yet) rather than 0.0 so an explicit "units=0.00"
+        # row for a real zero-bedroom/zero-bath building stays distinguishable
+        # from "this fixture type was never recorded for this building."
+        fixtures_data = defaultdict(lambda: {"bedrooms": None, "full_baths": None, "half_baths": None})
 
         line_count = 0
         processed_count = 0
@@ -105,7 +108,7 @@ class FixturesAggregator:
             f"from {line_count:,} lines ({processed_count:,} bedroom/bathroom records)"
         )
 
-    def get_fixtures(self, account_number: str, building_number: int) -> dict[str, float]:
+    def get_fixtures(self, account_number: str, building_number: int) -> dict[str, float | None]:
         """
         Get aggregated fixtures for a specific building.
 
@@ -114,26 +117,33 @@ class FixturesAggregator:
             building_number: Building number
 
         Returns:
-            Dictionary with bedrooms, full_baths, half_baths (0.0 if not found)
+            Dictionary with bedrooms, full_baths, half_baths (None if that
+            fixture type was never recorded for this building)
         """
         key = (account_number, building_number)
-        return self.fixtures_cache.get(key, {"bedrooms": 0.0, "full_baths": 0.0, "half_baths": 0.0})
+        return self.fixtures_cache.get(key, {"bedrooms": None, "full_baths": None, "half_baths": None})
 
-    def get_bedroom_count(self, account_number: str, building_number: int) -> int:
-        """Get bedroom count for a building."""
+    def get_bedroom_count(self, account_number: str, building_number: int) -> int | None:
+        """Get bedroom count for a building, or None if no RMB fixture row exists."""
         fixtures = self.get_fixtures(account_number, building_number)
-        return int(fixtures["bedrooms"])
+        bedrooms = fixtures["bedrooms"]
+        return None if bedrooms is None else int(bedrooms)
 
-    def get_bathroom_count(self, account_number: str, building_number: int) -> float:
+    def get_bathroom_count(self, account_number: str, building_number: int) -> float | None:
         """
-        Get total bathroom count for a building.
+        Get total bathroom count for a building, or None if neither a
+        full-bath nor half-bath fixture row exists.
 
-        Total bathrooms = full_baths + (half_baths * 0.5)
+        Total bathrooms = full_baths + (half_baths * 0.5). If only one of the
+        two fixture types was recorded, the other is treated as 0 (its
+        presence would have been recorded had it existed).
         """
         fixtures = self.get_fixtures(account_number, building_number)
         full = fixtures["full_baths"]
         half = fixtures["half_baths"]
-        return full + (half * 0.5)
+        if full is None and half is None:
+            return None
+        return (full or 0) + ((half or 0) * 0.5)
 
     def clear_cache(self) -> None:
         """Clear the fixtures cache."""
@@ -145,16 +155,18 @@ class FixturesAggregator:
         if not self.fixtures_cache:
             return {"total_buildings": 0, "with_bedrooms": 0, "with_bathrooms": 0, "with_both": 0}
 
-        with_bedrooms = sum(1 for f in self.fixtures_cache.values() if f["bedrooms"] > 0)
-        with_full_baths = sum(1 for f in self.fixtures_cache.values() if f["full_baths"] > 0)
-        with_half_baths = sum(1 for f in self.fixtures_cache.values() if f["half_baths"] > 0)
+        with_bedrooms = sum(1 for f in self.fixtures_cache.values() if (f["bedrooms"] or 0) > 0)
+        with_full_baths = sum(1 for f in self.fixtures_cache.values() if (f["full_baths"] or 0) > 0)
+        with_half_baths = sum(1 for f in self.fixtures_cache.values() if (f["half_baths"] or 0) > 0)
         with_bathrooms = sum(
-            1 for f in self.fixtures_cache.values() if f["full_baths"] > 0 or f["half_baths"] > 0
+            1
+            for f in self.fixtures_cache.values()
+            if (f["full_baths"] or 0) > 0 or (f["half_baths"] or 0) > 0
         )
         with_both = sum(
             1
             for f in self.fixtures_cache.values()
-            if f["bedrooms"] > 0 and (f["full_baths"] > 0 or f["half_baths"] > 0)
+            if (f["bedrooms"] or 0) > 0 and ((f["full_baths"] or 0) > 0 or (f["half_baths"] or 0) > 0)
         )
 
         return {

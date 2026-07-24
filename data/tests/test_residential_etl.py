@@ -475,6 +475,47 @@ class ETLLoaderOptimizationTests(TestCase):
         building = BuildingDetail.objects.get(account_number="ACC1")
         self.assertEqual(building.property_id, prop.id)
 
+    def test_load_building_details_survives_embedded_quote(self) -> None:
+        """A stray '"' in a source row must not merge/eat the next row.
+
+        Regression test: building_res.txt is raw TSV, not RFC4180 CSV, and
+        HCAD appraiser notes routinely contain literal, unescaped double
+        quotes. Without quoting=csv.QUOTE_NONE on open_reader()'s
+        csv.DictReader, the default dialect treats an odd quote as opening a
+        multi-line quoted field, silently swallowing the next physical
+        line(s) into one oversized row.
+        """
+        from data.etl import load_building_details
+
+        PropertyRecord.objects.create(
+            address="1 MAIN ST",
+            city="Houston",
+            zipcode="77001",
+            account_number="Q1",
+            state_class="A1",
+            is_residential=True,
+        )
+        PropertyRecord.objects.create(
+            address="2 MAIN ST",
+            city="Houston",
+            zipcode="77001",
+            account_number="Q2",
+            state_class="A1",
+            is_residential=True,
+        )
+        path = self._create_temp_file(
+            "acct\tbld_num\timprv_type\tqa_cd\tcndtn_cd\tdate_erected\theat_ar",
+            [
+                'Q1\t1\tA1\tC\t"AV\t2001\t1500',
+                "Q2\t1\tA1\tC\tAV\t2002\t1300",
+            ],
+        )
+
+        result = load_building_details(path, chunk_size=50, import_batch_id="b1q")
+
+        self.assertEqual(result["imported"], 2)
+        self.assertTrue(BuildingDetail.objects.filter(account_number="Q2").exists())
+
     def test_load_extra_features_uses_cached_property_map(self) -> None:
         from data.etl import load_extra_features
 

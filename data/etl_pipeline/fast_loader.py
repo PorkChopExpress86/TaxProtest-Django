@@ -57,9 +57,13 @@ def _resolve_indices(header: list[str], source_names: dict[str, list[str]]) -> d
 def _open_text(filepath: Path) -> tuple[csv.reader, Any]:
     """Open a HCAD data file as a tab-delimited positional csv.reader."""
     # HCAD files are latin-1/tab-delimited; errors="ignore" matches the
-    # generic transformer's tolerance for stray bytes.
+    # generic transformer's tolerance for stray bytes. quoting=QUOTE_NONE is
+    # required: these are raw TSV, not RFC4180 CSV, and free-text fields
+    # (e.g. appraiser notes) contain literal unescaped '"' characters that
+    # the default dialect would otherwise treat as field-quote delimiters,
+    # silently merging subsequent physical lines into one oversized row.
     fh = open(filepath, encoding="latin-1", errors="ignore", newline="")
-    reader = csv.reader(fh, delimiter="\t")
+    reader = csv.reader(fh, delimiter="\t", quoting=csv.QUOTE_NONE)
     return reader, fh
 
 
@@ -290,7 +294,7 @@ def copy_load_building_details(
 
         def bathrooms(acct: str, bnum: int, row: list[str]) -> str:
             count = fixtures_aggregator.get_bathroom_count(acct, bnum)
-            if count > 0:
+            if count is not None:
                 return repr(float(count))
             full = _safe_float(get(row, "full_baths")) or 0
             half = _safe_int(get(row, "half_baths")) or 0
@@ -299,15 +303,14 @@ def copy_load_building_details(
 
         def bedrooms(acct: str, bnum: int, row: list[str]) -> str:
             count = fixtures_aggregator.get_bedroom_count(acct, bnum)
-            if count > 0:
+            if count is not None:
                 return str(count)
             return _int(get(row, "bedrooms"))
 
         def half_baths(acct: str, bnum: int, row: list[str]) -> str:
             fx = fixtures_aggregator.get_fixtures(acct, bnum)
-            hb = int(fx["half_baths"])
-            if hb > 0:
-                return str(hb)
+            if fx["half_baths"] is not None:
+                return str(int(fx["half_baths"]))
             return _int(get(row, "half_baths"))
 
         def rows() -> Iterator[str]:

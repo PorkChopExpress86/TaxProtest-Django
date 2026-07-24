@@ -476,7 +476,7 @@ class ModelLoader:
         """
         # Try fixtures first
         bedroom_count = self.fixtures_aggregator.get_bedroom_count(account_num, building_num)
-        if bedroom_count > 0:
+        if bedroom_count is not None:
             return bedroom_count
 
         # Fallback to record (building_res.txt columns if they exist)
@@ -500,7 +500,7 @@ class ModelLoader:
         """
         # Try fixtures first
         bathroom_count = self.fixtures_aggregator.get_bathroom_count(account_num, building_num)
-        if bathroom_count > 0:
+        if bathroom_count is not None:
             return bathroom_count
 
         # Fallback to record
@@ -526,9 +526,8 @@ class ModelLoader:
         """
         # Try fixtures first
         fixtures = self.fixtures_aggregator.get_fixtures(account_num, building_num)
-        half_bath_count = int(fixtures["half_baths"])
-        if half_bath_count > 0:
-            return half_bath_count
+        if fixtures["half_baths"] is not None:
+            return int(fixtures["half_baths"])
 
         # Fallback to record
         return self._safe_int(record.get("half_baths"))

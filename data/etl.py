@@ -55,7 +55,12 @@ def open_reader(filepath: str) -> csv.DictReader:
     # We need to re-open as text for DictReader
     f = open(filepath, encoding=encoding, errors="ignore", newline="")
     # CSV may or may not have header; HCAD files generally include headers.
-    return csv.DictReader(f, delimiter=delimiter)
+    # quoting=QUOTE_NONE: these are raw HCAD TSV files, not RFC4180 CSV, and
+    # free-text fields (e.g. building_res.txt appraiser notes) contain literal
+    # unescaped '"' characters. The default dialect treats those as field-quote
+    # delimiters, silently merging subsequent physical lines into one
+    # oversized row and dropping the accounts in between.
+    return csv.DictReader(f, delimiter=delimiter, quoting=csv.QUOTE_NONE)
 
 
 def parse_currency(value: str | None) -> float | None:
