@@ -162,7 +162,14 @@ class DataTransformer:
         )
 
         f = open(filepath, encoding=encoding, errors="ignore", newline="")
-        reader = csv.DictReader(f, delimiter=delimiter)
+        # HCAD source files are plain tab/pipe-delimited text with raw, unescaped
+        # `"` characters in free-text fields (e.g. inspector notes). With default
+        # quoting, csv treats an unbalanced `"` as opening a quoted field that
+        # swallows subsequent lines until a closing quote turns up (or the field
+        # exceeds csv's size limit), silently corrupting row boundaries and
+        # dropping real records. These files have no quoting convention, so
+        # quote characters must be read literally.
+        reader = csv.DictReader(f, delimiter=delimiter, quoting=csv.QUOTE_NONE)
         return reader, f
 
     def _coerce_value(
