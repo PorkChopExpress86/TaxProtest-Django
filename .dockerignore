@@ -50,3 +50,9 @@ node_modules
 # Temporary files
 *.tmp
 *.temp
+
+# Runtime data (populated inside the container at build/run time, never needed from host)
+var/downloads
+var/extracted
+var/reports
+var/logs
