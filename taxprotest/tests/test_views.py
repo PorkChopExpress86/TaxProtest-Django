@@ -6,7 +6,13 @@ from unittest.mock import MagicMock, patch
 from django.test import TestCase
 from django.urls import reverse
 
-from data.models import AssessmentHistory, BuildingDetail, ExtraFeature, PropertyRecord
+from data.comparables import hcad_comparable
+from data.models import (
+    AssessmentHistory,
+    BuildingDetail,
+    ExtraFeature,
+    PropertyRecord,
+)
 
 
 class PropertySearchViewTests(TestCase):
@@ -72,6 +78,7 @@ class PropertySearchViewTests(TestCase):
                 is_active=True,
             )
 
+        # One query per county searched; Brazos adds one that returns nothing.
         with self.assertNumQueries(4):
             response = self.client.get(reverse("index"), {"zip_code": "77333"})
 
@@ -145,7 +152,9 @@ class PropertySearchViewTests(TestCase):
                 is_active=True,
             )
 
-        with self.assertNumQueries(3):
+        # One query per county searched (Harris rows + buildings + features,
+        # plus the Brazos lookup that returns nothing here).
+        with self.assertNumQueries(4):
             response = self.client.get(reverse("export_csv"), {"zip_code": "77111"})
 
         self.assertEqual(response.status_code, 200)
@@ -282,6 +291,7 @@ class SimilarPropertiesViewTests(TestCase):
                 "property": self.low_ppsf_property,
                 "building": self.low_ppsf_building,
                 "features": [],
+                "comparable": hcad_comparable(self.low_ppsf_property, self.low_ppsf_building, []),
                 "distance": 0.5,
                 "similarity_score": 80,
             },
@@ -289,6 +299,7 @@ class SimilarPropertiesViewTests(TestCase):
                 "property": self.high_ppsf_property,
                 "building": self.high_ppsf_building,
                 "features": [],
+                "comparable": hcad_comparable(self.high_ppsf_property, self.high_ppsf_building, []),
                 "distance": 0.9,
                 "similarity_score": 85,
             },
@@ -318,6 +329,7 @@ class SimilarPropertiesViewTests(TestCase):
             max_distance_miles=10.0,
             max_results=20,
             min_score=30.0,
+            source="hcad",
         )
         self.assertEqual(response.context["max_distance"], 10.0)
         self.assertEqual(response.context["max_results"], 20)
@@ -338,6 +350,7 @@ class SimilarPropertiesViewTests(TestCase):
             max_distance_miles=50.0,
             max_results=100,
             min_score=0.0,
+            source="hcad",
         )
         self.assertEqual(response.context["max_distance"], 50.0)
         self.assertEqual(response.context["max_results"], 100)
@@ -455,6 +468,11 @@ class ProtestRecommendationTests(TestCase):
                 "property": PropertyRecord.objects.get(account_number="COMP001"),
                 "building": BuildingDetail.objects.get(account_number="COMP001"),
                 "features": [],
+                "comparable": hcad_comparable(
+                    PropertyRecord.objects.get(account_number="COMP001"),
+                    BuildingDetail.objects.get(account_number="COMP001"),
+                    [],
+                ),
                 "distance": 0.5,
                 "similarity_score": 75,
             },
@@ -462,6 +480,11 @@ class ProtestRecommendationTests(TestCase):
                 "property": PropertyRecord.objects.get(account_number="COMP002"),
                 "building": BuildingDetail.objects.get(account_number="COMP002"),
                 "features": [],
+                "comparable": hcad_comparable(
+                    PropertyRecord.objects.get(account_number="COMP002"),
+                    BuildingDetail.objects.get(account_number="COMP002"),
+                    [],
+                ),
                 "distance": 0.6,
                 "similarity_score": 70,
             },
@@ -469,6 +492,11 @@ class ProtestRecommendationTests(TestCase):
                 "property": PropertyRecord.objects.get(account_number="COMP003"),
                 "building": BuildingDetail.objects.get(account_number="COMP003"),
                 "features": [],
+                "comparable": hcad_comparable(
+                    PropertyRecord.objects.get(account_number="COMP003"),
+                    BuildingDetail.objects.get(account_number="COMP003"),
+                    [],
+                ),
                 "distance": 0.7,
                 "similarity_score": 68,
             },
@@ -490,6 +518,11 @@ class ProtestRecommendationTests(TestCase):
                 "property": PropertyRecord.objects.get(account_number="COMP002"),
                 "building": BuildingDetail.objects.get(account_number="COMP002"),
                 "features": [],
+                "comparable": hcad_comparable(
+                    PropertyRecord.objects.get(account_number="COMP002"),
+                    BuildingDetail.objects.get(account_number="COMP002"),
+                    [],
+                ),
                 "distance": 0.5,
                 "similarity_score": 75,
             },
@@ -497,6 +530,11 @@ class ProtestRecommendationTests(TestCase):
                 "property": PropertyRecord.objects.get(account_number="COMP003"),
                 "building": BuildingDetail.objects.get(account_number="COMP003"),
                 "features": [],
+                "comparable": hcad_comparable(
+                    PropertyRecord.objects.get(account_number="COMP003"),
+                    BuildingDetail.objects.get(account_number="COMP003"),
+                    [],
+                ),
                 "distance": 0.6,
                 "similarity_score": 72,
             },
@@ -504,6 +542,11 @@ class ProtestRecommendationTests(TestCase):
                 "property": PropertyRecord.objects.get(account_number="COMP004"),
                 "building": BuildingDetail.objects.get(account_number="COMP004"),
                 "features": [],
+                "comparable": hcad_comparable(
+                    PropertyRecord.objects.get(account_number="COMP004"),
+                    BuildingDetail.objects.get(account_number="COMP004"),
+                    [],
+                ),
                 "distance": 0.7,
                 "similarity_score": 70,
             },
@@ -523,6 +566,11 @@ class ProtestRecommendationTests(TestCase):
                 "property": PropertyRecord.objects.get(account_number="COMP001"),
                 "building": BuildingDetail.objects.get(account_number="COMP001"),
                 "features": [],
+                "comparable": hcad_comparable(
+                    PropertyRecord.objects.get(account_number="COMP001"),
+                    BuildingDetail.objects.get(account_number="COMP001"),
+                    [],
+                ),
                 "distance": 0.5,
                 "similarity_score": 75,
             },
@@ -530,6 +578,11 @@ class ProtestRecommendationTests(TestCase):
                 "property": PropertyRecord.objects.get(account_number="COMP002"),
                 "building": BuildingDetail.objects.get(account_number="COMP002"),
                 "features": [],
+                "comparable": hcad_comparable(
+                    PropertyRecord.objects.get(account_number="COMP002"),
+                    BuildingDetail.objects.get(account_number="COMP002"),
+                    [],
+                ),
                 "distance": 0.6,
                 "similarity_score": 70,
             },
@@ -570,6 +623,11 @@ class ProtestRecommendationTests(TestCase):
                 "property": PropertyRecord.objects.get(account_number="COMP001"),
                 "building": BuildingDetail.objects.get(account_number="COMP001"),
                 "features": [],
+                "comparable": hcad_comparable(
+                    PropertyRecord.objects.get(account_number="COMP001"),
+                    BuildingDetail.objects.get(account_number="COMP001"),
+                    [],
+                ),
                 "distance": 0.5,
                 "similarity_score": 75,
             },
@@ -577,6 +635,11 @@ class ProtestRecommendationTests(TestCase):
                 "property": PropertyRecord.objects.get(account_number="COMP002"),
                 "building": BuildingDetail.objects.get(account_number="COMP002"),
                 "features": [],
+                "comparable": hcad_comparable(
+                    PropertyRecord.objects.get(account_number="COMP002"),
+                    BuildingDetail.objects.get(account_number="COMP002"),
+                    [],
+                ),
                 "distance": 0.6,
                 "similarity_score": 70,
             },
@@ -584,6 +647,11 @@ class ProtestRecommendationTests(TestCase):
                 "property": PropertyRecord.objects.get(account_number="COMP003"),
                 "building": BuildingDetail.objects.get(account_number="COMP003"),
                 "features": [],
+                "comparable": hcad_comparable(
+                    PropertyRecord.objects.get(account_number="COMP003"),
+                    BuildingDetail.objects.get(account_number="COMP003"),
+                    [],
+                ),
                 "distance": 0.7,
                 "similarity_score": 68,
             },
@@ -591,6 +659,9 @@ class ProtestRecommendationTests(TestCase):
                 "property": prop_no_value,
                 "building": BuildingDetail.objects.get(account_number="COMPNOVAL"),
                 "features": [],
+                "comparable": hcad_comparable(
+                    prop_no_value, BuildingDetail.objects.get(account_number="COMPNOVAL"), []
+                ),
                 "distance": 0.8,
                 "similarity_score": 65,
             },
@@ -678,6 +749,7 @@ class ProtestAnalysisViewTests(TestCase):
             "property": prop,
             "building": building,
             "features": [],
+            "comparable": hcad_comparable(prop, building, []),
             "distance": distance,
             "similarity_score": score,
             "score_breakdown": [
@@ -745,6 +817,7 @@ class ProtestAnalysisViewTests(TestCase):
             max_distance_miles=10.0,
             max_results=50,
             min_score=52.0,
+            source="hcad",
         )
 
     @patch("taxprotest.views.find_similar_properties")
@@ -757,6 +830,7 @@ class ProtestAnalysisViewTests(TestCase):
             max_distance_miles=10.0,
             max_results=50,
             min_score=70.0,
+            source="hcad",
         )
 
     @patch("taxprotest.views.find_similar_properties")
@@ -886,6 +960,7 @@ class ProtestAnalysisExportTests(TestCase):
             "property": self.comp,
             "building": self.comp_building,
             "features": [],
+            "comparable": hcad_comparable(self.comp, self.comp_building, []),
             "distance": 0.5,
             "similarity_score": 76.0,
             "score_breakdown": [

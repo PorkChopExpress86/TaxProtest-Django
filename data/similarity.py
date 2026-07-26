@@ -1,19 +1,21 @@
-"""
-Similarity search algorithm for finding comparable properties.
-Uses location (lat/long), size, age, and features to find similar properties.
+"""Similarity search for comparable properties.
+
+Scores on living area, land size, room counts, quality, age and distance. The
+algorithm is county-neutral: it operates on `ComparableProperty` from
+`data.comparables`, which is where each district's models are mapped onto a
+common shape. Supporting a new appraisal district means adding a source there,
+not editing the scoring here.
+
+Factors a district does not publish are skipped rather than zeroed, and the score
+is renormalised over what remains — see `_score_from_components`.
 """
 
+from collections.abc import Sequence
+from collections.abc import Set as AbstractSet
 from math import asin, cos, radians, sin, sqrt
-from typing import TYPE_CHECKING, Optional
 
-from django.db.models import ExpressionWrapper, F, FloatField, Value
-from django.db.models.functions import ACos, Cos, Greatest, Least, Radians, Sin
-
+from .comparables import ComparableProperty, hcad_comparable, resolve_source
 from .models import BuildingDetail, ExtraFeature, PropertyRecord
-
-if TYPE_CHECKING:
-    pass
-
 
 QUALITY_RANK = {"X": 7, "A": 6, "B": 5, "C": 4, "D": 3, "E": 2, "F": 1}
 
@@ -175,41 +177,72 @@ def _condition_similarity(target_code: object, candidate_code: object) -> float 
 
 
 def _building_character_similarity(
-    target_building: "BuildingDetail",
-    candidate_building: "BuildingDetail",
+    target_codes: Sequence[str],
+    candidate_codes: Sequence[str],
 ) -> float | None:
-    for attr_name in ("building_style", "building_type", "building_class"):
-        similarity = _categorical_similarity(
-            getattr(target_building, attr_name, None),
-            getattr(candidate_building, attr_name, None),
-        )
+    """Compare building type/style/class, most specific code first."""
+    for target_code, candidate_code in zip(target_codes, candidate_codes):
+        similarity = _categorical_similarity(target_code, candidate_code)
         if similarity is not None:
             return similarity
 
     return None
 
 
-def _effective_year(building: Optional["BuildingDetail"]) -> int | None:
-    if building is None:
+def _grade_rank(code: str) -> int | None:
+    """Extract an ordinal grade from a class code.
+
+    HCAD grades with letters (A/B/C); Brazos embeds a digit in a structured code
+    (`RV3`, `RV4P`, `RF2` — residential, grade 3/4/2). Without this the two
+    counties' quality codes would only ever compare as equal-or-unknown.
+    """
+    digits = "".join(ch for ch in code if ch.isdigit())
+    if not digits:
+        return None
+    try:
+        return int(digits[:1])
+    except ValueError:
         return None
 
-    for attr_name in ("effective_year", "year_remodeled", "year_built"):
-        value = getattr(building, attr_name, None)
-        if value:
-            return int(value)
 
-    return None
+def _quality_similarity(target_code: object, candidate_code: object) -> float | None:
+    """Compare quality codes, whatever scheme the district uses."""
+    ranked = _ranked_code_similarity(target_code, candidate_code, QUALITY_RANK)
+    if ranked is not None:
+        return ranked
+
+    normalized_target = _normalized_code(target_code)
+    normalized_candidate = _normalized_code(candidate_code)
+    if not normalized_target or not normalized_candidate:
+        return None
+
+    target_rank = _grade_rank(normalized_target)
+    candidate_rank = _grade_rank(normalized_candidate)
+    if target_rank is not None and candidate_rank is not None:
+        # A grade gap matters more when the code families also differ
+        # ("RV3" vs "RF3" is a different construction class at the same grade).
+        grade_similarity = _clamp(
+            _interpolate_curve(
+                abs(target_rank - candidate_rank),
+                [(0.0, 1.0), (1.0, 0.72), (2.0, 0.42), (3.0, 0.18), (5.0, 0.0)],
+            )
+        )
+        family_target = normalized_target.rstrip("0123456789P")
+        family_candidate = normalized_candidate.rstrip("0123456789P")
+        if family_target and family_candidate and family_target != family_candidate:
+            grade_similarity *= 0.8
+        return _clamp(grade_similarity)
+
+    return _categorical_similarity(normalized_target, normalized_candidate)
 
 
 def _feature_similarity(
-    target_features: list[ExtraFeature] | None,
-    candidate_features: list[ExtraFeature] | None,
+    target_codes: AbstractSet[str] | None,
+    candidate_codes: AbstractSet[str] | None,
 ) -> float | None:
-    if target_features is None or candidate_features is None:
+    """Jaccard overlap of feature codes (pools, garages, porches)."""
+    if target_codes is None or candidate_codes is None:
         return None
-
-    target_codes = {f.feature_code for f in target_features if f.feature_code}
-    candidate_codes = {f.feature_code for f in candidate_features if f.feature_code}
 
     if not target_codes and not candidate_codes:
         return None
@@ -313,29 +346,35 @@ def _score_from_components(
     }
 
 
-def calculate_similarity_details(
-    target_prop: PropertyRecord,
-    candidate_prop: PropertyRecord,
-    target_building: BuildingDetail | None = None,
-    candidate_building: BuildingDetail | None = None,
-    target_features: list[ExtraFeature] | None = None,
-    candidate_features: list[ExtraFeature] | None = None,
+def score_comparables(
+    target: ComparableProperty,
+    candidate: ComparableProperty,
     distance: float = 0.0,
     max_distance_miles: float = 10.0,
 ) -> dict[str, object]:
-    """Calculate an explainable similarity score and component breakdown."""
-    components: list[dict[str, object]] = []
-    is_land_only = target_building is None and candidate_building is None
+    """Score two normalised properties, whatever county they came from.
 
-    if not is_land_only and target_building and candidate_building:
+    This is the algorithm proper. Anything county-specific belongs in
+    `data.comparables`, which maps a district's models onto ComparableProperty.
+
+    Factors a district does not publish arrive as None and are simply skipped:
+    Brazos has no room counts or condition ratings, so its scores are built from
+    the remaining factors and carry the usual completeness penalty. Rankings stay
+    meaningful because every candidate in a search shares the same gaps, but an
+    absolute score is only comparable within one county.
+    """
+    components: list[dict[str, object]] = []
+    is_land_only = not target.has_building and not candidate.has_building
+
+    if not is_land_only:
         components.extend(
             [
                 _component(
                     "living_area",
                     RESIDENTIAL_WEIGHTS["living_area"],
                     _percentage_similarity(
-                        target_building.heat_area,
-                        candidate_building.heat_area,
+                        target.living_area,
+                        candidate.living_area,
                         [
                             (0.0, 1.0),
                             (0.03, 0.96),
@@ -353,8 +392,8 @@ def calculate_similarity_details(
                     "bedrooms",
                     RESIDENTIAL_WEIGHTS["bedrooms"],
                     _difference_similarity(
-                        target_building.bedrooms,
-                        candidate_building.bedrooms,
+                        target.bedrooms,
+                        candidate.bedrooms,
                         [(0.0, 1.0), (1.0, 0.62), (2.0, 0.22), (3.0, 0.06), (4.0, 0.0)],
                     ),
                 ),
@@ -362,34 +401,30 @@ def calculate_similarity_details(
                     "bathrooms",
                     RESIDENTIAL_WEIGHTS["bathrooms"],
                     _difference_similarity(
-                        target_building.bathrooms,
-                        candidate_building.bathrooms,
+                        target.bathrooms,
+                        candidate.bathrooms,
                         [(0.0, 1.0), (0.5, 0.76), (1.0, 0.40), (1.5, 0.14), (2.5, 0.0)],
                     ),
                 ),
                 _component(
                     "quality",
                     RESIDENTIAL_WEIGHTS["quality"],
-                    _ranked_code_similarity(
-                        target_building.quality_code,
-                        candidate_building.quality_code,
-                        QUALITY_RANK,
-                    ),
+                    _quality_similarity(target.quality_code, candidate.quality_code),
                 ),
                 _component(
                     "condition",
                     RESIDENTIAL_WEIGHTS["condition"],
                     _condition_similarity(
-                        target_building.condition_code,
-                        candidate_building.condition_code,
+                        target.condition_code,
+                        candidate.condition_code,
                     ),
                 ),
                 _component(
                     "age",
                     RESIDENTIAL_WEIGHTS["age"],
                     _difference_similarity(
-                        _effective_year(target_building),
-                        _effective_year(candidate_building),
+                        target.effective_year,
+                        candidate.effective_year,
                         [
                             (0.0, 1.0),
                             (2.0, 0.90),
@@ -405,15 +440,17 @@ def calculate_similarity_details(
                     "stories",
                     RESIDENTIAL_WEIGHTS["stories"],
                     _difference_similarity(
-                        target_building.stories,
-                        candidate_building.stories,
+                        target.stories,
+                        candidate.stories,
                         [(0.0, 1.0), (0.5, 0.70), (1.0, 0.35), (2.0, 0.0)],
                     ),
                 ),
                 _component(
                     "building_character",
                     RESIDENTIAL_WEIGHTS["building_character"],
-                    _building_character_similarity(target_building, candidate_building),
+                    _building_character_similarity(
+                        target.character_codes, candidate.character_codes
+                    ),
                 ),
             ]
         )
@@ -434,8 +471,8 @@ def calculate_similarity_details(
                 "land_size",
                 land_weight,
                 _percentage_similarity(
-                    target_prop.land_area,
-                    candidate_prop.land_area,
+                    target.land_area,
+                    candidate.land_area,
                     [
                         (0.0, 1.0),
                         (0.05, 0.90),
@@ -448,7 +485,9 @@ def calculate_similarity_details(
                 ),
             ),
             _component(
-                "features", feature_weight, _feature_similarity(target_features, candidate_features)
+                "features",
+                feature_weight,
+                _feature_similarity(target.feature_codes, candidate.feature_codes),
             ),
             _component(
                 "distance",
@@ -459,6 +498,29 @@ def calculate_similarity_details(
     )
 
     return _score_from_components(components, is_land_only=is_land_only)
+
+
+def calculate_similarity_details(
+    target_prop: PropertyRecord,
+    candidate_prop: PropertyRecord,
+    target_building: BuildingDetail | None = None,
+    candidate_building: BuildingDetail | None = None,
+    target_features: list[ExtraFeature] | None = None,
+    candidate_features: list[ExtraFeature] | None = None,
+    distance: float = 0.0,
+    max_distance_miles: float = 10.0,
+) -> dict[str, object]:
+    """Calculate an explainable similarity score for two HCAD properties.
+
+    Retained as the HCAD-shaped entry point; `score_comparables` is the
+    county-neutral core.
+    """
+    return score_comparables(
+        hcad_comparable(target_prop, target_building, target_features),
+        hcad_comparable(candidate_prop, candidate_building, candidate_features),
+        distance,
+        max_distance_miles,
+    )
 
 
 def calculate_similarity_score(
@@ -490,165 +552,81 @@ def find_similar_properties(
     max_distance_miles: float = 10.0,
     max_results: int = 50,
     min_score: float = 30.0,
+    source: str | None = None,
 ) -> list[dict]:
+    """Find properties comparable to the given account.
+
+    `source` selects the county ("hcad" or "brazos"); when omitted the account is
+    looked up in each in turn, HCAD first. Distance filtering happens in the
+    database via a bounding box plus a great-circle distance, then scoring runs
+    in Python over the candidates that survive.
+
+    Each result keeps the underlying model instance under "property", so callers
+    retain access to county-specific fields.
     """
-    Find properties similar to the given account number.
-    Optimized to perform distance calculation in the database.
-    """
-    # Get the target property
     try:
-        target = PropertyRecord.objects.filter(account_number=account_number).first()
-        if not target:
-            return []
+        resolved = resolve_source(account_number, source)
+    except ValueError:
+        raise
     except Exception:
         return []
 
-    # Check if target has coordinates
-    if not target.latitude or not target.longitude:
+    if resolved is None:
         return []
 
-    target_lat = float(target.latitude)
-    target_lon = float(target.longitude)
+    provider, target = resolved
 
-    # Get target building and features
-    target_building = target.buildings.filter(is_active=True).first()  # type: ignore[attr-defined]
-    target_features = list(target.extra_features.filter(is_active=True))  # type: ignore[attr-defined]
+    # Without coordinates there is nothing to search around.
+    if not target.has_location:
+        return []
 
-    # Calculate bounding box for initial index-based filtering
-    # 1 degree lat =~ 69 miles
-    lat_range = max_distance_miles / 69.0
-    lon_range = max_distance_miles / (69.0 * cos(radians(target_lat)))
+    candidates = provider.find_candidates(target, max_distance_miles)
+    if not candidates:
+        return []
 
-    min_lat = target_lat - lat_range
-    max_lat = target_lat + lat_range
-    min_lon = target_lon - lon_range
-    max_lon = target_lon + lon_range
-
-    # Query for nearby properties using Django ORM with annotations
-    # This avoids raw SQL issues and "GROUP BY" errors while still being efficient
-
-    # 1. Base filter by bounding box (uses database index)
-    candidates = PropertyRecord.objects.filter(
-        latitude__gte=min_lat,
-        latitude__lte=max_lat,
-        longitude__gte=min_lon,
-        longitude__lte=max_lon,
-        latitude__isnull=False,
-        longitude__isnull=False,
-    ).exclude(account_number=account_number)
-
-    # 2. Optional: Filter by size if we have target building data
-    if target_building and target_building.heat_area:
-        min_area = float(target_building.heat_area) * 0.5
-        max_area = float(target_building.heat_area) * 1.5
-
-        # Use subquery to filter efficiently
-        matching_buildings = BuildingDetail.objects.filter(
-            is_active=True, heat_area__gte=min_area, heat_area__lte=max_area
-        ).values("account_number")
-
-        candidates = candidates.filter(account_number__in=matching_buildings)
-
-    # 3. Annotate with distance calculation and filter
-    # Formula: 3959 * acos(cos(radians(lat1)) * cos(radians(lat2)) * cos(radians(long2) - radians(long1)) + sin(radians(lat1)) * sin(radians(lat2)))
-
-    # We use Value() for constants (target lat/lon) and F() for DB fields
-    # Ensure float conversion for constants to avoid type issues
-    target_lat_rad = radians(target_lat)
-    target_lon_rad = radians(target_lon)
-
-    candidates = (
-        candidates.annotate(
-            distance=ExpressionWrapper(
-                3959.0
-                * ACos(
-                    Least(
-                        1.0,
-                        Greatest(
-                            -1.0,
-                            Cos(Value(target_lat_rad))
-                            * Cos(Radians(F("latitude")))
-                            * Cos(Radians(F("longitude")) - Value(target_lon_rad))
-                            + Sin(Value(target_lat_rad)) * Sin(Radians(F("latitude"))),
-                        ),
-                    )
-                ),
-                output_field=FloatField(),
-            )
-        )
-        .filter(distance__lte=max_distance_miles)
-        .order_by("distance")
-    )
-
-    # Limit the number of candidates we process in Python
-    # We fetch more than max_results to allow for filtering by similarity score
-    candidates = candidates[:2000]
-
-    # Process candidates
     results = []
-
-    # Fetch related data efficiently
-    # Since we sliced the queryset, we need to evaluate it to get the list of objects
-    # and then fetch related data for those specific objects
-    candidate_list = list(candidates)
-
-    if not candidate_list:
-        return []
-
-    candidate_accts = [c.account_number for c in candidate_list]
-
-    # Bulk fetch buildings
-    buildings_map = {}
-    for b in BuildingDetail.objects.filter(account_number__in=candidate_accts, is_active=True):
-        buildings_map[b.account_number] = b
-
-    # Bulk fetch features
-    from collections import defaultdict
-
-    features_map = defaultdict(list)
-    for f in ExtraFeature.objects.filter(account_number__in=candidate_accts, is_active=True):
-        features_map[f.account_number].append(f)
-
-    # Calculate scores
-    for candidate in candidate_list:
-        dist = getattr(candidate, "distance", 0.0)
-
-        c_building = buildings_map.get(candidate.account_number)
-        c_features = features_map.get(candidate.account_number, [])
-
-        details = calculate_similarity_details(
+    for candidate, distance in candidates:
+        details = score_comparables(
             target,
             candidate,
-            target_building,
-            c_building,
-            target_features,
-            c_features,
-            dist,
+            distance,
             max_distance_miles=max_distance_miles,
         )
         score = float(details["score"])
+        if score < min_score:
+            continue
 
-        if score >= min_score:
-            results.append(
-                {
-                    "property": candidate,
-                    "building": c_building,
-                    "features": c_features,
-                    "distance": round(dist, 2),
-                    "similarity_score": score,
-                    "score_breakdown": details["components"],
-                }
-            )
-
-    # Sort and limit
-    results.sort(
-        key=lambda x: (
-            -x["similarity_score"],
-            x["distance"],
-            x["property"].account_number,
+        results.append(
+            {
+                "property": candidate.source,
+                "comparable": candidate,
+                "building": candidate.building,
+                "features": list(candidate.features),
+                "distance": round(distance, 2),
+                "similarity_score": score,
+                "score_breakdown": details["components"],
+                "source": provider.name,
+            }
         )
-    )
+
+    results.sort(key=lambda x: (-x["similarity_score"], x["distance"], x["comparable"].key))
     return results[:max_results]
+
+
+def _feature_code(feature: object) -> str:
+    """Feature code from either county's row type."""
+    for attr in ("feature_code", "imprv_det_type_cd"):
+        if code := getattr(feature, attr, None):
+            return str(code)
+    return ""
+
+
+def _feature_description(feature: object) -> str:
+    """Human-readable feature label from either county's row type."""
+    for attr in ("feature_description", "imprv_det_type_desc"):
+        if description := getattr(feature, attr, None):
+            return str(description)
+    return _feature_code(feature)
 
 
 def get_feature_summary(features: list[ExtraFeature]) -> dict[str, int]:
@@ -658,9 +636,9 @@ def get_feature_summary(features: list[ExtraFeature]) -> dict[str, int]:
     Returns:
         Dictionary with feature counts: {'POOL': 1, 'DETGAR': 2, ...}
     """
-    summary = {}
+    summary: dict[str, int] = {}
     for feature in features:
-        code = feature.feature_code
+        code = _feature_code(feature)
         if code:
             summary[code] = summary.get(code, 0) + 1
     return summary
@@ -674,9 +652,9 @@ def format_feature_list(features: list[ExtraFeature], max_features: int = 10) ->
         Comma-separated list like "Reinforced Concrete Pool, Frame Detached Garage"
     """
     # Group features by description and count them
-    feature_counts = {}
+    feature_counts: dict[str, int] = {}
     for feature in features:
-        desc = feature.feature_description or feature.feature_code or "Unknown"
+        desc = _feature_description(feature) or "Unknown"
         feature_counts[desc] = feature_counts.get(desc, 0) + 1
 
     # Format as readable list
