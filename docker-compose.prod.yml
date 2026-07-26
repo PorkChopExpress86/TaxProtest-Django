@@ -48,6 +48,7 @@ services:
       - HCAD_EXTRACT_DIR=${HCAD_EXTRACT_DIR:-/app/var/extracted}
       - HCAD_LOG_DIR=${HCAD_LOG_DIR:-/app/var/logs}
       - PROJECT_REPORT_DIR=${PROJECT_REPORT_DIR:-/app/var/reports}
+      - BRAZOS_DATA_DIR=${BRAZOS_DATA_DIR:-/app/data/cad_downloads}
     depends_on:
       db:
         condition: service_healthy
@@ -56,6 +57,10 @@ services:
     # No code bind mount in production, but the runtime data under /app/var persists.
     volumes:
       - ./var:/app/var
+      # Brazos CAD staging area. There is no .:/app mount here, so without this
+      # the downloaded .zip and extracted .TXT files would live in the container's
+      # writable layer and be lost on every stop, crash or rebuild.
+      - ./data/cad_downloads:/app/data/cad_downloads
     # Celery worker for processing background tasks
   worker:
     build: .
@@ -72,11 +77,17 @@ services:
       - HCAD_EXTRACT_DIR=${HCAD_EXTRACT_DIR:-/app/var/extracted}
       - HCAD_LOG_DIR=${HCAD_LOG_DIR:-/app/var/logs}
       - PROJECT_REPORT_DIR=${PROJECT_REPORT_DIR:-/app/var/reports}
+      - BRAZOS_DATA_DIR=${BRAZOS_DATA_DIR:-/app/data/cad_downloads}
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
+    # Shares the web service's staging area so a queued Brazos import reuses an
+    # archive already on disk instead of re-downloading it.
+    volumes:
+      - ./var:/app/var
+      - ./data/cad_downloads:/app/data/cad_downloads
     command: celery -A taxprotest worker --loglevel=info
 
   # Celery beat for scheduled tasks (runs monthly imports)
