@@ -391,6 +391,7 @@ shapefile via `load_brazos_gis`, from https://brazoscad.org/tax-information/gis/
 
 | File | Contents |
 |---|---|
+| `TODO.md` | Outstanding work, known gaps and caveats — **read at the start of a session, update in the same commit as the work** |
 | `README.md` | Overview, features, quick start, similarity weights |
 | `DEPLOYMENT.md` | CD pipeline, SSH keys, Docker permissions, GitHub secrets |
 | `docs/guides/SETUP.md` | Installation, Docker services, production deployment |
