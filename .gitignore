@@ -17,6 +17,9 @@ var/downloads/
 var/extracted/
 var/logs/
 var/reports/
+# Brazos CAD staging area (bind-mounted; multi-GB archives and extracted .TXT)
+data/cad_downloads/*
+!data/cad_downloads/.gitkeep
 eggs/
 .eggs/
 lib/

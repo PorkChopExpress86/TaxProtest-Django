@@ -56,6 +56,7 @@ services:
       - HCAD_EXTRACT_DIR=${HCAD_EXTRACT_DIR:-/app/var/extracted}
       - HCAD_LOG_DIR=${HCAD_LOG_DIR:-/app/var/logs}
       - PROJECT_REPORT_DIR=${PROJECT_REPORT_DIR:-/app/var/reports}
+      - BRAZOS_DATA_DIR=${BRAZOS_DATA_DIR:-/app/data/cad_downloads}
     depends_on:
       postgres:
         condition: service_healthy
@@ -63,6 +64,10 @@ services:
         condition: service_healthy
     volumes:
       - .:/app
+      # Brazos CAD staging area. Bound explicitly so the downloaded .zip and the
+      # extracted .TXT files survive a container stop, crash or rebuild — a
+      # re-run then skips the multi-GB download instead of starting over.
+      - ./data/cad_downloads:/app/data/cad_downloads
       # /hcad_downloads_baked lives outside /app in the image so the .:/app
       # bind-mount never touches it. The entrypoint syncs it to /app/var/downloads.
 
@@ -86,6 +91,7 @@ services:
       - HCAD_EXTRACT_DIR=${HCAD_EXTRACT_DIR:-/app/var/extracted}
       - HCAD_LOG_DIR=${HCAD_LOG_DIR:-/app/var/logs}
       - PROJECT_REPORT_DIR=${PROJECT_REPORT_DIR:-/app/var/reports}
+      - BRAZOS_DATA_DIR=${BRAZOS_DATA_DIR:-/app/data/cad_downloads}
     depends_on:
       postgres:
         condition: service_healthy
@@ -93,6 +99,7 @@ services:
         condition: service_healthy
     volumes:
       - .:/app
+      - ./data/cad_downloads:/app/data/cad_downloads
     command: celery -A taxprotest worker --loglevel=info
 
   # Celery beat for scheduled tasks (runs monthly imports)

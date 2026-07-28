@@ -14,8 +14,19 @@ from django.shortcuts import render
 from django.urls import reverse
 
 from data.assessment_history import evaluate_cap_status
-from data.models import AssessmentHistory, BuildingDetail, ExtraFeature, PropertyRecord
-from data.query import build_property_search_queryset
+from data.comparables import (
+    COUNTY_CHOICES,
+    ComparableProperty,
+    resolve_source,
+    search_comparables,
+)
+from data.models import (
+    AssessmentHistory,
+    BuildingDetail,
+    ExtraFeature,
+    PropertyAccount,
+    PropertyRecord,
+)
 from data.similarity import find_similar_properties, format_feature_list, get_similarity_label
 from data.tax_impact import calculate_tax_impact
 
@@ -91,6 +102,49 @@ def _active_related_maps(properties):
     return buildings_by_account, features_by_account
 
 
+def _comparable_row(
+    comparable: ComparableProperty,
+    *,
+    distance: float | None = None,
+    similarity_score: float | None = None,
+    match_label: str = "",
+    score_breakdown: list | None = None,
+    is_target: bool = False,
+) -> dict[str, object]:
+    """Flatten a comparable into the row shape the templates render.
+
+    One shape for every county: fields a district does not publish (Brazos has no
+    bedroom, bathroom or condition data) come through as None and the templates
+    show a dash, rather than each county needing its own table.
+    """
+    row: dict[str, object] = {
+        "account_number": comparable.key,
+        "county": comparable.county,
+        "county_label": comparable.county_label,
+        "owner_name": comparable.owner_name,
+        "address": comparable.street_number,
+        "street_name": comparable.street_name,
+        "zip_code": comparable.zipcode,
+        "assessed_value": comparable.assessed_value,
+        "building_area": comparable.living_area,
+        "land_area": comparable.land_area,
+        "ppsf": comparable.price_per_sqft,
+        "bedrooms": comparable.bedrooms,
+        "bathrooms": comparable.bathrooms,
+        "quality_code": comparable.quality_code or None,
+        "year_built": comparable.effective_year,
+        "features": format_feature_list(list(comparable.features), max_features=5),
+    }
+    if distance is not None:
+        row["distance"] = distance
+    if similarity_score is not None:
+        row["similarity_score"] = similarity_score
+        row["match_label"] = match_label or get_similarity_label(float(similarity_score))
+        row["score_breakdown"] = score_breakdown or []
+        row["is_target"] = is_target
+    return row
+
+
 def _assessment_history_rows(prop: PropertyRecord, limit: int = 5) -> list[dict[str, object]]:
     history = list(
         AssessmentHistory.objects.filter(account_number=prop.account_number).order_by("-tax_year")[
@@ -116,6 +170,80 @@ def _assessment_history_rows(prop: PropertyRecord, limit: int = 5) -> list[dict[
             }
         )
     return rows
+
+
+def _brazos_assessment_history(prop_id: int, limit: int = 5) -> list[dict[str, object]]:
+    """Assessment history assembled from Brazos' per-year account rows.
+
+    Brazos has no AssessmentHistory table; each certified roll year is its own
+    PropertyAccount row, so the history is however many years have been loaded.
+    """
+    accounts = list(PropertyAccount.objects.filter(prop_id=prop_id).order_by("-tax_year")[:limit])
+    rows: list[dict[str, object]] = []
+    for index, account in enumerate(accounts):
+        prior = accounts[index + 1] if index + 1 < len(accounts) else None
+        assessed = account.assessed_value
+        increase_percent = None
+        if assessed is not None and prior is not None and prior.assessed_value:
+            increase_percent = (
+                (assessed - prior.assessed_value) / prior.assessed_value * ONE_HUNDRED
+            ).quantize(PERCENT, rounding=ROUND_HALF_UP)
+        rows.append(
+            {
+                "tax_year": account.tax_year,
+                "assessed_value": assessed,
+                "appraised_value": account.appraised_value,
+                "market_value": account.market_value,
+                "increase_percent": increase_percent,
+                "cap_status": _brazos_cap_status(account, increase_percent),
+            }
+        )
+    return rows
+
+
+def _brazos_cap_status(account: PropertyAccount, increase_percent) -> dict[str, object]:
+    """Cap status in the same shape `evaluate_cap_status` returns.
+
+    Brazos states the limitation directly as an amount rather than leaving it to
+    be inferred: `ten_percent_cap` for a homestead, `circuit_breaker_val` for the
+    SB2 limitation. A non-zero amount means a cap was applied that year.
+    """
+    homestead = bool(account.hs_exempt)
+    cap_type = "homestead" if homestead else "circuit_breaker"
+    limit_percent = Decimal("10") if homestead else Decimal("20")
+    applied = account.ten_percent_cap or Decimal("0")
+    breaker = account.circuit_breaker_val or Decimal("0")
+    overage = applied + breaker
+
+    if account.assessed_value is None:
+        return {
+            "status": "unknown",
+            "label": "Needs review",
+            "cap_type": cap_type,
+            "limit_percent": limit_percent,
+            "increase_percent": increase_percent,
+            "allowed_value": None,
+            "overage": None,
+        }
+
+    limited = overage > 0
+    return {
+        # A cap that actually bit means the raw value exceeded the limit.
+        "status": "over_limit" if limited else "within_limit",
+        "label": "Capped" if limited else "Within cap",
+        "cap_type": cap_type,
+        "limit_percent": limit_percent,
+        "increase_percent": increase_percent,
+        "allowed_value": account.assessed_value,
+        "overage": overage if limited else None,
+    }
+
+
+def _history_for(comparable: ComparableProperty, limit: int = 5) -> list[dict[str, object]]:
+    """Assessment history for whichever county the property belongs to."""
+    if comparable.county == "brazos":
+        return _brazos_assessment_history(int(comparable.key), limit=limit)
+    return _assessment_history_rows(comparable.source, limit=limit)  # type: ignore[arg-type]
 
 
 def _score_breakdown_summary(components: list[dict[str, object]]) -> str:
@@ -293,6 +421,9 @@ def index(request):
     page_number = query_source.get("page", "1")
     sort = query_source.get("sort", "zipcode")
     direction = query_source.get("dir", "asc")
+    county = query_source.get("county", "").strip()
+    if county not in {choice for choice, _ in COUNTY_CHOICES}:
+        county = ""
 
     filters_applied = any([first_name, last_name, address, street_name, zip_code])
 
@@ -304,55 +435,16 @@ def index(request):
         "zip_code": zip_code,
         "sort": sort,
         "dir": direction,
+        "county": county,
     }
 
     if filters_applied:
-        qs = build_property_search_queryset(params)
-
-        paginator = Paginator(qs, 200)
+        # Searching every county returns a combined, per-county-capped list, so
+        # pagination happens over that list rather than a single queryset.
+        comparables = search_comparables(params, county or None)
+        paginator = Paginator(comparables, 200)
         page_obj = paginator.get_page(page_number)
-        properties = list(page_obj.object_list)
-        buildings_by_account, features_by_account = _active_related_maps(properties)
-
-        formatted = []
-        for prop in properties:
-            assessed = prop.assessed_value or prop.value
-            bldg_area = prop.building_area or 0
-            ppsf = None
-            if assessed and bldg_area and bldg_area > 0:
-                try:
-                    ppsf = float(assessed) / float(bldg_area)
-                except Exception:
-                    ppsf = None
-
-            # Get building details (bedrooms, bathrooms, quality)
-            building = buildings_by_account.get(prop.account_number)
-            bedrooms = building.bedrooms if building else None
-            bathrooms = building.bathrooms if building else None
-            quality_code = building.quality_code if building else None
-
-            # Get extra features (pool, garage, etc.)
-            features = features_by_account.get(prop.account_number, [])
-            features_text = format_feature_list(features, max_features=5) if features else None
-
-            formatted.append(
-                {
-                    "account_number": prop.account_number,
-                    "owner_name": prop.owner_name,
-                    "address": prop.street_number,
-                    "street_name": prop.street_name,
-                    "zip_code": prop.zipcode,
-                    "assessed_value": assessed,
-                    "building_area": prop.building_area,
-                    "land_area": prop.land_area,
-                    "ppsf": ppsf,
-                    "bedrooms": bedrooms,
-                    "bathrooms": bathrooms,
-                    "quality_code": quality_code,
-                    "features": features_text,
-                }
-            )
-        results = formatted
+        results = [_comparable_row(c) for c in page_obj.object_list]
 
     query_params = request.GET.copy()
     page_query = query_params.copy()
@@ -373,6 +465,8 @@ def index(request):
         "filters_applied": filters_applied,
         "sort": sort,
         "dir": direction,
+        "county": county,
+        "county_choices": COUNTY_CHOICES,
     }
 
     return render(request, "index.html", context)
@@ -387,6 +481,9 @@ def export_csv(request):
     zip_code = request.GET.get("zip_code", "").strip()
     sort = request.GET.get("sort", "zipcode")
     direction = request.GET.get("dir", "asc")
+    county = request.GET.get("county", "").strip()
+    if county not in {choice for choice, _ in COUNTY_CHOICES}:
+        county = ""
 
     params = {
         "first_name": first_name,
@@ -396,6 +493,7 @@ def export_csv(request):
         "zip_code": zip_code,
         "sort": sort,
         "dir": direction,
+        "county": county,
     }
 
     if not _has_meaningful_export_filter(params):
@@ -404,15 +502,17 @@ def export_csv(request):
             f"{EXPORT_MIN_TEXT_FILTER_LENGTH} non-space characters in a text filter."
         )
 
-    qs = build_property_search_queryset(params)
-    properties = list(qs[:EXPORT_CSV_MAX_ROWS])
-    buildings_by_account, features_by_account = _active_related_maps(properties)
+    comparables = search_comparables(params, county or None, limit=EXPORT_CSV_MAX_ROWS)[
+        :EXPORT_CSV_MAX_ROWS
+    ]
 
     # Create CSV response
     response = HttpResponse(content_type="text/csv")
     response["Content-Disposition"] = 'attachment; filename="property_search.csv"'
 
     writer = csv.writer(response)
+    # County is appended rather than inserted, so existing column positions —
+    # and anything already consuming this export — stay valid.
     writer.writerow(
         [
             "Account Number",
@@ -427,43 +527,30 @@ def export_csv(request):
             "Quality",
             "Features",
             "Price per sqft",
+            "County",
         ]
     )
 
-    for prop in properties:
-        assessed = prop.assessed_value or prop.value
-        bldg_area = prop.building_area or 0
-        ppsf = None
-        if assessed and bldg_area and bldg_area > 0:
-            try:
-                ppsf = float(assessed) / float(bldg_area)
-            except Exception:
-                ppsf = None
-
-        # Get building details
-        building = buildings_by_account.get(prop.account_number)
-        bedrooms = building.bedrooms if building else ""
-        bathrooms = f"{float(building.bathrooms):.1f}" if building and building.bathrooms else ""
-        quality_code = building.quality_code if building else ""
-
-        # Get extra features
-        features = features_by_account.get(prop.account_number, [])
-        features_text = format_feature_list(features, max_features=10) if features else ""
+    for comparable in comparables:
+        bathrooms = f"{float(comparable.bathrooms):.1f}" if comparable.bathrooms is not None else ""
+        features_text = format_feature_list(list(comparable.features), max_features=10)
+        ppsf = comparable.price_per_sqft
 
         writer.writerow(
             [
-                _csv_safe_text(prop.account_number),
-                _csv_safe_text(prop.owner_name),
-                _csv_safe_text(prop.street_number),
-                _csv_safe_text(prop.street_name),
-                _csv_safe_text(prop.zipcode),
-                assessed if assessed else "",
-                bldg_area if bldg_area else "",
-                bedrooms,
+                _csv_safe_text(comparable.key),
+                _csv_safe_text(comparable.owner_name),
+                _csv_safe_text(comparable.street_number),
+                _csv_safe_text(comparable.street_name),
+                _csv_safe_text(comparable.zipcode),
+                comparable.assessed_value if comparable.assessed_value else "",
+                comparable.living_area if comparable.living_area else "",
+                comparable.bedrooms if comparable.bedrooms is not None else "",
                 bathrooms,
-                _csv_safe_text(quality_code),
-                _csv_safe_text(features_text),
+                _csv_safe_text(comparable.quality_code),
+                _csv_safe_text(features_text if features_text != "None" else ""),
                 f"{ppsf:.2f}" if ppsf else "",
+                _csv_safe_text(comparable.county_label),
             ]
         )
 
@@ -471,23 +558,24 @@ def export_csv(request):
 
 
 def similar_properties(request, account_number):
-    """Find and display properties similar to the given account."""
-    # Use filter().first() to handle potential duplicates
-    target_property = PropertyRecord.objects.filter(account_number=account_number).first()
+    """Find and display properties similar to the given account, in any county."""
+    county = request.GET.get("county", "").strip() or None
+    resolved = resolve_source(account_number, county)
 
-    if not target_property:
+    if resolved is None:
         return render(
             request,
             "similar_properties.html",
             {"error": "Property not found", "account_number": account_number},
         )
 
-    # Get target building and features for display
-    target_building = target_property.buildings.filter(is_active=True).first()
-    target_features = list(target_property.extra_features.filter(is_active=True))
+    provider, target = resolved
+    target_property = target.source
+    target_building = target.building
+    target_features = list(target.features)
 
     # Check if property has required data
-    if not target_property.latitude or not target_property.longitude:
+    if not target.has_location:
         return render(
             request,
             "similar_properties.html",
@@ -495,6 +583,8 @@ def similar_properties(request, account_number):
                 "error": "This property does not have location data required for similarity search.",
                 "target_property": target_property,
                 "target_building": target_building,
+                "target_comparable": target,
+                "county_label": target.county_label,
             },
         )
 
@@ -524,84 +614,30 @@ def similar_properties(request, account_number):
         max_distance_miles=max_distance,
         max_results=max_results,
         min_score=min_score,
+        source=provider.name,
     )
 
-    # Format results for template
-    formatted_results = []
-
-    # First, add the target property to the results
-    target_assessed = target_property.assessed_value or target_property.value
-    target_bldg_area = (
-        target_building.heat_area if target_building else (target_property.building_area or 0)
-    )
-    target_ppsf = None
-    if target_assessed and target_bldg_area and target_bldg_area > 0:
-        try:
-            target_ppsf = float(target_assessed) / float(target_bldg_area)
-        except Exception:
-            target_ppsf = None
-
-    formatted_results.append(
-        {
-            "account_number": target_property.account_number,
-            "owner_name": target_property.owner_name,
-            "address": target_property.street_number,
-            "street_name": target_property.street_name,
-            "zip_code": target_property.zipcode,
-            "assessed_value": target_assessed,
-            "building_area": target_bldg_area,
-            "land_area": target_property.land_area,
-            "ppsf": target_ppsf,
-            "distance": 0.0,
-            "similarity_score": 100,
-            "year_built": target_building.year_built if target_building else None,
-            "bedrooms": target_building.bedrooms if target_building else None,
-            "bathrooms": target_building.bathrooms if target_building else None,
-            "quality_code": target_building.quality_code if target_building else None,
-            "features": format_feature_list(target_features, max_features=5),
-            "match_label": "Your property",
-            "score_breakdown": [],
-            "is_target": True,
-        }
-    )
+    # Format results for template, subject property first
+    formatted_results = [
+        _comparable_row(
+            target,
+            distance=0.0,
+            similarity_score=100,
+            match_label="Your property",
+            is_target=True,
+        )
+    ]
+    target_ppsf = target.price_per_sqft
 
     # Then add similar properties
     for result in similar:
-        prop = result["property"]
-        building = result["building"]
-        features = result["features"]
-
-        assessed = prop.assessed_value or prop.value
-        bldg_area = building.heat_area if building else (prop.building_area or 0)
-        ppsf = None
-        if assessed and bldg_area and bldg_area > 0:
-            try:
-                ppsf = float(assessed) / float(bldg_area)
-            except Exception:
-                ppsf = None
-
         formatted_results.append(
-            {
-                "account_number": prop.account_number,
-                "owner_name": prop.owner_name,
-                "address": prop.street_number,
-                "street_name": prop.street_name,
-                "zip_code": prop.zipcode,
-                "assessed_value": assessed,
-                "building_area": bldg_area,
-                "land_area": prop.land_area,
-                "ppsf": ppsf,
-                "distance": result["distance"],
-                "similarity_score": result["similarity_score"],
-                "year_built": building.year_built if building else None,
-                "bedrooms": building.bedrooms if building else None,
-                "bathrooms": building.bathrooms if building else None,
-                "quality_code": building.quality_code if building else None,
-                "features": format_feature_list(features, max_features=5),
-                "match_label": get_similarity_label(result["similarity_score"]),
-                "score_breakdown": result.get("score_breakdown", []),
-                "is_target": False,
-            }
+            _comparable_row(
+                result["comparable"],
+                distance=result["distance"],
+                similarity_score=result["similarity_score"],
+                score_breakdown=result.get("score_breakdown", []),
+            )
         )
 
     # Calculate percentile for target property's price per sqft
@@ -717,21 +753,22 @@ def similar_properties(request, account_number):
                     f"of {comparable_count} similar properties."
                 )
 
-    assessment_history = _assessment_history_rows(target_property)
+    assessment_history = _history_for(target)
 
     context = {
         "target_property": target_property,
         "target_building": target_building,
+        "target_comparable": target,
+        "county": target.county,
+        "county_label": target.county_label,
         "target_features": format_feature_list(target_features),
         "assessment_history": assessment_history,
         "assessment_history_chart": _assessment_history_chart(assessment_history),
-        "target_year_built": target_building.year_built if target_building else None,
-        "target_bedrooms": target_building.bedrooms if target_building else None,
-        "target_bathrooms": target_building.bathrooms if target_building else None,
-        "target_quality_code": (target_building.quality_code if target_building else None),
-        "target_area": (
-            target_building.heat_area if target_building else target_property.building_area
-        ),
+        "target_year_built": target.effective_year,
+        "target_bedrooms": target.bedrooms,
+        "target_bathrooms": target.bathrooms,
+        "target_quality_code": target.quality_code or None,
+        "target_area": target.living_area,
         "target_ppsf": target_ppsf,
         "target_ppsf_percentile": target_ppsf_percentile,
         "results": formatted_results,
@@ -759,14 +796,17 @@ def similar_properties(request, account_number):
 
 def protest_analysis(request, account_number):
     """Protest analysis page: equity comparison for ARB hearing preparation."""
-    target_property = PropertyRecord.objects.filter(account_number=account_number).first()
-    if not target_property:
+    county = request.GET.get("county", "").strip() or None
+    resolved = resolve_source(account_number, county)
+    if resolved is None:
         raise Http404("Property not found")
 
-    target_building = target_property.buildings.filter(is_active=True).first()
-    target_features = list(target_property.extra_features.filter(is_active=True))
+    provider, target = resolved
+    target_property = target.source
+    target_building = target.building
+    target_features = list(target.features)
 
-    if not target_property.latitude or not target_property.longitude:
+    if not target.has_location:
         return render(
             request,
             "protest_analysis.html",
@@ -774,6 +814,9 @@ def protest_analysis(request, account_number):
                 "error": "This property does not have location data required for similarity search.",
                 "target_property": target_property,
                 "target_building": target_building,
+                "target_comparable": target,
+                "county": target.county,
+                "county_label": target.county_label,
             },
         )
 
@@ -785,16 +828,8 @@ def protest_analysis(request, account_number):
     min_score = max(52.0, min(100.0, min_score))
 
     # Compute subject $/sqft
-    subject_heat_area = (
-        float(target_building.heat_area) if target_building and target_building.heat_area else None
-    )
-    subject_assessed = target_property.assessed_value or target_property.value
-    subject_value_per_sqft = None
-    if subject_assessed and subject_heat_area and subject_heat_area > 0:
-        try:
-            subject_value_per_sqft = float(subject_assessed) / subject_heat_area
-        except Exception:
-            subject_value_per_sqft = None
+    subject_heat_area = float(target.living_area) if target.living_area else None
+    subject_value_per_sqft = target.price_per_sqft
 
     # Find similar properties
     similar = find_similar_properties(
@@ -802,48 +837,30 @@ def protest_analysis(request, account_number):
         max_distance_miles=10.0,
         max_results=50,
         min_score=min_score,
+        source=provider.name,
     )
 
     # Build enriched comp list
     comps = []
     for result in similar:
-        prop = result["property"]
-        building = result["building"]
-        features = result["features"]
-
-        comp_assessed = prop.assessed_value or prop.value
-        comp_heat_area = float(building.heat_area) if building and building.heat_area else None
-
-        comp_value_per_sqft = None
+        comparable = result["comparable"]
+        comp_value_per_sqft = comparable.price_per_sqft
         comp_delta = None
-        if comp_assessed and comp_heat_area and comp_heat_area > 0:
-            try:
-                comp_value_per_sqft = float(comp_assessed) / comp_heat_area
-                if subject_value_per_sqft is not None:
-                    comp_delta = comp_value_per_sqft - subject_value_per_sqft
-            except Exception:
-                pass
+        if comp_value_per_sqft is not None and subject_value_per_sqft is not None:
+            comp_delta = comp_value_per_sqft - subject_value_per_sqft
 
         comps.append(
             {
-                "account_number": prop.account_number,
-                "address": prop.street_number,
-                "street_name": prop.street_name,
-                "zip_code": prop.zipcode,
-                "assessed_value": comp_assessed,
-                "heat_area": comp_heat_area,
+                **_comparable_row(
+                    comparable,
+                    distance=result["distance"],
+                    similarity_score=result["similarity_score"],
+                    score_breakdown=result.get("score_breakdown", []),
+                ),
+                "heat_area": float(comparable.living_area) if comparable.living_area else None,
                 "comp_value_per_sqft": comp_value_per_sqft,
                 "comp_delta": comp_delta,
-                "distance": result["distance"],
-                "similarity_score": result["similarity_score"],
-                "match_label": get_similarity_label(result["similarity_score"]),
-                "year_built": building.year_built if building else None,
-                "bedrooms": building.bedrooms if building else None,
-                "bathrooms": building.bathrooms if building else None,
-                "quality_code": building.quality_code if building else None,
-                "condition_code": building.condition_code if building else None,
-                "features": format_feature_list(features, max_features=5),
-                "score_breakdown": result.get("score_breakdown", []),
+                "condition_code": comparable.condition_code or None,
                 "score_breakdown_summary": _score_breakdown_summary(
                     result.get("score_breakdown", [])
                 ),
@@ -866,14 +883,16 @@ def protest_analysis(request, account_number):
             estimated_savings = max(0.0, equity_gap_per_sqft * subject_heat_area)
         comps_below_subject = sum(1 for p in qualifying_ppsf if p < subject_value_per_sqft)
 
-    assessment_history = _assessment_history_rows(target_property)
+    assessment_history = _history_for(target)
     median_assessed_value = None
     if median_comp_value_per_sqft is not None and subject_heat_area:
         median_assessed_value = Decimal(str(median_comp_value_per_sqft)) * Decimal(
             str(subject_heat_area)
         )
+    # Tax impact needs TaxUnitRate and PropertyJurisdictionExemption rows, which
+    # are only loaded for Harris. It degrades to completeness="missing" elsewhere.
     tax_impact = calculate_tax_impact(
-        account_number=target_property.account_number,
+        account_number=target.key,
         tax_year=assessment_history[0]["tax_year"] if assessment_history else None,
         median_assessed_value=median_assessed_value,
     )
@@ -881,6 +900,9 @@ def protest_analysis(request, account_number):
     context = {
         "target_property": target_property,
         "target_building": target_building,
+        "target_comparable": target,
+        "county": target.county,
+        "county_label": target.county_label,
         "target_features": format_feature_list(target_features),
         "assessment_history": assessment_history,
         "assessment_history_chart": _assessment_history_chart(assessment_history),
@@ -896,7 +918,7 @@ def protest_analysis(request, account_number):
             qualifying_ppsf, subject_value_per_sqft
         ),
         "min_score": min_score,
-        "pdf_export_url": reverse("protest_analysis_pdf", args=[target_property.account_number]),
+        "pdf_export_url": reverse("protest_analysis_pdf", args=[target.key]),
         "tax_impact": tax_impact,
     }
 
@@ -905,11 +927,12 @@ def protest_analysis(request, account_number):
 
 def protest_analysis_export(request, account_number):
     """CSV export of protest analysis comparable properties."""
-    target_property = PropertyRecord.objects.filter(account_number=account_number).first()
-    if not target_property:
+    resolved = resolve_source(account_number, request.GET.get("county", "").strip() or None)
+    if resolved is None:
         raise Http404("Property not found")
-
-    target_building = target_property.buildings.filter(is_active=True).first()
+    provider, target = resolved
+    target_property = target.source
+    target_building = target.building
 
     try:
         min_score = float(request.GET.get("min_score", "70.0"))
@@ -917,22 +940,15 @@ def protest_analysis_export(request, account_number):
         min_score = 70.0
     min_score = max(52.0, min(100.0, min_score))
 
-    subject_heat_area = (
-        float(target_building.heat_area) if target_building and target_building.heat_area else None
-    )
-    subject_assessed = target_property.assessed_value or target_property.value
-    subject_value_per_sqft = None
-    if subject_assessed and subject_heat_area and subject_heat_area > 0:
-        try:
-            subject_value_per_sqft = float(subject_assessed) / subject_heat_area
-        except Exception:
-            pass
+    subject_heat_area = float(target.living_area) if target.living_area else None
+    subject_value_per_sqft = target.price_per_sqft
 
     similar = find_similar_properties(
         account_number=account_number,
         max_distance_miles=10.0,
         max_results=50,
         min_score=min_score,
+        source=provider.name,
     )
 
     response = HttpResponse(content_type="text/csv")
@@ -940,21 +956,18 @@ def protest_analysis_export(request, account_number):
     response["Content-Disposition"] = f'attachment; filename="protest_analysis_{safe_account}.csv"'
 
     writer = csv.writer(response)
-    qualifying_ppsf = []
-    for result in similar:
-        prop = result["property"]
-        building = result["building"]
-        comp_assessed = prop.assessed_value or prop.value
-        comp_heat_area = float(building.heat_area) if building and building.heat_area else None
-        if comp_assessed and comp_heat_area and comp_heat_area > 0:
-            qualifying_ppsf.append(float(comp_assessed) / comp_heat_area)
+    qualifying_ppsf = [
+        result["comparable"].price_per_sqft
+        for result in similar
+        if result["comparable"].price_per_sqft is not None
+    ]
 
     median_assessed_value = None
     if subject_heat_area and qualifying_ppsf:
         median_comp_ppsf = statistics.median(qualifying_ppsf)
         median_assessed_value = Decimal(str(median_comp_ppsf)) * Decimal(str(subject_heat_area))
     tax_impact = calculate_tax_impact(
-        account_number=target_property.account_number,
+        account_number=target.key,
         tax_year=None,
         median_assessed_value=median_assessed_value,
     )
@@ -984,35 +997,25 @@ def protest_analysis_export(request, account_number):
     )
 
     for result in similar:
-        prop = result["property"]
-        building = result["building"]
-
-        comp_assessed = prop.assessed_value or prop.value
-        comp_heat_area = float(building.heat_area) if building and building.heat_area else None
-
-        comp_value_per_sqft = None
+        comparable = result["comparable"]
+        comp_assessed = comparable.assessed_value
+        comp_heat_area = float(comparable.living_area) if comparable.living_area else None
+        comp_value_per_sqft = comparable.price_per_sqft
         comp_delta = None
-        if comp_assessed and comp_heat_area and comp_heat_area > 0:
-            try:
-                comp_value_per_sqft = float(comp_assessed) / comp_heat_area
-                if subject_value_per_sqft is not None:
-                    comp_delta = comp_value_per_sqft - subject_value_per_sqft
-            except Exception:
-                pass
-
-        full_address = f"{prop.street_number} {prop.street_name}".strip()
+        if comp_value_per_sqft is not None and subject_value_per_sqft is not None:
+            comp_delta = comp_value_per_sqft - subject_value_per_sqft
 
         writer.writerow(
             [
-                full_address,
+                comparable.full_address,
                 f"{result['similarity_score']:.1f}",
                 get_similarity_label(result["similarity_score"]),
                 f"{comp_heat_area:.0f}" if comp_heat_area else "",
-                building.bedrooms if building else "",
-                f"{float(building.bathrooms):.1f}" if building and building.bathrooms else "",
-                building.year_built if building else "",
-                building.quality_code if building else "",
-                building.condition_code if building else "",
+                comparable.bedrooms if comparable.bedrooms is not None else "",
+                f"{float(comparable.bathrooms):.1f}" if comparable.bathrooms is not None else "",
+                comparable.effective_year or "",
+                comparable.quality_code,
+                comparable.condition_code,
                 f"{float(comp_assessed):.2f}" if comp_assessed else "",
                 f"{comp_value_per_sqft:.2f}" if comp_value_per_sqft is not None else "",
                 f"{comp_delta:.2f}" if comp_delta is not None else "",
@@ -1074,12 +1077,13 @@ def _simple_pdf(lines):
 
 def protest_analysis_pdf(request, account_number):
     """PDF export of the protest evidence report."""
-    target_property = PropertyRecord.objects.filter(account_number=account_number).first()
-    if not target_property:
+    resolved = resolve_source(account_number, request.GET.get("county", "").strip() or None)
+    if resolved is None:
         raise Http404("Property not found")
-
-    target_building = target_property.buildings.filter(is_active=True).first()
-    assessed = target_property.assessed_value or target_property.value
+    provider, target = resolved
+    target_property = target.source
+    target_building = target.building
+    assessed = target.assessed_value
     try:
         min_score = float(request.GET.get("min_score", "70.0"))
     except (ValueError, TypeError):
@@ -1087,18 +1091,18 @@ def protest_analysis_pdf(request, account_number):
     min_score = max(52.0, min(100.0, min_score))
 
     lines = [
-        "Harris County Property Tax Protest Evidence Report",
-        f"Account: {target_property.account_number}",
-        f"Property: {target_property.street_number} {target_property.street_name}",
+        # The county is stated, not assumed — this document is filed as evidence.
+        f"{target.county_label} County Property Tax Protest Evidence Report",
+        f"Account: {target.key}",
+        f"Property: {target.full_address}",
         f"Assessed Value: ${float(assessed):,.0f}" if assessed else "Assessed Value: unavailable",
     ]
-    if target_building and target_building.heat_area:
-        lines.append(f"Living Area: {float(target_building.heat_area):,.0f} sqft")
-        if assessed:
-            ppsf = float(assessed) / float(target_building.heat_area)
-            lines.append(f"Subject Value/Sqft: ${ppsf:,.2f}")
+    if target.living_area:
+        lines.append(f"Living Area: {float(target.living_area):,.0f} sqft")
+        if target.price_per_sqft is not None:
+            lines.append(f"Subject Value/Sqft: ${target.price_per_sqft:,.2f}")
 
-    history_rows = _assessment_history_rows(target_property)
+    history_rows = _history_for(target)
     if history_rows:
         lines.append("")
         lines.append("Assessment History")
@@ -1117,39 +1121,32 @@ def protest_analysis_pdf(request, account_number):
         max_distance_miles=10.0,
         max_results=10,
         min_score=min_score,
+        source=provider.name,
     )
     if similar:
         lines.append("")
         lines.append("Comparable Evidence")
         for result in similar:
-            prop = result["property"]
-            building = result["building"]
-            comp_assessed = prop.assessed_value or prop.value
-            comp_ppsf = None
-            if comp_assessed and building and building.heat_area:
-                comp_ppsf = float(comp_assessed) / float(building.heat_area)
+            comparable = result["comparable"]
+            comp_ppsf = comparable.price_per_sqft
             ppsf_text = f", ${comp_ppsf:,.2f}/sqft" if comp_ppsf is not None else ""
-            lines.append(
-                f"{prop.street_number} {prop.street_name}: "
-                f"score {float(result['similarity_score']):.1f}{ppsf_text}"
-            )
+            label = comparable.full_address or f"Account {comparable.key}"
+            lines.append(f"{label}: score {float(result['similarity_score']):.1f}{ppsf_text}")
 
     median_assessed_value = None
-    if target_building and target_building.heat_area and similar:
-        qualifying_ppsf = []
-        for result in similar:
-            prop = result["property"]
-            building = result["building"]
-            comp_assessed = prop.assessed_value or prop.value
-            if comp_assessed and building and building.heat_area:
-                qualifying_ppsf.append(float(comp_assessed) / float(building.heat_area))
+    if target.living_area and similar:
+        qualifying_ppsf = [
+            result["comparable"].price_per_sqft
+            for result in similar
+            if result["comparable"].price_per_sqft is not None
+        ]
         if qualifying_ppsf:
             median_assessed_value = Decimal(str(statistics.median(qualifying_ppsf))) * Decimal(
-                str(float(target_building.heat_area))
+                str(float(target.living_area))
             )
 
     tax_impact = calculate_tax_impact(
-        account_number=target_property.account_number,
+        account_number=target.key,
         tax_year=history_rows[0]["tax_year"] if history_rows else None,
         median_assessed_value=median_assessed_value,
     )

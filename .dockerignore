@@ -56,3 +56,6 @@ var/downloads
 var/extracted
 var/reports
 var/logs
+
+# Brazos CAD staging area — bind-mounted at runtime, must never enter the build context
+data/cad_downloads

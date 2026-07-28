@@ -29,8 +29,19 @@ Django web application for property tax protest analysis in Harris County, Texas
 - `PropertyJurisdictionExemption` — per-account jurisdiction/exemption rows used for tax impact calculations
 - `DownloadRecord` — tracks ETL download history
 
+**Brazos CAD (PACS export)** — populated by `load_brazos_cad` via PostgreSQL COPY, not the ORM. Keyed by `prop_id` + `tax_year`; `prop_id`/`imp_id` are indexed integers rather than ForeignKeys, because PACS exports contain orphan rows that would abort a bulk load.
+- `PropertyAccount` — account record; unique on (`prop_id`, `tax_year`)
+- `PropertyLand` — land segments
+- `PropertyImprovement` — improvements
+- `PropertyImprovementDetail` — improvement details incl. sketch commands
+- `PropertyEntity` — taxing jurisdiction codes
+- `BrazosImportRun` — per-run audit trail (rows loaded/rejected, status)
+
 ### ETL & Analysis (`data/`)
 - `etl.py` — shared ETL helpers (bulk upsert, data-ready marking)
+- `brazos_layouts.py` — Brazos CAD fixed-width field offsets, types and implied decimal scales
+- `brazos_copy.py` — shared PostgreSQL COPY plumbing for both Brazos loaders
+- `comparables.py` — `ComparableProperty` + per-county sources; the seam that makes similarity county-neutral
 - `residential.py` — `is_residential_state_class()`, `normalize_state_class()`
 - `tasks_new.py` — Celery tasks: `download_and_import_building_data`, `download_and_import_gis_data`
 - `similarity.py` — similarity scoring algorithm (see Similarity section below)
@@ -51,6 +62,8 @@ Django web application for property tax protest analysis in Harris County, Texas
 | `download_hcad` | Download HCAD source files |
 | `import_jur_exemptions` | Upsert jurisdiction/exemption rows from TSV (`--path`, `--tax-year`) |
 | `import_tax_unit_rates` | Upsert per-unit adopted tax rates from TSV (`--path`, `--tax-year`) |
+| `load_brazos_cad` | Scrape, download and COPY-load the Brazos CAD certified roll (`--year`, `--list`, `--only`, `--dry-run`) |
+| `load_brazos_gis` | Attach parcel coordinates to `PropertyAccount` from BCAD shapefiles (`--year`, `--list`, `--shapefile-year`, `--dry-run`) |
 
 ### Admin (`data/admin.py`)
 Custom `DownloadRecordAdmin` with an ETL pipeline panel at `/admin/data/downloadrecord/`. Exposes:
@@ -59,14 +72,29 @@ Custom `DownloadRecordAdmin` with an ETL pipeline panel at `/admin/data/download
 - Task status polling (async JSON endpoint)
 
 ### Views & URLs (`taxprotest/`)
+**All property views are county-aware.** They take an optional `?county=hcad|brazos`; without it
+the account is resolved by looking it up in each county in turn (HCAD first). The account/`prop_id`
+in the URL is unchanged, so existing Harris links keep working.
+
 | URL | View | Purpose |
 |---|---|---|
-| `/` | `index` | Property search |
+| `/` | `index` | Property search, with a county filter (`?county=`) |
 | `/similar/<account_number>/` | `similar_properties` | Comparable properties with protest recommendation |
-| `/export/` | `export_csv` | CSV export of search results |
+| `/export/` | `export_csv` | CSV export of search results (County appended as the last column) |
 | `/protest/<account_number>/` | `protest_analysis` | ARB hearing evidence report with equity analysis and tax impact |
 | `/protest/<account_number>/export/` | `protest_analysis_export` | CSV export of protest comps + tax impact |
 | `/protest/<account_number>/pdf/` | `protest_analysis_pdf` | PDF export of protest evidence report |
+
+Views never touch a county's models directly. `_comparable_row()` flattens a `ComparableProperty`
+into the single row shape every template renders, so a factor a district does not publish arrives
+as `None` and shows as a dash instead of each county needing its own table. When adding a county,
+the views and templates should need no changes at all.
+
+Brazos specifics handled in the views: assessment history is assembled from its per-year
+`PropertyAccount` rows (there is no `AssessmentHistory` table), and `_brazos_cap_status()` returns
+the same dict shape as `evaluate_cap_status()` so the template's `.status`/`.label` lookups work.
+Tax impact needs `TaxUnitRate`/`PropertyJurisdictionExemption`, which are Harris-only, so it
+degrades to `completeness="missing"` with an explanatory note rather than a blank panel.
 | `/about/` | `about` | About page |
 | `/healthz/` | `healthz` | Liveness probe |
 | `/readiness/` | `readiness` | Readiness probe |
@@ -76,7 +104,35 @@ Custom `DownloadRecordAdmin` with an ETL pipeline panel at `/admin/data/download
 
 ## Similarity Algorithm
 
-`data/similarity.py` — `find_similar_properties(account_number, max_distance_miles=10.0, max_results=50, min_score=30.0)` → `List[Dict]`
+`data/similarity.py` — `find_similar_properties(account_number, max_distance_miles=10.0, max_results=50, min_score=30.0, source=None)` → `List[Dict]`
+
+**County-neutral.** The algorithm scores `ComparableProperty` objects from `data/comparables.py`,
+which is where each district's models are mapped onto one shape. `source` selects the county
+(`"hcad"` or `"brazos"`); omitted, the key is looked up in each in turn, HCAD first. **Adding a
+district means writing a source in `comparables.py`, not editing `similarity.py`.**
+
+| Source | Models | Key |
+|---|---|---|
+| `HcadSource` | `PropertyRecord` + `BuildingDetail` + `ExtraFeature` | `account_number` |
+| `BrazosSource` | `PropertyAccount` + `PropertyImprovementDetail` | `prop_id` (latest year unless pinned) |
+
+Brazos has no single "building" row, so `comparables.py` folds improvement details into
+building-level facts: living area is the sum of `MA*` rows (main area, second floor), the other
+detail codes (`AG`, `OP`, `SP`…) become features, and quality/year come from the largest dwelling
+row. A `MA2` row implies two storeys — the only storey signal Brazos publishes.
+
+**Missing factors are skipped, never zeroed.** Brazos publishes no bedrooms, bathrooms or
+condition, so those arrive as `None` and `_score_from_components` renormalises over the rest, with
+the usual completeness penalty. Rankings stay sound because every candidate in one search shares
+the same gaps — but an absolute score is only comparable *within* a county, not across them.
+
+Quality codes differ by district: HCAD grades with letters (`A`/`B`/`C`), Brazos embeds a digit in
+a structured code (`RV3`, `RV4P`). `_quality_similarity` tries the letter rank, then an ordinal
+grade extracted from the digits, then falls back to categorical matching.
+
+Result dicts keep `property` (the underlying model instance), `building` and `features` (the
+county's own row types); `comparable` and `source` are added alongside. Comparables are always
+drawn from the target's own county — the search never mixes districts.
 
 **Distance** is a filter only — candidates beyond `max_distance_miles` are excluded before scoring. Distance does not affect the score.
 
@@ -117,6 +173,23 @@ docker compose exec web python manage.py import_all_data
 
 # Validate imported data
 docker compose exec web python manage.py validate_data
+
+# Brazos CAD certified roll (latest year; ~1.2M rows, a few minutes)
+# Staged .zip + extracts (~1.6 GB/year) are deleted automatically on success.
+docker compose exec web python manage.py load_brazos_cad
+docker compose exec web python manage.py load_brazos_cad --list
+docker compose exec web python manage.py load_brazos_cad --year 2024 --only PropertyAccount
+docker compose exec web python manage.py load_brazos_cad --keep-archive   # skip re-download next run
+
+# Brazos CAD parcel coordinates (run after load_brazos_cad for the same year)
+docker compose exec web python manage.py load_brazos_gis --year 2025
+docker compose exec web python manage.py load_brazos_gis --list
+
+# Reclaim ETL staging disk (run from the host, not the container)
+./scripts/cleanup_data.sh --dry-run          # always check first
+./scripts/cleanup_data.sh                    # extracted/derived files only
+./scripts/cleanup_data.sh --brazos --all     # one pipeline's staging
+./scripts/cleanup_data.sh --all --yes        # everything, no prompt
 
 # Shell
 docker compose exec web python manage.py shell
@@ -161,8 +234,16 @@ Test files live in `data/tests/`:
 - `test_tasks_new.py` — Celery task logic
 - `test_tax_impact.py` — `calculate_tax_impact()` logic
 - `test_tax_import_commands.py` — `import_jur_exemptions` and `import_tax_unit_rates` commands
+- `test_brazos_layouts.py` — BCAD fixed-width field offsets, value conversion, export header
+- `test_load_brazos_cad.py` — BCAD record reader, COPY encoding, upsert SQL, staging cleanup
+- `test_brazos_models.py` — BCAD value accessors, situs address, import-run provenance
+- `test_load_brazos_gis.py` — BCAD parcel layer/column selection, coordinate application
+- `test_comparables.py` — county mapping, source resolution, cross-county scoring
 
-View tests live in `taxprotest/tests/`.
+View tests live in `taxprotest/tests/`:
+- `test_views.py` — Harris behaviour (search, export, similarity, protest analysis)
+- `test_views_multicounty.py` — Brazos rendering, county resolution and filtering, history and
+  cap status from account rows, tax-impact degradation
 
 ---
 
@@ -241,13 +322,78 @@ HCAD: https://download.hcad.org/data/
 
 Downloaded at build time via `scripts/build_time_download.py`. Re-download targets live in `var/downloads/`, with extracted data under `var/extracted/`.
 
+Brazos CAD: https://brazoscad.org/certified-data-downloads/
+
+One certified-roll `.zip` per tax year, containing fixed-width PACS (Harris Govern / True Automation) `.TXT` files. Loaded by `load_brazos_cad`; byte offsets live in `data/brazos_layouts.py`.
+
+| File | Model | Contents |
+|---|---|---|
+| `APPRAISAL_INFO.TXT` | `PropertyAccount` | Property/account records (~1.4 GB, 9247-char records) |
+| `APPRAISAL_LAND_DETAIL.TXT` | `PropertyLand` | Land segments |
+| `APPRAISAL_IMPROVEMENT_INFO.TXT` | `PropertyImprovement` | Improvements |
+| `APPRAISAL_IMPROVEMENT_DETAIL.TXT` | `PropertyImprovementDetail` | Improvement details + sketch commands |
+| `APPRAISAL_ENTITY.TXT` | `PropertyEntity` | Taxing jurisdiction codes |
+
+Downloads and extracted files stage in `data/cad_downloads/` (bind-mounted, gitignored). A year is ~1.6 GB staged; `load_brazos_cad` deletes it after a successful load, and `scripts/cleanup_data.sh` reclaims leftovers from interrupted runs.
+
+**Never read `appraised_val` / `assessed_val` directly.** Despite their names, both are computed
+*before* the agricultural productivity deduction, so on ag land they overstate value — often
+tenfold. Use the `PropertyAccount` accessors, which resolve to the figures the district publishes:
+
+| Use this | Backed by | esearch label |
+|---|---|---|
+| `.market_value` | `appraised_val` | Market Value |
+| `.appraised_value` | `appraised_val_prod_loss` | Appraised Value |
+| `.assessed_value` | `assessed_val_prod_loss` | Assessed Value |
+| `.ag_value_loss` | ag/timber market minus use value | Ag Value Loss |
+| `.situs_address` | `situs_num` + prefix/street/suffix/unit | Situs Address |
+| `.taxing_units` | `entities`, split on commas | — |
+| `.has_location` | `latitude`/`longitude` | — |
+
+Other fields worth knowing: `circuit_breaker_val` (SB2 2023 limitation, non-zero on 4.7% of 2025
+rows), `entities` (per-property taxing units, populated on 100% of rows — `PropertyEntity` is only
+a code lookup), and `dataset_id` (joins a row to its `BrazosImportRun`).
+
+**Layout caveats.** `situs_num` sits at offset 4460, ~3.3 KB from the rest of the address — easy to
+miss. `circuit_breaker_val` (9068–9082) is *past* the published 9067-character layout: Brazos emits
+9247-char records, but the 2021 export is exactly 9067. It is therefore marked `optional=True` in
+`brazos_layouts.py` and excluded from `min_width`, so older exports still load with the column NULL
+instead of being rejected wholesale. Mark any other post-9067 field the same way.
+
+**Data vintage.** `BrazosImportRun` records the export header (run date, supplement number, dataset
+id, PACS version); `run.is_certified_roll` is True only when supplement is 0. The certified roll is
+a snapshot — esearch reflects post-certification supplements, so live values drift from it over
+time. That drift is expected and is not an ETL fault.
+
+Verified against esearch.brazoscad.org with `scripts/verify_brazos_against_esearch.py`
+(17 fields/property; 0 unexplained mismatches).
+
+**Parcel geometry.** The certified roll has no spatial data; coordinates come from a separate
+shapefile via `load_brazos_gis`, from https://brazoscad.org/tax-information/gis/. Run it *after*
+`load_brazos_cad` for the same year.
+
+- Joins on `PROP_ID`. Coverage is **94.5% of real property** (`prop_type_cd='R'`); mineral,
+  personal-property and mobile-home accounts have no parcel boundary and stay NULL by nature, so
+  the ~50% figure across all accounts is expected, not a failure.
+- Source CRS is NAD83 Texas Central (ftUS), reprojected to EPSG:4326. `parcel_area_sqft` is
+  computed *before* reprojection, and cross-checks against `land_acres` from the roll to ~1%.
+- Uses `representative_point()`, never `centroid` — a centroid falls outside concave river-front
+  and cul-de-sac parcels, which would attribute a point to a neighbouring property.
+- **Archive layout varies wildly by year.** 2025 ships a single `Parcels_*.shp`; 2024 ships a
+  33-layer GIS package where `Parcel_ID.shp` is map lettering and the boundaries live in
+  `Public_Parcel_Boundary_certified.shp`. The loader picks the largest polygon layer carrying a
+  property-id column, then chooses among id columns by which yields the most usable ids — 2024 has
+  `PROP_ID` holding `'R22549'` and `PROP_ID1` holding `22549`. Do not hardcode either.
+
 ---
 
 ## Documentation
 
 | File | Contents |
 |---|---|
+| `TODO.md` | Outstanding work, known gaps and caveats — **read at the start of a session, update in the same commit as the work** |
 | `README.md` | Overview, features, quick start, similarity weights |
+| `DEPLOYMENT.md` | CD pipeline, SSH keys, Docker permissions, GitHub secrets |
 | `docs/guides/SETUP.md` | Installation, Docker services, production deployment |
 | `docs/guides/DATABASE.md` | ETL processes, import commands, DB management |
 | `docs/guides/GIS.md` | GIS data handling, coordinate storage, similarity distance |
