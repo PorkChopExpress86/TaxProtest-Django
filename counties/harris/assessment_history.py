@@ -2,18 +2,13 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass
-from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
 from django.db import transaction
 
 from counties.harris.models import AssessmentHistory
-
-TEN_PERCENT_CAP = Decimal("10")
-TWENTY_PERCENT_CAP = Decimal("20")
-ONE_HUNDRED = Decimal("100")
-CENT = Decimal("0.01")
 
 
 def _parse_decimal(value: Any) -> Decimal | None:
@@ -32,83 +27,6 @@ def _parse_int(value: Any) -> int | None:
         return int(str(value).strip())
     except (ValueError, TypeError):
         return None
-
-
-def _money(value: Decimal | None) -> Decimal | None:
-    if value is None:
-        return None
-    return value.quantize(CENT, rounding=ROUND_HALF_UP)
-
-
-def _percent_change(current: Decimal | None, prior: Decimal | None) -> Decimal | None:
-    if current is None or prior is None or prior <= 0:
-        return None
-    return ((current - prior) / prior * ONE_HUNDRED).quantize(CENT, rounding=ROUND_HALF_UP)
-
-
-#: HCAD's ``Cap_acct`` is a flag, not a presence marker: it is "Y", "N", or
-#: "Pending" on every row. Only "Y" means the homestead cap applies. Testing it
-#: for non-emptiness would put all 7.9M rows under the 10% homestead cap,
-#: including the ~5.5M marked "N" that are subject to the 20% circuit breaker.
-HOMESTEAD_CAP_FLAG = "Y"
-
-
-def _has_cap_account(entry: AssessmentHistory) -> bool:
-    """Whether the 10% homestead cap applies rather than the 20% circuit breaker.
-
-    "Pending" (a homestead application not yet granted) is treated as not
-    capped: the cap is not in force for the year under review, and claiming the
-    tighter limit would overstate the owner's case in an ARB filing.
-    """
-    return str(entry.cap_account or "").strip().upper() == HOMESTEAD_CAP_FLAG
-
-
-def evaluate_cap_status(
-    current: AssessmentHistory,
-    prior: AssessmentHistory | None = None,
-) -> dict[str, Any]:
-    """Evaluate assessed/appraised value increase against Texas cap thresholds."""
-    prior_value = current.prior_appraised_value or (prior.appraised_value if prior else None)
-    if prior_value is None and prior:
-        prior_value = prior.assessed_value
-
-    current_value = current.appraised_value or current.assessed_value
-    market_value = current.market_value
-    new_construction = current.new_construction_value or Decimal("0")
-    increase_percent = _percent_change(current_value, prior_value)
-
-    cap_type = "homestead" if _has_cap_account(current) else "circuit_breaker"
-    limit_percent = TEN_PERCENT_CAP if cap_type == "homestead" else TWENTY_PERCENT_CAP
-
-    if current_value is None or prior_value is None:
-        return {
-            "status": "unknown",
-            "label": "Needs review",
-            "cap_type": cap_type,
-            "limit_percent": limit_percent,
-            "increase_percent": increase_percent,
-            "allowed_value": None,
-            "overage": None,
-        }
-
-    allowed_by_cap = prior_value * (Decimal("1") + (limit_percent / ONE_HUNDRED))
-    allowed_by_cap += new_construction
-    allowed_value = (
-        min(allowed_by_cap, market_value) if market_value is not None else allowed_by_cap
-    )
-    allowed_value = _money(allowed_value)
-    overage = _money(current_value - allowed_value) if allowed_value is not None else None
-    status = "over_limit" if overage is not None and overage > 0 else "within_limit"
-
-    return {
-        "status": status,
-        "label": "Over cap" if status == "over_limit" else "Within cap",
-        "cap_type": cap_type,
-        "limit_percent": limit_percent,
-        "increase_percent": increase_percent,
-        "allowed_value": allowed_value,
-        "overage": overage,
-    }
 
 
 @dataclass

@@ -571,8 +571,14 @@ class ImportCommandTests(TestCase):
 
 class EvaluateCapStatusIntegrationTests(TestCase):
     """The point of this ticket: a real year-over-year cap analysis works
-    once multiple years are loaded, with no code changes to evaluate_cap_status
-    or assessment_history_rows -- both are already county-agnostic."""
+    once multiple years are loaded, with no code changes to
+    assessment_history_rows -- it was already county-agnostic.
+
+    evaluate_cap_status itself is intentionally NOT county-agnostic for cap
+    *type*: Brazos's cap_account is a derived "some reduction was applied"
+    signal, not HCAD's homestead-specific Y/N/Pending flag, so it can only
+    report an honest "unknown" cap type here -- see counties/common/cap_status.py.
+    """
 
     def setUp(self):
         PropertyAccount.objects.create(prop_id="000000010013", tax_year=2025)
@@ -621,4 +627,7 @@ class EvaluateCapStatusIntegrationTests(TestCase):
         rows = assessment_history_rows("000000010013", county="brazos")
         self.assertEqual([r["tax_year"] for r in rows], [2025, 2024])
         self.assertIsNotNone(rows[0]["increase_percent"])
-        self.assertEqual(rows[0]["cap_status"]["cap_type"], "homestead")
+        # cap_type stays "unknown" -- Brazos's derived flag can't tell us
+        # whether this was a homestead cap or something else. See
+        # counties/common/tests/test_cap_status.py for the dedicated coverage.
+        self.assertEqual(rows[0]["cap_status"]["cap_type"], "unknown")
