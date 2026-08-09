@@ -7,6 +7,7 @@ Complete guide to database management, data imports, and ETL processes for TaxPr
 - [Database Schema](#database-schema)
 - [Data Sources](#data-sources)
 - [Import Commands](#import-commands)
+- [Tax Impact Data (Harris)](#tax-impact-data-harris)
 - [Import Processes](#import-processes)
 - [Scheduled Imports](#scheduled-imports)
 - [Data Management](#data-management)
@@ -262,6 +263,26 @@ print(f'Orphaned Buildings:  {orphaned_buildings:,}')
 print(f'Orphaned Features:   {orphaned_features:,}')
 "
 ```
+
+## Tax Impact Data (Harris)
+
+The protest report's Tax Impact section needs two tables populated:
+`TaxUnitRate` (a rate per taxing unit) and `PropertyJurisdictionExemption`
+(a row per account and taxing unit). Both come from HCAD's `Real_jur_exempt.zip`:
+
+```bash
+# Downloaded alongside the other archives at build time, or on demand:
+docker compose exec web python manage.py import_hcad_jur_exempt --tax-year 2025
+```
+
+The command reads `jur_value.txt`, `jur_exempt.txt`, `jur_exemption_dscr.txt`,
+and `jur_tax_dist_exempt_value_rate.txt`, converts HCAD's per-$100 rates to the
+fractional rates `calculate_tax_impact` expects, and verifies after loading that
+every stored (account, taxing unit) pair reproduces HCAD's own taxable value.
+
+By default it loads only accounts already ingested as `PropertyRecord`s (~10M
+rows); `--all-accounts` covers all ~1.6M accounts in the files, including
+commercial and personal property.
 
 ## Import Processes
 

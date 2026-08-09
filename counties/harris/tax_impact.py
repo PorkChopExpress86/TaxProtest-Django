@@ -39,13 +39,23 @@ def _money(value: Decimal) -> Decimal:
 
 
 def _latest_assessment_year(account_number: str, county: str) -> int | None:
-    row = (
-        AssessmentHistory.objects.filter(account_number=account_number, county=county)
-        .order_by("-tax_year")
-        .values_list("tax_year", flat=True)
-        .first()
-    )
-    return int(row) if row is not None else None
+    """Newest tax year we can compute an impact for.
+
+    Prefers assessment history, which also supplies the current assessed value
+    shown alongside the estimate. Falls back to the jurisdiction rows, because
+    those are what the calculation actually consumes: a county can have a full
+    set of taxing units and rates loaded without any assessment history yet
+    (Harris's ``import_hcad_jur_exempt`` populates the former, not the latter),
+    and refusing to compute then would report "missing" on data we hold.
+    """
+    for queryset in (
+        AssessmentHistory.objects.filter(account_number=account_number, county=county),
+        PropertyJurisdictionExemption.objects.filter(account_number=account_number, county=county),
+    ):
+        row = queryset.order_by("-tax_year").values_list("tax_year", flat=True).first()
+        if row is not None:
+            return int(row)
+    return None
 
 
 def _dedupe_units(rows: list[PropertyJurisdictionExemption]) -> list[PropertyJurisdictionExemption]:

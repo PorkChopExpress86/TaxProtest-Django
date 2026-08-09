@@ -57,6 +57,9 @@ ARCHIVES = [
     {"filename": "Real_acct_owner.zip", "required": True},
     {"filename": "Real_acct_ownership_history.zip", "required": False},
     {"filename": "Real_building_land.zip", "required": True},
+    # Jurisdiction/exemption rows and per-unit tax rates -- the inputs the
+    # protest report's Tax Impact section needs (import_hcad_jur_exempt).
+    {"filename": "Real_jur_exempt.zip", "required": False},
     {"filename": "Code_description_real.zip", "required": False},
     {"filename": "PP_files.zip", "required": False},
     {"filename": "Code_description_pp.zip", "required": False},

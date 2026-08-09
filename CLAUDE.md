@@ -127,7 +127,8 @@ Harris (`counties/harris/management/commands/`):
 | `import_building_data` | Building details, features, room counts |
 | `load_room_counts` | Room counts only (fixtures.txt) |
 | `download_hcad` | Download HCAD source files |
-| `import_jur_exemptions` | Upsert jurisdiction/exemption rows from TSV (`--path`, `--tax-year`) |
+| `import_hcad_jur_exempt` | **Jurisdiction/exemption rows + tax unit rates from `Real_jur_exempt.zip`** (`--tax-year`); this is what makes the Tax Impact section work |
+| `import_jur_exemptions` | Upsert jurisdiction/exemption rows from a pre-normalised TSV (`--path`, `--tax-year`) |
 | `import_tax_unit_rates` | Upsert per-unit adopted tax rates from TSV (`--path`, `--tax-year`) |
 
 Brazos (`counties/brazos/management/commands/`):
@@ -336,6 +337,7 @@ Task names are module paths — renaming or moving a task module changes its Cel
 | `Real_acct_owner.txt` | Property records |
 | `Real_building_land.zip` | Building details and features |
 | `Parcels.zip` | GIS shapefiles (~800MB) |
+| `Real_jur_exempt.zip` | Jurisdiction values, exemptions, and tax rates (~110MB) |
 
 Downloaded at build time via `scripts/build_time_download.py` into `counties/harris/var/downloads/`,
 extracted to `counties/harris/var/extracted/`.
@@ -373,9 +375,17 @@ are fixed-width with no header row; offsets are pinned in `counties/brazos/parse
 - All Harris ETL helper logic goes in `counties/harris/etl.py` or `counties/harris/residential.py`,
   not inline in management commands.
 - Celery tasks import from `counties.harris.tasks_new`.
-- Tax impact calculations require `TaxUnitRate` and `PropertyJurisdictionExemption` rows to be
-  populated via `import_tax_unit_rates` and `import_jur_exemptions` before the protest analysis views
-  will show meaningful results; missing data degrades gracefully to `completeness="missing"`.
+- Tax impact calculations require `TaxUnitRate` and `PropertyJurisdictionExemption` rows before the
+  protest analysis views show meaningful results; missing data degrades gracefully to
+  `completeness="missing"`. For Harris, populate both with `import_hcad_jur_exempt --tax-year YYYY`
+  (from `Real_jur_exempt.zip`); Brazos gets them from `load_brazos_cad`. The generic
+  `import_jur_exemptions` / `import_tax_unit_rates` commands take pre-normalised TSVs and cannot
+  read HCAD's raw files.
+- **Tax rates are stored fractional** (`0.00878300`), not per $100 as HCAD and most districts publish
+  them (`0.878300`) — `calculate_tax_impact` multiplies a taxable value by `adopted_rate` directly.
+- **`PropertyJurisdictionExemption` stores the gross value on its base row** (`exemption_code=""`)
+  with the reduction on a companion row, because `calculate_tax_impact` subtracts exemptions itself.
+  Storing an already-net taxable value there double-counts.
 - `AssessmentHistory`, `TaxUnitRate`, and `PropertyJurisdictionExemption` are shared tables scoped by
   a `county` column. Always pass `county=` when querying them.
 
