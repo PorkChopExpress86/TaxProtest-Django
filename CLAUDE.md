@@ -138,6 +138,7 @@ Brazos (`counties/brazos/management/commands/`):
 | `load_brazos_cad` | Download + extract + ingest the certified BCAD archive |
 | `load_brazos_gis` | GIS coordinates from the BCAD parcel shapefile (run **after** `load_brazos_cad`) |
 | `import_brazos_tax_rates` | Per-entity adopted tax rates |
+| `import_brazos_assessment_history` | **Multi-year assessed/appraised/market value history** (`--start-year`, `--end-year`); downloads each year's own certified archive from BCAD's decade-deep portal — no diffing, each year already carries its own values |
 | `validate_brazos_against_source` | Cross-check ingested rows against the source files |
 
 ### Admin (`counties/harris/admin.py`)
@@ -344,7 +345,10 @@ extracted to `counties/harris/var/extracted/`.
 
 **Brazos County (BCAD)** — certified PACS export, fetched by `load_brazos_cad` into
 `counties/brazos/var/downloads/` and extracted to `counties/brazos/var/extracted/<year>/`. The files
-are fixed-width with no header row; offsets are pinned in `counties/brazos/parsers/pacs.py`.
+are fixed-width with no header row; offsets are pinned in `counties/brazos/parsers/pacs.py`. BCAD's
+download portal keeps roughly a decade of past certified years available (confirmed 2016–2025 as of
+2026-08); `import_brazos_assessment_history` downloads each target year's own archive rather than
+diffing consecutive years — nothing in the export carries a prior-year value column.
 
 ---
 
@@ -381,6 +385,13 @@ are fixed-width with no header row; offsets are pinned in `counties/brazos/parse
   (from `Real_jur_exempt.zip`); Brazos gets them from `load_brazos_cad`. The generic
   `import_jur_exemptions` / `import_tax_unit_rates` commands take pre-normalised TSVs and cannot
   read HCAD's raw files.
+- **`AssessmentHistory.cap_account` means different things per county and neither is a clean boolean.**
+  Harris's `Cap_acct` is HCAD's own `Y`/`N`/`Pending` flag; Brazos has no such field, so it's derived
+  as `"Y"` when `appraised_value > assessed_value` for that year (see
+  `import_brazos_assessment_history`'s docstring for why that delta is the cap and not an
+  entity-specific exemption). `evaluate_cap_status` treats both identically (`== "Y"` → homestead cap),
+  which is a known simplification — see issue #14 (cap type/year applicability is unresolved for
+  both counties).
 - **Tax rates are stored fractional** (`0.00878300`), not per $100 as HCAD and most districts publish
   them (`0.878300`) — `calculate_tax_impact` multiplies a taxable value by `adopted_rate` directly.
 - **`PropertyJurisdictionExemption` stores the gross value on its base row** (`exemption_code=""`)

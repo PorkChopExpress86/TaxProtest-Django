@@ -284,6 +284,33 @@ By default it loads only accounts already ingested as `PropertyRecord`s (~10M
 rows); `--all-accounts` covers all ~1.6M accounts in the files, including
 commercial and personal property.
 
+## Multi-Year Assessment History (Brazos)
+
+Brazos gets its jurisdiction/exemption rows and tax rates from `load_brazos_cad`
+(the current year only). The protest report's trend chart and cap-status
+analysis additionally need multiple *years* of history, which BCAD's own
+current-year export can't provide:
+
+```bash
+docker compose exec web python manage.py import_brazos_assessment_history \
+    --start-year 2021 --end-year 2025
+```
+
+BCAD's `certified-data-downloads` portal keeps roughly a decade of past
+certified exports available (confirmed 2016–2025 as of 2026-08) — unlike
+HCAD's `real_acct.txt`, nothing in BCAD's export carries a prior-year value
+column, so this command downloads each target year's own archive and reads
+that year's own `assessed_value`/`appraised_value`/`market_value` directly
+from `APPRAISAL_ENTITY_INFO.TXT`, rather than diffing consecutive years.
+
+One past year (2023, at least) ships DEFLATE64-compressed, which Python's
+`zipfile` can't decompress — the command falls back to the system `7z`
+binary (`p7zip-full`, in the Dockerfile) for exactly the archives that need
+it; nothing to do manually. Each year's roll-up is sanity-checked (`market
+>= appraised >= assessed`) before anything is written — a year failing that
+check likely means BCAD changed the export's field layout again, and the
+command refuses to load unverified data rather than write it silently.
+
 ## Import Processes
 
 ### Property Records Import

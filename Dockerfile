@@ -9,12 +9,17 @@ ENV PYTHONUNBUFFERED=1
 WORKDIR /app
 
 # Install system dependencies
+# p7zip-full: some past-year BCAD certified archives use DEFLATE64 compression
+# (confirmed: the 2023 export), which Python's stdlib zipfile cannot decompress
+# (NotImplementedError) -- import_brazos_assessment_history falls back to `7z`
+# for exactly those archives, trying the stdlib path first everywhere else.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
     postgresql-client \
     gcc \
     python3-dev \
     libpq-dev \
+    p7zip-full \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
