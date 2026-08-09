@@ -1,0 +1,4 @@
+# Project-level runtime state that is not county data — currently the Celery
+# beat schedule database. Regenerated automatically; never committed.
+*
+!.gitignore

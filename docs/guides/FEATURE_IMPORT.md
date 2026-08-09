@@ -6,9 +6,9 @@ This guide covers importing HCAD extra features such as `Gunite Pool`, `Frame De
 
 Feature data comes from the `Real_building_land` extract:
 
-- `var/extracted/Real_building_land/extra_features_detail1.txt`
-- `var/extracted/Real_building_land/extra_features_detail2.txt`
-- `var/extracted/Real_building_land/extra_features.txt` as a fallback format
+- `counties/harris/var/extracted/Real_building_land/extra_features_detail1.txt`
+- `counties/harris/var/extracted/Real_building_land/extra_features_detail2.txt`
+- `counties/harris/var/extracted/Real_building_land/extra_features.txt` as a fallback format
 
 The modern ETL prefers the detail files when they exist. Detail files contain the useful display fields:
 
@@ -84,4 +84,4 @@ If every feature displays as `None` or `None (3)`, inspect the active rows:
 docker compose run --rm --user root web python manage.py shell -c "from data.models import ExtraFeature; from django.db.models import Count; print(list(ExtraFeature.objects.filter(is_active=True).values('feature_description').annotate(c=Count('id')).order_by('-c')[:10]));"
 ```
 
-If the top description is literal `None`, the import likely read the wrong source columns or stringified Python `None`. Verify the mappings in `data/etl_pipeline/transform.py`, `data/etl_pipeline/model_loader.py`, and `data/etl.py`, then rerun the focused tests and import workflow.
+If the top description is literal `None`, the import likely read the wrong source columns or stringified Python `None`. Verify the mappings in `counties/harris/etl_pipeline/transform.py`, `counties/harris/etl_pipeline/model_loader.py`, and `counties/harris/etl.py`, then rerun the focused tests and import workflow.

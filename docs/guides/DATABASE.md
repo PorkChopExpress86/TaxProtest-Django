@@ -317,7 +317,7 @@ print(f'Orphaned Features:   {orphaned_features:,}')
 
 **Process:**
 1. Downloads Real_building_land.zip
-2. Extracts to `var/extracted/Real_building_land/`
+2. Extracts to `counties/harris/var/extracted/Real_building_land/`
 3. **Soft Delete Phase:**
    - Marks all existing records as `is_active=False`
    - Preserves historical data
@@ -475,7 +475,7 @@ from data.models import PropertyRecord
 queryable = PropertyRecord.objects.filter(is_residential=True, is_data_ready=True)
 ```
 
-- `is_residential` — derived from `state_class` via `data/residential.py`; excludes commercial, exempt, and other non-residential parcels
+- `is_residential` — derived from `state_class` via `counties/harris/residential.py`; excludes commercial, exempt, and other non-residential parcels
 - `is_data_ready` — set by ETL after building, room-count, and GIS data are all present
 
 **Always filter for active records** on related models:
@@ -572,7 +572,7 @@ docker compose logs worker
 **Re-run import:**
 ```bash
 # Delete old downloads
-rm -rf var/extracted/Real_building_land/
+rm -rf counties/harris/var/extracted/Real_building_land/
 
 # Re-run import
 docker compose exec web python manage.py import_building_data
@@ -660,7 +660,7 @@ import csv
 csv.field_size_limit(10485760)  # 10MB limit
 ```
 
-This is already set in `data/etl.py`.
+This is already set in `counties/harris/etl.py`.
 
 ---
 

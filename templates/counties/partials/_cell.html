@@ -1,0 +1,37 @@
+{% load humanize %}{% load countyfmt %}
+{% comment %}
+One table cell, rendered from a Column spec. `row` may be a dict (search
+results) or a dataclass (comparables) — the `field` filter reads either.
+{% endcomment %}
+{% with value=row|field:column.key %}
+{% if column.format == "currency" %}
+  {% if value %}{{ value|currency }}{% else %}<span class="text-gray-400">N/A</span>{% endif %}
+{% elif column.format == "sqft" %}
+  {% if value %}{{ value|sqft }}{% else %}<span class="text-gray-400">&ndash;</span>{% endif %}
+{% elif column.format == "acres" %}
+  {% if value %}{{ value|acres }}{% else %}<span class="text-gray-400">&ndash;</span>{% endif %}
+{% elif column.format == "ppsf" %}
+  {% if value %}${{ value|floatformat:2 }}{% else %}<span class="text-gray-400">&ndash;</span>{% endif %}
+{% elif column.format == "distance" %}
+  {% if value is not None %}{{ value }} mi{% else %}<span class="text-gray-400">&ndash;</span>{% endif %}
+{% elif column.format == "bedbath" %}
+  {% with beds=row|field:"bedrooms" baths=row|field:"bathrooms" %}
+    {% if beds or baths %}
+      <span class="text-gray-700">{{ beds|default:"-" }}</span>
+      <span class="text-gray-400">/</span>
+      <span class="text-gray-700">{{ baths|floatformat:1|default:"-" }}</span>
+    {% else %}<span class="text-gray-400">&ndash;</span>{% endif %}
+  {% endwith %}
+{% elif column.format == "quality" %}
+  {% if value %}
+    <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium {{ value|quality_classes }}"
+          title="{{ value|quality_label }}">{{ value }}</span>
+  {% else %}<span class="text-gray-400">&ndash;</span>{% endif %}
+{% elif column.format == "mono" %}
+  <span class="font-mono text-gray-800">{{ value|default:"&ndash;" }}</span>
+{% elif column.truncate %}
+  <div class="max-w-[200px] truncate" title="{{ value }}">{{ value|default:"&ndash;" }}</div>
+{% else %}
+  {% if value or value == 0 %}{{ value }}{% else %}<span class="text-gray-400">&ndash;</span>{% endif %}
+{% endif %}
+{% endwith %}

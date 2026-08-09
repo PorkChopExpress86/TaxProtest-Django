@@ -72,14 +72,27 @@ FULL_PATTERNS=(
     'Dockerfile\.[[:alnum:]]+$'
     '^requirements.*\.txt$'
     '^requirements/'
-    '^data/migrations/'
-    '^brazos_cad/migrations/'
-    '^data/models\.py$'
-    '^brazos_cad/models\.py$'
+    '^counties/[^/]+/migrations/'
+    '^counties/[^/]+/models\.py$'
+    # The shared web layer and every county's adapter/urls are imported by
+    # web/worker/beat, so any change there needs a full rebuild. Matched
+    # module-by-module so counties/common/tests/ stays skippable.
+    '^counties/common/[^/]+\.py$'
+    '^counties/common/templatetags/'
+    '^counties/[^/]+/adapter\.py$'
+    '^counties/[^/]+/urls\.py$'
+    '^counties/[^/]+/apps\.py$'
+    '^counties/[^/]+/similarity\.py$'
+    '^counties/[^/]+/query\.py$'
+    '^counties/[^/]+/tax_impact\.py$'
+    '^counties/[^/]+/assessment_history\.py$'
+    '^counties/[^/]+/tasks_new\.py$'
+    '^counties/[^/]+/admin\.py$'
     '^taxprotest/settings\.py$'
     '^taxprotest/runtime_paths\.py$'
     '^taxprotest/celery\.py$'
     '^taxprotest/urls\.py$'
+    '^taxprotest/views\.py$'
     '^templates/'
     '^static/'
 )
@@ -87,11 +100,11 @@ FULL_PATTERNS=(
 # Partial-rebuild patterns: code that is only run by the `etl` service.
 # If web/worker/beat ever import any of these paths, classify as FULL.
 PARTIAL_PATTERNS=(
-    '^brazos_cad/management/'
-    '^brazos_cad/parsers/'
-    '^brazos_cad/etl\.py$'
-    '^data/etl_pipeline/'
-    '^data/etl\.py$'
+    '^counties/[^/]+/management/'
+    '^counties/[^/]+/parsers/'
+    '^counties/[^/]+/etl\.py$'
+    '^counties/[^/]+/etl_pipeline/'
+    '^counties/[^/]+/residential\.py$'
 )
 
 # Skip patterns: docs, CI config, tests, repo housekeeping only.
@@ -100,12 +113,16 @@ SKIP_PATTERNS=(
     '^docs/'
     '^LICENSE'
     '^\.github/'
-    '^tests/'
+    '^counties/[^/]+/tests/'
     '\.test\.py$'
+    '^scripts/manual/'
     '^scripts/monitor_'
     '^scripts/benchmark_'
     '^scripts/check_'
     '^scripts/run_gis_'
+    # Runtime data directories carry only a .gitignore in version control.
+    '^counties/[^/]+/var/'
+    '^taxprotest/var/'
 )
 
 matches_any() {

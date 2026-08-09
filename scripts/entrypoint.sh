@@ -21,8 +21,10 @@ fi
 
 BAKED_DIR=/hcad_downloads_baked
 BAKED_STAMP=$(cat "$BAKED_DIR/.build_stamp" 2>/dev/null || echo "")
-RUNTIME_ROOT="${RUNTIME_ROOT:-/app/var}"
-HCAD_DOWNLOAD_DIR="${HCAD_DOWNLOAD_DIR:-$RUNTIME_ROOT/downloads}"
+# Each county owns its runtime data under counties/<slug>/var/ (see
+# taxprotest/runtime_paths.py). Only Harris has build-baked archives.
+HARRIS_RUNTIME_ROOT="${HARRIS_RUNTIME_ROOT:-/app/counties/harris/var}"
+HCAD_DOWNLOAD_DIR="${HCAD_DOWNLOAD_DIR:-$HARRIS_RUNTIME_ROOT/downloads}"
 SYNCED_STAMP=$(cat "$HCAD_DOWNLOAD_DIR/.synced_stamp" 2>/dev/null || echo "")
 SKIP_DATA_DOWNLOAD="${SKIP_DATA_DOWNLOAD:-0}"
 

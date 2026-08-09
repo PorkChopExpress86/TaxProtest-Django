@@ -1,0 +1,63 @@
+{% load humanize %}
+{% comment %}
+Assessed-value trend chart plus the per-year table. `show_cap_status` adds the
+YoY-change and homestead-cap columns the protest report needs.
+{% endcomment %}
+{% if assessment_history_chart %}
+<div class="px-6 py-5 border-b border-gray-100">
+  <p class="text-xs font-semibold text-gray-600 uppercase tracking-wider mb-2">Assessed Value Trend</p>
+  <svg viewBox="0 0 {{ assessment_history_chart.width }} {{ assessment_history_chart.height }}" class="w-full h-52">
+    {% for tick in assessment_history_chart.y_ticks %}
+    <line x1="{{ assessment_history_chart.left }}" y1="{{ tick.y }}" x2="{{ assessment_history_chart.right }}" y2="{{ tick.y }}" stroke="#e5e7eb" stroke-width="1" />
+    <text x="4" y="{{ tick.y|add:4 }}" font-size="11" fill="#6b7280">${{ tick.amount|floatformat:0|intcomma }}</text>
+    {% endfor %}
+    <line x1="{{ assessment_history_chart.left }}" y1="{{ assessment_history_chart.baseline_y }}" x2="{{ assessment_history_chart.right }}" y2="{{ assessment_history_chart.baseline_y }}" stroke="#cbd5e1" stroke-width="1.5" />
+    <path d="{{ assessment_history_chart.path }}" fill="none" stroke="#2563eb" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+    {% for point in assessment_history_chart.points %}
+    <circle cx="{{ point.x }}" cy="{{ point.y }}" r="4" fill="#2563eb" />
+    <text x="{{ point.x }}" y="{{ assessment_history_chart.height|add:-6 }}" text-anchor="middle" font-size="11" fill="#6b7280">{{ point.year }}</text>
+    {% endfor %}
+  </svg>
+</div>
+{% endif %}
+<div class="overflow-x-auto">
+  <table class="min-w-full divide-y divide-gray-200 text-xs lg:text-sm">
+    <thead class="bg-gray-50">
+      <tr>
+        <th class="px-4 py-3 text-left font-semibold text-gray-700">Tax Year</th>
+        <th class="px-4 py-3 text-left font-semibold text-gray-700">Assessed Value</th>
+        {% if show_cap_status %}
+        <th class="px-4 py-3 text-left font-semibold text-gray-700">YoY Change</th>
+        <th class="px-4 py-3 text-left font-semibold text-gray-700">Cap Status</th>
+        {% endif %}
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-gray-100">
+      {% for row in assessment_history %}
+      <tr>
+        <td class="px-4 py-3 text-gray-900">{{ row.tax_year }}</td>
+        <td class="px-4 py-3 text-gray-900">
+          {% if row.assessed_value %}${{ row.assessed_value|floatformat:0|intcomma }}{% else %}&ndash;{% endif %}
+        </td>
+        {% if show_cap_status %}
+        <td class="px-4 py-3 text-gray-900">
+          {% if row.increase_percent is not None %}{{ row.increase_percent|floatformat:2 }}%{% else %}&ndash;{% endif %}
+        </td>
+        <td class="px-4 py-3 text-gray-900">
+          {% if row.cap_status.status == "over_limit" %}
+          <span class="font-semibold text-red-700">{{ row.cap_status.label }}</span>
+          {% elif row.cap_status.status == "within_limit" %}
+          <span class="font-semibold text-green-700">{{ row.cap_status.label }}</span>
+          {% else %}
+          <span class="font-semibold text-gray-600">{{ row.cap_status.label }}</span>
+          {% endif %}
+          {% if row.cap_status.limit_percent %}
+          <div class="text-[11px] text-gray-500 mt-0.5">Limit: {{ row.cap_status.limit_percent|floatformat:0 }}%</div>
+          {% endif %}
+        </td>
+        {% endif %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>

@@ -158,7 +158,7 @@ docker compose exec web python manage.py load_gis_data
 
 **What it does:**
 1. Downloads Parcels.zip from HCAD (~800MB)
-2. Extracts to `var/extracted/Parcels/`
+2. Extracts to `counties/harris/var/extracted/Parcels/`
 3. Reads shapefile with GeoPandas
 4. Converts coordinates to WGS84
 5. Calculates polygon centroids
@@ -198,7 +198,7 @@ docker compose exec web python manage.py load_gis_data --skip-download
 **Force fresh download:**
 ```bash
 # Remove old files
-rm -rf var/extracted/Parcels/
+rm -rf counties/harris/var/extracted/Parcels/
 
 # Download and import
 docker compose exec web python manage.py load_gis_data
@@ -211,12 +211,12 @@ If automatic download fails:
 1. **Download manually:**
    - Go to: https://download.hcad.org/GIS/
    - Download: Parcels.zip
-   - Place in: `var/downloads/Parcels.zip`
+   - Place in: `counties/harris/var/downloads/Parcels.zip`
 
 2. **Extract:**
    ```bash
-   mkdir -p var/extracted/Parcels
-   unzip var/downloads/Parcels.zip -d var/extracted/Parcels/
+   mkdir -p counties/harris/var/extracted/Parcels
+   unzip counties/harris/var/downloads/Parcels.zip -d counties/harris/var/extracted/Parcels/
    ```
 
 3. **Import:**
@@ -337,7 +337,7 @@ print(f"Distance: {distance:.2f} miles")  # ~3.2 miles
 
 Distance is used as a **filter only** — candidates beyond `max_distance_miles` (default 10) are excluded before scoring begins. Distance does not affect the similarity score itself. This lets properties with very similar physical attributes compare well regardless of whether they are 1 mile or 9 miles apart.
 
-The small distance weight (4%) in `RESIDENTIAL_WEIGHTS` is retained in `data/similarity.py` for future use but is currently applied with a flat 1.0 value so it does not skew results.
+The small distance weight (4%) in `RESIDENTIAL_WEIGHTS` is retained in `counties/harris/similarity.py` for future use but is currently applied with a flat 1.0 value so it does not skew results.
 
 ### Residential Scoring Weights
 
@@ -477,10 +477,10 @@ ERROR: Could not open shapefile
 docker compose exec web python -c "import osgeo; print(osgeo.__version__)"
 
 # Check file exists
-docker compose exec web ls -lh var/extracted/Parcels/
+docker compose exec web ls -lh counties/harris/var/extracted/Parcels/
 
 # Verify shapefile integrity
-docker compose exec web ogrinfo var/extracted/Parcels/ParcelsCity.shp
+docker compose exec web ogrinfo counties/harris/var/extracted/Parcels/ParcelsCity.shp
 ```
 
 **Projection errors:**
@@ -493,7 +493,7 @@ ERROR: Invalid projection
 # Check projection
 docker compose exec web python -c "
 import geopandas as gpd
-gdf = gpd.read_file('var/extracted/Parcels/ParcelsCity.shp')
+gdf = gpd.read_file('counties/harris/var/extracted/Parcels/ParcelsCity.shp')
 print(gdf.crs)
 "
 
@@ -605,12 +605,12 @@ If HCAD changes shapefile structure:
 1. **Download new file manually**
 2. **Inspect structure:**
    ```bash
-   docker compose exec web ogrinfo -al var/extracted/Parcels/ParcelsCity.shp | head -100
+   docker compose exec web ogrinfo -al counties/harris/var/extracted/Parcels/ParcelsCity.shp | head -100
    ```
 3. **Check field names:**
    ```python
    import geopandas as gpd
-   gdf = gpd.read_file('var/extracted/Parcels/ParcelsCity.shp', rows=5)
+   gdf = gpd.read_file('counties/harris/var/extracted/Parcels/ParcelsCity.shp', rows=5)
    print(gdf.columns.tolist())
    ```
 4. **Update management command** if fields changed
