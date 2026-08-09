@@ -248,7 +248,7 @@ class ExtractFallbackTests(TestCase):
 
             with (
                 patch(
-                    "counties.brazos.management.commands.import_brazos_assessment_history.zipfile.ZipFile",
+                    "counties.brazos.portal.zipfile.ZipFile",
                     side_effect=NotImplementedError("That compression method is not supported"),
                 ),
                 patch(

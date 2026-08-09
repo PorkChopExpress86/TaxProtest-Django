@@ -63,7 +63,6 @@ from __future__ import annotations
 
 import logging
 import re
-import zipfile
 from collections.abc import Iterator
 from dataclasses import dataclass
 from decimal import Decimal
@@ -77,13 +76,12 @@ from django.db import transaction
 
 from counties.brazos.models import PropertyAccount
 from counties.brazos.parsers.pacs import parse_entity_info_line
+from counties.brazos.portal import USER_AGENT, download_archive, extract_zip
 from counties.common.tax_models import AssessmentHistory
 
 logger = logging.getLogger("brazos_cad")
 
 PORTAL_URL = "https://brazoscad.org/certified-data-downloads/"
-USER_AGENT = "TaxProtest-Django/1.0 (+brazos_cad loader)"
-DOWNLOAD_TIMEOUT = 300  # seconds
 
 YEAR_RE = re.compile(r"(19|20)\d{2}")
 ZIP_RE = re.compile(r"\.zip$", re.IGNORECASE)
@@ -215,39 +213,22 @@ class Command(BaseCommand):
     # ------------------------------------------------------------------ download/extract
 
     def _download(self, url: str, destination: Path, *, force: bool, dry_run: bool) -> Path:
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        if destination.exists() and not force:
-            self.stdout.write(f"  archive already on disk: {destination}")
-            return destination
-        if dry_run:
-            self.stdout.write(f"  [dry-run] would download {url} -> {destination}")
-            return destination
-
-        self.stdout.write(f"  downloading {url} -> {destination}")
-        try:
-            with requests.get(
-                url, headers={"User-Agent": USER_AGENT}, timeout=DOWNLOAD_TIMEOUT, stream=True
-            ) as response:
-                response.raise_for_status()
-                with destination.open("wb") as fh:
-                    for chunk in response.iter_content(chunk_size=1024 * 1024):
-                        fh.write(chunk)
-        except requests.RequestException as exc:
-            raise CommandError(f"Failed to download {url}: {exc}") from exc
-        return destination
+        return download_archive(
+            url,
+            destination,
+            force=force,
+            dry_run=dry_run,
+            log=lambda msg: self.stdout.write(f"  {msg}"),
+        )
 
     def _extract(self, archive: Path, extract_dir: Path, *, dry_run: bool) -> None:
-        if not archive.exists():
-            raise CommandError(f"Archive not found: {archive}")
-        if dry_run:
-            self.stdout.write(f"  [dry-run] would extract {archive} -> {extract_dir}")
-            return
-        extract_dir.mkdir(parents=True, exist_ok=True)
         try:
-            with zipfile.ZipFile(archive) as zf:
-                zf.extractall(extract_dir)
-        except zipfile.BadZipFile as exc:
-            raise CommandError(f"Archive is not a valid zip: {archive} ({exc})") from exc
+            extract_zip(
+                archive,
+                extract_dir,
+                dry_run=dry_run,
+                log=lambda msg: self.stdout.write(f"  {msg}"),
+            )
         except NotImplementedError:
             # Confirmed real: BCAD's 2023 certified export uses DEFLATE64
             # compression, which Python's zipfile has never supported (a
