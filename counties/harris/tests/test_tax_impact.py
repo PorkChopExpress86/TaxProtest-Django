@@ -146,17 +146,42 @@ class TaxYearFallbackTests(TestCase):
         self.assertEqual(result.completeness, "complete")
         self.assertEqual(result.current_tax_owed, Decimal("1000.00"))
 
-    def test_assessment_history_still_wins_when_present(self):
+    def test_a_newer_assessment_year_does_not_override_a_costable_one(self):
+        """History reaching 2026 while the jurisdiction extract is still 2025 is
+        the normal state: the two come from different HCAD archives. Costing
+        2026 would find no taxing units and report "missing"."""
         AssessmentHistory.objects.create(
             account_number="ACCTFALLBACK",
-            tax_year=2024,
+            tax_year=2026,
             county="harris",
-            assessed_value=Decimal("90000"),
+            assessed_value=Decimal("120000"),
         )
 
         result = calculate_tax_impact("ACCTFALLBACK", tax_year=None, median_assessed_value=None)
 
-        self.assertEqual(result.tax_year, 2024)
+        self.assertEqual(result.tax_year, 2025)
+        self.assertEqual(result.completeness, "complete")
+        self.assertEqual(result.current_tax_owed, Decimal("1000.00"))
+
+    def test_an_explicit_year_is_still_honoured(self):
+        result = calculate_tax_impact("ACCTFALLBACK", tax_year=2019, median_assessed_value=None)
+
+        self.assertEqual(result.tax_year, 2019)
+        self.assertEqual(result.completeness, "missing")
+
+    def test_history_supplies_the_year_when_no_jurisdiction_rows_exist(self):
+        PropertyJurisdictionExemption.objects.all().delete()
+        AssessmentHistory.objects.create(
+            account_number="ACCTFALLBACK",
+            tax_year=2023,
+            county="harris",
+            assessed_value=Decimal("80000"),
+        )
+
+        result = calculate_tax_impact("ACCTFALLBACK", tax_year=None, median_assessed_value=None)
+
+        self.assertEqual(result.tax_year, 2023)
+        self.assertEqual(result.completeness, "missing")
 
     def test_another_countys_rows_do_not_supply_the_year(self):
         result = calculate_tax_impact(

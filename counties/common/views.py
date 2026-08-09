@@ -272,8 +272,12 @@ def _protest_inputs(request, key: str, adapter: CountyAdapter):
     )
     equity = summarize_equity(subject, comps)
     history = adapter.assessment_history(key)
-    tax_year = history[0]["tax_year"] if history else subject.tax_year
-    tax_impact = adapter.tax_impact(key, tax_year, equity.median_assessed_value)
+    # Deliberately not pinned to the newest assessment-history year: rates and
+    # jurisdiction rows come from a different archive and can lag it by a year,
+    # and asking for a year with no taxing units yields "missing" rather than an
+    # estimate. Passing None lets the county resolve the newest year it can
+    # actually cost, and the report prints whichever year that was.
+    tax_impact = adapter.tax_impact(key, None, equity.median_assessed_value)
     return subject, comps, equity, history, tax_impact, min_score
 
 
