@@ -13,7 +13,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from counties.harris.models import AssessmentHistory
+    from counties.common.tax_models import AssessmentHistory
 
 TEN_PERCENT_CAP = Decimal("10")
 TWENTY_PERCENT_CAP = Decimal("20")

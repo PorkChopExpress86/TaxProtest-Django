@@ -6,7 +6,8 @@ from unittest.mock import patch
 from django.test import TestCase
 from django.urls import reverse
 
-from counties.harris.models import AssessmentHistory, BuildingDetail, ExtraFeature, PropertyRecord
+from counties.common.tax_models import AssessmentHistory
+from counties.harris.models import BuildingDetail, ExtraFeature, PropertyRecord
 
 
 class PropertySearchViewTests(TestCase):

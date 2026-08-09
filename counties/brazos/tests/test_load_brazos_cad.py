@@ -30,7 +30,7 @@ from counties.brazos.models import (
     PropertyImprovementDetail,
     PropertyLand,
 )
-from counties.harris.models import PropertyJurisdictionExemption
+from counties.common.tax_models import PropertyJurisdictionExemption
 
 
 def _line(length: int, fields: dict[tuple[int, int], str]) -> str:

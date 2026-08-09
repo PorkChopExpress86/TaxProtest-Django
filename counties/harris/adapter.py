@@ -23,6 +23,7 @@ from counties.common.contracts import (
     Subject,
 )
 from counties.common.history import assessment_history_rows
+from counties.common.tax_impact import calculate_tax_impact
 from counties.harris.models import BuildingDetail, ExtraFeature, PropertyRecord
 from counties.harris.query import build_property_search_queryset
 from counties.harris.similarity import (
@@ -30,7 +31,6 @@ from counties.harris.similarity import (
     format_feature_list,
     get_similarity_label,
 )
-from counties.harris.tax_impact import calculate_tax_impact
 
 COUNTY_SLUG = "harris"
 
