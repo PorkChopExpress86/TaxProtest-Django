@@ -62,6 +62,7 @@ Harris). Relative values resolve against the project root.
 | `analysis.py` | `summarize_equity()` → `EquitySummary`; `recommend_protest()` → `ProtestRecommendation`; percentile and YoY helpers |
 | `charts.py` | `assessment_history_chart()`, `ppsf_distribution_chart()`, `score_breakdown_summary()` — pure SVG layout data |
 | `history.py` | `assessment_history_rows(account_number, county)` over the shared `AssessmentHistory` table |
+| `cap_status.py` | `evaluate_cap_status(entry, prior)` — Texas homestead/circuit-breaker cap math; reads `AssessmentHistory.cap_account` differently per county (see `COUNTIES_WITH_TYPED_CAP_FLAG`) |
 | `exports.py` | Search CSV, protest-comps CSV, and the hand-rolled `simple_pdf()` evidence report |
 | `views.py` | `index`, `export_csv`, `similar_properties`, `protest_analysis`, `protest_analysis_export`, `protest_analysis_pdf` — all take `adapter=` |
 | `urls.py` | `county_urlpatterns(adapter)` binds an adapter to the full route set |
@@ -104,7 +105,7 @@ asserts every registered county exposes the identical route set — a new county
 - `tasks_new.py` — Celery tasks: `download_and_import_building_data`, `download_and_import_gis_data`
 - `similarity.py` — similarity scoring algorithm (see Similarity section below)
 - `tax_impact.py` — `calculate_tax_impact(account_number, tax_year, median_assessed_value, county)` → `TaxImpactResult`
-- `assessment_history.py` — `evaluate_cap_status(entry, prior)` for cap analysis display
+- `assessment_history.py` — `AssessmentHistoryImporter` for HCAD snapshot import (cap-status evaluation moved to `counties/common/cap_status.py` — it's a shared, county-aware function, not Harris-owned)
 - `query.py` — `build_property_search_queryset(params)`
 - `adapter.py` — `HARRIS_PROFILE` + `HarrisAdapter`
 
@@ -389,9 +390,12 @@ diffing consecutive years — nothing in the export carries a prior-year value c
   Harris's `Cap_acct` is HCAD's own `Y`/`N`/`Pending` flag; Brazos has no such field, so it's derived
   as `"Y"` when `appraised_value > assessed_value` for that year (see
   `import_brazos_assessment_history`'s docstring for why that delta is the cap and not an
-  entity-specific exemption). `evaluate_cap_status` treats both identically (`== "Y"` → homestead cap),
-  which is a known simplification — see issue #14 (cap type/year applicability is unresolved for
-  both counties).
+  entity-specific exemption). `counties/common/cap_status.py`'s `evaluate_cap_status` only decodes the
+  flag into `homestead`/`circuit_breaker` for counties in `COUNTIES_WITH_TYPED_CAP_FLAG` (today: Harris
+  alone) — any other county gets an honest `cap_type="unknown"`/`status="unknown"` rather than a guess,
+  since a derived flag doesn't say which cap applied. Still open, and out of scope for that function:
+  issue #14 (the homestead-vs-circuit-breaker rule itself ignores tax year — the 20% circuit breaker is
+  a 2023 SB2 provision applied here to pre-2023 rows too — and an unmodelled ~$5M value ceiling).
 - **Tax rates are stored fractional** (`0.00878300`), not per $100 as HCAD and most districts publish
   them (`0.878300`) — `calculate_tax_impact` multiplies a taxable value by `adopted_rate` directly.
 - **`PropertyJurisdictionExemption` stores the gross value on its base row** (`exemption_code=""`)
