@@ -75,7 +75,10 @@
     "prop_id": "000000037016",
     "situs_address_full": "1701 SOUTHWEST PKY COLLEGE STATION, TX 77840",
     "owner_name": "JAKLL HOLDINGS LLC-SERIES BCS",
-    "assessed_value": 1795000
+    "assessed_value": 1795000,
+    "known_drift": {
+      "assessed_value": "Certified 2025 export (APPRAISAL_ENTITY_INFO.TXT) reports 1895846 on all 5 of this property's entity rows; BCAD's live page shows a later post-certification value. Owner and situs match exactly, so this is roll drift, not an ingest bug."
+    }
   },
   {
     "prop_id": "000000302974",
@@ -105,7 +108,10 @@
     "prop_id": "000000455826",
     "situs_address_full": "871 KICKAPOO LN COLLEGE STATION, TX 77845",
     "owner_name": "CONTINENTAL HOMES OF TEXAS LP",
-    "assessed_value": 46449
+    "assessed_value": 46449,
+    "known_drift": {
+      "assessed_value": "Certified 2025 export reports 44685 on all 7 entity rows; BCAD's live page shows a later value (new construction on a builder-owned lot). Owner and situs match exactly, so this is roll drift, not an ingest bug."
+    }
   },
   {
     "prop_id": "000000106326",

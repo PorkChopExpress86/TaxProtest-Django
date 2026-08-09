@@ -355,14 +355,18 @@ def load_gis_parcels(
     assert gpd is not None  # for type checkers; guarded above
     gdf = gpd.read_file(shapefile_path)
 
-    # Ensure CRS is WGS84 (lat/long) for consistent coordinates
+    # Centroid first, then reproject to WGS84. A centroid is a planar
+    # calculation, so it belongs in the shapefile's own projected CRS --
+    # running it on lat/long degrees is what makes geopandas warn "Geometry is
+    # in a geographic CRS". The positional difference is sub-metre on
+    # parcel-sized polygons, but this order is the correct one and it
+    # reprojects N points instead of N polygons.
+    centroids = gdf.geometry.centroid
     if gdf.crs and gdf.crs.to_epsg() != 4326:
-        gdf = gdf.to_crs(epsg=4326)
+        centroids = centroids.to_crs(epsg=4326)
 
-    # Calculate centroids for lat/long
-    gdf["centroid"] = gdf.geometry.centroid
-    gdf["latitude"] = gdf["centroid"].y
-    gdf["longitude"] = gdf["centroid"].x
+    gdf["latitude"] = centroids.y
+    gdf["longitude"] = centroids.x
 
     # Identify account number column (HCAD uses various names)
     account_col = None
