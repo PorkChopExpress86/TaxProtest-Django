@@ -52,24 +52,25 @@ services:
       - FORCE_SECURE_COOKIES=${FORCE_SECURE_COOKIES:-1}
       - WEB_CONCURRENCY=${WEB_CONCURRENCY:-3}
       - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
-      - HCAD_DOWNLOAD_DIR=${HCAD_DOWNLOAD_DIR:-/app/var/downloads}
-      - HCAD_EXTRACT_DIR=${HCAD_EXTRACT_DIR:-/app/var/extracted}
-      - HCAD_LOG_DIR=${HCAD_LOG_DIR:-/app/var/logs}
-      - PROJECT_REPORT_DIR=${PROJECT_REPORT_DIR:-/app/var/reports}
-      - BCAD_DOWNLOAD_DIR=${BCAD_DOWNLOAD_DIR:-/app/data/cad_downloads}
-      - BCAD_EXTRACT_DIR=${BCAD_EXTRACT_DIR:-/app/var/bcad_extracted}
+      - HCAD_DOWNLOAD_DIR=${HCAD_DOWNLOAD_DIR:-/app/counties/harris/var/downloads}
+      - HCAD_EXTRACT_DIR=${HCAD_EXTRACT_DIR:-/app/counties/harris/var/extracted}
+      - HCAD_LOG_DIR=${HCAD_LOG_DIR:-/app/counties/harris/var/logs}
+      - PROJECT_REPORT_DIR=${PROJECT_REPORT_DIR:-/app/counties/harris/var/reports}
+      - BCAD_DOWNLOAD_DIR=${BCAD_DOWNLOAD_DIR:-/app/counties/brazos/var/downloads}
+      - BCAD_EXTRACT_DIR=${BCAD_EXTRACT_DIR:-/app/counties/brazos/var/extracted}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     volumes:
+      # Each county's runtime data lives under counties/<slug>/var/, so the
+      # single project bind-mount already persists downloaded + extracted files
+      # on the host across container restarts and rebuilds.
       - .:/app
-      # Persist BCAD .zip + .TXT files outside the container so downloads
-      # survive container restarts/rebuilds.
-      - ./data/cad_downloads:/app/data/cad_downloads
       # /hcad_downloads_baked lives outside /app in the image so the .:/app
-      # bind-mount never touches it. The entrypoint syncs it to /app/var/downloads.
+      # bind-mount never touches it. The entrypoint syncs it into
+      # counties/harris/var/downloads.
 
   # Celery worker for processing background tasks
   worker:
@@ -87,12 +88,12 @@ services:
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - DEBUG=${DEBUG:-0}
       - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
-      - HCAD_DOWNLOAD_DIR=${HCAD_DOWNLOAD_DIR:-/app/var/downloads}
-      - HCAD_EXTRACT_DIR=${HCAD_EXTRACT_DIR:-/app/var/extracted}
-      - HCAD_LOG_DIR=${HCAD_LOG_DIR:-/app/var/logs}
-      - PROJECT_REPORT_DIR=${PROJECT_REPORT_DIR:-/app/var/reports}
-      - BCAD_DOWNLOAD_DIR=${BCAD_DOWNLOAD_DIR:-/app/data/cad_downloads}
-      - BCAD_EXTRACT_DIR=${BCAD_EXTRACT_DIR:-/app/var/bcad_extracted}
+      - HCAD_DOWNLOAD_DIR=${HCAD_DOWNLOAD_DIR:-/app/counties/harris/var/downloads}
+      - HCAD_EXTRACT_DIR=${HCAD_EXTRACT_DIR:-/app/counties/harris/var/extracted}
+      - HCAD_LOG_DIR=${HCAD_LOG_DIR:-/app/counties/harris/var/logs}
+      - PROJECT_REPORT_DIR=${PROJECT_REPORT_DIR:-/app/counties/harris/var/reports}
+      - BCAD_DOWNLOAD_DIR=${BCAD_DOWNLOAD_DIR:-/app/counties/brazos/var/downloads}
+      - BCAD_EXTRACT_DIR=${BCAD_EXTRACT_DIR:-/app/counties/brazos/var/extracted}
     depends_on:
       postgres:
         condition: service_healthy
@@ -118,12 +119,12 @@ services:
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - DEBUG=${DEBUG:-0}
       - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
-      - HCAD_DOWNLOAD_DIR=${HCAD_DOWNLOAD_DIR:-/app/var/downloads}
-      - HCAD_EXTRACT_DIR=${HCAD_EXTRACT_DIR:-/app/var/extracted}
-      - HCAD_LOG_DIR=${HCAD_LOG_DIR:-/app/var/logs}
-      - PROJECT_REPORT_DIR=${PROJECT_REPORT_DIR:-/app/var/reports}
-      - BCAD_DOWNLOAD_DIR=${BCAD_DOWNLOAD_DIR:-/app/data/cad_downloads}
-      - BCAD_EXTRACT_DIR=${BCAD_EXTRACT_DIR:-/app/var/bcad_extracted}
+      - HCAD_DOWNLOAD_DIR=${HCAD_DOWNLOAD_DIR:-/app/counties/harris/var/downloads}
+      - HCAD_EXTRACT_DIR=${HCAD_EXTRACT_DIR:-/app/counties/harris/var/extracted}
+      - HCAD_LOG_DIR=${HCAD_LOG_DIR:-/app/counties/harris/var/logs}
+      - PROJECT_REPORT_DIR=${PROJECT_REPORT_DIR:-/app/counties/harris/var/reports}
+      - BCAD_DOWNLOAD_DIR=${BCAD_DOWNLOAD_DIR:-/app/counties/brazos/var/downloads}
+      - BCAD_EXTRACT_DIR=${BCAD_EXTRACT_DIR:-/app/counties/brazos/var/extracted}
     depends_on:
       postgres:
         condition: service_healthy
@@ -153,8 +154,8 @@ services:
       - RUFF_CACHE_DIR=/tmp/.ruff_cache
       - MYPY_CACHE_DIR=/tmp/.mypy_cache
       - PYTEST_ADDOPTS=-o cache_dir=/tmp/.pytest_cache
-      - HCAD_DOWNLOAD_DIR=${HCAD_DOWNLOAD_DIR:-/app/var/downloads}
-      - HCAD_EXTRACT_DIR=${HCAD_EXTRACT_DIR:-/app/var/extracted}
+      - HCAD_DOWNLOAD_DIR=${HCAD_DOWNLOAD_DIR:-/app/counties/harris/var/downloads}
+      - HCAD_EXTRACT_DIR=${HCAD_EXTRACT_DIR:-/app/counties/harris/var/extracted}
     depends_on:
       postgres:
         condition: service_healthy
@@ -174,10 +175,10 @@ services:
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - DEBUG=${DEBUG:-0}
       - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:-dev-only-change-this-in-production}
-      - HCAD_DOWNLOAD_DIR=${HCAD_DOWNLOAD_DIR:-/app/var/downloads}
-      - HCAD_EXTRACT_DIR=${HCAD_EXTRACT_DIR:-/app/var/extracted}
-      - HCAD_LOG_DIR=${HCAD_LOG_DIR:-/app/var/logs}
-      - PROJECT_REPORT_DIR=${PROJECT_REPORT_DIR:-/app/var/reports}
+      - HCAD_DOWNLOAD_DIR=${HCAD_DOWNLOAD_DIR:-/app/counties/harris/var/downloads}
+      - HCAD_EXTRACT_DIR=${HCAD_EXTRACT_DIR:-/app/counties/harris/var/extracted}
+      - HCAD_LOG_DIR=${HCAD_LOG_DIR:-/app/counties/harris/var/logs}
+      - PROJECT_REPORT_DIR=${PROJECT_REPORT_DIR:-/app/counties/harris/var/reports}
     volumes:
       - .:/app
     depends_on:
@@ -202,10 +203,10 @@ services:
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - DEBUG=${DEBUG:-0}
       - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:-dev-only-change-this-in-production}
-      - HCAD_DOWNLOAD_DIR=${HCAD_DOWNLOAD_DIR:-/app/var/downloads}
-      - HCAD_EXTRACT_DIR=${HCAD_EXTRACT_DIR:-/app/var/extracted}
-      - HCAD_LOG_DIR=${HCAD_LOG_DIR:-/app/var/logs}
-      - PROJECT_REPORT_DIR=${PROJECT_REPORT_DIR:-/app/var/reports}
+      - HCAD_DOWNLOAD_DIR=${HCAD_DOWNLOAD_DIR:-/app/counties/harris/var/downloads}
+      - HCAD_EXTRACT_DIR=${HCAD_EXTRACT_DIR:-/app/counties/harris/var/extracted}
+      - HCAD_LOG_DIR=${HCAD_LOG_DIR:-/app/counties/harris/var/logs}
+      - PROJECT_REPORT_DIR=${PROJECT_REPORT_DIR:-/app/counties/harris/var/reports}
     volumes:
       - .:/app
     depends_on:
@@ -216,8 +217,8 @@ services:
     command: python manage.py check_and_import_data
 
   # One-off BCAD ETL service. Pulls the latest certified Brazos CAD
-  # archive, extracts it into the bind-mounted staging directory, and
-  # ingests each APPRAISAL_*.TXT file into PostgreSQL via raw COPY.
+  # archive into counties/brazos/var/, extracts it there, and ingests each
+  # APPRAISAL_*.TXT file into PostgreSQL via raw COPY.
   # Lives under the `etl` profile so it is not started by `docker compose
   # up`; invoke explicitly with `docker compose --profile etl up etl` or
   # `docker compose up etl`.
@@ -233,11 +234,10 @@ services:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-taxprotest}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-taxprotest}
       - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
       - DEBUG=${DEBUG:-0}
-      - BCAD_DOWNLOAD_DIR=${BCAD_DOWNLOAD_DIR:-/app/data/cad_downloads}
-      - BCAD_EXTRACT_DIR=${BCAD_EXTRACT_DIR:-/app/var/bcad_extracted}
+      - BCAD_DOWNLOAD_DIR=${BCAD_DOWNLOAD_DIR:-/app/counties/brazos/var/downloads}
+      - BCAD_EXTRACT_DIR=${BCAD_EXTRACT_DIR:-/app/counties/brazos/var/extracted}
     volumes:
       - .:/app
-      - ./data/cad_downloads:/app/data/cad_downloads
     depends_on:
       postgres:
         condition: service_healthy

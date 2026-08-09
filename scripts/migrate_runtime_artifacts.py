@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+"""Move legacy runtime data into the per-county ``counties/<slug>/var/`` trees.
+
+Safe to re-run: directories already in the right place are left untouched.
+"""
+
 from __future__ import annotations
 
 import sys
@@ -19,10 +24,12 @@ def main() -> int:
     paths = runtime_paths.resolve_runtime_paths(BASE_DIR)
 
     print("Runtime artifact migration complete.")
-    print(f"  downloads: {paths.download_dir}")
-    print(f"  extracted: {paths.extract_dir}")
-    print(f"  logs:      {paths.log_dir}")
-    print(f"  reports:   {paths.report_dir}")
+    for county in paths:
+        print(f"  [{county.slug}]")
+        print(f"    downloads: {county.download_dir}")
+        print(f"    extracted: {county.extract_dir}")
+        print(f"    logs:      {county.log_dir}")
+        print(f"    reports:   {county.report_dir}")
 
     if result["created"]:
         print("  created:")

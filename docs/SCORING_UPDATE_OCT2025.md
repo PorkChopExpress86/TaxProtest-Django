@@ -180,7 +180,7 @@ The new scoring better reflects what makes properties truly comparable for tax a
 
 ## Files Modified
 
-1. **`data/similarity.py`**
+1. **`counties/harris/similarity.py`**
    - Updated `calculate_similarity_score()` function
    - Added quality code matching logic
    - Adjusted all scoring weights

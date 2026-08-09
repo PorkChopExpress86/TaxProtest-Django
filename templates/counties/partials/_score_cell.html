@@ -1,0 +1,18 @@
+{% load countyfmt %}
+{% comment %}Similarity score badge, match label, and the per-factor breakdown.{% endcomment %}
+<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium {{ comp.similarity_score|score_classes }}">
+  {{ comp.similarity_score|floatformat:1 }}
+</span>
+<div class="text-xs text-gray-500 mt-0.5">{{ comp.match_label }}</div>
+{% if comp.score_breakdown %}
+<details class="mt-1 text-xs text-gray-600">
+  <summary class="cursor-pointer font-semibold">Score Details</summary>
+  <div class="mt-1 space-y-0.5">
+    {% for component in comp.score_breakdown %}
+      {% if component.points is not None %}
+      <div>{{ component.label }}: {{ component.points|floatformat:1 }}/{{ component.weight|floatformat:1 }}</div>
+      {% endif %}
+    {% endfor %}
+  </div>
+</details>
+{% endif %}

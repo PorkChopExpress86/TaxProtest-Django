@@ -33,7 +33,7 @@ docker compose exec web python manage.py etl_pipeline run --skip-download --skip
 ## Architecture
 
 ```
-data/etl_pipeline/
+counties/harris/etl_pipeline/
 ├── __init__.py          # Package exports
 ├── config.py            # Configuration management
 ├── download.py          # Download manager with retry logic
@@ -56,7 +56,7 @@ Downloads ZIP archives from HCAD's data portal:
 
 ### 2. Extract Stage
 
-Extracts downloaded ZIP archives to `var/extracted/` while preserving archives in `var/downloads/`.
+Extracts downloaded ZIP archives to `counties/harris/var/extracted/` while preserving archives in `counties/harris/var/downloads/`.
 
 ### 3. Transform Stage
 
@@ -167,9 +167,9 @@ Configuration is managed via environment variables:
 
 ```bash
 # Download directory
-HCAD_DOWNLOAD_DIR=/app/var/downloads
-HCAD_EXTRACT_DIR=/app/var/extracted
-HCAD_LOG_DIR=/app/var/logs
+HCAD_DOWNLOAD_DIR=/app/counties/harris/var/downloads
+HCAD_EXTRACT_DIR=/app/counties/harris/var/extracted
+HCAD_LOG_DIR=/app/counties/harris/var/logs
 
 # Data year
 HCAD_DATA_YEAR=2025

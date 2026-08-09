@@ -1,55 +1,29 @@
-"""
-URL configuration for taxprotest project.
+"""URL configuration for the taxprotest project.
 
-The `urlpatterns` list routes URLs to views. For more information please see:
-    https://docs.djangoproject.com/en/5.2/topics/http/urls/
-Examples:
-Function views
-    1. Add an import:  from my_app import views
-    2. Add a URL to urlpatterns:  path('', views.home, name='home')
-Class-based views
-    1. Add an import:  from other_app.views import Home
-    2. Add a URL to urlpatterns:  path('', Home.as_view(), name='home')
-Including another URLconf
-    1. Import the include() function: from django.urls import include, path
-    2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
+Each county mounts the same set of pages from ``counties.common.urls``:
+
+    /                          Harris County search        (name: index)
+    /similar/<account>/        Harris comparables          (name: similar_properties)
+    /protest/<account>/        Harris protest report       (name: protest_analysis)
+    /brazos/                   Brazos County search        (name: brazos_index)
+    /brazos/similar/<id>/      Brazos comparables          (name: brazos_similar_properties)
+    /brazos/protest/<id>/      Brazos protest report       (name: brazos_protest_analysis)
+
+plus each county's ``export/``, ``protest/<key>/export/``, and
+``protest/<key>/pdf/`` routes. Site-wide pages live in ``taxprotest.views``.
 """
 
 from django.contrib import admin
 from django.urls import include, path
 
-from .views import (
-    about,
-    export_csv,
-    healthz,
-    index,
-    protest_analysis,
-    protest_analysis_export,
-    protest_analysis_pdf,
-    readiness,
-    similar_properties,
-)
+from .views import about, healthz, readiness
 
 urlpatterns = [
     path("admin/", admin.site.urls),
-    path("brazos/", include("brazos_cad.urls")),
-    path("", index, name="index"),  # Root URL
-    path("export/", export_csv, name="export_csv"),  # CSV export
-    path(
-        "similar/<str:account_number>/", similar_properties, name="similar_properties"
-    ),  # Similar properties
-    path("protest/<str:account_number>/", protest_analysis, name="protest_analysis"),
-    path(
-        "protest/<str:account_number>/export/",
-        protest_analysis_export,
-        name="protest_analysis_export",
-    ),
-    path(
-        "protest/<str:account_number>/pdf/",
-        protest_analysis_pdf,
-        name="protest_analysis_pdf",
-    ),
     path("about/", about, name="about"),
     path("healthz/", healthz, name="healthz"),
     path("readiness/", readiness, name="readiness"),
+    path("brazos/", include("counties.brazos.urls")),
+    # Harris is mounted last because it owns the site root.
+    path("", include("counties.harris.urls")),
 ]

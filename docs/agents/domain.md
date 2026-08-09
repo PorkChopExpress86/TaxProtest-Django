@@ -20,7 +20,7 @@ Single-context repo (this repo):
 ├── docs/adr/
 │   ├── 0001-....md
 │   └── 0002-....md
-└── taxprotest/, data/, brazos_cad/, templates/, scripts/
+└── taxprotest/, data/, counties/brazos/, templates/, scripts/
 ```
 
 ## Use the glossary's vocabulary
