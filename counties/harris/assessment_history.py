@@ -46,8 +46,21 @@ def _percent_change(current: Decimal | None, prior: Decimal | None) -> Decimal |
     return ((current - prior) / prior * ONE_HUNDRED).quantize(CENT, rounding=ROUND_HALF_UP)
 
 
+#: HCAD's ``Cap_acct`` is a flag, not a presence marker: it is "Y", "N", or
+#: "Pending" on every row. Only "Y" means the homestead cap applies. Testing it
+#: for non-emptiness would put all 7.9M rows under the 10% homestead cap,
+#: including the ~5.5M marked "N" that are subject to the 20% circuit breaker.
+HOMESTEAD_CAP_FLAG = "Y"
+
+
 def _has_cap_account(entry: AssessmentHistory) -> bool:
-    return bool(str(entry.cap_account or "").strip())
+    """Whether the 10% homestead cap applies rather than the 20% circuit breaker.
+
+    "Pending" (a homestead application not yet granted) is treated as not
+    capped: the cap is not in force for the year under review, and claiming the
+    tighter limit would overstate the owner's case in an ARB filing.
+    """
+    return str(entry.cap_account or "").strip().upper() == HOMESTEAD_CAP_FLAG
 
 
 def evaluate_cap_status(
