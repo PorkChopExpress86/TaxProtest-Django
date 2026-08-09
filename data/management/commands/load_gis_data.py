@@ -26,6 +26,9 @@ def find_preferred_shapefile(extract_dir: str) -> str | None:
         for file in files:
             if file.endswith(".shp"):
                 shapefiles.append(os.path.join(root, file))
+        for d in dirs:
+            if d.endswith(".gdb"):
+                shapefiles.append(os.path.join(root, d))
 
     if not shapefiles:
         return None
@@ -34,7 +37,7 @@ def find_preferred_shapefile(extract_dir: str) -> str | None:
         normalized = path.replace("\\", "/").lower()
         name = os.path.basename(normalized)
         return (
-            2 if name == "parcelscity.shp" else 1 if "parcelscity" in name else 0,
+            3 if name == "parcelscity.shp" else 2 if "parcelscity" in name else 1 if name.endswith(".gdb") else 0,
             1 if "/gis/pdata/" in normalized else 0,
             len(normalized),
         )

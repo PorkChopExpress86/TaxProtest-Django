@@ -33,7 +33,9 @@ class Command(BaseCommand):
 
             upserted = 0
             for row in reader:
-                code = (row.get("tax_unit_code") or row.get("tax_unit") or row.get("unit_code") or "").strip()
+                code = (
+                    row.get("tax_unit_code") or row.get("tax_unit") or row.get("unit_code") or ""
+                ).strip()
                 name = (row.get("tax_unit_name") or row.get("unit_name") or "").strip()
                 rate_text = (row.get("adopted_rate") or row.get("rate") or "").strip()
                 if not code or not rate_text:
@@ -42,6 +44,7 @@ class Command(BaseCommand):
                 TaxUnitRate.objects.update_or_create(
                     tax_year=tax_year,
                     tax_unit_code=code,
+                    county="harris",
                     defaults={
                         "tax_unit_name": name,
                         "adopted_rate": rate_text,
@@ -50,4 +53,6 @@ class Command(BaseCommand):
                 )
                 upserted += 1
 
-        self.stdout.write(self.style.SUCCESS(f"Upserted {upserted} tax-unit rate rows for {tax_year}."))
+        self.stdout.write(
+            self.style.SUCCESS(f"Upserted {upserted} tax-unit rate rows for {tax_year}.")
+        )

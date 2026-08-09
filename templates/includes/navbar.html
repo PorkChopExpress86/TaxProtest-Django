@@ -12,6 +12,16 @@
                 </a>
             </div>
             <div class="flex items-center space-x-4">
+                <div class="flex items-center space-x-1 bg-gray-100 rounded-lg p-1">
+                    <a href="{% url 'index' %}"
+                       class="px-3 py-1.5 rounded-md text-sm font-medium transition-colors {% if request.resolver_match.url_name == 'index' %}bg-white text-blue-700 shadow-sm{% else %}text-gray-600 hover:text-blue-600{% endif %}">
+                        Harris County
+                    </a>
+                    <a href="{% url 'brazos_index' %}"
+                       class="px-3 py-1.5 rounded-md text-sm font-medium transition-colors {% if request.resolver_match.url_name == 'brazos_index' %}bg-white text-blue-700 shadow-sm{% else %}text-gray-600 hover:text-blue-600{% endif %}">
+                        Brazos County
+                    </a>
+                </div>
                 <a href="{% url 'about' %}" class="text-gray-600 hover:text-blue-600 px-3 py-2 rounded-md text-sm font-medium transition-colors">About</a>
                 <a href="#" class="text-gray-600 hover:text-blue-600 px-3 py-2 rounded-md text-sm font-medium transition-colors">Contact</a>
             </div>

@@ -25,6 +25,8 @@ HCAD_DOWNLOAD_DIR = PROJECT_PATHS.download_dir
 HCAD_EXTRACT_DIR = PROJECT_PATHS.extract_dir
 HCAD_LOG_DIR = PROJECT_PATHS.log_dir
 PROJECT_REPORT_DIR = PROJECT_PATHS.report_dir
+BCAD_DOWNLOAD_DIR = PROJECT_PATHS.bcad_download_dir
+BCAD_EXTRACT_DIR = PROJECT_PATHS.bcad_extract_dir
 
 # Load .env from project root when present (development convenience)
 env_path = os.path.join(BASE_DIR, ".env")
@@ -98,6 +100,7 @@ INSTALLED_APPS = [
     "django.contrib.humanize",  # for intcomma, naturaltime, etc. used in templates
     # local apps
     "data",
+    "brazos_cad",
 ]
 
 MIDDLEWARE = [

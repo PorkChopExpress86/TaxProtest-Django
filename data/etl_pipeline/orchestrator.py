@@ -734,6 +734,19 @@ class ETLOrchestrator:
                 shapefiles.append(path)
 
         if not shapefiles:
+            gdb_dirs: list[Path] = []
+            for root in search_roots:
+                if not root.exists():
+                    continue
+                for path in root.rglob("*.gdb"):
+                    if path.is_dir():
+                        normalized = str(path).replace("\\", "/")
+                        if normalized not in seen:
+                            seen.add(normalized)
+                            gdb_dirs.append(path)
+
+            if gdb_dirs:
+                return min(gdb_dirs, key=lambda p: (0 if "parcels.gdb" in p.name.lower() else 1, len(p.parts)))
             return None
 
         def priority(path: Path) -> tuple[int, int, int]:

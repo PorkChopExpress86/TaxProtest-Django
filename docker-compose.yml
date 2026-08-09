@@ -56,6 +56,8 @@ services:
       - HCAD_EXTRACT_DIR=${HCAD_EXTRACT_DIR:-/app/var/extracted}
       - HCAD_LOG_DIR=${HCAD_LOG_DIR:-/app/var/logs}
       - PROJECT_REPORT_DIR=${PROJECT_REPORT_DIR:-/app/var/reports}
+      - BCAD_DOWNLOAD_DIR=${BCAD_DOWNLOAD_DIR:-/app/data/cad_downloads}
+      - BCAD_EXTRACT_DIR=${BCAD_EXTRACT_DIR:-/app/var/bcad_extracted}
     depends_on:
       postgres:
         condition: service_healthy
@@ -63,6 +65,9 @@ services:
         condition: service_healthy
     volumes:
       - .:/app
+      # Persist BCAD .zip + .TXT files outside the container so downloads
+      # survive container restarts/rebuilds.
+      - ./data/cad_downloads:/app/data/cad_downloads
       # /hcad_downloads_baked lives outside /app in the image so the .:/app
       # bind-mount never touches it. The entrypoint syncs it to /app/var/downloads.
 
@@ -86,6 +91,8 @@ services:
       - HCAD_EXTRACT_DIR=${HCAD_EXTRACT_DIR:-/app/var/extracted}
       - HCAD_LOG_DIR=${HCAD_LOG_DIR:-/app/var/logs}
       - PROJECT_REPORT_DIR=${PROJECT_REPORT_DIR:-/app/var/reports}
+      - BCAD_DOWNLOAD_DIR=${BCAD_DOWNLOAD_DIR:-/app/data/cad_downloads}
+      - BCAD_EXTRACT_DIR=${BCAD_EXTRACT_DIR:-/app/var/bcad_extracted}
     depends_on:
       postgres:
         condition: service_healthy
@@ -115,6 +122,8 @@ services:
       - HCAD_EXTRACT_DIR=${HCAD_EXTRACT_DIR:-/app/var/extracted}
       - HCAD_LOG_DIR=${HCAD_LOG_DIR:-/app/var/logs}
       - PROJECT_REPORT_DIR=${PROJECT_REPORT_DIR:-/app/var/reports}
+      - BCAD_DOWNLOAD_DIR=${BCAD_DOWNLOAD_DIR:-/app/data/cad_downloads}
+      - BCAD_EXTRACT_DIR=${BCAD_EXTRACT_DIR:-/app/var/bcad_extracted}
     depends_on:
       postgres:
         condition: service_healthy
@@ -205,6 +214,34 @@ services:
       redis:
         condition: service_healthy
     command: python manage.py check_and_import_data
+
+  # One-off BCAD ETL service. Pulls the latest certified Brazos CAD
+  # archive, extracts it into the bind-mounted staging directory, and
+  # ingests each APPRAISAL_*.TXT file into PostgreSQL via raw COPY.
+  # Lives under the `etl` profile so it is not started by `docker compose
+  # up`; invoke explicitly with `docker compose --profile etl up etl` or
+  # `docker compose up etl`.
+  etl:
+    build:
+      context: .
+      args:
+        SKIP_DATA_DOWNLOAD: ${SKIP_DATA_DOWNLOAD:-1}
+    profiles: ["etl"]
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-taxprotest}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-taxprotest}
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
+      - DEBUG=${DEBUG:-0}
+      - BCAD_DOWNLOAD_DIR=${BCAD_DOWNLOAD_DIR:-/app/data/cad_downloads}
+      - BCAD_EXTRACT_DIR=${BCAD_EXTRACT_DIR:-/app/var/bcad_extracted}
+    volumes:
+      - .:/app
+      - ./data/cad_downloads:/app/data/cad_downloads
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: python manage.py load_brazos_cad
 
 volumes:
   pgdata:
