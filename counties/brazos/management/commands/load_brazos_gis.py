@@ -255,14 +255,20 @@ class Command(BaseCommand):
         gdf = gpd.read_file(shapefile_path)
         self.stdout.write(f"Loaded {len(gdf)} parcel features (CRS={gdf.crs})")
 
+        # Centroid first, reprojection second. A centroid is a planar
+        # calculation, so it belongs in the source projected CRS (EPSG:2277,
+        # US survey feet) -- running it on EPSG:4326 degrees is what makes
+        # geopandas warn "Geometry is in a geographic CRS". The positional
+        # difference is sub-metre on parcel-sized polygons, but this order is
+        # the correct one and it reprojects N points instead of N polygons.
+        centroids = gdf.geometry.centroid
         if gdf.crs and gdf.crs.to_epsg() != 4326:
-            gdf = gdf.to_crs(epsg=4326)
+            centroids = centroids.to_crs(epsg=4326)
 
         # NOT "_lat"/"_lon": itertuples() builds a namedtuple, and namedtuple
         # fields can't start with an underscore -- pandas silently renames
         # such columns to positional names ("_0", "_1", ...), which would
         # make getattr(row, "_lat", ...) below always return the default.
-        centroids = gdf.geometry.centroid
         gdf["gis_lat"] = centroids.y
         gdf["gis_lon"] = centroids.x
 
@@ -360,6 +366,30 @@ class Command(BaseCommand):
 
     # ------------------------------------------------------------------ main
 
+    @staticmethod
+    def _offline_archive_label(download_dir: Path, extract_root: Path) -> int | None:
+        """Newest year already on disk, for when --skip-download blocks the scrape.
+
+        The scrape is normally what supplies the year the archive is named
+        after (``bcad_gis_<year>.zip``), so with ``--skip-download`` and no
+        explicit ``--year`` the year has to be recovered from what a previous
+        run left behind: an extracted ``gis/<year>/`` directory, or the
+        downloaded archive itself. Returns ``None`` when neither exists.
+        """
+        years: set[int] = set()
+        if extract_root.is_dir():
+            years.update(
+                int(child.name)
+                for child in extract_root.iterdir()
+                if child.is_dir() and child.name.isdigit()
+            )
+        if download_dir.is_dir():
+            for archive in download_dir.glob("bcad_gis_*.zip"):
+                label = archive.stem.removeprefix("bcad_gis_")
+                if label.isdigit():
+                    years.add(int(label))
+        return max(years) if years else None
+
     def handle(self, *args, **options):
         force: bool = options["force"]
         skip_download: bool = options["skip_download"]
@@ -375,17 +405,27 @@ class Command(BaseCommand):
             archive_label = scraped_year
         else:
             url = ""
-            archive_label = requested_year or "latest"
+            archive_label = requested_year or self._offline_archive_label(
+                download_dir, extract_root
+            )
+            if archive_label is None:
+                raise CommandError(
+                    f"--skip-download set but no BCAD GIS archive or extracted parcel "
+                    f"directory was found under {download_dir} or {extract_root}. "
+                    "Drop --skip-download so the archive can be fetched, or pass --year "
+                    "to name one explicitly."
+                )
 
         archive = download_dir / f"bcad_gis_{archive_label}.zip"
         extract_dir = extract_root / str(archive_label)
 
         if not skip_download:
             self._download(url, archive, force=force, dry_run=dry_run)
-        elif not archive.exists():
+        elif not archive.exists() and not skip_extract:
             raise CommandError(
                 f"--skip-download set but archive not found: {archive}. "
-                "Remove --skip-download or pass --force."
+                "Drop --skip-download so it can be fetched, or pass --year to name "
+                "an archive already on disk."
             )
 
         if not skip_extract:
