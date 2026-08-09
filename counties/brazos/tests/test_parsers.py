@@ -207,6 +207,8 @@ class ParseEntityInfoLineTests(SimpleTestCase):
                 (298, 313): "000000000000000",
                 (313, 328): "000000000075000",
                 (328, 343): "000000000000000",
+                (388, 403): "000000000676378",
+                (403, 418): "000000000243298",
             },
         )
         parsed = parse_entity_info_line(line)
@@ -220,6 +222,11 @@ class ParseEntityInfoLineTests(SimpleTestCase):
         self.assertEqual(parsed["hs_amt"], Decimal("0"))
         self.assertEqual(parsed["ov65_amt"], Decimal("75000"))
         self.assertEqual(parsed["dp_amt"], Decimal("0"))
+        # market/appraised, real 2025 values for this property (issue #13):
+        # market >= appraised >= assessed, with a $685 cap-loss between
+        # appraised and assessed (243298 - 242613).
+        self.assertEqual(parsed["market_value"], Decimal("676378"))
+        self.assertEqual(parsed["appraised_value"], Decimal("243298"))
 
     def test_blank_amounts_are_none_not_zero(self):
         line = _line(2750, {(0, 12): "000000010055"})
@@ -228,3 +235,5 @@ class ParseEntityInfoLineTests(SimpleTestCase):
         self.assertIsNone(parsed["ov65_amt"])
         self.assertIsNone(parsed["dp_amt"])
         self.assertIsNone(parsed["assessed_value"])
+        self.assertIsNone(parsed["market_value"])
+        self.assertIsNone(parsed["appraised_value"])

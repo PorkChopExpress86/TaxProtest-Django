@@ -252,6 +252,28 @@ def parse_entity_line(line: str) -> dict[str, Any]:
 # understating a real exemption rather than just omitting an unconfirmed one.
 # The ab/en/fr/ht/pro/pc/so/ex366/ch exemption types (APPRAISAL_INFO.TXT,
 # byte 2723-2731) are unverified entirely and not sourced from any file.
+#
+# market_value/appraised_value (issue #13, multi-year assessment history):
+# property-wide values, NOT per-entity like assessed_value/taxable_value
+# above -- confirmed consistent across every entity row for a property on
+# both a live-cross-checked 2025 export (78,508/79,537 = 98.7% consistent;
+# 100% satisfy market >= appraised >= assessed on a 20k-row sample matched
+# against the already-verified PropertyAccount.assessed_value) and an
+# independently downloaded 2022 export, whose APPRAISAL_ENTITY_INFO.TXT is a
+# different record length (2,614 vs 2025's 2,750 bytes -- the format has
+# grown over time) but has these same fields at these same offsets
+# (59,658/59,824 = 99.7% sane-ordered on a 300k-row scan). APPRAISAL_INFO.TXT
+# also has fields plausibly named appraised_val/assessed_val/ten_percent_cap
+# (byte 1916-1960) per the True Automation file-layout spec, but those do NOT
+# reconcile against the live-verified assessed_value at all and were
+# discarded (see docs/research/brazos-values.md's "Attempt 1" -- this
+# project's earlier, independent finding that this region of the file is
+# per-segment, not property-wide, which the mismatch here reconfirms).
+#
+# appraised_value > assessed_value indicates a value-capping reduction
+# applied that year (uniform across every entity, unlike the entity-specific
+# hs_amt/ov65_amt/dp_amt exemptions that separately reduce taxable_value) --
+# used as this county's cap_account signal for AssessmentHistory.
 ENTITY_INFO_LAYOUT: tuple[FieldSpec, ...] = (
     FieldSpec("prop_id", 0, 12, _text),
     FieldSpec("tax_year", 12, 17, _int_or_none),
@@ -263,6 +285,8 @@ ENTITY_INFO_LAYOUT: tuple[FieldSpec, ...] = (
     FieldSpec("hs_amt", 298, 313, _money_flat),
     FieldSpec("ov65_amt", 313, 328, _money_flat),
     FieldSpec("dp_amt", 328, 343, _money_flat),
+    FieldSpec("market_value", 388, 403, _money_flat),
+    FieldSpec("appraised_value", 403, 418, _money_flat),
 )
 
 
