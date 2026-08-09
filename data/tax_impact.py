@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import ROUND_HALF_UP, Decimal
 
 from data.models import AssessmentHistory, PropertyJurisdictionExemption, TaxUnitRate
 
@@ -38,9 +38,9 @@ def _money(value: Decimal) -> Decimal:
     return value.quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
 
 
-def _latest_assessment_year(account_number: str) -> int | None:
+def _latest_assessment_year(account_number: str, county: str) -> int | None:
     row = (
-        AssessmentHistory.objects.filter(account_number=account_number)
+        AssessmentHistory.objects.filter(account_number=account_number, county=county)
         .order_by("-tax_year")
         .values_list("tax_year", flat=True)
         .first()
@@ -64,10 +64,17 @@ def calculate_tax_impact(
     account_number: str,
     tax_year: int | None,
     median_assessed_value: Decimal | float | int | None,
+    county: str = "harris",
 ) -> TaxImpactResult:
-    """Compute current-vs-median annual tax impact from imported HCAD tax data."""
+    """Compute current-vs-median annual tax impact from imported tax data.
 
-    resolved_year = tax_year or _latest_assessment_year(account_number)
+    ``county`` scopes every query to one county's rows in the shared
+    AssessmentHistory/TaxUnitRate/PropertyJurisdictionExemption tables (see
+    wayfinder ticket #9) — required because tax_unit_code alone isn't
+    guaranteed unique across counties.
+    """
+
+    resolved_year = tax_year or _latest_assessment_year(account_number, county)
     warnings: list[str] = []
     breakdown: list[dict[str, object]] = []
     exemptions_summary: list[dict[str, object]] = []
@@ -95,6 +102,7 @@ def calculate_tax_impact(
         PropertyJurisdictionExemption.objects.filter(
             account_number=account_number,
             tax_year=resolved_year,
+            county=county,
         ).order_by("tax_unit_code", "exemption_code")
     )
 
@@ -114,7 +122,9 @@ def calculate_tax_impact(
         )
 
     assessment = (
-        AssessmentHistory.objects.filter(account_number=account_number, tax_year=resolved_year)
+        AssessmentHistory.objects.filter(
+            account_number=account_number, tax_year=resolved_year, county=county
+        )
         .values_list("assessed_value", flat=True)
         .first()
     )
@@ -125,6 +135,7 @@ def calculate_tax_impact(
         for row in TaxUnitRate.objects.filter(
             tax_year=resolved_year,
             tax_unit_code__in=[row.tax_unit_code for row in unit_rows],
+            county=county,
         )
     }
 
@@ -236,7 +247,9 @@ def calculate_tax_impact(
                 "tax_unit_name": unit.tax_unit_name,
                 "rate": rate,
                 "current_taxable_value": _money(current_taxable),
-                "median_taxable_value": _money(median_taxable) if median_taxable is not None else None,
+                "median_taxable_value": (
+                    _money(median_taxable) if median_taxable is not None else None
+                ),
                 "current_tax_amount": _money(current_tax),
                 "median_tax_amount": _money(median_tax),
                 "warning": None,

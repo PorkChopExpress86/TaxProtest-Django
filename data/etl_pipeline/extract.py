@@ -144,6 +144,10 @@ class ExtractManager:
         patterns: list[str] | None = None,
     ) -> bool:
         """Check if a file should be extracted based on patterns."""
+        normalized = filename.replace("\\", "/")
+        if ".gdb/" in normalized:
+            return True
+
         # Get file extension
         ext = Path(filename).suffix.lower()
 

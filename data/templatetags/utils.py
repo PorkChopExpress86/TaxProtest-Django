@@ -23,6 +23,16 @@ def sqft(value):
         return ""
 
 
+@register.filter
+def acres(value):
+    try:
+        if value is None:
+            return ""
+        return f"{float(value):,.2f}"
+    except Exception:
+        return ""
+
+
 @register.simple_tag
 def sort_url(base_query: str, sort: str, current_sort: str, current_dir: str):
     next_dir = "desc" if current_sort == sort and current_dir == "asc" else "asc"

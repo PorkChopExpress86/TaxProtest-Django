@@ -15,6 +15,8 @@ class RuntimePaths:
     extract_dir: Path
     log_dir: Path
     report_dir: Path
+    bcad_download_dir: Path
+    bcad_extract_dir: Path
 
 
 def _resolve_env_path(
@@ -46,6 +48,12 @@ def resolve_runtime_paths(
         log_dir=_resolve_env_path(root, environ, "HCAD_LOG_DIR", str(runtime_root / "logs")),
         report_dir=_resolve_env_path(
             root, environ, "PROJECT_REPORT_DIR", str(runtime_root / "reports")
+        ),
+        bcad_download_dir=_resolve_env_path(
+            root, environ, "BCAD_DOWNLOAD_DIR", str(runtime_root / "bcad_downloads")
+        ),
+        bcad_extract_dir=_resolve_env_path(
+            root, environ, "BCAD_EXTRACT_DIR", str(runtime_root / "bcad_extracted")
         ),
     )
 

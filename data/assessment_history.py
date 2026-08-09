@@ -117,8 +117,11 @@ class AssessmentHistoryImporter:
         years = list(range(start_year, end_year + 1))
 
         with transaction.atomic():
+            # county="harris": this importer reads HCAD snapshots only. AssessmentHistory
+            # is now a shared table (see wayfinder ticket #9) — an unscoped delete here
+            # would also wipe Brazos's rows for the same tax-year range.
             AssessmentHistory.objects.filter(
-                tax_year__gte=start_year, tax_year__lte=end_year
+                tax_year__gte=start_year, tax_year__lte=end_year, county="harris"
             ).delete()
 
             for year in years:

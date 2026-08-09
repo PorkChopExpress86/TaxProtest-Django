@@ -169,11 +169,25 @@ class ExtraFeature(models.Model):
         return f"{self.feature_description} for {self.account_number}"
 
 
+# Shared by AssessmentHistory / TaxUnitRate / PropertyJurisdictionExemption: these
+# three tables are the tax-impact data model reused verbatim across counties (see
+# wayfinder ticket #9 on the issue tracker). account_number/prop_id and tax_unit_code
+# formats aren't guaranteed collision-proof across counties, so county disambiguates
+# real key uniqueness rather than relying on incidental format differences.
+COUNTY_CHOICES = [
+    ("harris", "Harris"),
+    ("brazos", "Brazos"),
+]
+
+
 class AssessmentHistory(models.Model):
     """Year-based assessed value history for real properties."""
 
     account_number = models.CharField(max_length=20, db_index=True)
     tax_year = models.IntegerField(db_index=True)
+    county = models.CharField(
+        max_length=16, choices=COUNTY_CHOICES, default="harris", db_index=True
+    )
     assessed_value = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     appraised_value = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     market_value = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
@@ -192,7 +206,8 @@ class AssessmentHistory(models.Model):
         ordering = ["-tax_year"]
         constraints = [
             models.UniqueConstraint(
-                fields=["account_number", "tax_year"], name="unique_assessment_history_per_year"
+                fields=["account_number", "tax_year", "county"],
+                name="unique_assessment_history_per_year",
             )
         ]
 
@@ -205,6 +220,9 @@ class TaxUnitRate(models.Model):
 
     tax_year = models.IntegerField(db_index=True)
     tax_unit_code = models.CharField(max_length=32, db_index=True)
+    county = models.CharField(
+        max_length=16, choices=COUNTY_CHOICES, default="harris", db_index=True
+    )
     tax_unit_name = models.CharField(max_length=255, blank=True)
     adopted_rate = models.DecimalField(max_digits=12, decimal_places=8)
     source = models.CharField(max_length=64, blank=True)
@@ -214,7 +232,8 @@ class TaxUnitRate(models.Model):
     class Meta:
         constraints = [
             models.UniqueConstraint(
-                fields=["tax_year", "tax_unit_code"], name="unique_tax_rate_per_unit_year"
+                fields=["tax_year", "tax_unit_code", "county"],
+                name="unique_tax_rate_per_unit_year",
             )
         ]
         indexes = [
@@ -226,10 +245,13 @@ class TaxUnitRate(models.Model):
 
 
 class PropertyJurisdictionExemption(models.Model):
-    """HCAD jurisdiction/exemption row linked to an account and year."""
+    """Jurisdiction/exemption row linked to an account and year."""
 
     account_number = models.CharField(max_length=20, db_index=True)
     tax_year = models.IntegerField(db_index=True)
+    county = models.CharField(
+        max_length=16, choices=COUNTY_CHOICES, default="harris", db_index=True
+    )
     tax_unit_code = models.CharField(max_length=32, db_index=True)
     tax_unit_name = models.CharField(max_length=255, blank=True)
     exemption_code = models.CharField(max_length=32, blank=True)
@@ -245,7 +267,7 @@ class PropertyJurisdictionExemption(models.Model):
     class Meta:
         constraints = [
             models.UniqueConstraint(
-                fields=["account_number", "tax_year", "tax_unit_code", "exemption_code"],
+                fields=["account_number", "tax_year", "tax_unit_code", "exemption_code", "county"],
                 name="unique_jur_exemption_per_unit_code_year",
             )
         ]

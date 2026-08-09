@@ -16,7 +16,7 @@ Including another URLconf
 """
 
 from django.contrib import admin
-from django.urls import path
+from django.urls import include, path
 
 from .views import (
     about,
@@ -32,6 +32,7 @@ from .views import (
 
 urlpatterns = [
     path("admin/", admin.site.urls),
+    path("brazos/", include("brazos_cad.urls")),
     path("", index, name="index"),  # Root URL
     path("export/", export_csv, name="export_csv"),  # CSV export
     path(

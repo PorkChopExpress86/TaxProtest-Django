@@ -283,19 +283,47 @@ def refresh_property_readiness() -> dict:
         "residential_properties": residential_properties.count(),
     }
 
-    results["ready_properties_cleared"] = PropertyRecord.objects.filter(is_data_ready=True).update(
-        is_data_ready=False
-    )
+    from django.db import connection
 
-    results["ready_properties_set"] = (
-        residential_properties.filter(
-            latitude__isnull=False,
-            longitude__isnull=False,
+    if connection.vendor == "postgresql":
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                UPDATE data_propertyrecord
+                SET is_data_ready = false
+                WHERE is_data_ready = true;
+            """)
+            results["ready_properties_cleared"] = cursor.rowcount
+
+            cursor.execute("""
+                UPDATE data_propertyrecord
+                SET is_data_ready = true
+                FROM (
+                    SELECT DISTINCT property_id
+                    FROM data_buildingdetail
+                    WHERE is_active = true
+                      AND bedrooms IS NOT NULL
+                      AND bathrooms IS NOT NULL
+                ) b
+                WHERE data_propertyrecord.id = b.property_id
+                  AND data_propertyrecord.is_residential = true
+                  AND data_propertyrecord.latitude IS NOT NULL
+                  AND data_propertyrecord.longitude IS NOT NULL;
+            """)
+            results["ready_properties_set"] = cursor.rowcount
+    else:
+        results["ready_properties_cleared"] = PropertyRecord.objects.filter(is_data_ready=True).update(
+            is_data_ready=False
         )
-        .annotate(has_ready_building=Exists(ready_buildings))
-        .filter(has_ready_building=True)
-        .update(is_data_ready=True)
-    )
+
+        results["ready_properties_set"] = (
+            residential_properties.filter(
+                latitude__isnull=False,
+                longitude__isnull=False,
+            )
+            .annotate(has_ready_building=Exists(ready_buildings))
+            .filter(has_ready_building=True)
+            .update(is_data_ready=True)
+        )
 
     logger.info(
         "Refreshed property readiness: %s/%s residential properties ready",
@@ -380,42 +408,74 @@ def load_gis_parcels(
         logger.info("No valid GIS rows found in %s", shapefile_path)
         return 0
 
-    batch: list[PropertyRecord] = []
-    properties = PropertyRecord.objects.filter(
-        account_number__in=updates_by_account.keys(),
-        is_residential=True,
-    ).only("id", "account_number", "latitude", "longitude", "parcel_id")
+    from django.db import connection
 
-    with transaction.atomic():
-        for prop in properties.iterator(chunk_size=chunk_size):
-            update = updates_by_account.get(prop.account_number)
-            if not update:
-                continue
-            lat, lon, parcel_id = update
+    if connection.vendor == "postgresql":
+        from io import StringIO
+        buffer = StringIO()
+        for acct, (lat, lon, pid) in updates_by_account.items():
+            buffer.write(f"{acct}\t{lat}\t{lon}\t{pid or ''}\n")
+        buffer.seek(0)
 
-            prop.latitude = lat
-            prop.longitude = lon
-            if parcel_id:
-                prop.parcel_id = parcel_id
-            batch.append(prop)
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                CREATE TEMP TABLE temp_gis_updates (
+                    account_number VARCHAR(20),
+                    latitude DOUBLE PRECISION,
+                    longitude DOUBLE PRECISION,
+                    parcel_id VARCHAR(255)
+                );
+            """)
+            cursor.cursor.copy_from(
+                buffer, "temp_gis_updates", columns=("account_number", "latitude", "longitude", "parcel_id")
+            )
+            cursor.execute("""
+                UPDATE data_propertyrecord
+                SET latitude = u.latitude,
+                    longitude = u.longitude,
+                    parcel_id = CASE WHEN u.parcel_id != '' THEN u.parcel_id ELSE data_propertyrecord.parcel_id END
+                FROM temp_gis_updates u
+                WHERE data_propertyrecord.account_number = u.account_number
+                  AND data_propertyrecord.is_residential = true;
+            """)
+            total_updated = cursor.rowcount
+    else:
+        batch: list[PropertyRecord] = []
+        properties = PropertyRecord.objects.filter(
+            account_number__in=updates_by_account.keys(),
+            is_residential=True,
+        ).only("id", "account_number", "latitude", "longitude", "parcel_id")
 
-            if len(batch) >= chunk_size:
+        with transaction.atomic():
+            for prop in properties.iterator(chunk_size=chunk_size):
+                update = updates_by_account.get(prop.account_number)
+                if not update:
+                    continue
+                lat, lon, parcel_id = update
+
+                prop.latitude = lat
+                prop.longitude = lon
+                if parcel_id:
+                    prop.parcel_id = parcel_id
+                batch.append(prop)
+
+                if len(batch) >= chunk_size:
+                    PropertyRecord.objects.bulk_update(
+                        batch,
+                        ["latitude", "longitude", "parcel_id"],
+                        batch_size=chunk_size,
+                    )
+                    total_updated += len(batch)
+                    logger.info("Updated %s properties with GIS data...", total_updated)
+                    batch.clear()
+
+            if batch:
                 PropertyRecord.objects.bulk_update(
                     batch,
                     ["latitude", "longitude", "parcel_id"],
                     batch_size=chunk_size,
                 )
                 total_updated += len(batch)
-                logger.info("Updated %s properties with GIS data...", total_updated)
-                batch.clear()
-
-        if batch:
-            PropertyRecord.objects.bulk_update(
-                batch,
-                ["latitude", "longitude", "parcel_id"],
-                batch_size=chunk_size,
-            )
-            total_updated += len(batch)
 
     logger.info("Completed: Updated %s properties with GIS coordinates", total_updated)
     if refresh_readiness:

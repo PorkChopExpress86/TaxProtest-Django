@@ -265,3 +265,19 @@ Downloaded at build time via `scripts/build_time_download.py`. Re-download targe
 - All ETL helper logic goes in `data/etl.py` or `data/residential.py`, not inline in management commands
 - Celery tasks import from `data.tasks_new` — `data.tasks` (if it exists) is legacy
 - Tax impact calculations (`data/tax_impact.py`) require `TaxUnitRate` and `PropertyJurisdictionExemption` rows to be populated via `import_tax_unit_rates` and `import_jur_exemptions` before the protest analysis views will show meaningful results; missing data degrades gracefully to `completeness="missing"`
+
+---
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in this repo's GitHub Issues (`PorkChopExpress86/TaxProtest-Django`), via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five canonical roles (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
