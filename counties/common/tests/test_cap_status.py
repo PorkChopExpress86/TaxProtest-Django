@@ -14,7 +14,7 @@ from decimal import Decimal
 from django.test import TestCase
 
 from counties.common.cap_status import evaluate_cap_status
-from counties.harris.models import AssessmentHistory
+from counties.common.tax_models import AssessmentHistory
 
 
 class HarrisTypedFlagTests(TestCase):

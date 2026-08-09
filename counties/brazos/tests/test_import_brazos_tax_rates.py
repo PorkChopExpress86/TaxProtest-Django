@@ -14,8 +14,8 @@ from unittest.mock import MagicMock, patch
 from django.core.management import CommandError, call_command
 from django.test import TestCase
 
-from counties.harris.models import PropertyJurisdictionExemption, TaxUnitRate
-from counties.harris.tax_impact import calculate_tax_impact
+from counties.common.tax_impact import calculate_tax_impact
+from counties.common.tax_models import PropertyJurisdictionExemption, TaxUnitRate
 
 FIXTURE_HTML = """
 <html><body>

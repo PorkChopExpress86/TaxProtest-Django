@@ -13,7 +13,7 @@ export; see ``counties/brazos/parsers/pacs.py`` for the fixed-width field layout
   - APPRAISAL_ENTITY.TXT             -> PropertyEntity (id/code lookup only,
     NOT currently ingested — this file has no entity_name/type/rate columns,
     see PropertyEntity's docstring)
-  - APPRAISAL_ENTITY_INFO.TXT        -> counties.harris.models.PropertyJurisdictionExemption
+  - APPRAISAL_ENTITY_INFO.TXT        -> counties.common.tax_models.PropertyJurisdictionExemption
     (NOT a brazos_cad model — shared with Harris, see wayfinder ticket #9);
     also rolls up PropertyAccount.assessed_value (see below)
 
@@ -345,7 +345,7 @@ class PropertyEntity(models.Model):
     """Maps to BCAD APPRAISAL_ENTITY.TXT — a bare entity_id -> entity_code lookup,
     not an entity master. Trimmed to exactly what that file provides (wayfinder
     ticket #9): tax-unit name/rate data now lives solely in the shared
-    TaxUnitRate table (data/models.py, county="brazos") so there's one source of
+    TaxUnitRate table (counties/common/tax_models.py, county="brazos") so there's one source of
     truth for rates, not two. NOT currently populated by load_brazos_cad.
     """
 

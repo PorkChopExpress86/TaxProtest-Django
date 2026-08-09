@@ -4,8 +4,8 @@ from decimal import Decimal
 
 from django.test import TestCase
 
-from counties.harris.models import AssessmentHistory, PropertyJurisdictionExemption, TaxUnitRate
-from counties.harris.tax_impact import calculate_tax_impact
+from counties.common.tax_impact import calculate_tax_impact
+from counties.common.tax_models import AssessmentHistory, PropertyJurisdictionExemption, TaxUnitRate
 
 
 class TaxImpactCalculatorTests(TestCase):

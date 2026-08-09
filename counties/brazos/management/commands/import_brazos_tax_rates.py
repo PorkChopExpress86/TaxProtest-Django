@@ -7,7 +7,7 @@ for this (see docs/research/brazos-entity-tax-rates.md on branch
 research/brazos-entity-tax-rates, wayfinder ticket #8). This command scrapes
 that page directly.
 
-TaxUnitRate is shared with Harris (wayfinder ticket #9): counties.harris.tax_impact
+TaxUnitRate is shared with Harris (wayfinder ticket #9): counties.common.tax_impact
 .calculate_tax_impact() is reused verbatim across counties once its three
 backing tables carry a matching county's rows. Upserts here are always keyed
 with county="brazos" so they never collide with Harris's rows in the same
@@ -27,7 +27,7 @@ import requests
 from bs4 import BeautifulSoup
 from django.core.management.base import BaseCommand, CommandError
 
-from counties.harris.models import TaxUnitRate
+from counties.common.tax_models import TaxUnitRate
 
 BCAD_RATES_URL = "https://brazoscad.org/tax-information/adopted-tax-rates/"
 USER_AGENT = "TaxProtest-Django/1.0 (+brazos_cad loader)"

@@ -77,7 +77,7 @@ from django.db import transaction
 
 from counties.brazos.models import PropertyAccount
 from counties.brazos.parsers.pacs import parse_entity_info_line
-from counties.harris.models import AssessmentHistory
+from counties.common.tax_models import AssessmentHistory
 
 logger = logging.getLogger("brazos_cad")
 

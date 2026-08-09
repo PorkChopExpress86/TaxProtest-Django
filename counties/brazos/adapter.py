@@ -36,7 +36,7 @@ from counties.common.contracts import (
     Subject,
 )
 from counties.common.history import assessment_history_rows
-from counties.harris.tax_impact import calculate_tax_impact
+from counties.common.tax_impact import calculate_tax_impact
 
 COUNTY_SLUG = "brazos"
 

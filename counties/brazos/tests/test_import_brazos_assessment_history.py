@@ -22,7 +22,7 @@ from counties.brazos.management.commands.import_brazos_assessment_history import
     YearRollup,
 )
 from counties.brazos.models import PropertyAccount
-from counties.harris.models import AssessmentHistory
+from counties.common.tax_models import AssessmentHistory
 
 
 def _line(length: int, fields: dict[tuple[int, int], str]) -> str:

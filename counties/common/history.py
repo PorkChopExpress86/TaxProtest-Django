@@ -1,8 +1,10 @@
 """Assessment-history rows for the shared report, from the shared table.
 
-``AssessmentHistory`` is county-scoped rather than county-owned (it lives in the
-Harris app for historical reasons but carries a ``county`` column), so both
-counties read it through this one helper and get identically shaped rows.
+``AssessmentHistory`` is county-scoped rather than county-owned (its
+``Meta.app_label`` is pinned to Harris's "data" label for migration-history
+continuity, but the model itself lives in ``counties.common.tax_models`` --
+see that module's docstring), so both counties read it through this one
+helper and get identically shaped rows.
 """
 
 from __future__ import annotations
@@ -11,18 +13,13 @@ from typing import Any
 
 from counties.common.analysis import year_over_year_percent
 from counties.common.cap_status import evaluate_cap_status
+from counties.common.tax_models import AssessmentHistory
 
 
 def assessment_history_rows(
     account_number: str, county: str = "harris", limit: int = 5
 ) -> list[dict[str, Any]]:
     """Per-year assessed values, newest first, with YoY change and cap status."""
-    # Imported lazily: AssessmentHistory is a Harris-app model shared via its
-    # county column (wayfinder ticket #9); importing a county app at module
-    # scope would invert the county-neutral layer's dependency direction.
-    # evaluate_cap_status is genuinely part of this layer -- see cap_status.py.
-    from counties.harris.models import AssessmentHistory
-
     history = list(
         AssessmentHistory.objects.filter(account_number=account_number, county=county).order_by(
             "-tax_year"

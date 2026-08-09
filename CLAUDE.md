@@ -63,13 +63,19 @@ Harris). Relative values resolve against the project root.
 | `charts.py` | `assessment_history_chart()`, `ppsf_distribution_chart()`, `score_breakdown_summary()` — pure SVG layout data |
 | `history.py` | `assessment_history_rows(account_number, county)` over the shared `AssessmentHistory` table |
 | `cap_status.py` | `evaluate_cap_status(entry, prior)` — Texas homestead/circuit-breaker cap math; reads `AssessmentHistory.cap_account` differently per county (see `COUNTIES_WITH_TYPED_CAP_FLAG`) |
+| `tax_models.py` | `AssessmentHistory`, `TaxUnitRate`, `PropertyJurisdictionExemption` — the shared tax-data models (see Key Files below) |
+| `tax_impact.py` | `calculate_tax_impact(account_number, tax_year, median_assessed_value, county)` → `TaxImpactResult` |
 | `exports.py` | Search CSV, protest-comps CSV, and the hand-rolled `simple_pdf()` evidence report |
 | `views.py` | `index`, `export_csv`, `similar_properties`, `protest_analysis`, `protest_analysis_export`, `protest_analysis_pdf` — all take `adapter=` |
 | `urls.py` | `county_urlpatterns(adapter)` binds an adapter to the full route set |
 | `templatetags/countyfmt.py` | `currency`, `sqft`, `acres`, `field`, `quality_label`, `quality_classes`, `score_classes`, `sort_header` |
 
 `counties.common` is in `INSTALLED_APPS` (label `counties_common`) purely so Django discovers its
-template tags. It holds no models and imports no county app at module scope.
+template tags. It imports no county app at module scope. It does hold three models
+(`tax_models.py`) — but their `Meta.app_label` is pinned to `"data"` (Harris's pinned label, see
+`counties/harris/apps.py`), so their tables, migrations, and content types stay under the `data` app;
+only the Python class definitions live in `counties.common`. Migrations for them are still written to
+`counties/harris/migrations/`.
 
 ### Adding a county
 
@@ -94,18 +100,22 @@ asserts every registered county exposes the identical route set — a new county
 - `PropertyRecord` — core property record; key flags: `is_residential`, `is_data_ready`
 - `BuildingDetail` — building specs (sqft, bedrooms, bathrooms, quality, condition, etc.)
 - `ExtraFeature` — pools, garages, patios, etc.
+- `DownloadRecord` — tracks ETL download history
+
+### Shared tax-data models (`counties/common/tax_models.py`)
 - `AssessmentHistory` — per-year assessed/appraised/market values with cap fields; **county-scoped, shared with Brazos**
 - `TaxUnitRate` — annual adopted tax rate per taxing unit code; county-scoped
 - `PropertyJurisdictionExemption` — per-account jurisdiction/exemption rows used for tax impact; county-scoped
-- `DownloadRecord` — tracks ETL download history
+
+Physically defined in `counties/common/` (not Harris-owned), but `Meta.app_label = "data"` keeps their
+tables and migration history under Harris's pinned app label — see the Shared Web Layer section above.
 
 ### Harris ETL & analysis (`counties/harris/`)
 - `etl.py` — shared ETL helpers (bulk upsert, data-ready marking)
 - `residential.py` — `is_residential_state_class()`, `normalize_state_class()`
 - `tasks_new.py` — Celery tasks: `download_and_import_building_data`, `download_and_import_gis_data`
 - `similarity.py` — similarity scoring algorithm (see Similarity section below)
-- `tax_impact.py` — `calculate_tax_impact(account_number, tax_year, median_assessed_value, county)` → `TaxImpactResult`
-- `assessment_history.py` — `AssessmentHistoryImporter` for HCAD snapshot import (cap-status evaluation moved to `counties/common/cap_status.py` — it's a shared, county-aware function, not Harris-owned)
+- `assessment_history.py` — `AssessmentHistoryImporter` for HCAD snapshot import (cap-status evaluation moved to `counties/common/cap_status.py`, tax-impact calculation to `counties/common/tax_impact.py` — both are shared, county-aware, not Harris-owned)
 - `query.py` — `build_property_search_queryset(params)`
 - `adapter.py` — `HARRIS_PROFILE` + `HarrisAdapter`
 
@@ -129,8 +139,6 @@ Harris (`counties/harris/management/commands/`):
 | `load_room_counts` | Room counts only (fixtures.txt) |
 | `download_hcad` | Download HCAD source files |
 | `import_hcad_jur_exempt` | **Jurisdiction/exemption rows + tax unit rates from `Real_jur_exempt.zip`** (`--tax-year`); this is what makes the Tax Impact section work |
-| `import_jur_exemptions` | Upsert jurisdiction/exemption rows from a pre-normalised TSV (`--path`, `--tax-year`) |
-| `import_tax_unit_rates` | Upsert per-unit adopted tax rates from TSV (`--path`, `--tax-year`) |
 
 Brazos (`counties/brazos/management/commands/`):
 
@@ -238,7 +246,7 @@ docker compose logs -f beat
 docker compose run --rm taxprotest-dev pytest -q
 
 # Single module
-docker compose run --rm taxprotest-dev pytest counties/harris/tests/test_tax_impact.py
+docker compose run --rm taxprotest-dev pytest counties/common/tests/test_tax_impact.py
 
 # Single test
 docker compose run --rm taxprotest-dev pytest \
@@ -248,8 +256,8 @@ docker compose run --rm taxprotest-dev pytest \
 Tests live beside the code they cover:
 
 - `counties/common/tests/` — the cross-county invariants: every county exposes the same routes, the
-  shared equity maths, and Brazos's newly shared pages
-- `counties/harris/tests/` — Harris models, ETL, similarity, tax impact, admin, runtime paths, and the
+  shared equity maths, cap-status evaluation, tax-impact calculation, and Brazos's newly shared pages
+- `counties/harris/tests/` — Harris models, ETL, similarity, admin, runtime paths, and the
   Harris rendering of the shared pages (`test_views.py`)
 - `counties/brazos/tests/` — BCAD parsers, loaders, similarity, and the Brazos rendering of the shared pages
 - `taxprotest/tests/` — site-wide views only (about, health, readiness)
@@ -383,9 +391,7 @@ diffing consecutive years — nothing in the export carries a prior-year value c
 - Tax impact calculations require `TaxUnitRate` and `PropertyJurisdictionExemption` rows before the
   protest analysis views show meaningful results; missing data degrades gracefully to
   `completeness="missing"`. For Harris, populate both with `import_hcad_jur_exempt --tax-year YYYY`
-  (from `Real_jur_exempt.zip`); Brazos gets them from `load_brazos_cad`. The generic
-  `import_jur_exemptions` / `import_tax_unit_rates` commands take pre-normalised TSVs and cannot
-  read HCAD's raw files.
+  (from `Real_jur_exempt.zip`); Brazos gets them from `load_brazos_cad`.
 - **`AssessmentHistory.cap_account` means different things per county and neither is a clean boolean.**
   Harris's `Cap_acct` is HCAD's own `Y`/`N`/`Pending` flag; Brazos has no such field, so it's derived
   as `"Y"` when `appraised_value > assessed_value` for that year (see

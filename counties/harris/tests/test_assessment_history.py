@@ -8,7 +8,8 @@ from django.core.management import call_command
 from django.db import IntegrityError
 from django.test import TestCase
 
-from counties.harris.models import AssessmentHistory, PropertyRecord
+from counties.common.tax_models import AssessmentHistory
+from counties.harris.models import PropertyRecord
 
 
 class AssessmentHistoryModelTests(TestCase):

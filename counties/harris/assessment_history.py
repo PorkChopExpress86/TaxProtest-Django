@@ -8,7 +8,7 @@ from typing import Any
 
 from django.db import transaction
 
-from counties.harris.models import AssessmentHistory
+from counties.common.tax_models import AssessmentHistory
 
 
 def _parse_decimal(value: Any) -> Decimal | None:

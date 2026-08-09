@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 
-from counties.harris.models import AssessmentHistory, PropertyJurisdictionExemption, TaxUnitRate
+from counties.common.tax_models import AssessmentHistory, PropertyJurisdictionExemption, TaxUnitRate
 
 MONEY_QUANT = Decimal("0.01")
 ZERO = Decimal("0")

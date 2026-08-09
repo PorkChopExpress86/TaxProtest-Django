@@ -19,9 +19,9 @@ which fields are and aren't populated (e.g. assessed_value/total_value/
 state_class are not currently sourced on PropertyAccount; APPRAISAL_ENTITY.TXT
 isn't ingested at all, since it's an id/code lookup, not an entity master).
 
-APPRAISAL_ENTITY_INFO.TXT is ingested into counties.harris.models.PropertyJurisdictionExemption
+APPRAISAL_ENTITY_INFO.TXT is ingested into counties.common.tax_models.PropertyJurisdictionExemption
 (county="brazos") -- NOT a brazos_cad model. That table is shared with Harris
-(see wayfinder ticket #9): counties.harris.tax_impact.calculate_tax_impact() is reused
+(see wayfinder ticket #9): counties.common.tax_impact.calculate_tax_impact() is reused
 verbatim across counties once its three backing tables (TaxUnitRate,
 PropertyJurisdictionExemption, AssessmentHistory) carry a matching county's
 rows. Deletes here are always scoped by county="brazos" to avoid touching
@@ -74,7 +74,7 @@ from counties.brazos.parsers.pacs import (
     parse_info_line,
     parse_land_detail_line,
 )
-from counties.harris.models import PropertyJurisdictionExemption
+from counties.common.tax_models import PropertyJurisdictionExemption
 
 logger = logging.getLogger("brazos_cad")
 

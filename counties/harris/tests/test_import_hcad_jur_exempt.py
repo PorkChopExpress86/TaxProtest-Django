@@ -16,14 +16,10 @@ from unittest.mock import patch
 from django.core.management import CommandError, call_command
 from django.test import TestCase
 
+from counties.common.tax_impact import calculate_tax_impact
+from counties.common.tax_models import AssessmentHistory, PropertyJurisdictionExemption, TaxUnitRate
 from counties.harris.management.commands.import_hcad_jur_exempt import Command
-from counties.harris.models import (
-    AssessmentHistory,
-    PropertyJurisdictionExemption,
-    PropertyRecord,
-    TaxUnitRate,
-)
-from counties.harris.tax_impact import calculate_tax_impact
+from counties.harris.models import PropertyRecord
 
 RATE_HEADER = "RP_TYPE\ttax_dist\tname\texempt_cd\tprop\tcurr\texempt_val\texempt_rate"
 VALUE_HEADER = "acct\ttax_district\ttp_cd\tpct_district\tappraised_val\ttaxable_val"

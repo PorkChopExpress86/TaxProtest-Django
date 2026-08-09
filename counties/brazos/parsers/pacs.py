@@ -237,7 +237,7 @@ def parse_entity_line(line: str) -> dict[str, Any]:
 
 # ------------------------------------------------------------------- APPRAISAL_ENTITY_INFO.TXT
 # 2750 chars/line. One row per (property, taxing entity, year) -- the real
-# analog of counties.harris.models.PropertyJurisdictionExemption (wide: one column per
+# analog of counties.common.tax_models.PropertyJurisdictionExemption (wide: one column per
 # exemption type, needs unpivoting into that model's long per-code-row shape).
 # Offsets verified against real 2025 export bytes; see
 # docs/research/brazos-exemptions.md on branch research/brazos-exemptions for
