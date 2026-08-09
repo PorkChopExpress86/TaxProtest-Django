@@ -58,7 +58,6 @@ from __future__ import annotations
 import logging
 import math
 import re
-import zipfile
 from pathlib import Path
 
 import requests
@@ -67,12 +66,11 @@ from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
 from counties.brazos.models import PropertyAccount
+from counties.brazos.portal import USER_AGENT, download_archive, extract_zip
 
 logger = logging.getLogger("brazos_cad")
 
 GIS_PORTAL_URL = "https://brazoscad.org/tax-information/gis/"
-USER_AGENT = "TaxProtest-Django/1.0 (+brazos_cad loader)"
-DOWNLOAD_TIMEOUT = 300  # seconds
 
 YEAR_RE = re.compile(r"(19|20)\d{2}")
 ZIP_RE = re.compile(r"\.zip$", re.IGNORECASE)
@@ -199,40 +197,12 @@ class Command(BaseCommand):
     # ------------------------------------------------------------------ download / extract
 
     def _download(self, url: str, destination: Path, *, force: bool, dry_run: bool) -> Path:
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        if destination.exists() and not force:
-            self.stdout.write(f"Archive already on disk: {destination}")
-            return destination
-        if dry_run:
-            self.stdout.write(f"[dry-run] would download {url} -> {destination}")
-            return destination
-
-        self.stdout.write(f"Downloading {url} -> {destination}")
-        try:
-            with requests.get(
-                url, headers={"User-Agent": USER_AGENT}, timeout=DOWNLOAD_TIMEOUT, stream=True
-            ) as response:
-                response.raise_for_status()
-                with destination.open("wb") as fh:
-                    for chunk in response.iter_content(chunk_size=1024 * 1024):
-                        fh.write(chunk)
-        except requests.RequestException as exc:
-            raise CommandError(f"Failed to download {url}: {exc}") from exc
-        return destination
+        return download_archive(
+            url, destination, force=force, dry_run=dry_run, log=self.stdout.write
+        )
 
     def _extract(self, archive: Path, extract_dir: Path, *, dry_run: bool) -> None:
-        if not archive.exists():
-            raise CommandError(f"Archive not found: {archive}")
-        extract_dir.mkdir(parents=True, exist_ok=True)
-        if dry_run:
-            self.stdout.write(f"[dry-run] would extract {archive} into {extract_dir}")
-            return
-        try:
-            with zipfile.ZipFile(archive) as zf:
-                zf.extractall(extract_dir)
-        except zipfile.BadZipFile as exc:
-            raise CommandError(f"Archive is not a valid zip: {archive} ({exc})") from exc
-        self.stdout.write(f"Extracted into {extract_dir}")
+        extract_zip(archive, extract_dir, dry_run=dry_run, log=self.stdout.write)
 
     @staticmethod
     def _find_shapefile(extract_dir: Path) -> Path | None:
