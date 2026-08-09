@@ -156,9 +156,7 @@ class BrazosGainsTheSharedPagesTests(TestCase):
         self.assertEqual(response.status_code, 400)
 
     def test_protest_csv_export_returns_csv(self):
-        response = self.client.get(
-            reverse("brazos_protest_analysis_export", args=["000000010013"])
-        )
+        response = self.client.get(reverse("brazos_protest_analysis_export", args=["000000010013"]))
         self.assertEqual(response.status_code, 200)
         self.assertIn("text/csv", response["Content-Type"])
         self.assertIn("similarity_score", response.content.decode().splitlines()[0])
