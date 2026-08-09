@@ -32,6 +32,7 @@ class Command(BaseCommand):
                 raise CommandError("Input file has no header row")
 
             upserted = 0
+            skipped = 0
             for row in reader:
                 account_number = (
                     row.get("account_number") or row.get("acct") or row.get("account") or ""
@@ -41,6 +42,7 @@ class Command(BaseCommand):
                 ).strip()
                 exemption_code = (row.get("exemption_code") or row.get("exempt_code") or "").strip()
                 if not account_number or not tax_unit_code:
+                    skipped += 1
                     continue
 
                 PropertyJurisdictionExemption.objects.update_or_create(
@@ -71,6 +73,22 @@ class Command(BaseCommand):
                 )
                 upserted += 1
 
+        if skipped and not upserted:
+            # Feeding this command HCAD's raw jur_value.txt/jur_exempt.txt hits
+            # exactly this: their columns are tax_district/exempt_cat, which none
+            # of the aliases above match, so every row is skipped. Fail loudly
+            # rather than report a successful no-op.
+            raise CommandError(
+                f"Every one of {skipped} rows was skipped for missing an account number or "
+                f"tax unit code. Recognised headers are {sorted(reader.fieldnames or [])}; "
+                "an account column must be named account_number/acct/account and a unit "
+                "column tax_unit_code/tax_unit/unit_code. To load HCAD's own "
+                "Real_jur_exempt files, use import_hcad_jur_exempt instead."
+            )
+        if skipped:
+            self.stdout.write(
+                self.style.WARNING(f"Skipped {skipped} rows missing an account or tax unit code.")
+            )
         self.stdout.write(
             self.style.SUCCESS(f"Upserted {upserted} jurisdiction/exemption rows for {tax_year}.")
         )
