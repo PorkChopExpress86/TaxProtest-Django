@@ -1,4 +1,5 @@
 import csv
+import io
 import logging
 import math
 from collections import defaultdict
@@ -412,39 +413,47 @@ def load_gis_parcels(
         logger.info("No valid GIS rows found in %s", shapefile_path)
         return 0
 
-    from django.db import connection
-
     if connection.vendor == "postgresql":
-        from io import StringIO
+        # Set-based update: stage the parsed coordinates into a TEMP table via COPY,
+        # then apply them with a single UPDATE ... FROM join on account_number.
+        # This replaces a per-chunk bulk_update loop over ~1.2M rows (which emitted a
+        # giant CASE statement per batch and maintained the lat/long/parcel_id indexes
+        # row-by-row); the join-based update is roughly an order of magnitude faster.
+        logger.info("Staging %s GIS updates for set-based apply", len(updates_by_account))
 
-        buffer = StringIO()
-        for acct, (lat, lon, pid) in updates_by_account.items():
-            buffer.write(f"{acct}\t{lat}\t{lon}\t{pid or ''}\n")
-        buffer.seek(0)
-
-        with connection.cursor() as cursor:
+        with transaction.atomic(), connection.cursor() as cursor:
             cursor.execute("""
-                CREATE TEMP TABLE temp_gis_updates (
-                    account_number VARCHAR(20),
-                    latitude DOUBLE PRECISION,
-                    longitude DOUBLE PRECISION,
-                    parcel_id VARCHAR(255)
-                );
-            """)
-            cursor.cursor.copy_from(
-                buffer,
-                "temp_gis_updates",
-                columns=("account_number", "latitude", "longitude", "parcel_id"),
+                CREATE TEMP TABLE _gis_staging (
+                    account_number varchar(20) PRIMARY KEY,
+                    latitude numeric,
+                    longitude numeric,
+                    parcel_id varchar(50)
+                ) ON COMMIT DROP
+                """)
+
+            def _copy_rows() -> Iterable[str]:
+                for account_num, (lat, lon, parcel_id) in updates_by_account.items():
+                    # Tab-delimited COPY; account numbers/parcel ids never contain tabs.
+                    yield f"{account_num}\t{lat}\t{lon}\t{parcel_id}\n"
+
+            copy_buffer = io.StringIO("".join(_copy_rows()))
+            cursor.copy_expert(
+                "COPY _gis_staging (account_number, latitude, longitude, parcel_id) "
+                "FROM STDIN WITH (FORMAT text)",
+                copy_buffer,
             )
+
+            # Only overwrite parcel_id when the staged value is non-empty, preserving the
+            # prior behavior where a blank shapefile parcel id did not clobber existing data.
             cursor.execute("""
-                UPDATE data_propertyrecord
-                SET latitude = u.latitude,
-                    longitude = u.longitude,
-                    parcel_id = CASE WHEN u.parcel_id != '' THEN u.parcel_id ELSE data_propertyrecord.parcel_id END
-                FROM temp_gis_updates u
-                WHERE data_propertyrecord.account_number = u.account_number
-                  AND data_propertyrecord.is_residential = true;
-            """)
+                UPDATE data_propertyrecord AS p
+                SET latitude = s.latitude,
+                    longitude = s.longitude,
+                    parcel_id = CASE WHEN s.parcel_id <> '' THEN s.parcel_id ELSE p.parcel_id END
+                FROM _gis_staging AS s
+                WHERE p.account_number = s.account_number
+                  AND p.is_residential
+                """)
             total_updated = cursor.rowcount
     else:
         batch: list[PropertyRecord] = []
