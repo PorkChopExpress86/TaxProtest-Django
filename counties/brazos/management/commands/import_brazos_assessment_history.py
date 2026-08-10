@@ -76,7 +76,12 @@ from django.db import transaction
 
 from counties.brazos.models import PropertyAccount
 from counties.brazos.parsers.pacs import parse_entity_info_line
-from counties.brazos.portal import USER_AGENT, download_archive, extract_zip
+from counties.brazos.portal import (
+    USER_AGENT,
+    download_archive,
+    extract_zip,
+    resolve_timestamped_file,
+)
 from counties.common.tax_models import AssessmentHistory
 
 logger = logging.getLogger("brazos_cad")
@@ -263,12 +268,11 @@ class Command(BaseCommand):
 
     @staticmethod
     def _resolve_entity_info_file(extract_dir: Path) -> Path | None:
-        """Real BCAD filenames carry a timestamp prefix and may sit in a
-        nested directory (confirmed: 2025 is flat, 2022 nests everything
-        under "2022 CERTIFICATION EXPORT/") -- search recursively, take the
-        lexicographically-last match if extraction left more than one."""
-        matches = sorted(extract_dir.rglob(f"*{ENTITY_INFO_FILENAME}"), reverse=True)
-        return matches[0] if matches else None
+        """Locate APPRAISAL_ENTITY_INFO.TXT under ``extract_dir`` (see
+        ``resolve_timestamped_file`` for the timestamp-prefix/newest-match
+        rationale). ``warn_on_missing=False`` because ``handle()`` already
+        raises a ``CommandError`` when this returns ``None``."""
+        return resolve_timestamped_file(extract_dir, ENTITY_INFO_FILENAME, warn_on_missing=False)
 
     # ------------------------------------------------------------------ parse
 

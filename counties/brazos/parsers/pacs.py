@@ -31,7 +31,7 @@ import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
-from typing import Any
+from typing import Any, TypedDict, cast
 
 
 @dataclass(frozen=True)
@@ -290,8 +290,31 @@ ENTITY_INFO_LAYOUT: tuple[FieldSpec, ...] = (
 )
 
 
-def parse_entity_info_line(line: str) -> dict[str, Any]:
-    return parse_fixed_width(line, ENTITY_INFO_LAYOUT)
+class EntityInfoRow(TypedDict):
+    """One parsed line from APPRAISAL_ENTITY_INFO.TXT; field set/types mirror
+    ENTITY_INFO_LAYOUT exactly. Two independent callers (``load_brazos_cad``'s
+    ``_load_entity_info`` and ``import_brazos_assessment_history``'s
+    ``_roll_up_year``) pull fields out of this shape -- typing it means a
+    field renamed here, or a typo at either call site, is a mypy error
+    instead of a silent ``KeyError``/``None`` deep inside a bulk-load loop.
+    """
+
+    prop_id: str
+    tax_year: int | None
+    entity_id: str
+    tax_unit_code: str
+    tax_unit_name: str
+    assessed_value: Decimal | None
+    taxable_value: Decimal | None
+    hs_amt: Decimal | None
+    ov65_amt: Decimal | None
+    dp_amt: Decimal | None
+    market_value: Decimal | None
+    appraised_value: Decimal | None
+
+
+def parse_entity_info_line(line: str) -> EntityInfoRow:
+    return cast(EntityInfoRow, parse_fixed_width(line, ENTITY_INFO_LAYOUT))
 
 
 # --------------------------------------------------------------------------- APPRAISAL_INFO.TXT

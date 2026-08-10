@@ -73,7 +73,12 @@ from counties.brazos.parsers.pacs import (
     parse_info_line,
     parse_land_detail_line,
 )
-from counties.brazos.portal import USER_AGENT, download_archive, extract_zip
+from counties.brazos.portal import (
+    USER_AGENT,
+    download_archive,
+    extract_zip,
+    resolve_timestamped_file,
+)
 from counties.common.tax_models import PropertyJurisdictionExemption
 
 logger = logging.getLogger("brazos_cad")
@@ -278,29 +283,14 @@ class Command(BaseCommand):
 
     @staticmethod
     def _resolve_text_files(extract_dir: Path) -> dict[str, Path]:
-        """Map each expected APPRAISAL_*.TXT filename to a real path on disk.
-
-        Real BCAD export filenames carry a "YYYY-MM-DD_HHMMSS_" timestamp
-        prefix (e.g. "2025-07-23_002022_APPRAISAL_INFO.TXT"), so match by
-        suffix rather than exact name. If a --force re-extraction leaves
-        multiple timestamped copies of the same target file in one year's
-        directory, ISO-formatted prefixes sort correctly as strings, so
-        picking the lexicographically-last match picks the newest.
-        """
+        """Map each expected APPRAISAL_*.TXT filename to a real path on disk
+        (see ``resolve_timestamped_file`` for the timestamp-prefix/newest-
+        match rationale)."""
         out: dict[str, Path] = {}
         for filename in ALL_FILENAMES:
-            matches = sorted(extract_dir.rglob(f"*{filename}"), reverse=True)
-            if not matches:
-                logger.warning("Missing expected file: %s", filename)
-                continue
-            if len(matches) > 1:
-                logger.warning(
-                    "Multiple candidates for %s under %s; using the newest: %s",
-                    filename,
-                    extract_dir,
-                    matches[0].name,
-                )
-            out[filename] = matches[0]
+            resolved = resolve_timestamped_file(extract_dir, filename)
+            if resolved is not None:
+                out[filename] = resolved
         return out
 
     # ------------------------------------------------------------------ ingest
@@ -471,7 +461,7 @@ class Command(BaseCommand):
 
         for line in self._iter_lines(text_file):
             fields = parse_entity_info_line(line)
-            record_year = fields.pop("tax_year", None)
+            record_year = fields["tax_year"]
             if record_year is not None and record_year != tax_year:
                 mismatched += 1
                 continue
@@ -498,8 +488,17 @@ class Command(BaseCommand):
                     source=text_file.name,
                 )
             )
+            # EXEMPTION_AMOUNT_FIELDS names a fixed subset of EntityInfoRow's
+            # typed fields; look each one up by its literal key here so mypy
+            # still checks it, rather than indexing `fields` with the loop's
+            # dynamic `amount_field` string.
+            exemption_amounts: dict[str, Decimal | None] = {
+                "hs_amt": fields["hs_amt"],
+                "ov65_amt": fields["ov65_amt"],
+                "dp_amt": fields["dp_amt"],
+            }
             for amount_field, exemption_code in EXEMPTION_AMOUNT_FIELDS:
-                amount = fields.get(amount_field)
+                amount = exemption_amounts.get(amount_field)
                 if not amount:
                     continue
                 instances.append(
