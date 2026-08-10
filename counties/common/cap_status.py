@@ -75,6 +75,22 @@ def evaluate_cap_status(
     limit_percent/allowed_value/overage, rather than guessing. The
     year-over-year increase_percent is still real data and always returned.
     """
+    # Three-tier fallback for last year's value, each tier covering a real gap
+    # in the source data rather than a hypothetical one:
+    #   1. current.prior_appraised_value -- the county's own export sometimes
+    #      carries the prior year's appraised value directly on the current
+    #      row (HCAD's snapshot does this); use it first since it's the
+    #      county's own stated figure, not something we recomputed.
+    #   2. prior.appraised_value -- falls back to actually joining the prior
+    #      year's AssessmentHistory row when the current row's own snapshot
+    #      didn't carry a prior-year figure (no such field that year, or the
+    #      county's export left it blank).
+    #   3. prior.assessed_value -- last resort when even the prior year's row
+    #      is missing an appraised_value (e.g. an incomplete prior-year
+    #      import). assessed_value is an acceptable stand-in because Texas
+    #      assessed value is capped at appraised value (assessed = min(
+    #      appraised, capped value)) -- it's the closest real figure on hand,
+    #      not an arbitrary guess.
     prior_value = current.prior_appraised_value or (prior.appraised_value if prior else None)
     if prior_value is None and prior:
         prior_value = prior.assessed_value

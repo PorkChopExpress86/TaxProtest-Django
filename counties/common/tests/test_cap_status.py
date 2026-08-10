@@ -101,6 +101,72 @@ class HarrisTypedFlagTests(TestCase):
         self.assertEqual(status["status"], "within_limit")
         self.assertEqual(status["increase_percent"], Decimal("17.50"))
 
+    def test_prior_value_falls_back_to_prior_row_appraised_value(self):
+        # Tier 2: current.prior_appraised_value is missing (the county's own
+        # export didn't carry a prior-year figure on this row), so
+        # evaluate_cap_status must join the prior AssessmentHistory row and
+        # read its appraised_value. prior.assessed_value is set to a
+        # different number so a wrong (tier-3) read would produce a
+        # different, wrong allowed_value/overage below.
+        prior = AssessmentHistory.objects.create(
+            account_number="HIST005",
+            tax_year=2025,
+            assessed_value=Decimal("280000"),
+            appraised_value=Decimal("300000"),
+            market_value=Decimal("330000"),
+        )
+        current = AssessmentHistory.objects.create(
+            account_number="HIST005",
+            tax_year=2026,
+            assessed_value=Decimal("341000"),
+            appraised_value=Decimal("341000"),
+            market_value=Decimal("380000"),
+            prior_appraised_value=None,
+            new_construction_value=Decimal("10000"),
+            cap_account="Y",
+        )
+
+        status = evaluate_cap_status(current, prior)
+
+        self.assertEqual(status["cap_type"], "homestead")
+        # 300k (prior.appraised_value) +10% + 10k new construction = 340k.
+        # Falling through to prior.assessed_value (280k) would give 318k.
+        self.assertEqual(status["allowed_value"], Decimal("340000.00"))
+        self.assertEqual(status["status"], "over_limit")
+        self.assertEqual(status["increase_percent"], Decimal("13.67"))
+
+    def test_prior_value_falls_back_to_prior_row_assessed_value(self):
+        # Tier 3: current.prior_appraised_value is missing AND the prior
+        # row's own appraised_value is also missing (e.g. an incomplete
+        # prior-year import) -- evaluate_cap_status must fall all the way
+        # through to prior.assessed_value rather than treating the property
+        # as having no prior value.
+        prior = AssessmentHistory.objects.create(
+            account_number="HIST006",
+            tax_year=2025,
+            assessed_value=Decimal("295000"),
+            appraised_value=None,
+            market_value=Decimal("330000"),
+        )
+        current = AssessmentHistory.objects.create(
+            account_number="HIST006",
+            tax_year=2026,
+            assessed_value=Decimal("341000"),
+            appraised_value=Decimal("341000"),
+            market_value=Decimal("380000"),
+            prior_appraised_value=None,
+            new_construction_value=Decimal("10000"),
+            cap_account="Y",
+        )
+
+        status = evaluate_cap_status(current, prior)
+
+        self.assertEqual(status["cap_type"], "homestead")
+        # 295k (prior.assessed_value) +10% + 10k new construction = 334.5k.
+        self.assertEqual(status["allowed_value"], Decimal("334500.00"))
+        self.assertEqual(status["status"], "over_limit")
+        self.assertEqual(status["increase_percent"], Decimal("15.59"))
+
     def test_y_is_the_homestead_cap(self):
         status = self._pair("Y")
         self.assertEqual(status["cap_type"], "homestead")
