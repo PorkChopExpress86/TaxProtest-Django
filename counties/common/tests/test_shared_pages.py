@@ -171,6 +171,41 @@ class BrazosGainsTheSharedPagesTests(TestCase):
         self.assertIn("Property ID: 000000010013", body)
 
 
+class NoLocationSubjectTests(TestCase):
+    """A subject with no lat/long can't run comparable search -- every protest
+    view must say so consistently rather than some silently degrading."""
+
+    def setUp(self):
+        PropertyRecord.objects.create(
+            address="1 No Location St",
+            city="Houston",
+            zipcode="77001",
+            owner_name="No Location Owner",
+            account_number="NOLOC001",
+            street_number="1",
+            street_name="No Location St",
+            assessed_value=300000,
+            building_area=2000,
+            latitude=None,
+            longitude=None,
+        )
+
+    def test_html_report_shows_the_no_location_banner(self):
+        response = self.client.get(reverse("protest_analysis", args=["NOLOC001"]))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "does not have location data")
+
+    def test_csv_export_is_a_bad_request_not_a_silent_empty_file(self):
+        response = self.client.get(reverse("protest_analysis_export", args=["NOLOC001"]))
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(b"does not have location data", response.content)
+
+    def test_pdf_export_is_a_bad_request_not_a_silent_empty_report(self):
+        response = self.client.get(reverse("protest_analysis_pdf", args=["NOLOC001"]))
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(b"does not have location data", response.content)
+
+
 class HarrisPagesStillUseTheirOwnLabelsTests(TestCase):
     """Sharing the templates must not flatten each county's own vocabulary."""
 

@@ -84,6 +84,21 @@ class BrazosIndexViewTests(TestCase):
         self.assertNotContains(response, "/brazos/protest/000000010003/")
 
 
+class BrazosIndexNoDataLoadedTests(TestCase):
+    """No PropertyAccount rows at all -- active_year() is None, so
+    search_queryset() takes its "nothing loaded yet" branch."""
+
+    def test_search_with_a_filter_renders_empty_results_not_an_error(self):
+        response = self.client.get(reverse("brazos_index"), {"owner_name": "ANYONE"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["results"], [])
+
+    def test_export_with_a_filter_renders_an_empty_csv_not_an_error(self):
+        response = self.client.get(reverse("brazos_export_csv"), {"owner_name": "ANYONE"})
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("text/csv", response["Content-Type"])
+
+
 class ProtestAnalysisViewTests(TestCase):
     def setUp(self):
         self.target = PropertyAccount.objects.create(

@@ -791,7 +791,7 @@ class ProtestAnalysisViewTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["comps"][0].similarity_score, 87.4)
-        self.assertEqual(response.context["comps"][0].score_breakdown[0]["label"], "Living Area")
+        self.assertEqual(response.context["comps"][0].score_breakdown[0].label, "Living Area")
         self.assertContains(response, "87.4")
         self.assertContains(response, "Score Details")
 

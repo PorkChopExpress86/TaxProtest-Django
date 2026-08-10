@@ -32,6 +32,7 @@ from counties.common.contracts import (
     CountyAdapter,
     CountyProfile,
     DetailRow,
+    ScoreComponent,
     SearchField,
     Subject,
 )
@@ -122,7 +123,7 @@ class BrazosAdapter(CountyAdapter):
     def search_queryset(self, params: Mapping[str, str]):
         year = self.active_year()
         if not year:
-            return None
+            return PropertyAccount.objects.none()
 
         qs = PropertyAccount.objects.filter(tax_year=year)
         if params.get("owner_name"):
@@ -251,7 +252,10 @@ class BrazosAdapter(CountyAdapter):
                     distance=result["distance"],
                     similarity_score=result["similarity_score"],
                     match_label=get_similarity_label(result["similarity_score"]),
-                    score_breakdown=result.get("score_breakdown", []),
+                    score_breakdown=[
+                        ScoreComponent.from_mapping(component)
+                        for component in result.get("score_breakdown", [])
+                    ],
                 )
             )
         return comps

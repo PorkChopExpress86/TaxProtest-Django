@@ -18,6 +18,7 @@ from django.urls import reverse
 from counties.common.analysis import (
     percentile_of,
     recommend_protest,
+    sort_comps_for_display,
     summarize_equity,
 )
 from counties.common.charts import (
@@ -108,9 +109,8 @@ def index(request, *, adapter: CountyAdapter):
     page_obj = None
     if filters_applied:
         queryset = adapter.search_queryset(params)
-        if queryset is not None:
-            page_obj = Paginator(queryset, RESULTS_PER_PAGE).get_page(source.get("page", "1"))
-            results = adapter.search_rows(list(page_obj.object_list))
+        page_obj = Paginator(queryset, RESULTS_PER_PAGE).get_page(source.get("page", "1"))
+        results = adapter.search_rows(list(page_obj.object_list))
 
     page_query = request.GET.copy()
     page_query.pop("page", None)
@@ -151,7 +151,7 @@ def export_csv(request, *, adapter: CountyAdapter):
         )
 
     queryset = adapter.search_queryset(params)
-    records = list(queryset[:EXPORT_CSV_MAX_ROWS]) if queryset is not None else []
+    records = list(queryset[:EXPORT_CSV_MAX_ROWS])
     rows = adapter.search_rows(records)
     return search_results_csv(profile.csv_columns, rows)
 
@@ -215,16 +215,7 @@ def similar_properties(request, key, *, adapter: CountyAdapter):
         max_results=max_results,
         min_score=min_score,
     )
-    # Best match first, then nearest, then cheapest per sqft — a stable order
-    # that reads the way a homeowner scans the table.
-    comps.sort(
-        key=lambda comp: (
-            -float(comp.similarity_score or 0),
-            float(comp.distance or 0),
-            comp.value_per_sqft if comp.value_per_sqft is not None else float("inf"),
-            comp.key or "",
-        )
-    )
+    comps = sort_comps_for_display(comps)
 
     subject_ppsf = subject.value_per_sqft
     population = [c.value_per_sqft for c in comps if c.value_per_sqft is not None]
@@ -255,9 +246,21 @@ def similar_properties(request, key, *, adapter: CountyAdapter):
 # --------------------------------------------------------------------------- protest report
 
 
-def _protest_inputs(request, key: str, adapter: CountyAdapter):
-    """Shared setup for the report and both of its exports."""
-    subject = _subject_or_404(adapter, key)
+def _protest_inputs(request, subject: Subject, adapter: CountyAdapter):
+    """Shared setup for the report and both of its exports.
+
+    ``subject`` must already be fetched by the caller — every one of the three
+    views needs it before this call, either to apply the ``has_location``
+    guard below or to build the response itself, so it is fetched once and
+    threaded through rather than re-derived here.
+
+    Returns ``None`` when ``subject`` lacks the location data comparable
+    search requires, so every caller sees the same guard ``protest_analysis``
+    has always applied, not just the one that happened to check beforehand.
+    """
+    if not subject.has_location:
+        return None
+
     min_score = clamped_float(
         request.GET.get("min_score"),
         PROTEST_DEFAULT_MIN_SCORE,
@@ -265,32 +268,33 @@ def _protest_inputs(request, key: str, adapter: CountyAdapter):
         PROTEST_MAX_MIN_SCORE,
     )
     comps = adapter.find_comps(
-        key,
+        subject.key,
         max_distance_miles=PROTEST_MAX_DISTANCE,
         max_results=PROTEST_MAX_COMPS,
         min_score=min_score,
     )
+    comps = sort_comps_for_display(comps)
     equity = summarize_equity(subject, comps)
-    history = adapter.assessment_history(key)
+    history = adapter.assessment_history(subject.key)
     # Deliberately not pinned to the newest assessment-history year: rates and
     # jurisdiction rows come from a different archive and can lag it by a year,
     # and asking for a year with no taxing units yields "missing" rather than an
     # estimate. Passing None lets the county resolve the newest year it can
     # actually cost, and the report prints whichever year that was.
-    tax_impact = adapter.tax_impact(key, None, equity.median_assessed_value)
-    return subject, comps, equity, history, tax_impact, min_score
+    tax_impact = adapter.tax_impact(subject.key, None, equity.median_assessed_value)
+    return comps, equity, history, tax_impact, min_score
 
 
 def protest_analysis(request, key, *, adapter: CountyAdapter):
     """ARB evidence report: equity comparison, tax impact, comparable table."""
     profile = adapter.profile
     subject = _subject_or_404(adapter, key)
-    if not subject.has_location:
+    inputs = _protest_inputs(request, subject, adapter)
+    if inputs is None:
         return render(
             request, "counties/protest_analysis.html", _no_location_context(adapter, subject)
         )
-
-    subject, comps, equity, history, tax_impact, min_score = _protest_inputs(request, key, adapter)
+    comps, equity, history, tax_impact, min_score = inputs
 
     comp_rows = [
         {
@@ -328,17 +332,25 @@ def protest_analysis(request, key, *, adapter: CountyAdapter):
 
 def protest_analysis_export(request, key, *, adapter: CountyAdapter):
     """CSV of the report's comparable table plus its tax-impact totals."""
-    subject, comps, equity, _history, tax_impact, _min_score = _protest_inputs(
-        request, key, adapter
-    )
+    subject = _subject_or_404(adapter, key)
+    inputs = _protest_inputs(request, subject, adapter)
+    if inputs is None:
+        return HttpResponseBadRequest(
+            "This property does not have location data required for similarity search."
+        )
+    comps, equity, _history, tax_impact, _min_score = inputs
     return protest_comps_csv(subject, comps, equity, tax_impact)
 
 
 def protest_analysis_pdf(request, key, *, adapter: CountyAdapter):
     """Printable evidence report."""
-    subject, comps, _equity, history, tax_impact, _min_score = _protest_inputs(
-        request, key, adapter
-    )
+    subject = _subject_or_404(adapter, key)
+    inputs = _protest_inputs(request, subject, adapter)
+    if inputs is None:
+        return HttpResponseBadRequest(
+            "This property does not have location data required for similarity search."
+        )
+    comps, _equity, history, tax_impact, _min_score = inputs
     return protest_report_pdf(adapter.profile, subject, comps, history, tax_impact)
 
 
