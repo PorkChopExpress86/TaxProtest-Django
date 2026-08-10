@@ -16,43 +16,43 @@ help:
 	@echo "  make logs      - follow dev app logs"
 
 build:
-	SKIP_DATA_DOWNLOAD=1 podman compose build
+	SKIP_DATA_DOWNLOAD=1 docker compose build
 
 up:
-	podman compose up -d postgres web
+	docker compose up -d postgres web
 
 dev:
-	podman compose up -d postgres taxprotest-dev
+	docker compose up -d postgres taxprotest-dev
 
 down:
-	podman compose down
+	docker compose down
 
 test:
-	podman compose run --rm taxprotest-dev pytest -q
+	docker compose run --rm taxprotest-dev pytest -q
 
 lint:
-	podman compose run --rm taxprotest-dev ruff check .
-	podman compose run --rm taxprotest-dev black --check .
+	docker compose run --rm taxprotest-dev ruff check .
+	docker compose run --rm taxprotest-dev black --check .
 
 fmt:
-	podman compose run --rm taxprotest-dev ruff check --fix .
-	podman compose run --rm taxprotest-dev black .
+	docker compose run --rm taxprotest-dev ruff check --fix .
+	docker compose run --rm taxprotest-dev black .
 
 type:
-	podman compose run --rm taxprotest-dev mypy taxprotest data
+	docker compose run --rm taxprotest-dev mypy taxprotest data
 
 ingest:
-	podman compose up -d postgres
-	podman compose run --rm ingest
+	docker compose up -d postgres
+	docker compose run --rm ingest
 
 refresh:
-	podman compose run --rm refresh
+	docker compose run --rm refresh
 
 shell:
-	podman compose run --rm taxprotest-dev bash
+	docker compose run --rm taxprotest-dev bash
 
 logs:
-	podman compose logs -f taxprotest-dev
+	docker compose logs -f taxprotest-dev
 
 clean:
-	podman compose down --remove-orphans
+	docker compose down --remove-orphans
