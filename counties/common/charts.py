@@ -10,14 +10,16 @@ import statistics
 from collections.abc import Sequence
 from typing import Any
 
+from counties.common.contracts import ScoreComponent
 
-def score_breakdown_summary(components: Sequence[dict[str, Any]]) -> str:
+
+def score_breakdown_summary(components: Sequence[ScoreComponent]) -> str:
     """One-line ``"Living area: 20.4/24; Bedrooms: 14.0/14"`` for CSV columns."""
     parts = []
     for component in components:
-        if component.get("points") is None:
+        if component.points is None:
             continue
-        parts.append(f"{component['label']}: {component['points']}/{component['weight']}")
+        parts.append(f"{component.label}: {component.points}/{component.weight}")
     return "; ".join(parts)
 
 

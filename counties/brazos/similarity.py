@@ -635,5 +635,10 @@ def find_similar_properties(
                 }
             )
 
+    # Rank by score (then distance) before truncating to max_results, so the
+    # candidates that get cut are the weakest matches, not just the farthest
+    # ones enumerated first. This ordering is for *selecting* the top N, not
+    # for how they're displayed — the shared web layer's
+    # ``sort_comps_for_display`` owns final page order.
     results.sort(key=lambda x: (-x["similarity_score"], x["distance"], x["property"].prop_id))
     return results[:max_results]

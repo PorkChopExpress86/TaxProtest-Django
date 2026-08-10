@@ -150,6 +150,26 @@ def recommend_protest(
     )
 
 
+def sort_comps_for_display(comps: Sequence[Comp]) -> list[Comp]:
+    """Best match first, then nearest, then cheapest per sqft.
+
+    The one order every comp table uses. Both the Similar Properties page and
+    the protest report call this on whatever ``adapter.find_comps()`` returns,
+    so a homeowner comparing the two pages for the same property sees comps in
+    the same relative order on both — a stable order that reads the way a
+    homeowner scans the table.
+    """
+    return sorted(
+        comps,
+        key=lambda comp: (
+            -float(comp.similarity_score or 0),
+            comp.distance if comp.distance is not None else float("inf"),
+            comp.value_per_sqft if comp.value_per_sqft is not None else float("inf"),
+            comp.key or "",
+        ),
+    )
+
+
 def percentile_of(value: float | None, population: Sequence[float]) -> float | None:
     """Where ``value`` falls within ``population``, as a 0-100 percentile."""
     if value is None or not population:

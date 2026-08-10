@@ -74,6 +74,38 @@ class DetailRow:
     format: str = "text"
 
 
+@dataclass(frozen=True)
+class ScoreComponent:
+    """One weighted factor in a comp's similarity-score breakdown.
+
+    Each county's similarity module scores a candidate factor-by-factor (living
+    area, bedrooms, distance, ...) and returns that breakdown as a list of
+    these — Harris's and Brazos's ``_component()`` helpers build the same shape
+    independently (see ``counties/harris/similarity.py`` and
+    ``counties/brazos/similarity.py``); this is the seam where each adapter's
+    ``find_comps`` declares that shared shape explicit rather than leaving it
+    an informal key-name agreement. ``similarity`` and ``points`` are ``None``
+    when neither property had the data needed to score this factor at all.
+    """
+
+    name: str
+    label: str
+    weight: float
+    similarity: float | None
+    points: float | None
+
+    @classmethod
+    def from_mapping(cls, data: Mapping[str, Any]) -> ScoreComponent:
+        """Build from the raw dict a similarity module's ``_component()`` returns."""
+        return cls(
+            name=data["name"],
+            label=data["label"],
+            weight=data["weight"],
+            similarity=data.get("similarity"),
+            points=data.get("points"),
+        )
+
+
 # --------------------------------------------------------------------------- records
 
 
@@ -129,7 +161,7 @@ class Comp:
     condition_code: str | None = None
     features: str = ""
     distance: float | None = None
-    score_breakdown: list[dict[str, Any]] = field(default_factory=list)
+    score_breakdown: list[ScoreComponent] = field(default_factory=list)
 
     @property
     def value_per_sqft(self) -> float | None:
@@ -215,7 +247,12 @@ class CountyAdapter(ABC):
 
     @abstractmethod
     def search_queryset(self, params: Mapping[str, str]):
-        """Ordered queryset for the search form's ``params`` (already stripped)."""
+        """Ordered queryset for the search form's ``params`` (already stripped).
+
+        Always a real queryset, even when there is nothing to search — return
+        an empty one (``.none()``) rather than ``None`` so callers can hand it
+        straight to ``Paginator``/slicing without a presence check.
+        """
 
     @abstractmethod
     def search_rows(self, records: Sequence[Any]) -> list[dict[str, Any]]:

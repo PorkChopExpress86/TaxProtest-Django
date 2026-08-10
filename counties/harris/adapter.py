@@ -19,6 +19,7 @@ from counties.common.contracts import (
     Comp,
     CountyAdapter,
     CountyProfile,
+    ScoreComponent,
     SearchField,
     Subject,
 )
@@ -248,7 +249,10 @@ class HarrisAdapter(CountyAdapter):
                     distance=result["distance"],
                     similarity_score=result["similarity_score"],
                     match_label=get_similarity_label(result["similarity_score"]),
-                    score_breakdown=result.get("score_breakdown", []),
+                    score_breakdown=[
+                        ScoreComponent.from_mapping(component)
+                        for component in result.get("score_breakdown", [])
+                    ],
                 )
             )
         return comps
