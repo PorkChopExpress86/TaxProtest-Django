@@ -1,6 +1,12 @@
 # TaxProtest-Django
 
-A Django web app for property tax analysis and comparison using Harris County Appraisal District (HCAD) data. It supports search, similarity matching, automated data imports, and rich building/feature details.
+A Django web app for property tax analysis and comparison across Texas appraisal districts.
+Harris County (HCAD) and Brazos County (BCAD) are supported today.
+
+Each county brings its own ETL — different source files, different record layouts — but every
+county gets the *same* three pages: property search, comparable properties, and an ARB protest
+evidence report. That shared surface lives in `counties/common/`; a county joins by writing an
+adapter, not a new set of views and templates.
 
 ## Features
 
@@ -10,7 +16,8 @@ A Django web app for property tax analysis and comparison using Harris County Ap
 - Extra features (pools, garages, patios, etc.)
 - GIS coordinates (latitude/longitude) for location-aware results
 - Land-only property support with separate scoring weights
-- CSV export of search results
+- ARB protest evidence report with equity analysis and tax-impact estimate
+- CSV and PDF export of search results and protest comparables
 - Admin ETL pipeline panel with GIS and building import triggers
 - Scheduled imports (Celery Beat)
 - Health check endpoints (`/healthz/`, `/readiness/`)
@@ -118,13 +125,34 @@ Match labels: **Excellent** (≥84) · **Good** (≥70) · **Fair** (≥52) · *
 Project layout:
 
 ```
-taxprotest/           # Django project (settings, URLs, Celery)
-data/                 # Models, ETL, tasks, similarity, admin
-templates/            # HTML templates (Bootstrap 5)
-scripts/              # Entrypoint, build-time download, monitoring helpers
-var/                  # Runtime downloads, extracts, logs, and reports
-docker-compose.yml    # Docker services
+taxprotest/               # Django project (settings, URLs, Celery, site-wide views)
+  var/                    #   project runtime state (Celery beat schedule)
+counties/
+  common/                 # Shared web layer: contracts, analysis, charts, views, exports
+  harris/                 # Harris County (HCAD): models, ETL, similarity, adapter
+    var/                  #   downloads, extracted source files, ETL logs, reports
+  brazos/                 # Brazos County (BCAD): models, ETL, similarity, adapter
+    var/                  #   downloads, extracted source files
+templates/                # HTML templates (Tailwind); counties/ holds the shared pages
+scripts/                  # Entrypoint, build-time download, setup, monitoring helpers
+docker-compose.yml        # Docker services
 ```
+
+Each county's downloaded and extracted data lives inside that county's app directory, under
+`counties/<slug>/var/`. Nothing large lands in the project root. Every directory can be
+redirected with an environment variable (`HCAD_DOWNLOAD_DIR`, `BCAD_EXTRACT_DIR`, …) — see
+`taxprotest/runtime_paths.py`.
+
+### Adding a county
+
+1. Create `counties/<slug>/` as a Django app with its own models, ETL commands, and similarity scoring.
+2. Write `counties/<slug>/adapter.py`: a `CountyProfile` (labels, search fields, table columns) plus
+   a `CountyAdapter` translating your models into the neutral `Subject` / `Comp` records.
+3. Add `counties/<slug>/urls.py` calling `county_urlpatterns(adapter)`, and include it from
+   `taxprotest/urls.py`.
+
+Search, comparables, protest report, CSV, and PDF all come for free. `counties/common/tests/`
+asserts every registered county exposes the same route set.
 
 Common commands:
 
@@ -171,6 +199,7 @@ docker compose exec web python manage.py test
 - `docs/SIMILARITY_SCORING.md` — similarity algorithm details
 - `docs/ETL_PIPELINE.md` — ETL pipeline architecture
 - `docs/REVERSE_PROXY.md` — reverse proxy / production deployment notes
+- `docs/guides/DEPLOYMENT.md` — production deployment walkthrough
 
 ## AI workflows
 
@@ -180,12 +209,16 @@ docker compose exec web python manage.py test
 
 ## Data sources
 
-HCAD: https://download.hcad.org/data/
+Harris County (HCAD): https://download.hcad.org/data/ — downloaded into `counties/harris/var/downloads/`
 
-Data files used:
 - `Real_acct_owner.txt` — Property records
 - `Real_building_land.zip` — Building details and features
 - `Parcels.zip` — GIS shapefiles with coordinates
+
+Brazos County (BCAD): certified PACS export — downloaded into `counties/brazos/var/downloads/`
+
+- `APPRAISAL_*.TXT` — fixed-width property, land, improvement, and entity files
+- GIS parcel shapefile — coordinates and situs addresses
 
 ## Troubleshooting
 
@@ -213,4 +246,4 @@ See LICENSE for details.
 
 ---
 
-Made for property tax analysis in Harris County, Texas.
+Made for property tax analysis in Texas.

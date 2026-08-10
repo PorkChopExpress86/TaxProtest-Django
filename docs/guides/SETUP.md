@@ -16,7 +16,7 @@ Complete installation and configuration guide for setting up the TaxProtest-Djan
 ## Quick Start
 You can set up the entire project, including data download and import, by running the automated setup script:
 ```bash
-./setup.sh
+./scripts/setup.sh
 ```
 This script handles container building and migrations. The data import will start automatically when the containers launch for the first time.
 
@@ -125,7 +125,7 @@ Visit http://localhost:8000 - you should see the property search page.
 
 > [!TIP]
 > **Alternative: Automated Setup**
-> Instead of running steps 3, 4, and the Data Import section manually, you can simply run `./setup.sh` from the project root.
+> Instead of running steps 3, 4, and the Data Import section manually, you can simply run `./scripts/setup.sh` from the project root.
 
 
 ## Configuration
@@ -451,7 +451,7 @@ docker compose logs worker
 df -h
 
 # Verify downloaded files
-ls -lh var/downloads/
+ls -lh counties/harris/var/downloads/
 
 # Re-run import
 docker compose exec web python manage.py import_building_data
@@ -500,7 +500,7 @@ ports:
 - Check [GIS.md](GIS.md) for location/mapping issues
 - View logs: `docker compose logs -f`
 - Check Django admin: http://localhost:8000/admin/
-- Review HCAD documentation in `var/extracted/Code_description_*/`
+- Review HCAD documentation in `counties/harris/var/extracted/Code_description_*/`
 
 ---
 

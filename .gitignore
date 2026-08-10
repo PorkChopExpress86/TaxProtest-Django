@@ -11,19 +11,13 @@ __pycache__/
 build/
 develop-eggs/
 dist/
-downloads/
-extracted/
-var/downloads/
-var/extracted/
-var/logs/
-var/reports/
 eggs/
 .eggs/
 lib/
 lib64/
 parts/
 sdist/
-var/
+/var/
 wheels/
 share/python-wheels/
 *.egg-info/
@@ -125,8 +119,8 @@ ipython_config.py
 # PEP 582; used by e.g. github.com/David-OConnor/pyflow and github.com/pdm-project/pdm
 __pypackages__/
 
-# Celery stuff
-celerybeat-schedule
+# Celery stuff (the beat schedule DB now lives in taxprotest/var/)
+celerybeat-schedule*
 celerybeat.pid
 
 # SageMath parsed files
@@ -177,11 +171,16 @@ cython_debug/
 # Archive
 archive/
 
-celerybeat-schedule-wal
-celerybeat-schedule-shm
-
 # Django collectstatic output (regenerated at container build time)
 staticfiles/
+
+# Per-county runtime data (downloaded archives, extracted source files, ETL logs,
+# reports) lives in counties/<slug>/var/ and is ignored by that directory's own
+# .gitignore. Listed here too so `git status` stays quiet if one goes missing.
+counties/*/var/downloads/
+counties/*/var/extracted/
+counties/*/var/logs/
+counties/*/var/reports/
 
 # Claude Code local settings and runtime files (no shared skills/commands here)
 .claude/

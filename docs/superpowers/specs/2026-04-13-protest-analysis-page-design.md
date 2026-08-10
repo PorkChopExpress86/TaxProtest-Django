@@ -13,7 +13,7 @@ Property tax protest in Harris County (and all of Texas) has two primary legal g
 
 2. **Market Value:** Your appraised value exceeds the price a willing buyer would pay a willing seller. This argument requires recent sale prices (MLS data), which is outside current HCAD data.
 
-The existing similarity algorithm (`data/similarity.py`) already identifies comparable properties using the same factors an appraisal professional uses: living area (24%), bedrooms (14%), bathrooms (12%), land size (10%), quality (10%), age (8%), condition (6%), stories (4%), building character (4%), and extra features (4%). The `assessed_value` field is populated for all properties from the HCAD import.
+The existing similarity algorithm (`counties/harris/similarity.py`) already identifies comparable properties using the same factors an appraisal professional uses: living area (24%), bedrooms (14%), bathrooms (12%), land size (10%), quality (10%), age (8%), condition (6%), stories (4%), building character (4%), and extra features (4%). The `assessed_value` field is populated for all properties from the HCAD import.
 
 **The gap:** The current `/similar/<account>/` view shows structural similarity but not value comparison. A property owner cannot currently see whether their comparable properties are appraised higher or lower, which is the core of an equity protest.
 
@@ -163,7 +163,7 @@ Small muted text at bottom:
 | `templates/protest_analysis.html` | Create | New template |
 | `templates/similar_properties.html` | Modify | Add "Protest Analysis" button near top of page |
 
-No model changes. No changes to `data/similarity.py`.
+No model changes. No changes to `counties/harris/similarity.py`.
 
 ---
 

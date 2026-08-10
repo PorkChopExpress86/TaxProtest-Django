@@ -7,6 +7,7 @@ Complete guide to database management, data imports, and ETL processes for TaxPr
 - [Database Schema](#database-schema)
 - [Data Sources](#data-sources)
 - [Import Commands](#import-commands)
+- [Tax Impact Data (Harris)](#tax-impact-data-harris)
 - [Import Processes](#import-processes)
 - [Scheduled Imports](#scheduled-imports)
 - [Data Management](#data-management)
@@ -263,6 +264,53 @@ print(f'Orphaned Features:   {orphaned_features:,}')
 "
 ```
 
+## Tax Impact Data (Harris)
+
+The protest report's Tax Impact section needs two tables populated:
+`TaxUnitRate` (a rate per taxing unit) and `PropertyJurisdictionExemption`
+(a row per account and taxing unit). Both come from HCAD's `Real_jur_exempt.zip`:
+
+```bash
+# Downloaded alongside the other archives at build time, or on demand:
+docker compose exec web python manage.py import_hcad_jur_exempt --tax-year 2025
+```
+
+The command reads `jur_value.txt`, `jur_exempt.txt`, `jur_exemption_dscr.txt`,
+and `jur_tax_dist_exempt_value_rate.txt`, converts HCAD's per-$100 rates to the
+fractional rates `calculate_tax_impact` expects, and verifies after loading that
+every stored (account, taxing unit) pair reproduces HCAD's own taxable value.
+
+By default it loads only accounts already ingested as `PropertyRecord`s (~10M
+rows); `--all-accounts` covers all ~1.6M accounts in the files, including
+commercial and personal property.
+
+## Multi-Year Assessment History (Brazos)
+
+Brazos gets its jurisdiction/exemption rows and tax rates from `load_brazos_cad`
+(the current year only). The protest report's trend chart and cap-status
+analysis additionally need multiple *years* of history, which BCAD's own
+current-year export can't provide:
+
+```bash
+docker compose exec web python manage.py import_brazos_assessment_history \
+    --start-year 2021 --end-year 2025
+```
+
+BCAD's `certified-data-downloads` portal keeps roughly a decade of past
+certified exports available (confirmed 2016–2025 as of 2026-08) — unlike
+HCAD's `real_acct.txt`, nothing in BCAD's export carries a prior-year value
+column, so this command downloads each target year's own archive and reads
+that year's own `assessed_value`/`appraised_value`/`market_value` directly
+from `APPRAISAL_ENTITY_INFO.TXT`, rather than diffing consecutive years.
+
+One past year (2023, at least) ships DEFLATE64-compressed, which Python's
+`zipfile` can't decompress — the command falls back to the system `7z`
+binary (`p7zip-full`, in the Dockerfile) for exactly the archives that need
+it; nothing to do manually. Each year's roll-up is sanity-checked (`market
+>= appraised >= assessed`) before anything is written — a year failing that
+check likely means BCAD changed the export's field layout again, and the
+command refuses to load unverified data rather than write it silently.
+
 ## Import Processes
 
 ### Property Records Import
@@ -317,7 +365,7 @@ print(f'Orphaned Features:   {orphaned_features:,}')
 
 **Process:**
 1. Downloads Real_building_land.zip
-2. Extracts to `var/extracted/Real_building_land/`
+2. Extracts to `counties/harris/var/extracted/Real_building_land/`
 3. **Soft Delete Phase:**
    - Marks all existing records as `is_active=False`
    - Preserves historical data
@@ -475,7 +523,7 @@ from data.models import PropertyRecord
 queryable = PropertyRecord.objects.filter(is_residential=True, is_data_ready=True)
 ```
 
-- `is_residential` — derived from `state_class` via `data/residential.py`; excludes commercial, exempt, and other non-residential parcels
+- `is_residential` — derived from `state_class` via `counties/harris/residential.py`; excludes commercial, exempt, and other non-residential parcels
 - `is_data_ready` — set by ETL after building, room-count, and GIS data are all present
 
 **Always filter for active records** on related models:
@@ -572,7 +620,7 @@ docker compose logs worker
 **Re-run import:**
 ```bash
 # Delete old downloads
-rm -rf var/extracted/Real_building_land/
+rm -rf counties/harris/var/extracted/Real_building_land/
 
 # Re-run import
 docker compose exec web python manage.py import_building_data
@@ -660,7 +708,7 @@ import csv
 csv.field_size_limit(10485760)  # 10MB limit
 ```
 
-This is already set in `data/etl.py`.
+This is already set in `counties/harris/etl.py`.
 
 ---
 

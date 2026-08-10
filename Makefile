@@ -39,7 +39,7 @@ fmt:
 	docker compose run --rm taxprotest-dev black .
 
 type:
-	docker compose run --rm taxprotest-dev mypy taxprotest data
+	docker compose run --rm taxprotest-dev mypy taxprotest counties
 
 ingest:
 	docker compose up -d postgres

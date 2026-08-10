@@ -8,7 +8,7 @@
 ### 1. Increased Search Radius
 - **Changed:** Default search radius from 7 miles → 10 miles
 - **Files Updated:**
-  - `data/similarity.py` (line 166): `max_distance_miles: float = 10.0`
+  - `counties/harris/similarity.py` (line 166): `max_distance_miles: float = 10.0`
   - `taxprotest/views.py` (line 248): `max_distance = float(request.GET.get("max_distance", "10"))`
 
 ### 2. Removed Distance from Scoring (NEW)

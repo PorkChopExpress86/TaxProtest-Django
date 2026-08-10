@@ -69,9 +69,9 @@ bathrooms = full_baths + (half_baths * 0.5)
 ```
 
 **Files to modify**:
-- `data/etl_pipeline/transform.py` - Add fixtures schema
-- `data/etl_pipeline/load.py` - Join fixtures to buildings
-- `data/models.py` - Already has bedroom/bathroom fields ✅
+- `counties/harris/etl_pipeline/transform.py` - Add fixtures schema
+- `counties/harris/etl_pipeline/load.py` - Join fixtures to buildings
+- `counties/harris/models.py` - Already has bedroom/bathroom fields ✅
 
 **Testing**:
 1. Re-import building data with fixtures
@@ -84,7 +84,7 @@ bathrooms = full_baths + (half_baths * 0.5)
 ## Documentation Updated
 
 - `docs/SIMILARITY_FIX.md` - Complete investigation details
-- `data/similarity.py` - Added batch processing comments
+- `counties/harris/similarity.py` - Added batch processing comments
 
 ---
 
