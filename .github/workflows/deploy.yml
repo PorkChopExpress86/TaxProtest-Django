@@ -40,7 +40,7 @@ jobs:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
         run: |
           mkdir -p "$HOME/.ssh"
-          printf '%s' "$SSH_PRIVATE_KEY" > "$HOME/.ssh/deploy_key"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$HOME/.ssh/deploy_key"
           chmod 600 "$HOME/.ssh/deploy_key"
           ssh-keyscan -T 20 -p "${{ secrets.SERVER_PORT }}" "${{ secrets.SERVER_HOST }}" \
             >> "$HOME/.ssh/known_hosts"
