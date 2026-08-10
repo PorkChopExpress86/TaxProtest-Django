@@ -1,0 +1,308 @@
+[
+  {
+    "prop_id": "000000031491",
+    "situs_address_full": "707 WELLESLEY CT A-D COLLEGE STATION, TX 77840",
+    "owner_name": "SPICEWOOD LLC",
+    "assessed_value": 1882400
+  },
+  {
+    "prop_id": "000000046927",
+    "situs_address_full": "1309 WELLINGTON AVE BRYAN, TX 77803",
+    "owner_name": "DAVIS ANTHONY D &",
+    "assessed_value": 92580
+  },
+  {
+    "prop_id": "000000032175",
+    "situs_address_full": "6021 E SH-21 BRYAN, TX 77808",
+    "owner_name": "ROSS RONALD DALE",
+    "assessed_value": 86728
+  },
+  {
+    "prop_id": "000000036065",
+    "situs_address_full": "3501 OAK HILL DR BRYAN, TX 77802",
+    "owner_name": "STARNES RICHARD A",
+    "assessed_value": 267420
+  },
+  {
+    "prop_id": "000000345221",
+    "situs_address_full": "3204 PETERSON WAY BRYAN, TX 77802",
+    "owner_name": "BUSH FRANK A & THERESA LYNN",
+    "assessed_value": 345213
+  },
+  {
+    "prop_id": "000000011339",
+    "situs_address_full": "10514 E SH-21 BRYAN, TX 77808",
+    "owner_name": "DITTFURTH DORA M (LIFE ESTATE)",
+    "assessed_value": 188944
+  },
+  {
+    "prop_id": "000000027242",
+    "situs_address_full": "1303 FANNIN ST BRYAN, TX 77803",
+    "owner_name": "VILLARREAL ELAINE E",
+    "assessed_value": 21075
+  },
+  {
+    "prop_id": "000000445765",
+    "situs_address_full": "DARLINGTON AVE TX 00000",
+    "owner_name": "BRAZOS COUNTY MUNICIPAL UTILITY DISTRICT NO 1",
+    "assessed_value": 883
+  },
+  {
+    "prop_id": "000000032799",
+    "situs_address_full": "2501 WHISPERING OAKS CIR BRYAN, TX 77802",
+    "owner_name": "SHARKAWY-GEGG VIRGINIA THERESA",
+    "assessed_value": 258079
+  },
+  {
+    "prop_id": "000000412200",
+    "situs_address_full": "BIG RIVER ST COLLEGE STATION, TX 77840",
+    "owner_name": "AK69 LLC",
+    "assessed_value": 23626
+  },
+  {
+    "prop_id": "000000303560",
+    "situs_address_full": "3328 EMORY OAK DR BRYAN, TX 77807",
+    "owner_name": "SAENZ JOHN RICHARD SR & SONYA RIVERA",
+    "assessed_value": 190197
+  },
+  {
+    "prop_id": "000000087770",
+    "situs_address_full": "1500 CAVITT AVE BRYAN, TX 77801",
+    "owner_name": "BDS TOWING & RECOVERY LP",
+    "assessed_value": 77558
+  },
+  {
+    "prop_id": "000000037016",
+    "situs_address_full": "1701 SOUTHWEST PKY COLLEGE STATION, TX 77840",
+    "owner_name": "JAKLL HOLDINGS LLC-SERIES BCS",
+    "assessed_value": 1795000,
+    "known_drift": {
+      "assessed_value": "Certified 2025 export (APPRAISAL_ENTITY_INFO.TXT) reports 1895846 on all 5 of this property's entity rows; BCAD's live page shows a later post-certification value. Owner and situs match exactly, so this is roll drift, not an ingest bug."
+    }
+  },
+  {
+    "prop_id": "000000302974",
+    "situs_address_full": "4022 SOUTHERN TRACE DR COLLEGE STATION, TX 77845",
+    "owner_name": "DUBEC RICHARD LEE",
+    "assessed_value": 292959
+  },
+  {
+    "prop_id": "000000041084",
+    "situs_address_full": "1501 RICHLAND CT N COLLEGE STATION, TX 77845",
+    "owner_name": "JENNINGS JENNIFER MCFARLAND",
+    "assessed_value": 284779
+  },
+  {
+    "prop_id": "000000426795",
+    "situs_address_full": "4812 NATIVE TREE LN TX 00000",
+    "owner_name": "RANIER & SON DEV CO LLC",
+    "assessed_value": 43402
+  },
+  {
+    "prop_id": "000000076901",
+    "situs_address_full": "1002 BAYOU WOODS DR COLLEGE STATION, TX 77840",
+    "owner_name": "HONEY MESQUITE LLC",
+    "assessed_value": 303508
+  },
+  {
+    "prop_id": "000000455826",
+    "situs_address_full": "871 KICKAPOO LN COLLEGE STATION, TX 77845",
+    "owner_name": "CONTINENTAL HOMES OF TEXAS LP",
+    "assessed_value": 46449,
+    "known_drift": {
+      "assessed_value": "Certified 2025 export reports 44685 on all 7 entity rows; BCAD's live page shows a later value (new construction on a builder-owned lot). Owner and situs match exactly, so this is roll drift, not an ingest bug."
+    }
+  },
+  {
+    "prop_id": "000000106326",
+    "situs_address_full": "1213 BAYWOOD CT COLLEGE STATION, TX 77845",
+    "owner_name": "FIECHTNER LESLIE A",
+    "assessed_value": 269251
+  },
+  {
+    "prop_id": "000000445854",
+    "situs_address_full": "23955 SH-6 S TX 00000",
+    "owner_name": "ABSHIRE DOUGLAS J & LINDA G REVOCABLE TRUST",
+    "assessed_value": 61031
+  },
+  {
+    "prop_id": "000000025206",
+    "situs_address_full": "2316 WAYSIDE DR BRYAN, TX 77802",
+    "owner_name": "TIRADO KAROL ROJAS",
+    "assessed_value": 291933
+  },
+  {
+    "prop_id": "000000019233",
+    "situs_address_full": "2815 APPLE CREEK CIR BRYAN, TX 77802",
+    "owner_name": "PONZIO ROSEMARY (LIFE ESTATE)",
+    "assessed_value": 404181
+  },
+  {
+    "prop_id": "000000109178",
+    "situs_address_full": "2074 RAVENSTONE LOOP COLLEGE STATION, TX 77845",
+    "owner_name": "DELLINGER JUSTIN THOMAS & ERICA REVER",
+    "assessed_value": 383673
+  },
+  {
+    "prop_id": "000000033510",
+    "situs_address_full": "5425 N TEXAS AVE BRYAN, TX 77803",
+    "owner_name": "ATMOS ENERGY/MID-TEX DIVISION",
+    "assessed_value": 1750
+  },
+  {
+    "prop_id": "000000023104",
+    "situs_address_full": "703 W 22ND ST BRYAN, TX 77803",
+    "owner_name": "YAC BUILDERS LLC",
+    "assessed_value": 114475
+  },
+  {
+    "prop_id": "000000043428",
+    "situs_address_full": "3003 LODGEPOLE DR COLLEGE STATION, TX 77845",
+    "owner_name": "COMPTON LIVING TRUST",
+    "assessed_value": 204572
+  },
+  {
+    "prop_id": "000000031186",
+    "situs_address_full": "6270 J C LONG DR BRYAN, TX 77807",
+    "owner_name": "PRUETT TAFFIE C",
+    "assessed_value": 117341
+  },
+  {
+    "prop_id": "000000112618",
+    "situs_address_full": "4313 BERWICK PLACE COLLEGE STATION, TX 77845",
+    "owner_name": "MILLER NORMAN B & LESLIE B",
+    "assessed_value": 539260
+  },
+  {
+    "prop_id": "000000026603",
+    "situs_address_full": "8604 TOPAZ CT COLLEGE STATION, TX 77845",
+    "owner_name": "EVERETT MARK EDWARD & ELAINE WOODYATT EVERETT",
+    "assessed_value": 314038
+  },
+  {
+    "prop_id": "000000113060",
+    "situs_address_full": "11061 WAGON TRAIL CT BRYAN, TX 77808",
+    "owner_name": "MANDUJANO FLORES GUADALUPE",
+    "assessed_value": 131148
+  },
+  {
+    "prop_id": "000000099176",
+    "situs_address_full": "2301 E 29TH ST BRYAN, TX 77802",
+    "owner_name": "CARRIAGE MANAGEMENT INC",
+    "assessed_value": 1608485
+  },
+  {
+    "prop_id": "000000016120",
+    "situs_address_full": "PEACH CREEK RD COLLEGE STATION, TX 77845",
+    "owner_name": "SCHULTEA MICHAEL D",
+    "assessed_value": 12037
+  },
+  {
+    "prop_id": "000000020260",
+    "situs_address_full": "6928 RAYMOND STOTZER PKY COLLEGE STATION, TX 77845",
+    "owner_name": "KOREAN CHURCH OF A&M INC",
+    "assessed_value": 507855
+  },
+  {
+    "prop_id": "000000102781",
+    "situs_address_full": "3205 CATERINA LN COLLEGE STATION, TX 77845",
+    "owner_name": "SMITH MELVIN R",
+    "assessed_value": 438395
+  },
+  {
+    "prop_id": "000000406490",
+    "situs_address_full": "3216 MIDDLEBURG GREEN BRYAN, TX 77808",
+    "owner_name": "MILLER DAGAN",
+    "assessed_value": 507756
+  },
+  {
+    "prop_id": "000000035930",
+    "situs_address_full": "2203 HILLSIDE DR BRYAN, TX 77802",
+    "owner_name": "BOND KENNETH W & PAMELA J",
+    "assessed_value": 277812
+  },
+  {
+    "prop_id": "000000375626",
+    "situs_address_full": "TOWERS PKY COLLEGE STATION, TX 77845",
+    "owner_name": "FOXFIRE VENTURES LLC",
+    "assessed_value": 100
+  },
+  {
+    "prop_id": "000000393751",
+    "situs_address_full": "107 DEACON DR W COLLEGE STATION, TX 77845",
+    "owner_name": "ALIJOY MANAGEMENT LLC",
+    "assessed_value": 349460
+  },
+  {
+    "prop_id": "000000042745",
+    "situs_address_full": "3411 COASTAL DR COLLEGE STATION, TX 77845",
+    "owner_name": "DITTERT AMANDA & SAXON",
+    "assessed_value": 237883
+  },
+  {
+    "prop_id": "000000118324",
+    "situs_address_full": "FM 1179 BRYAN, TX 77808",
+    "owner_name": "SCF ASSOCIATION INC",
+    "assessed_value": 100
+  },
+  {
+    "prop_id": "000000045215",
+    "situs_address_full": "5158 TIMBERLINE DR COLLEGE STATION, TX 77845",
+    "owner_name": "STEEL SCOTT A & LORI",
+    "assessed_value": 1213968
+  },
+  {
+    "prop_id": "000000444084",
+    "situs_address_full": "7449 CATALINA HILL CT BRYAN, TX 77808",
+    "owner_name": "MENJIVAR-ARTEAGA LINDOMAR DAVID",
+    "assessed_value": 63500
+  },
+  {
+    "prop_id": "000000034650",
+    "situs_address_full": "3002 WOODVILLE RD BRYAN, TX 77803",
+    "owner_name": "GALVAN OFELIA",
+    "assessed_value": 194803
+  },
+  {
+    "prop_id": "000000406496",
+    "situs_address_full": "3204 ASHVILLE PATH BRYAN, TX 77808",
+    "owner_name": "BRIDGES ERIKA & LOUIE",
+    "assessed_value": 493946
+  },
+  {
+    "prop_id": "000000036191",
+    "situs_address_full": "3904 OAK BLUFF CIR BRYAN, TX 77802",
+    "owner_name": "RAMSEY DALLAS & KARI",
+    "assessed_value": 263538
+  },
+  {
+    "prop_id": "000000450436",
+    "situs_address_full": "5949 ELDORA DR COLLEGE STATION, TX 77845",
+    "owner_name": "SANDERS AMANDA LYNELLE & ERIC MATTHEW",
+    "assessed_value": 318580
+  },
+  {
+    "prop_id": "000000037375",
+    "situs_address_full": "3600 MAHAN DR BRYAN, TX 77802",
+    "owner_name": "ONEY HERVEY PROPERTIES LLC",
+    "assessed_value": 158210
+  },
+  {
+    "prop_id": "000000306856",
+    "situs_address_full": "2105 BLACKJACK DR COLLEGE STATION, TX 77845",
+    "owner_name": "PHILLIPS CHAD W & CORTNEY",
+    "assessed_value": 504599
+  },
+  {
+    "prop_id": "000000046081",
+    "situs_address_full": "2904 SILVER SPUR CIR BRYAN, TX 77801",
+    "owner_name": "GDOG PROPERTIES LLC",
+    "assessed_value": 177030
+  },
+  {
+    "prop_id": "000000032492",
+    "situs_address_full": "1101 NEW YORK ST BRYAN, TX 77803",
+    "owner_name": "FIELDS SHARON LYN",
+    "assessed_value": 21250
+  }
+]

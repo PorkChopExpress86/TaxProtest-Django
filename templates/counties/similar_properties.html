@@ -1,0 +1,318 @@
+{% extends "base.html" %}
+{% load humanize %}
+{% load countyfmt %}
+
+{% block title %}Similar Properties – {{ subject.address_line|default:"Property" }}{% endblock %}
+
+{% block content %}
+<div class="min-h-screen py-8 lg:py-12">
+  <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+
+    <div class="mb-6">
+      <a href="{{ search_url|default:'/' }}" class="inline-flex items-center text-blue-600 hover:text-blue-800">
+        <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path>
+        </svg>
+        Back to Search
+      </a>
+    </div>
+
+    {% if error %}
+    <div class="bg-red-50 border border-red-200 rounded-xl p-6 mb-8">
+      <div class="flex">
+        <div class="flex-shrink-0">
+          <svg class="h-6 w-6 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+          </svg>
+        </div>
+        <div class="ml-3">
+          <h3 class="text-lg font-medium text-red-800">{{ error }}</h3>
+        </div>
+      </div>
+    </div>
+    {% else %}
+
+    <!-- Subject property -->
+    <div class="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden mb-8">
+      <div class="bg-gradient-to-r from-indigo-500 to-purple-600 px-8 py-6 flex items-center justify-between">
+        <h1 class="text-2xl lg:text-3xl font-bold text-white">Finding Properties Similar To:</h1>
+        <a href="{{ protest_url }}"
+           class="inline-flex items-center px-4 py-2 bg-white bg-opacity-20 hover:bg-opacity-30 border border-white border-opacity-40 rounded-lg text-sm font-semibold text-white shadow-sm no-print">
+          &#9878; Protest Analysis
+        </a>
+      </div>
+
+      <div class="px-8 py-6">
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div>
+            <h2 class="text-xl font-bold text-gray-900 mb-4">{{ subject.address_line }}</h2>
+            <div class="space-y-2 text-sm">
+              <div><span class="font-semibold">{{ county.key_label }}:</span> {{ subject.key }}</div>
+              {% if subject.owner_name %}<div><span class="font-semibold">Owner:</span> {{ subject.owner_name }}</div>{% endif %}
+              {% if subject.zip_code %}<div><span class="font-semibold">Zip:</span> {{ subject.zip_code }}</div>{% endif %}
+              {% if subject.assessed_value %}
+              <div><span class="font-semibold">Assessed Value:</span> {{ subject.assessed_value|currency }}</div>
+              {% endif %}
+            </div>
+          </div>
+
+          <div>
+            <h3 class="text-lg font-semibold text-gray-900 mb-4">Property Details</h3>
+            <div class="space-y-2 text-sm">
+              {% if subject.living_area %}
+              <div><span class="font-semibold">Living Area:</span> {{ subject.living_area|sqft }} sqft</div>
+              {% endif %}
+              {% if subject.value_per_sqft %}
+              <div><span class="font-semibold">Price per Sqft:</span> ${{ subject.value_per_sqft|floatformat:2 }}
+                {% if subject_percentile %}
+                <span class="text-xs text-gray-600">({{ subject_percentile|floatformat:0 }}th percentile)</span>
+                {% endif %}
+              </div>
+              {% endif %}
+              {% if subject.year_built %}<div><span class="font-semibold">Year Built:</span> {{ subject.year_built }}</div>{% endif %}
+              {% if subject.bedrooms %}<div><span class="font-semibold">Bedrooms:</span> {{ subject.bedrooms }}</div>{% endif %}
+              {% if subject.bathrooms %}<div><span class="font-semibold">Bathrooms:</span> {{ subject.bathrooms }}</div>{% endif %}
+              {% if subject.quality_code %}
+              <div><span class="font-semibold">Quality:</span>
+                <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium {{ subject.quality_code|quality_classes }}">
+                  {{ subject.quality_code }} ({{ subject.quality_code|quality_label }})
+                </span>
+              </div>
+              {% endif %}
+              {% for row in subject.detail_rows %}
+              <div><span class="font-semibold">{{ row.label }}:</span> {{ row.value|default:"–" }}</div>
+              {% endfor %}
+              {% if subject.features %}<div><span class="font-semibold">Features:</span> {{ subject.features }}</div>{% endif %}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    {% if assessment_history %}
+    <div class="bg-white border border-gray-200 rounded-xl mb-8 shadow-sm overflow-hidden">
+      <div class="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+        <h3 class="text-sm font-bold text-gray-900 uppercase tracking-wider">Assessment History</h3>
+        <span class="text-xs text-gray-500">Newest first</span>
+      </div>
+      {% include "counties/partials/_assessment_history.html" %}
+    </div>
+    {% endif %}
+
+    <!-- Protest recommendation -->
+    {% if recommendation %}
+    {% with level=recommendation.level %}
+    <div class="mb-8">
+      <div class="rounded-xl p-5 flex items-start shadow-md
+        {% if level == 'strong' %}bg-red-50 border-2 border-red-300
+        {% elif level == 'moderate' %}bg-amber-50 border-2 border-amber-300
+        {% elif level == 'low' %}bg-green-50 border-2 border-green-300
+        {% else %}bg-gray-50 border-2 border-gray-300{% endif %}">
+        <div class="flex-shrink-0 mt-0.5 mr-4">
+          <svg class="h-7 w-7
+            {% if level == 'strong' %}text-red-600
+            {% elif level == 'moderate' %}text-amber-600
+            {% elif level == 'low' %}text-green-600
+            {% else %}text-gray-600{% endif %}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+        </div>
+        <div class="flex-1">
+          <h3 class="text-base font-bold
+            {% if level == 'strong' %}text-red-900
+            {% elif level == 'moderate' %}text-amber-900
+            {% elif level == 'low' %}text-green-900
+            {% else %}text-gray-900{% endif %}">{{ recommendation.headline }}</h3>
+          <p class="mt-2 text-sm
+            {% if level == 'strong' %}text-red-800
+            {% elif level == 'moderate' %}text-amber-800
+            {% elif level == 'low' %}text-green-800
+            {% else %}text-gray-800{% endif %}">{{ recommendation.reason }}</p>
+
+          <div class="mt-3 pt-3 border-t
+            {% if level == 'strong' %}border-red-200
+            {% elif level == 'moderate' %}border-amber-200
+            {% elif level == 'low' %}border-green-200
+            {% else %}border-gray-200{% endif %}">
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs text-gray-700">
+              <div>
+                <span class="font-semibold">Your PPSF:</span> ${{ subject.value_per_sqft|floatformat:2 }}
+                {% if subject_percentile %}<span class="text-gray-500">({{ subject_percentile|floatformat:0 }}th percentile)</span>{% endif %}
+              </div>
+              <div><span class="font-semibold">Comp Median:</span> ${{ recommendation.median|floatformat:2 }}</div>
+              <div><span class="font-semibold">Comp Range:</span> ${{ recommendation.minimum|floatformat:2 }} - ${{ recommendation.maximum|floatformat:2 }}</div>
+            </div>
+            <p class="mt-2 text-xs text-gray-600">
+              Based on {{ recommendation.comparable_count }} comparable propert{{ recommendation.comparable_count|pluralize:"y,ies" }}
+              with avg match score {{ recommendation.average_score|floatformat:0 }}
+            </p>
+          </div>
+
+          <p class="mt-3 text-[11px] text-gray-500 italic">
+            ⚠️ This is an informational estimate based only on price per sqft of similar properties. Not legal or tax advice.
+            Consult a property tax professional for personalized guidance.
+          </p>
+        </div>
+      </div>
+    </div>
+    {% endwith %}
+    {% elif subject.value_per_sqft %}
+    <div class="mb-8">
+      <div class="rounded-xl p-4 bg-blue-50 border border-blue-200 flex items-start">
+        <div class="flex-shrink-0 mt-0.5 mr-3">
+          <svg class="h-6 w-6 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+        </div>
+        <div>
+          <h3 class="text-sm font-semibold text-blue-900">Not Enough Data for Recommendation</h3>
+          <p class="mt-1 text-xs text-blue-800">
+            Not enough similar properties with pricing data to make a recommendation.
+            Try expanding your search radius or lowering the minimum similarity score.
+          </p>
+        </div>
+      </div>
+    </div>
+    {% endif %}
+
+    <!-- Search settings -->
+    <div class="bg-white border border-gray-200 rounded-xl p-6 mb-8 shadow-sm">
+      <h3 class="text-sm font-bold text-gray-900 uppercase tracking-wider mb-4">Search Settings</h3>
+      <form method="GET" class="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
+        <div>
+          <label for="max_distance" class="block text-sm font-medium text-gray-700 mb-1">Search Radius</label>
+          <select name="max_distance" id="max_distance" class="block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm">
+            <option value="5" {% if max_distance == 5.0 %}selected{% endif %}>5 miles</option>
+            <option value="10" {% if max_distance == 10.0 %}selected{% endif %}>10 miles</option>
+            <option value="15" {% if max_distance == 15.0 %}selected{% endif %}>15 miles</option>
+            <option value="20" {% if max_distance == 20.0 %}selected{% endif %}>20 miles</option>
+            <option value="25" {% if max_distance == 25.0 %}selected{% endif %}>25 miles</option>
+          </select>
+        </div>
+        <div>
+          <label for="min_score" class="block text-sm font-medium text-gray-700 mb-1">Min Match Score</label>
+          <select name="min_score" id="min_score" class="block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm">
+            <option value="10" {% if min_score == 10.0 %}selected{% endif %}>10+</option>
+            <option value="20" {% if min_score == 20.0 %}selected{% endif %}>20+</option>
+            <option value="30" {% if min_score == 30.0 %}selected{% endif %}>30+</option>
+            <option value="40" {% if min_score == 40.0 %}selected{% endif %}>40+</option>
+            <option value="50" {% if min_score == 50.0 %}selected{% endif %}>50+</option>
+            <option value="60" {% if min_score == 60.0 %}selected{% endif %}>60+</option>
+            <option value="70" {% if min_score == 70.0 %}selected{% endif %}>70+</option>
+          </select>
+        </div>
+        <div>
+          <label for="max_results" class="block text-sm font-medium text-gray-700 mb-1">Max Results</label>
+          <select name="max_results" id="max_results" class="block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm">
+            <option value="20" {% if max_results == 20 %}selected{% endif %}>20 results</option>
+            <option value="50" {% if max_results == 50 %}selected{% endif %}>50 results</option>
+            <option value="100" {% if max_results == 100 %}selected{% endif %}>100 results</option>
+          </select>
+        </div>
+        <div>
+          <button type="submit" class="w-full bg-indigo-600 border border-transparent rounded-md shadow-sm py-2 px-4 text-sm font-medium text-white hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+            Update Search
+          </button>
+        </div>
+      </form>
+    </div>
+
+    {% if comps %}
+    <div class="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden">
+      <div class="bg-gradient-to-r from-green-500 to-emerald-600 px-8 py-6">
+        <h2 class="text-2xl font-bold text-white flex items-center">
+          <svg class="w-6 h-6 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+          </svg>
+          Similar Properties Found
+        </h2>
+        <p class="text-green-100 mt-1">
+          {{ comps|length }} matching propert{{ comps|length|pluralize:"y,ies" }} sorted by match score (best match first)
+        </p>
+      </div>
+
+      <div class="relative">
+        <div class="overflow-x-auto overflow-y-auto max-h-[70vh] border-b border-gray-200">
+          <table class="min-w-full divide-y divide-gray-200 text-xs lg:text-sm">
+            <thead class="bg-gray-50 sticky top-0 z-10 shadow-sm">
+              <tr>
+                <th class="px-2 lg:px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase">Match</th>
+                <th class="px-2 lg:px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase">Distance</th>
+                <th class="px-2 lg:px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase">Address</th>
+                {% for column in columns %}
+                <th class="px-2 lg:px-4 py-3 text-{{ column.align }} text-xs font-medium text-gray-600 uppercase"
+                    {% if column.title %}title="{{ column.title }}"{% endif %}>{{ column.label }}</th>
+                {% endfor %}
+                <th class="px-2 lg:px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase">Features</th>
+              </tr>
+            </thead>
+            <tbody class="bg-white divide-y divide-gray-100">
+              {# Pin the subject at the top so its numbers sit alongside the comps. #}
+              <tr class="bg-indigo-50 border-2 border-indigo-300">
+                <td class="px-2 lg:px-4 py-3">
+                  <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold bg-indigo-600 text-white">
+                    YOUR PROPERTY
+                  </span>
+                </td>
+                <td class="px-2 lg:px-4 py-3 text-sm text-gray-600"><span class="font-semibold">-</span></td>
+                <td class="px-2 lg:px-4 py-3 text-sm">
+                  <div class="font-bold">{{ subject.address_line }}</div>
+                  <div class="text-gray-500 text-xs truncate max-w-xs">{{ subject.owner_name|default:"" }}</div>
+                </td>
+                {% for column in columns %}
+                <td class="px-2 lg:px-4 py-3 text-{{ column.align }} text-sm {% if column.format == 'currency' %}text-blue-700 font-semibold{% endif %}">
+                  {% include "counties/partials/_cell.html" with row=subject column=column %}
+                </td>
+                {% endfor %}
+                <td class="px-2 lg:px-4 py-3 text-xs text-gray-600 max-w-xs truncate">{{ subject.features|default:"-" }}</td>
+              </tr>
+              {% for comp in comps %}
+              <tr class="hover:bg-blue-50/50">
+                <td class="px-2 lg:px-4 py-3">
+                  {% include "counties/partials/_score_cell.html" %}
+                </td>
+                <td class="px-2 lg:px-4 py-3 text-sm text-gray-600">
+                  {% if comp.distance is not None %}{{ comp.distance }} mi{% else %}&ndash;{% endif %}
+                </td>
+                <td class="px-2 lg:px-4 py-3 text-sm">
+                  <div class="font-medium">{{ comp.address }}</div>
+                  <div class="text-gray-500 text-xs truncate max-w-xs">{{ comp.owner_name|default:comp.zip_code|default:"" }}</div>
+                </td>
+                {% for column in columns %}
+                <td class="px-2 lg:px-4 py-3 text-{{ column.align }} text-sm {% if column.format == 'currency' %}text-blue-700 font-semibold{% endif %}">
+                  {% include "counties/partials/_cell.html" with row=comp column=column %}
+                </td>
+                {% endfor %}
+                <td class="px-2 lg:px-4 py-3 text-xs text-gray-600 max-w-xs truncate">{{ comp.features|default:"-" }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        <div class="px-4 py-2 bg-blue-50 text-center text-xs text-blue-700 lg:hidden border-t border-blue-200">
+          👉 Swipe left/right to see all columns
+        </div>
+      </div>
+    </div>
+    {% else %}
+    <div class="bg-white rounded-2xl shadow-xl border border-gray-100 p-12 text-center">
+      <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+      </svg>
+      <h3 class="mt-4 text-lg font-medium text-gray-900">No Similar Properties Found</h3>
+      <p class="mt-2 text-gray-500">Try expanding your search radius or lowering the minimum similarity score.</p>
+      <div class="mt-6">
+        <a href="?max_distance=10&max_results=50&min_score=20"
+           class="inline-flex items-center px-4 py-2 border border-transparent rounded-lg shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700">
+          Expand Search Parameters
+        </a>
+      </div>
+    </div>
+    {% endif %}
+
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

@@ -51,8 +51,9 @@ node_modules
 *.tmp
 *.temp
 
-# Runtime data (populated inside the container at build/run time, never needed from host)
-var/downloads
-var/extracted
-var/reports
-var/logs
+# Per-county runtime data (populated inside the container at build/run time,
+# never needed from the host build context)
+counties/*/var/downloads
+counties/*/var/extracted
+counties/*/var/reports
+counties/*/var/logs

@@ -20,11 +20,27 @@ from taxprotest.runtime_paths import resolve_runtime_paths
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
-PROJECT_PATHS = resolve_runtime_paths(BASE_DIR)
-HCAD_DOWNLOAD_DIR = PROJECT_PATHS.download_dir
-HCAD_EXTRACT_DIR = PROJECT_PATHS.extract_dir
-HCAD_LOG_DIR = PROJECT_PATHS.log_dir
-PROJECT_REPORT_DIR = PROJECT_PATHS.report_dir
+# Runtime data (downloads, extracted source files, ETL logs, reports) lives
+# inside the county app that owns it -- counties/<slug>/var/ -- so no county's
+# staging area clutters the project root or collides with another's.
+COUNTY_PATHS = resolve_runtime_paths(BASE_DIR)
+
+# Harris County (HCAD): counties/harris/var/ unless HCAD_*_DIR overrides it.
+HARRIS_PATHS = COUNTY_PATHS["harris"]
+HCAD_DOWNLOAD_DIR = HARRIS_PATHS.download_dir
+HCAD_EXTRACT_DIR = HARRIS_PATHS.extract_dir
+HCAD_LOG_DIR = HARRIS_PATHS.log_dir
+HCAD_REPORT_DIR = HARRIS_PATHS.report_dir
+# Pre-existing name for the Harris report directory, kept for deployments and
+# callers that still set/read PROJECT_REPORT_DIR.
+PROJECT_REPORT_DIR = HCAD_REPORT_DIR
+
+# Brazos County (BCAD): counties/brazos/var/ unless BCAD_*_DIR overrides it.
+BRAZOS_PATHS = COUNTY_PATHS["brazos"]
+BCAD_DOWNLOAD_DIR = BRAZOS_PATHS.download_dir
+BCAD_EXTRACT_DIR = BRAZOS_PATHS.extract_dir
+BCAD_LOG_DIR = BRAZOS_PATHS.log_dir
+BCAD_REPORT_DIR = BRAZOS_PATHS.report_dir
 
 # Load .env from project root when present (development convenience)
 env_path = os.path.join(BASE_DIR, ".env")
@@ -96,8 +112,10 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     # contrib extras
     "django.contrib.humanize",  # for intcomma, naturaltime, etc. used in templates
-    # local apps
-    "data",
+    # local apps: the shared county web layer, then one app per county
+    "counties.common",
+    "counties.harris",
+    "counties.brazos",
 ]
 
 MIDDLEWARE = [
@@ -266,7 +284,8 @@ LOGGING = {
     "loggers": {
         "django": {"handlers": ["console"], "level": LOG_LEVEL, "propagate": False},
         "celery": {"handlers": ["console"], "level": LOG_LEVEL, "propagate": False},
-        "data": {"handlers": ["console"], "level": LOG_LEVEL, "propagate": False},
+        "counties": {"handlers": ["console"], "level": LOG_LEVEL, "propagate": False},
+        "brazos_cad": {"handlers": ["console"], "level": LOG_LEVEL, "propagate": False},
         "taxprotest.request": {
             "handlers": ["console"],
             "level": LOG_LEVEL,

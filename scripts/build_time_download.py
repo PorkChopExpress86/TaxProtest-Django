@@ -8,9 +8,9 @@ container entrypoint syncs those archives into the runtime volume and the ETL
 pipeline extracts + imports them at startup.
 
 This script only DOWNLOADS — it deliberately does not extract. The build-time
-extract directory lives under /app/var, which the runtime mounts a volume over,
-so anything extracted here would be discarded. Extraction happens at runtime
-instead (see scripts/entrypoint.sh).
+extract directory lives under /app/counties/harris/var, which the runtime mounts
+a volume over, so anything extracted here would be discarded. Extraction happens
+at runtime instead (see scripts/entrypoint.sh).
 
 Tries the current year first, then falls back to the prior year — matching the
 logic used by the Celery tasks and the modern ETL DownloadManager at runtime.
@@ -34,7 +34,7 @@ if BASE_DIR not in sys.path:
 from taxprotest.runtime_paths import resolve_runtime_paths
 
 RUNTIME_PATHS = resolve_runtime_paths(BASE_DIR)
-DOWNLOAD_DIR = os.fspath(RUNTIME_PATHS.download_dir)
+DOWNLOAD_DIR = os.fspath(RUNTIME_PATHS["harris"].download_dir)
 
 CHUNK_SIZE = 1 << 20  # 1 MiB — fewer syscalls than the default 8 KiB on multi-GB files
 DOWNLOAD_TIMEOUT = 600
@@ -57,6 +57,9 @@ ARCHIVES = [
     {"filename": "Real_acct_owner.zip", "required": True},
     {"filename": "Real_acct_ownership_history.zip", "required": False},
     {"filename": "Real_building_land.zip", "required": True},
+    # Jurisdiction/exemption rows and per-unit tax rates -- the inputs the
+    # protest report's Tax Impact section needs (import_hcad_jur_exempt).
+    {"filename": "Real_jur_exempt.zip", "required": False},
     {"filename": "Code_description_real.zip", "required": False},
     {"filename": "PP_files.zip", "required": False},
     {"filename": "Code_description_pp.zip", "required": False},

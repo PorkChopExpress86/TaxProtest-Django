@@ -9,6 +9,8 @@ geopandas>=0.14
 pyogrio>=0.7
 gunicorn>=21.2
 whitenoise>=6.7.0
+beautifulsoup4>=4.12
+lxml>=5.0
 
 # Dev/Test/Linting dependencies
 pre-commit>=3.7

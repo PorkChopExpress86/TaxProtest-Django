@@ -9,12 +9,17 @@ ENV PYTHONUNBUFFERED=1
 WORKDIR /app
 
 # Install system dependencies
+# p7zip-full: some past-year BCAD certified archives use DEFLATE64 compression
+# (confirmed: the 2023 export), which Python's stdlib zipfile cannot decompress
+# (NotImplementedError) -- import_brazos_assessment_history falls back to `7z`
+# for exactly those archives, trying the stdlib path first everywhere else.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
     postgresql-client \
     gcc \
     python3-dev \
     libpq-dev \
+    p7zip-full \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
@@ -33,7 +38,7 @@ RUN DJANGO_SECRET_KEY=dummy python manage.py collectstatic --noinput || true
 ARG SKIP_DATA_DOWNLOAD=0
 RUN if [ "$SKIP_DATA_DOWNLOAD" = "0" ]; then \
         python scripts/build_time_download.py && \
-        cp -r /app/var/downloads /hcad_downloads_baked && \
+        cp -r /app/counties/harris/var/downloads /hcad_downloads_baked && \
         date -u +%Y%m%dT%H%M%SZ > /hcad_downloads_baked/.build_stamp; \
     fi
 

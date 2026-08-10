@@ -10,7 +10,7 @@ Successfully implemented a clean import process using SQL `TRUNCATE` instead of 
 
 ## Changes Made
 
-### 1. Modified ETL Functions (`data/etl.py`)
+### 1. Modified ETL Functions (`counties/harris/etl.py`)
 
 **Added import:**
 ```python
@@ -105,10 +105,10 @@ To run a clean import:
 from data.etl import load_building_details, load_extra_features
 
 # Import buildings (truncates first)
-load_building_details('var/extracted/Real_building_land/building_res.txt')
+load_building_details('counties/harris/var/extracted/Real_building_land/building_res.txt')
 
 # Import extra features (truncates first)
-load_extra_features('var/extracted/Real_building_land/extra_features.txt')
+load_extra_features('counties/harris/var/extracted/Real_building_land/extra_features.txt')
 ```
 
 Or via management command (if created):

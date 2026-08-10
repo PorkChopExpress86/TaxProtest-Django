@@ -9,7 +9,7 @@ The similar properties search was returning a 500 server error when accessed.
 The code was using `PropertyRecord.objects.get(account_number=account_number)` which expects exactly one result. However, the database contains duplicate account numbers, causing Django to raise a `MultipleObjectsReturned` exception.
 
 ### Solution
-Changed both `data/similarity.py` and `taxprotest/views.py` to use `.filter().first()` instead of `.get()`:
+Changed both `counties/harris/similarity.py` and `taxprotest/views.py` to use `.filter().first()` instead of `.get()`:
 
 **Before:**
 ```python
@@ -33,7 +33,7 @@ Account `1074380000028` (16213 Wall St, 77040) returned only **5-6 results** wit
 
 #### 1. 500-Candidate Limit ✅ FIXED
 
-**Location**: Line 267 in `data/similarity.py`
+**Location**: Line 267 in `counties/harris/similarity.py`
 
 **Problem**: 
 - Despite 381,079 properties in valid size range, algorithm only processed first 500
@@ -162,9 +162,9 @@ Within 5 miles: 15+ properties
 
 ## Related Files
 
-- `data/similarity.py` - Main algorithm (FIXED: batch processing)
-- `data/etl_pipeline/transform.py` - Building schema (NEEDS: fixtures aggregation)
-- `var/extracted/Real_building_land/fixtures.txt` - Source data file
+- `counties/harris/similarity.py` - Main algorithm (FIXED: batch processing)
+- `counties/harris/etl_pipeline/transform.py` - Building schema (NEEDS: fixtures aggregation)
+- `counties/harris/var/extracted/Real_building_land/fixtures.txt` - Source data file
 - `docs/SIMILARITY_ALGORITHM.md` - Algorithm documentation
 - `docs/SIMILARITY_SCORING.md` - Detailed scoring guide
 
