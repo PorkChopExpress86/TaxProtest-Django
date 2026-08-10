@@ -73,6 +73,82 @@ def _dedupe_units(rows: list[PropertyJurisdictionExemption]) -> list[PropertyJur
     return out
 
 
+def _empty_result(tax_year: int | None, warning: str) -> TaxImpactResult:
+    """Shared shape for the two "nothing to compute" early returns.
+
+    Both callers stop before any unit has been priced, so every totals field
+    is zero/empty save the single warning explaining why.
+    """
+    return TaxImpactResult(
+        tax_year=tax_year,
+        current_tax_owed=ZERO,
+        median_tax_owed=ZERO,
+        estimated_savings=ZERO,
+        effective_rate=ZERO,
+        current_assessed_value=None,
+        taxable_value_used=None,
+        completeness="missing",
+        warnings=[warning],
+        exemptions_summary=[],
+        per_unit_breakdown=[],
+    )
+
+
+def _apply_exemptions(
+    current_base: Decimal,
+    median_base: Decimal | None,
+    records: list[PropertyJurisdictionExemption],
+) -> tuple[Decimal, Decimal | None, list[dict[str, object]]]:
+    """Apply one taxing unit's exemption records to a starting taxable value.
+
+    For each record, in order, apply its fixed exemption amount and then its
+    percent exemption, clamping the running taxable value at zero after each
+    step, to both the current and median bases. Fixed-before-percent is a
+    deliberate sequencing choice; the zero-floor is a deliberate business
+    rule -- this is Texas ARB math, not incidental plumbing. Returns the
+    final current/median taxable values plus a before/after audit-trail entry
+    per record that actually changed something.
+    """
+    current_taxable = current_base
+    median_taxable = median_base
+    exemptions_applied: list[dict[str, object]] = []
+
+    for rec in records:
+        fixed = _to_decimal(rec.exemption_amount)
+        percent = _to_decimal(rec.exemption_percent)
+        if fixed is None and percent is None:
+            continue
+
+        before_current = current_taxable
+        before_median = median_taxable
+
+        if fixed is not None:
+            current_taxable = max(ZERO, current_taxable - fixed)
+            if median_taxable is not None:
+                median_taxable = max(ZERO, median_taxable - fixed)
+        if percent is not None and percent > ZERO:
+            pct = percent / ONE_HUNDRED
+            current_taxable = max(ZERO, current_taxable * (Decimal("1") - pct))
+            if median_taxable is not None:
+                median_taxable = max(ZERO, median_taxable * (Decimal("1") - pct))
+
+        exemptions_applied.append(
+            {
+                "tax_unit_code": rec.tax_unit_code,
+                "exemption_code": rec.exemption_code,
+                "description": rec.exemption_description,
+                "fixed_amount": fixed,
+                "percent": percent,
+                "before_current": _money(before_current),
+                "after_current": _money(current_taxable),
+                "before_median": _money(before_median) if before_median is not None else None,
+                "after_median": _money(median_taxable) if median_taxable is not None else None,
+            }
+        )
+
+    return current_taxable, median_taxable, exemptions_applied
+
+
 def calculate_tax_impact(
     account_number: str,
     tax_year: int | None,
@@ -93,19 +169,7 @@ def calculate_tax_impact(
     exemptions_summary: list[dict[str, object]] = []
 
     if resolved_year is None:
-        return TaxImpactResult(
-            tax_year=None,
-            current_tax_owed=ZERO,
-            median_tax_owed=ZERO,
-            estimated_savings=ZERO,
-            effective_rate=ZERO,
-            current_assessed_value=None,
-            taxable_value_used=None,
-            completeness="missing",
-            warnings=["No assessment year is available for this account."],
-            exemptions_summary=[],
-            per_unit_breakdown=[],
-        )
+        return _empty_result(None, "No assessment year is available for this account.")
 
     median_value = _to_decimal(median_assessed_value)
     if median_value is None or median_value < ZERO:
@@ -120,18 +184,8 @@ def calculate_tax_impact(
     )
 
     if not unit_rows:
-        return TaxImpactResult(
-            tax_year=resolved_year,
-            current_tax_owed=ZERO,
-            median_tax_owed=ZERO,
-            estimated_savings=ZERO,
-            effective_rate=ZERO,
-            current_assessed_value=None,
-            taxable_value_used=None,
-            completeness="missing",
-            warnings=["No jurisdiction/exemption rows were found for this account and year."],
-            exemptions_summary=[],
-            per_unit_breakdown=[],
+        return _empty_result(
+            resolved_year, "No jurisdiction/exemption rows were found for this account and year."
         )
 
     assessment = (
@@ -210,42 +264,11 @@ def calculate_tax_impact(
             continue
 
         # Apply fixed + percent exemptions if present for each unit in deterministic order.
-        current_taxable = taxable_base
-        median_taxable = median_value if median_value is not None else None
-        exemptions_applied: list[dict[str, object]] = []
-
-        for rec in unit_records:
-            fixed = _to_decimal(rec.exemption_amount)
-            percent = _to_decimal(rec.exemption_percent)
-            if fixed is None and percent is None:
-                continue
-
-            before_current = current_taxable
-            before_median = median_taxable
-
-            if fixed is not None:
-                current_taxable = max(ZERO, current_taxable - fixed)
-                if median_taxable is not None:
-                    median_taxable = max(ZERO, median_taxable - fixed)
-            if percent is not None and percent > ZERO:
-                pct = percent / ONE_HUNDRED
-                current_taxable = max(ZERO, current_taxable * (Decimal("1") - pct))
-                if median_taxable is not None:
-                    median_taxable = max(ZERO, median_taxable * (Decimal("1") - pct))
-
-            exemptions_applied.append(
-                {
-                    "tax_unit_code": rec.tax_unit_code,
-                    "exemption_code": rec.exemption_code,
-                    "description": rec.exemption_description,
-                    "fixed_amount": fixed,
-                    "percent": percent,
-                    "before_current": _money(before_current),
-                    "after_current": _money(current_taxable),
-                    "before_median": _money(before_median) if before_median is not None else None,
-                    "after_median": _money(median_taxable) if median_taxable is not None else None,
-                }
-            )
+        current_taxable, median_taxable, exemptions_applied = _apply_exemptions(
+            taxable_base,
+            median_value if median_value is not None else None,
+            unit_records,
+        )
 
         current_tax = current_taxable * rate
         median_tax = median_taxable * rate if median_taxable is not None else ZERO
