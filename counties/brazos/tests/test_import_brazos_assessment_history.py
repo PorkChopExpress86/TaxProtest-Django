@@ -236,6 +236,20 @@ class ResolveEntityInfoFileTests(SimpleTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertIsNone(Command._resolve_entity_info_file(Path(tmp)))
 
+    def test_picks_newest_and_warns_when_duplicate_timestamped_copies_exist(self):
+        # resolve_timestamped_file's "multiple candidates" warning applies
+        # here too now that both callers share it (see counties/brazos/portal.py).
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / f"2022-08-23_001488_{ENTITY_INFO_FILENAME}").write_text("stale")
+            (root / f"2025-07-23_002022_{ENTITY_INFO_FILENAME}").write_text("fresh")
+
+            with self.assertLogs("brazos_cad", level="WARNING") as logs:
+                found = Command._resolve_entity_info_file(root)
+
+        self.assertEqual(found.name, f"2025-07-23_002022_{ENTITY_INFO_FILENAME}")
+        self.assertTrue(any("Multiple candidates" in message for message in logs.output))
+
 
 class ExtractFallbackTests(TestCase):
     """BCAD's 2023 export uses DEFLATE64, which zipfile can't decompress."""
