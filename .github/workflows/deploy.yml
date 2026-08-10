@@ -42,8 +42,10 @@ jobs:
           mkdir -p "$HOME/.ssh"
           printf '%s' "$SSH_PRIVATE_KEY" > "$HOME/.ssh/deploy_key"
           chmod 600 "$HOME/.ssh/deploy_key"
-          ssh-keyscan -p "${{ secrets.SERVER_PORT }}" "${{ secrets.SERVER_HOST }}" \
-            >> "$HOME/.ssh/known_hosts" 2>/dev/null
+          ssh-keyscan -T 20 -p "${{ secrets.SERVER_PORT }}" "${{ secrets.SERVER_HOST }}" \
+            >> "$HOME/.ssh/known_hosts"
+          echo "--- known_hosts contents ---"
+          cat "$HOME/.ssh/known_hosts"
 
       - name: Validate SSH connectivity
         if: steps.skip.outputs.skip != 'true'
