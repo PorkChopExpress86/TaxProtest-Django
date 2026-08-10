@@ -18,8 +18,9 @@ jobs:
     steps:
       - name: Check for skip-deploy marker
         id: skip
+        env:
+          MSG: ${{ github.event.head_commit.message }}
         run: |
-          MSG="${{ github.event.head_commit.message }}"
           if [[ "$MSG" == "[skip deploy]"* ]]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
