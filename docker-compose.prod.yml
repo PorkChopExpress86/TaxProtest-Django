@@ -51,6 +51,16 @@ services:
     volumes:
       - ./counties/harris/var:/app/counties/harris/var
       - ./counties/brazos/var:/app/counties/brazos/var
+    # nginx-proxy-manager lives on the external `media_proxy` network and
+    # reverse-proxies to http://taxprotest-web:8000 -- by container name, so
+    # the container_name in the base file is load-bearing, not cosmetic.
+    # Both networks must be listed: naming any network here stops Compose from
+    # attaching `default` implicitly, which would cut web off from postgres.
+    # Without this the site 502s after every rebuild, since a manual
+    # `docker network connect` does not survive container recreation.
+    networks:
+      - default
+      - media_proxy
 
   # Celery worker for processing background tasks
   worker:
@@ -101,3 +111,9 @@ services:
 volumes:
   pgdata:
     driver: local
+
+networks:
+  # Created outside this project (by the nginx-proxy-manager stack), so it is
+  # declared external rather than managed here.
+  media_proxy:
+    external: true
