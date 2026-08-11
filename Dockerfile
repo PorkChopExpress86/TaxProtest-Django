@@ -26,11 +26,19 @@ RUN apt-get update \
 COPY requirements.txt /app/
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy project
-COPY . /app/
+# Create the app user before copying so files land correctly owned. A later
+# `chown -R /app` would rewrite every file into a second copy-on-write layer,
+# doubling the image; --chown on the COPY sets ownership as the layer is built.
+RUN addgroup --system django && adduser --system --ingroup django django
 
-# Collect static files during build so reverse proxies can serve them directly
-RUN DJANGO_SECRET_KEY=dummy python manage.py collectstatic --noinput || true
+# Copy project
+COPY --chown=django:django . /app/
+
+# Collect static files during build so reverse proxies can serve them directly.
+# This runs as root, so hand the output back to django -- staticfiles/ is a
+# couple of MB, unlike a recursive chown over all of /app.
+RUN DJANGO_SECRET_KEY=dummy python manage.py collectstatic --noinput || true \
+    && chown -R django:django /app/staticfiles
 
 # Download and extract data during build.
 # Set SKIP_DATA_DOWNLOAD=1 (via --build-arg or docker-compose build.args) to skip
@@ -45,12 +53,9 @@ RUN if [ "$SKIP_DATA_DOWNLOAD" = "0" ]; then \
 # Expose port
 EXPOSE 8000
 
-# Create a non-root user and switch to it
-RUN addgroup --system django && adduser --system --ingroup django django
-
-# Chown all the files to the app user (combined to avoid extra layers)
-RUN chown -R django:django /app \
-    && if [ -d /hcad_downloads_baked ]; then chown -R django:django /hcad_downloads_baked; fi
+# /app is already owned by django via COPY --chown above; only the build-baked
+# archives (written by root in the RUN above) still need their ownership fixed.
+RUN if [ -d /hcad_downloads_baked ]; then chown -R django:django /hcad_downloads_baked; fi
 
 # Switch to the non-root user
 USER django

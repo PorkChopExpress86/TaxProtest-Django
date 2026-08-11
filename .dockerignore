@@ -57,3 +57,15 @@ counties/*/var/downloads
 counties/*/var/extracted
 counties/*/var/reports
 counties/*/var/logs
+
+# Legacy pre-migration runtime data. scripts/migrate_runtime_artifacts.py moves
+# these into counties/<slug>/var/, but servers that predate the move still carry
+# them, and they are bind-mounted at run time regardless -- never build inputs.
+# Leaving root var/ out of .dockerignore put 18GB into the image on the
+# production host (doubled to ~38GB once `chown -R /app` rewrote every file).
+var/
+downloads/
+data/cad_downloads/
+
+# Celery beat schedule (regenerated at run time)
+taxprotest/var/
