@@ -1,29 +1,19 @@
+# Production overrides. Service keys MUST match docker-compose.yml exactly --
+# a key that does not exist in the base file adds a second service rather than
+# overriding the first. (A `db:` key here once did exactly that, running a
+# second PostgreSQL on the same pgdata volume as `postgres:`.)
+#
+# List-valued fields (ports, volumes) MERGE with the base file by default, so
+# anything meant to be removed in production needs an explicit `!override`.
 services:
-  db:
-    image: postgres:15
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-taxprotest}
-      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}"
-      POSTGRES_DB: ${POSTGRES_DB:-taxprotest}
-    # No ports exposed to host in production
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U taxprotest" ]
-      interval: 30s
-      timeout: 10s
-      retries: 5
+  postgres:
+    # No ports exposed to host in production; !override clears the base mapping
+    # instead of appending to it.
+    ports: !override []
 
   redis:
-    image: redis:7
-    restart: unless-stopped
-    # No ports exposed to host in production
-    healthcheck:
-      test: [ "CMD", "redis-cli", "ping" ]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+    # No ports exposed to host in production.
+    ports: !override []
 
   web:
     build: .
@@ -33,7 +23,7 @@ services:
     env_file:
       - .env
     environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-taxprotest}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-taxprotest}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-taxprotest}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-taxprotest}
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - DEBUG=0
@@ -49,23 +39,27 @@ services:
       - HCAD_LOG_DIR=${HCAD_LOG_DIR:-/app/counties/harris/var/logs}
       - PROJECT_REPORT_DIR=${PROJECT_REPORT_DIR:-/app/counties/harris/var/reports}
     depends_on:
-      db:
+      postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-    # No code bind mount in production, but each county's runtime data
-    # (counties/<slug>/var) persists on the host across rebuilds.
+    # NOTE: these MERGE with the base file's `.:/app`, so production still runs
+    # code from the host checkout rather than from the baked image. Add
+    # `volumes: !override` here to make the image the sole source of code --
+    # but see scripts/deploy.sh first, whose PARTIAL/SKIP tiers assume a plain
+    # `git pull` changes what the containers run.
     volumes:
       - ./counties/harris/var:/app/counties/harris/var
       - ./counties/brazos/var:/app/counties/brazos/var
-    # Celery worker for processing background tasks
+
+  # Celery worker for processing background tasks
   worker:
     build: .
     restart: unless-stopped
     env_file:
       - .env
     environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-taxprotest}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-taxprotest}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-taxprotest}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-taxprotest}
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - DEBUG=0
@@ -75,7 +69,7 @@ services:
       - HCAD_LOG_DIR=${HCAD_LOG_DIR:-/app/counties/harris/var/logs}
       - PROJECT_REPORT_DIR=${PROJECT_REPORT_DIR:-/app/counties/harris/var/reports}
     depends_on:
-      db:
+      postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -88,7 +82,7 @@ services:
     env_file:
       - .env
     environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-taxprotest}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-taxprotest}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-taxprotest}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-taxprotest}
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - DEBUG=0
@@ -98,7 +92,7 @@ services:
       - HCAD_LOG_DIR=${HCAD_LOG_DIR:-/app/counties/harris/var/logs}
       - PROJECT_REPORT_DIR=${PROJECT_REPORT_DIR:-/app/counties/harris/var/reports}
     depends_on:
-      db:
+      postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
