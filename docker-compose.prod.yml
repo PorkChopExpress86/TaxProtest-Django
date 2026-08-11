@@ -28,7 +28,7 @@ services:
   web:
     build: .
     restart: unless-stopped
-    ports:
+    ports: !override
       - "127.0.0.1:8020:8000"
     env_file:
       - .env
