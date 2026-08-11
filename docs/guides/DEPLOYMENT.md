@@ -126,3 +126,23 @@ build time respectively.
 | `non-fast-forward` from `git pull --ff-only` | Server's local commits ahead of `origin/main` | `git fetch origin && git reset --hard origin/main` on the server (or resolve manually) |
 | Rebuild succeeds but the new code is not active in `web` | A PARTIAL classification ran; `web`/`worker`/`beat` still hold the previous image | Re-run the deploy or `docker compose up -d --no-deps web worker beat` |
 | First deploy fails with `set -euo pipefail` and a cryptic line | `docker compose` plugin missing on the server | Install Compose v2: `apt install docker-compose-plugin` |
+| Workflow fails instantly (0s) with "This run likely failed because of a workflow file issue" and no job is created | The workflow references a context where it is not allowed — `secrets` in `jobs.<id>.name`, for example. Schema validation happens before any job exists, so there are no step logs to read | Validate the file; keep `secrets.*` to `steps`, `env`, and `with` |
+| `Set up SSH key` hangs the full `ssh-keyscan` timeout, then fails | Nothing reached the server's SSH port from the public internet. Testing from your own LAN proves little — most routers hairpin internal traffic on a path that outside traffic never takes | Test from off-network (phone on cellular). Check for a second NAT (ISP modem in front of the router) and for CGNAT |
+| Public site 502s after a rebuild while `curl 127.0.0.1:8020` works | The web container is not on the reverse proxy's network. nginx-proxy-manager resolves the upstream **by container name**, so `container_name: taxprotest-web` and the `media_proxy` network membership in `docker-compose.prod.yml` are both load-bearing | Both are declared in compose; a one-off `docker network connect` does **not** survive recreation |
+| Every deploy takes the site down for ~11 minutes | `SKIP_DATA_DOWNLOAD=0` bakes HCAD archives into the image, so `scripts/entrypoint.sh` sees a new build stamp and runs a full `import_all_data` before gunicorn starts | Set `SKIP_DATA_DOWNLOAD=1` in the server's `.env` unless a self-contained image is genuinely needed |
+| The built image is tens of GB | Something large is in the build context. A recursive `chown -R /app` then doubles it into a second layer | Check `du -sh /app/*` inside the image (`docker run --rm --entrypoint sh <image> -c '...'`) and exclude it in `.dockerignore`; prefer `COPY --chown` over a later `chown -R` |
+
+### A note on the prod compose override
+
+`docker-compose.prod.yml` overrides `docker-compose.yml` **by service key**. A key
+that does not exist in the base file adds a *new* service instead of overriding
+one — which is how this project once ran two PostgreSQL containers against the
+same `pgdata` volume simultaneously. List-valued fields (`ports`, `volumes`)
+also *merge* rather than replace, so anything meant to be removed in production
+needs an explicit `!override`.
+
+After changing either compose file, check what actually renders before deploying:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml config --services
+```
