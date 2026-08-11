@@ -136,7 +136,10 @@ matches_any() {
     return 1
 }
 
-classification="FULL"
+# Start undecided: seeding this with "FULL" made the check below always true,
+# leaving the PARTIAL and SKIP branches unreachable and every deploy a full
+# rebuild.
+classification="UNDECIDED"
 for f in "${CHANGED_FILES[@]}"; do
     if matches_any "$f" "${FULL_PATTERNS[@]}"; then
         classification="FULL"
