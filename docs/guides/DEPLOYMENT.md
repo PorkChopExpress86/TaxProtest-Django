@@ -117,6 +117,14 @@ Migrations and `collectstatic` are intentionally **not** run here; they
 are handled by `scripts/entrypoint.sh` on container start and at Docker
 build time respectively.
 
+Anything matching none of the three pattern sets falls through to **FULL**,
+which is deliberate: an unrecognised path is assumed to matter. `deploy.sh`
+itself is one of those, so editing the deploy script triggers a full rebuild.
+
+Note also that the classification runs from the copy of `deploy.sh` already on
+the server, *before* `git pull` — so a change to the classification logic takes
+effect on the deploy after the one that delivers it.
+
 ## 7. Troubleshooting
 
 | Symptom | Likely cause | Fix |
