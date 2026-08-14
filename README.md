@@ -200,45 +200,21 @@ docker compose exec web python manage.py test
 - `docs/ETL_PIPELINE.md` — ETL pipeline architecture
 - `docs/REVERSE_PROXY.md` — reverse proxy / production deployment notes
 - `docs/guides/DEPLOYMENT.md` — production deployment walkthrough
+- `docs/ARCHITECTURE_REVIEW_AUDIT.md` — architecture review and test parity audit
 
-## AI workflows
+## AI workflows & Skills
 
 - `docs/ai-workflows.md` — practical guide for AI/Copilot workflows in this repo
+- `.agent/skills/security-review/` — security review skill, history purging, and Bitwarden secret management runbook
 - `.github/copilot-instructions.md` — repository-wide Copilot guardrails
 - `.github/prompts/` — reusable prompt files for ingestion, comparables, Docker/dev workflow, and test creation
 
-## Data sources
-
-Harris County (HCAD): https://download.hcad.org/data/ — downloaded into `counties/harris/var/downloads/`
-
-- `Real_acct_owner.txt` — Property records
-- `Real_building_land.zip` — Building details and features
-- `Parcels.zip` — GIS shapefiles with coordinates
-
-Brazos County (BCAD): certified PACS export — downloaded into `counties/brazos/var/downloads/`
-
-- `APPRAISAL_*.TXT` — fixed-width property, land, improvement, and entity files
-- GIS parcel shapefile — coordinates and situs addresses
-
-## Troubleshooting
-
-```bash
-# Rebuild containers
-docker compose up --build
-
-# View logs
-docker compose logs
-
-# Reset database (destructive)
-docker compose down -v
-docker compose up --build
-```
-
 ## Security
 
-- Never commit `.env` files or secrets
-- Rotate Django secret keys if exposed
-- Configure `ALLOWED_HOSTS` for production
+- Never commit `.env` files or secrets (enforced via `.gitignore`)
+- Rotate Django secret keys if exposed; `DJANGO_SECRET_KEY` is required at runtime
+- Celery serializers are locked down to `json` to prevent insecure deserialization
+- Use `scripts/bw_backup.py` to securely back up `.env` into your Bitwarden vault (`Environment files` folder)
 
 ## License
 
