@@ -181,7 +181,12 @@ echo "==> Classification: $classification"
 
 # --- pull + rebuild ----------------------------------------------------------
 
-git pull --ff-only origin main
+# Attempt fast-forward pull first; if history diverged (e.g. after history sanitization/force push),
+# reset hard to origin/main to align the production tree with remote.
+if ! git pull --ff-only origin main 2>/dev/null; then
+    echo "==> Warning: git pull --ff-only failed (diverged history). Resetting hard to origin/main..."
+    git reset --hard origin/main
+fi
 
 case "$classification" in
     FULL)
