@@ -49,6 +49,11 @@ class Command(BaseCommand):
                 "refreshes where the app should still start after a successful data load."
             ),
         )
+        parser.add_argument(
+            "--keep-extracted",
+            action="store_true",
+            help="Keep uncompressed extracted data files on disk after loading (default: false, cleans up)",
+        )
 
     @staticmethod
     def _select_sources(
@@ -125,6 +130,7 @@ class Command(BaseCommand):
             skip_download=options["skip_download"],
             skip_extract=options["skip_extract"],
             skip_load=False,
+            cleanup_extracted=not options["keep_extracted"],
         )
 
         self.stdout.write("")

@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import logging
 import re
+import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
@@ -221,6 +222,11 @@ class Command(BaseCommand):
             "--dry-run",
             action="store_true",
             help="Log every action without writing to disk or the database.",
+        )
+        parser.add_argument(
+            "--keep-extracted",
+            action="store_true",
+            help="Keep uncompressed extracted data files on disk after loading (default: false, cleans up)",
         )
 
     # ------------------------------------------------------------------ helpers
@@ -772,5 +778,8 @@ class Command(BaseCommand):
             self.stdout.write(self.style.SUCCESS("Ingest complete:"))
             for filename, count in results.items():
                 self.stdout.write(f"  {filename}: {count} rows")
+            if not skip_extract and not options["keep_extracted"] and not dry_run and extract_dir.exists():
+                shutil.rmtree(extract_dir, ignore_errors=True)
+                self.stdout.write(self.style.SUCCESS("Cleaned up uncompressed extracted files."))
         else:
             self.stdout.write("Skipped ingest (--skip-ingest).")

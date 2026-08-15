@@ -59,10 +59,9 @@ Usage:
     python manage.py import_brazos_assessment_history --years 3 --all-accounts
 """
 
-from __future__ import annotations
-
 import logging
 import re
+import shutil
 from collections.abc import Iterator
 from dataclasses import dataclass
 from decimal import Decimal
@@ -172,6 +171,11 @@ class Command(BaseCommand):
             "--dry-run",
             action="store_true",
             help="Download/extract/parse/verify without writing to the database.",
+        )
+        parser.add_argument(
+            "--keep-extracted",
+            action="store_true",
+            help="Keep uncompressed extracted data files on disk after loading (default: false, cleans up)",
         )
 
     # ------------------------------------------------------------------ portal
@@ -470,3 +474,10 @@ class Command(BaseCommand):
                 f"{len(per_year_rollups)} year(s) ({start_year}-{end_year})."
             )
         )
+
+        if not skip_extract and not options["keep_extracted"] and not dry_run:
+            for year in years:
+                year_extract_dir = extract_root / str(year)
+                if year_extract_dir.exists():
+                    shutil.rmtree(year_extract_dir, ignore_errors=True)
+            self.stdout.write(self.style.SUCCESS("Cleaned up uncompressed extracted files."))

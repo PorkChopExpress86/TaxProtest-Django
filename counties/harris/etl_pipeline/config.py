@@ -275,6 +275,7 @@ class ETLConfig:
     skip_extract: bool = False
     skip_transform: bool = False
     skip_load: bool = False
+    cleanup_extracted: bool = True
     continue_on_error: bool = True
     send_notifications: bool = False
 

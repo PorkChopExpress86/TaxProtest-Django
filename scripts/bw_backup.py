@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 
+
 def zenity(args):
     res = subprocess.run(["zenity"] + args, capture_output=True, text=True)
     return res.stdout.strip() if res.returncode == 0 else None
@@ -59,7 +60,7 @@ def main():
                 pass
 
     # 5. Read .env and create or update item in Bitwarden
-    with open(".env", "r") as f:
+    with open(".env") as f:
         env_content = f.read()
 
     items_raw = subprocess.run(["bw", "list", "items", "--search", item_name, "--session", session], env=env, capture_output=True, text=True).stdout

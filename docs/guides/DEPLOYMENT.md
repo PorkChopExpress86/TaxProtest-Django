@@ -154,3 +154,33 @@ After changing either compose file, check what actually renders before deploying
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.prod.yml config --services
 ```
+
+---
+
+## 8. Reverse Proxy & Domain Configuration
+
+When deploying behind an external reverse proxy (e.g. Nginx, Nginx Proxy Manager, Traefik, Caddy):
+
+### Network & Port Bindings
+- Compose exposes the web service on host port `8020` and binds the container to port `8000`.
+- In production (`docker-compose.prod.yml`), the web container connects to an external network (e.g. `media_proxy`) with fixed `container_name: taxprotest-web` so upstream proxies can route to `http://taxprotest-web:8000` or `http://127.0.0.1:8020`.
+
+### Environment Settings (`.env`)
+```bash
+ALLOWED_HOSTS=property.yourdomain.com,localhost,127.0.0.1
+CSRF_TRUSTED_ORIGINS=https://property.yourdomain.com
+USE_X_FORWARDED_HOST=1
+ENABLE_SECURE_PROXY_SSL_HEADER=1
+FORCE_SECURE_COOKIES=1
+```
+
+### Proxy Headers
+Ensure the reverse proxy forwards the protocol and host headers:
+```nginx
+proxy_set_header Host $host;
+proxy_set_header X-Real-IP $remote_addr;
+proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+proxy_set_header X-Forwarded-Proto $scheme;
+proxy_set_header X-Forwarded-Host $host;
+```
+

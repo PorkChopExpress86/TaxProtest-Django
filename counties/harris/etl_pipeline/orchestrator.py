@@ -182,6 +182,7 @@ class ETLOrchestrator:
         skip_extract: bool | None = None,
         skip_transform: bool | None = None,
         skip_load: bool | None = None,
+        cleanup_extracted: bool | None = None,
         scope: str = "full",
         strict: bool = True,
         validate_contract: bool = True,
@@ -194,6 +195,7 @@ class ETLOrchestrator:
             skip_extract: Skip extract stage
             skip_transform: Skip transform stage
             skip_load: Skip load stage
+            cleanup_extracted: Delete uncompressed extracted files after successful load
             scope: Pipeline scope (full, building-only, gis-only, property-only)
             strict: Fail run on required gaps/errors
             validate_contract: Run post-load validate_data checks
@@ -212,6 +214,9 @@ class ETLOrchestrator:
         )
         skip_load = skip_load if skip_load is not None else self.config.skip_load
         skip_load = bool(skip_load or self.config.dry_run)
+        cleanup_extracted = (
+            cleanup_extracted if cleanup_extracted is not None else self.config.cleanup_extracted
+        )
 
         # Initialize result
         self.result = PipelineResult(
@@ -268,6 +273,11 @@ class ETLOrchestrator:
 
             all_success = all(r.success for r in self.result.stages.values())
             self.result.status = PipelineStatus.COMPLETED if all_success else PipelineStatus.PARTIAL
+
+            # Clean up uncompressed extracted files after successful load to save disk space
+            if all_success and cleanup_extracted and wrote_data:
+                self.logger.info("Cleaning up uncompressed extracted files after successful load")
+                self.extract_manager.cleanup(sources=sources)
         except Exception as e:
             self.result.status = PipelineStatus.FAILED
             self.result.errors.append(str(e))

@@ -58,7 +58,9 @@ from __future__ import annotations
 import logging
 import math
 import re
+import shutil
 from pathlib import Path
+from typing import Any
 
 import requests
 from bs4 import BeautifulSoup
@@ -113,13 +115,13 @@ def _join_address(*parts: object) -> str:
     return " ".join(p for p in (_clean_str(part) for part in parts) if p)
 
 
-def _clean_decimal(value: object):
+def _clean_decimal(value: Any):
     if value is None or _is_nan(value):
         return None
     return value
 
 
-def _clean_int(value: object) -> int | None:
+def _clean_int(value: Any) -> int | None:
     if value is None or _is_nan(value):
         return None
     try:
@@ -157,6 +159,11 @@ class Command(BaseCommand):
             "--dry-run",
             action="store_true",
             help="Log every action without writing to disk or the database.",
+        )
+        parser.add_argument(
+            "--keep-extracted",
+            action="store_true",
+            help="Keep uncompressed extracted data files on disk after loading (default: false, cleans up)",
         )
 
     # ------------------------------------------------------------------ scrape
@@ -433,3 +440,7 @@ class Command(BaseCommand):
                 f"{results['unmatched']} shapefile parcels had no match."
             )
         )
+
+        if not skip_extract and not options["keep_extracted"] and not dry_run and extract_dir.exists():
+            shutil.rmtree(extract_dir, ignore_errors=True)
+            self.stdout.write(self.style.SUCCESS("Cleaned up uncompressed extracted files."))

@@ -54,7 +54,7 @@ def _resolve_indices(header: list[str], source_names: dict[str, list[str]]) -> d
     return indices
 
 
-def _open_text(filepath: Path) -> tuple[csv.reader, Any]:
+def _open_text(filepath: Path) -> tuple[Iterator[list[str]], Any]:
     """Open a HCAD data file as a tab-delimited positional csv.reader."""
     # HCAD files are latin-1/tab-delimited; errors="ignore" matches the
     # generic transformer's tolerance for stray bytes.

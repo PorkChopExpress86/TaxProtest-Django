@@ -145,8 +145,8 @@ class DataTransformer:
             encoding = self._detect_encoding(filepath)
 
         # Read sample for delimiter detection
-        with open(filepath, "rb") as f:
-            sample_bytes = f.read(4096)
+        with open(filepath, "rb") as sample_fh:
+            sample_bytes = sample_fh.read(4096)
 
         try:
             sample = sample_bytes.decode(encoding, errors="ignore")
@@ -161,7 +161,7 @@ class DataTransformer:
             f"Opening {filepath.name} with encoding={encoding}, delimiter={repr(delimiter)}"
         )
 
-        f = open(filepath, encoding=encoding, errors="ignore", newline="")
+        fh = open(filepath, encoding=encoding, errors="ignore", newline="")
         # HCAD source files are plain tab/pipe-delimited text with raw, unescaped
         # `"` characters in free-text fields (e.g. inspector notes). With default
         # quoting, csv treats an unbalanced `"` as opening a quoted field that
@@ -169,8 +169,8 @@ class DataTransformer:
         # exceeds csv's size limit), silently corrupting row boundaries and
         # dropping real records. These files have no quoting convention, so
         # quote characters must be read literally.
-        reader = csv.DictReader(f, delimiter=delimiter, quoting=csv.QUOTE_NONE)
-        return reader, f
+        reader = csv.DictReader(fh, delimiter=delimiter, quoting=csv.QUOTE_NONE)
+        return reader, fh
 
     def _coerce_value(
         self,

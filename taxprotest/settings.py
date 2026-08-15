@@ -197,6 +197,7 @@ USE_TZ = True
 
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
+STATIC_ROOT.mkdir(exist_ok=True, parents=True)
 
 USE_X_FORWARDED_HOST = _env_bool("USE_X_FORWARDED_HOST", default=False)
 if _env_bool("ENABLE_SECURE_PROXY_SSL_HEADER", default=False):

@@ -306,7 +306,7 @@ docker compose logs -f worker
 
 # Check database counts
 docker compose exec web python manage.py shell -c "
-from data.models import PropertyRecord, BuildingDetail, ExtraFeature
+from counties.harris.models import PropertyRecord, BuildingDetail, ExtraFeature
 print(f'Properties: {PropertyRecord.objects.count():,}')
 print(f'Buildings: {BuildingDetail.objects.count():,}')
 print(f'Features: {ExtraFeature.objects.count():,}')

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from datetime import datetime
 from pathlib import Path
 
@@ -21,6 +22,11 @@ class Command(BaseCommand):
         parser.add_argument("--skip-download", action="store_true")
         parser.add_argument("--skip-extract", action="store_true")
         parser.add_argument(
+            "--keep-extracted",
+            action="store_true",
+            help="Keep uncompressed extracted data files on disk after loading (default: false, cleans up)",
+        )
+        parser.add_argument(
             "--download-root",
             type=str,
             default=str(Path(settings.HCAD_DOWNLOAD_DIR) / "assessment_history"),
@@ -41,6 +47,7 @@ class Command(BaseCommand):
         extract_root = Path(options["extract_root"])
         skip_download = options["skip_download"]
         skip_extract = options["skip_extract"]
+        keep_extracted = options["keep_extracted"]
 
         years = list(range(start_year, end_year + 1))
         for year in years:
@@ -54,6 +61,10 @@ class Command(BaseCommand):
 
         importer = AssessmentHistoryImporter()
         counts = importer.import_year_range(start_year, end_year, extract_root)
+
+        if not skip_extract and not keep_extracted and extract_root.exists():
+            shutil.rmtree(extract_root, ignore_errors=True)
+            self.stdout.write(self.style.SUCCESS("Cleaned up uncompressed extracted files."))
 
         self.stdout.write(
             self.style.SUCCESS(

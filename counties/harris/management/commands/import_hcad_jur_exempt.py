@@ -65,6 +65,8 @@ from __future__ import annotations
 
 import csv
 import logging
+import shutil
+import zipfile
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
@@ -174,6 +176,11 @@ class Command(BaseCommand):
             action="store_true",
             help="Parse, stage, and reconcile without writing to the real tables.",
         )
+        parser.add_argument(
+            "--keep-extracted",
+            action="store_true",
+            help="Keep uncompressed extracted data files on disk after loading (default: false, cleans up)",
+        )
 
     # ------------------------------------------------------------------ setup
 
@@ -182,6 +189,13 @@ class Command(BaseCommand):
             directory = Path(option)
         else:
             directory = Path(settings.HCAD_EXTRACT_DIR) / "Real_jur_exempt"
+            if not directory.is_dir():
+                zip_path = Path(settings.HCAD_DOWNLOAD_DIR) / "Real_jur_exempt.zip"
+                if zip_path.exists():
+                    self.stdout.write(f"Extracting {zip_path} -> {directory} ...")
+                    directory.mkdir(parents=True, exist_ok=True)
+                    with zipfile.ZipFile(zip_path) as zf:
+                        zf.extractall(directory)
         if not directory.is_dir():
             raise CommandError(
                 f"Extract directory not found: {directory}. "
@@ -606,3 +620,12 @@ class Command(BaseCommand):
                 f"{inserted:,}, every one reproducing HCAD's own taxable value."
             )
         )
+
+        if (
+            options.get("path") is None
+            and not options["keep_extracted"]
+            and not dry_run
+            and directory.exists()
+        ):
+            shutil.rmtree(directory, ignore_errors=True)
+            self.stdout.write(self.style.SUCCESS("Cleaned up uncompressed extracted files."))

@@ -137,7 +137,6 @@ Harris (`counties/harris/management/commands/`):
 | `load_hcad_real_acct` | Property records only |
 | `load_gis_data` | GIS coordinates from HCAD Parcels shapefile |
 | `import_building_data` | Building details, features, room counts |
-| `load_room_counts` | Room counts only (fixtures.txt) |
 | `download_hcad` | Download HCAD source files |
 | `import_hcad_jur_exempt` | **Jurisdiction/exemption rows + tax unit rates from `Real_jur_exempt.zip`** (`--tax-year`); this is what makes the Tax Impact section work |
 
@@ -367,13 +366,12 @@ diffing consecutive years — nothing in the export carries a prior-year value c
 | File | Contents |
 |---|---|
 | `README.md` | Overview, features, quick start, project layout, adding a county |
-| `docs/guides/SETUP.md` | Installation, Docker services, production deployment |
-| `docs/guides/DEPLOYMENT.md` | Production deployment walkthrough |
-| `docs/guides/DATABASE.md` | ETL processes, import commands, DB management |
+| `docs/guides/SETUP.md` | Installation, Docker services, configuration |
+| `docs/guides/DEPLOYMENT.md` | Production deployment, GitHub Actions, and reverse proxy setup |
+| `docs/guides/DATABASE.md` | Multi-county schemas, import workflows, and ETL pipeline architecture |
 | `docs/guides/GIS.md` | GIS data handling, coordinate storage, similarity distance |
-| `docs/SIMILARITY_SCORING.md` | Similarity algorithm deep-dive |
-| `docs/ETL_PIPELINE.md` | ETL pipeline architecture |
-| `docs/REVERSE_PROXY.md` | Reverse proxy / production deployment notes |
+| `docs/guides/SIMILARITY.md` | Similarity scoring engine, mathematical curves, and factor weights |
+| `docs/hcad_docs/HCAD_DATA_REFERENCE.md` | HCAD data archives, codebooks, and table reference |
 
 ---
 

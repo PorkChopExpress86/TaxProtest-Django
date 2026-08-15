@@ -76,12 +76,7 @@ docker compose exec web python manage.py load_gis_data
 
 # Building details, features, and room counts
 docker compose exec web python manage.py import_building_data
-
-# Room counts only (fixtures.txt)
-docker compose exec web python manage.py load_room_counts
 ```
-
-For feature-specific repair and validation steps, see `docs/guides/FEATURE_IMPORT.md`.
 
 If upgrading an older database that may contain mixed or incomplete rows, preview and apply cleanup with:
 
@@ -194,20 +189,16 @@ docker compose exec web python manage.py test
 ## Documentation
 
 - `docs/guides/SETUP.md` — installation and configuration
-- `docs/guides/DATABASE.md` — imports, ETL processes, and DB management
+- `docs/guides/DEPLOYMENT.md` — production deployment, GitHub Actions, and reverse proxy setup
+- `docs/guides/DATABASE.md` — database schemas, imports, and ETL processes (Harris & Brazos)
 - `docs/guides/GIS.md` — GIS data handling and location features
-- `docs/SIMILARITY_SCORING.md` — similarity algorithm details
-- `docs/ETL_PIPELINE.md` — ETL pipeline architecture
-- `docs/REVERSE_PROXY.md` — reverse proxy / production deployment notes
-- `docs/guides/DEPLOYMENT.md` — production deployment walkthrough
-- `docs/ARCHITECTURE_REVIEW_AUDIT.md` — architecture review and test parity audit
+- `docs/guides/SIMILARITY.md` — similarity scoring algorithm and pure-math curves
+- `docs/hcad_docs/HCAD_DATA_REFERENCE.md` — HCAD data archives, codebooks, and definitions
 
 ## AI workflows & Skills
 
-- `docs/ai-workflows.md` — practical guide for AI/Copilot workflows in this repo
+- `docs/ai-workflows.md` — practical guide for AI development workflows in this repo
 - `.agent/skills/security-review/` — security review skill, history purging, and Bitwarden secret management runbook
-- `.github/copilot-instructions.md` — repository-wide Copilot guardrails
-- `.github/prompts/` — reusable prompt files for ingestion, comparables, Docker/dev workflow, and test creation
 
 ## Security
 

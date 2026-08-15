@@ -1,718 +1,270 @@
-# Database Configuration & Data Imports
+# Database Configuration, Schema & ETL Guide
 
-Complete guide to database management, data imports, and ETL processes for TaxProtest-Django.
-
-## Table of Contents
-
-- [Database Schema](#database-schema)
-- [Data Sources](#data-sources)
-- [Import Commands](#import-commands)
-- [Tax Impact Data (Harris)](#tax-impact-data-harris)
-- [Import Processes](#import-processes)
-- [Scheduled Imports](#scheduled-imports)
-- [Data Management](#data-management)
-- [Troubleshooting](#troubleshooting)
-
-## Database Schema
-
-### PropertyRecord Model
-
-Main property records table with owner and valuation data.
-
-**Fields:**
-- `account_number` (PK) - HCAD account number
-- `owner_name` - Property owner name
-- `street_number` - Street address number
-- `street_name` - Street name
-- `zipcode` - ZIP code
-- `assessed_value` - Property assessed value
-- `building_area` - Building square footage
-- `land_area` - Land square footage
-- `state_class` - HCAD state class used to identify residential parcels
-- `is_residential` - Residential classification flag derived from `state_class`
-- `is_data_ready` - Whether building, room-count, and GIS data are all present
-- `latitude` - Geographic coordinate
-- `longitude` - Geographic coordinate
-- `parcel_id` - GIS parcel identifier
-
-**Indexes:**
-- account_number (primary key)
-- owner_name
-- street_name
-- zipcode
-- latitude, longitude
-
-**Count:** ~1.6M records
-
-### BuildingDetail Model
-
-Detailed building specifications for each property.
-
-**Fields:**
-- `property` (FK) - Link to PropertyRecord
-- `account_number` - HCAD account number (indexed)
-- `building_number` - Building number (for multi-building properties)
-- `building_type` - Type code
-- `building_style` - Style code
-- `building_class` - Class code
-- `quality_code` - Quality rating
-- `condition_code` - Condition rating
-- `year_built` - Year of construction
-- `year_remodeled` - Year of remodel
-- `heat_area` - Heated square footage
-- `base_area` - Base area
-- `gross_area` - Gross area
-- `stories` - Number of stories
-- `foundation_type` - Foundation type code
-- `exterior_wall` - Exterior wall material
-- `roof_cover` - Roof covering material
-- `roof_type` - Roof type
-- `bedrooms` - Number of bedrooms
-- `bathrooms` - Number of bathrooms (decimal for half baths)
-- `half_baths` - Number of half bathrooms
-- `fireplaces` - Number of fireplaces
-- `is_active` - Active status (soft delete)
-- `import_date` - Import timestamp
-- `import_batch_id` - Batch identifier
-
-**Indexes:**
-- account_number, building_number
-- is_active, import_date
-
-**Count:** ~1.3M records
-
-### ExtraFeature Model
-
-Extra property features like pools, garages, patios.
-
-**Fields:**
-- `property` (FK) - Link to PropertyRecord
-- `account_number` - HCAD account number (indexed)
-- `feature_number` - Feature sequence number
-- `feature_code` - Feature type code (POOL, DETGAR, etc.)
-- `feature_description` - Human-readable description
-- `quantity` - Number of features
-- `area` - Feature area
-- `length` - Feature length
-- `width` - Feature width
-- `quality_code` - Quality rating
-- `condition_code` - Condition rating
-- `year_built` - Year feature was added
-- `value` - Appraised value of feature
-- `is_active` - Active status (soft delete)
-- `import_date` - Import timestamp
-- `import_batch_id` - Batch identifier
-
-**Indexes:**
-- account_number, feature_code
-- is_active, import_date
-
-**Count:** 0-5M records (varies by import)
-
-### DownloadRecord Model
-
-Tracks downloaded and extracted HCAD data files.
-
-**Fields:**
-- `url` - Source URL
-- `filename` - Downloaded filename
-- `download_date` - When downloaded
-- `extracted` - Extraction status
-
-## Data Sources
-
-All data comes from **Harris County Appraisal District (HCAD)**:
-- Website: https://hcad.org/
-- Downloads: https://download.hcad.org/data/
-
-### File Descriptions
-
-**Real_acct_owner.txt** (~500MB)
-- Property ownership records
-- Owner names and mailing addresses
-- Property site addresses
-- Assessed values
-- Building and land areas
-
-**Real_building_land.zip** (~1.5GB compressed, ~5GB extracted)
-Contains multiple files:
-- `building_res.txt` - Residential building details
-- `building_other.txt` - Commercial building details
-- `extra_features.txt` - Pools, garages, patios, etc.
-- `fixtures.txt` - Room counts (bedrooms, bathrooms)
-- `land.txt` - Land details
-- `structural_elem1.txt` - Structural elements
-- `structural_elem2.txt` - Additional elements
-
-**Parcels.zip** (~800MB compressed, ~3GB extracted)
-- GIS shapefiles with property boundaries
-- Latitude/longitude coordinates
-- Parcel identifiers
-
-### Update Frequency
-
-- **Real_acct_owner:** Updated monthly (around the 1st)
-- **Real_building_land:** Updated monthly (around the 5th)
-- **Parcels:** Updated annually (usually January)
-
-## Import Commands
-
-### Current Import Path (Recommended)
-
-The current authoritative ETL flow is the legacy management-command path, with strict post-import validation of the residential-ready dataset:
-
-```bash
-# Full import: property records + building data + GIS coordinates
-docker compose exec web python manage.py import_all_data
-
-# Validate the residential-only, data-ready contract
-docker compose exec web python manage.py validate_data
-
-# Preview cleanup for older mixed/incomplete datasets
-docker compose exec web python manage.py reconcile_property_data
-
-# Apply legacy-row cleanup
-docker compose exec web python manage.py reconcile_property_data --apply
-```
-
-`import_all_data` now fails hard if the requested building or GIS completeness is not achieved.
-
-### Manual Stage Commands
-
-Use these when you need to rerun one portion of the import:
-
-**Property Records (Required):**
-```bash
-docker compose exec web python manage.py load_hcad_real_acct
-```
-
-**GIS Data:**
-```bash
-# Download and import
-docker compose exec web python manage.py load_gis_data
-
-# Skip download (use existing files)
-docker compose exec web python manage.py load_gis_data --skip-download
-```
-
-**Building Details & Features:**
-```bash
-# Full import (building details, features, fixtures)
-docker compose exec web python manage.py import_building_data
-
-# Async via Celery
-docker compose exec web python manage.py import_building_data --async
-```
-
-For extra feature repair and validation, including `Gunite Pool` and `Frame Detached Garage` checks, see [FEATURE_IMPORT.md](FEATURE_IMPORT.md).
-
-**Room Counts (Bedrooms/Bathrooms):**
-```bash
-docker compose exec web python manage.py load_room_counts
-```
-
-**Link Orphaned Records:**
-```bash
-# Link building/feature records to properties
-docker compose exec web python manage.py link_orphaned_records
-
-# Custom batch size
-docker compose exec web python manage.py link_orphaned_records --chunk-size 10000
-```
-
-### Modular ETL Pipeline (Alternate)
-
-The modular `etl_pipeline` command remains available for alternate workflows and targeted debugging, but it is not the authoritative production path today:
-
-```bash
-# Full import (property data + building details + GIS coordinates)
-docker compose exec web python manage.py etl_pipeline run
-
-# Check status
-docker compose exec web python manage.py etl_pipeline status
-
-# Skip download (use existing files)
-docker compose exec web python manage.py etl_pipeline run --skip-download --skip-extract
-
-# Property data only (skip GIS)
-docker compose exec web python manage.py etl_pipeline run --property-only
-
-# GIS data only (update coordinates)
-docker compose exec web python manage.py etl_pipeline run --skip-download --skip-extract --gis-only
-```
-
-### Check Database State
-
-```bash
-docker compose exec web python manage.py shell -c "
-from data.models import PropertyRecord, BuildingDetail, ExtraFeature
-
-# Record counts
-print(f'Properties:          {PropertyRecord.objects.count():,}')
-print(f'  Residential:       {PropertyRecord.objects.filter(is_residential=True).count():,}')
-print(f'  Data-ready:        {PropertyRecord.objects.filter(is_data_ready=True).count():,}')
-print(f'  Queryable:         {PropertyRecord.objects.filter(is_residential=True, is_data_ready=True).count():,}')
-print(f'Buildings:           {BuildingDetail.objects.count():,}')
-print(f'  Active:            {BuildingDetail.objects.filter(is_active=True).count():,}')
-print(f'Features:            {ExtraFeature.objects.count():,}')
-
-# Orphaned records
-orphaned_buildings = BuildingDetail.objects.filter(property__isnull=True).count()
-orphaned_features = ExtraFeature.objects.filter(property__isnull=True).count()
-print(f'Orphaned Buildings:  {orphaned_buildings:,}')
-print(f'Orphaned Features:   {orphaned_features:,}')
-"
-```
-
-## Tax Impact Data (Harris)
-
-The protest report's Tax Impact section needs two tables populated:
-`TaxUnitRate` (a rate per taxing unit) and `PropertyJurisdictionExemption`
-(a row per account and taxing unit). Both come from HCAD's `Real_jur_exempt.zip`:
-
-```bash
-# Downloaded alongside the other archives at build time, or on demand:
-docker compose exec web python manage.py import_hcad_jur_exempt --tax-year 2025
-```
-
-The command reads `jur_value.txt`, `jur_exempt.txt`, `jur_exemption_dscr.txt`,
-and `jur_tax_dist_exempt_value_rate.txt`, converts HCAD's per-$100 rates to the
-fractional rates `calculate_tax_impact` expects, and verifies after loading that
-every stored (account, taxing unit) pair reproduces HCAD's own taxable value.
-
-By default it loads only accounts already ingested as `PropertyRecord`s (~10M
-rows); `--all-accounts` covers all ~1.6M accounts in the files, including
-commercial and personal property.
-
-## Multi-Year Assessment History (Brazos)
-
-Brazos gets its jurisdiction/exemption rows and tax rates from `load_brazos_cad`
-(the current year only). The protest report's trend chart and cap-status
-analysis additionally need multiple *years* of history, which BCAD's own
-current-year export can't provide:
-
-```bash
-docker compose exec web python manage.py import_brazos_assessment_history \
-    --start-year 2021 --end-year 2025
-```
-
-BCAD's `certified-data-downloads` portal keeps roughly a decade of past
-certified exports available (confirmed 2016–2025 as of 2026-08) — unlike
-HCAD's `real_acct.txt`, nothing in BCAD's export carries a prior-year value
-column, so this command downloads each target year's own archive and reads
-that year's own `assessed_value`/`appraised_value`/`market_value` directly
-from `APPRAISAL_ENTITY_INFO.TXT`, rather than diffing consecutive years.
-
-One past year (2023, at least) ships DEFLATE64-compressed, which Python's
-`zipfile` can't decompress — the command falls back to the system `7z`
-binary (`p7zip-full`, in the Dockerfile) for exactly the archives that need
-it; nothing to do manually. Each year's roll-up is sanity-checked (`market
->= appraised >= assessed`) before anything is written — a year failing that
-check likely means BCAD changed the export's field layout again, and the
-command refuses to load unverified data rather than write it silently.
-
-## Import Processes
-
-### Property Records Import
-
-**Source:** Real_acct_owner.txt  
-**Duration:** 15-30 minutes  
-**Records:** ~1.6M
-
-**Process:**
-1. Downloads file from HCAD
-2. Parses tab-delimited text file
-3. Bulk creates PropertyRecord objects (5000 per batch)
-4. Creates indexes for fast lookups
-
-**Data Imported:**
-- Account numbers
-- Owner names
-- Site addresses (street number, name, zip)
-- Assessed values
-- Building and land areas
-
-### GIS Data Import
-
-**Source:** Parcels.zip (shapefile)  
-**Duration:** 30-45 minutes  
-**Records:** ~1.5M updated
-
-**Process:**
-1. Downloads Parcels.zip from HCAD GIS data
-2. Extracts shapefile (ParcelsCity.shp)
-3. Reads with GeoPandas
-4. Converts coordinates to WGS84 (EPSG:4326)
-5. Calculates parcel centroids
-6. Matches by account number
-7. Bulk updates PropertyRecord with lat/long
-
-**Data Imported:**
-- Latitude coordinates
-- Longitude coordinates
-- Parcel IDs
-
-**Dependencies:**
-- geopandas
-- pyogrio
-- shapely
-
-### Building Data Import
-
-**Source:** Real_building_land.zip  
-**Duration:** 60-90 minutes  
-**Records:** 1.3M buildings, 0-5M features, room counts
-
-**Process:**
-1. Downloads Real_building_land.zip
-2. Extracts to `counties/harris/var/extracted/Real_building_land/`
-3. **Soft Delete Phase:**
-   - Marks all existing records as `is_active=False`
-   - Preserves historical data
-4. **Building Import (building_res.txt):**
-   - Validates account numbers exist
-   - Imports building specs (area, year, type, etc.)
-   - Sets `is_active=True`, batch ID, timestamp
-   - Bulk creates 5000 records per batch
-5. **Feature Import (extra_features.txt):**
-   - Validates account numbers
-   - Imports features (pools, garages, etc.)
-   - Sets import metadata
-6. **Fixture Import (fixtures.txt):**
-   - Loads room counts (bedrooms, bathrooms)
-   - Updates existing BuildingDetail records
-   - Processes RMB (bedrooms), RMF (full baths), RMH (half baths)
-7. **Orphan Linking:**
-   - Links records where property was NULL
-   - Matches by account_number
-8. **Statistics:**
-   - Returns counts: imported, invalid, skipped, linked
-
-**Data Imported:**
-- Building specifications
-- Year built, remodeled
-- Areas (heated, base, gross)
-- Quality and condition codes
-- Stories, foundation, exterior, roof
-- Bedrooms and bathrooms
-- Extra features with descriptions
-
-### Soft Delete & Batch Tracking
-
-**Why Soft Deletes?**
-- Preserve historical data
-- Enable rollback if import fails
-- Track changes between imports
-- Audit data modifications
-
-**Batch IDs:**
-Each import gets unique batch ID: `YYYYMMDD_HHMMSS`
-Example: `20251016_140532`
-
-**Query by Batch:**
-```python
-from data.models import BuildingDetail
-
-# Get specific import batch
-batch = BuildingDetail.objects.filter(import_batch_id='20251016_140532')
-
-# Get most recent import
-from django.db.models import Max
-latest_batch = BuildingDetail.objects.aggregate(Max('import_batch_id'))
-latest_records = BuildingDetail.objects.filter(
-    import_batch_id=latest_batch['import_batch_id__max']
-)
-
-# Reactivate old batch (rollback)
-BuildingDetail.objects.filter(is_active=False).update(is_active=True)
-BuildingDetail.objects.filter(import_batch_id='20251016_140532').update(is_active=False)
-```
-
-## Scheduled Imports
-
-### Monthly Building Data Import
-
-**Schedule:** 2nd Tuesday of each month at 2:00 AM Central  
-**Task:** `data.tasks_new.download_and_import_building_data`  
-**What:** Building details, features, fixtures (bedrooms/bathrooms)
-
-**Configured in:** `taxprotest/celery.py`
-```python
-'download-and-import-building-data-monthly': {
-    'task': 'data.tasks_new.download_and_import_building_data',
-    'schedule': crontab(
-        day_of_week='tuesday',
-        day_of_month='8-14',  # 2nd week
-        hour=2,
-        minute=0,
-    ),
-}
-```
-
-**Why 2nd Tuesday?**
-- HCAD updates data early in the month
-- Gives time for HCAD to finalize updates
-- Avoids 1st of month system load
-
-### Annual GIS Import
-
-**Schedule:** January 15th at 3:00 AM Central  
-**Task:** `data.tasks_new.download_and_import_gis_data`  
-**What:** Property coordinates (lat/long)
-
-**Why Annually?**
-- Property locations rarely change
-- Large file (~800MB compressed, ~3GB extracted)
-- Takes 30-45 minutes to process
-
-### Monitor Scheduled Tasks
-
-```bash
-# Check Celery Beat scheduler logs
-docker compose logs -f beat
-
-# Check Celery worker logs
-docker compose logs -f worker
-
-# List scheduled tasks
-docker compose exec beat celery -A taxprotest inspect scheduled
-
-# Active tasks
-docker compose exec worker celery -A taxprotest inspect active
-
-# Registered tasks
-docker compose exec worker celery -A taxprotest inspect registered
-```
-
-### Manual Trigger via Admin
-
-1. Go to http://localhost:8000/admin/
-2. Navigate to **Download Records → ETL Pipeline**
-3. Click **"Trigger Building Import"** or **"Trigger GIS Import"**
-4. Monitor in worker logs: `docker compose logs -f worker`
-
-## Data Management
-
-### Data Validation
-
-**Import Statistics:**
-Every import returns detailed statistics:
-```python
-{
-    'imported': 148500,      # Successfully created
-    'invalid': 350,          # Invalid account numbers
-    'skipped': 150,          # Missing required data
-    'buildings_linked': 2450,  # Orphans linked
-    'features_linked': 1830,
-}
-```
-
-**Validation Checks:**
-- Account number exists in PropertyRecord
-- Required fields present
-- Data types correct
-- Duplicate detection
-
-### Query Active Data Only
-
-**Queryable residential properties** must have both flags set:
-```python
-from data.models import PropertyRecord
-
-# The full residential-ready contract
-queryable = PropertyRecord.objects.filter(is_residential=True, is_data_ready=True)
-```
-
-- `is_residential` — derived from `state_class` via `counties/harris/residential.py`; excludes commercial, exempt, and other non-residential parcels
-- `is_data_ready` — set by ETL after building, room-count, and GIS data are all present
-
-**Always filter for active records** on related models:
-```python
-from data.models import BuildingDetail, ExtraFeature
-
-buildings = BuildingDetail.objects.filter(is_active=True)
-features = ExtraFeature.objects.filter(is_active=True)
-
-# Via property relationship
-property.buildings.filter(is_active=True)
-property.extra_features.filter(is_active=True)
-```
-
-### Database Maintenance
-
-**Vacuum (Optimize):**
-```bash
-docker compose exec db psql -U taxprotest -d taxprotest -c "VACUUM ANALYZE;"
-```
-
-**Reindex:**
-```bash
-docker compose exec db psql -U taxprotest -d taxprotest -c "REINDEX DATABASE taxprotest;"
-```
-
-**Check Database Size:**
-```bash
-docker compose exec db psql -U taxprotest -d taxprotest -c "
-SELECT pg_size_pretty(pg_database_size('taxprotest')) as size;
-"
-```
-
-**Table Sizes:**
-```bash
-docker compose exec db psql -U taxprotest -d taxprotest -c "
-SELECT
-  relname as table,
-  pg_size_pretty(pg_total_relation_size(relid)) as size
-FROM pg_catalog.pg_statio_user_tables
-ORDER BY pg_total_relation_size(relid) DESC
-LIMIT 10;
-"
-```
-
-### Backup & Restore
-
-**Backup:**
-```bash
-# Full database backup
-docker compose exec db pg_dump -U taxprotest taxprotest > backup_$(date +%Y%m%d).sql
-
-# Compressed backup
-docker compose exec db pg_dump -U taxprotest taxprotest | gzip > backup_$(date +%Y%m%d).sql.gz
-
-# Schema only
-docker compose exec db pg_dump -U taxprotest --schema-only taxprotest > schema.sql
-
-# Data only
-docker compose exec db pg_dump -U taxprotest --data-only taxprotest > data.sql
-```
-
-**Restore:**
-```bash
-# Restore full backup
-docker compose exec -T db psql -U taxprotest taxprotest < backup_20251016.sql
-
-# Restore compressed
-gunzip -c backup_20251016.sql.gz | docker compose exec -T db psql -U taxprotest taxprotest
-```
-
-**Automated Backups:**
-```bash
-# Add to crontab
-0 3 * * * cd /path/to/project && docker compose exec db pg_dump -U taxprotest taxprotest | gzip > /backups/taxprotest_$(date +\%Y\%m\%d).sql.gz
-```
-
-## Troubleshooting
-
-### Import Fails
-
-**Check logs:**
-```bash
-docker compose logs web
-docker compose logs worker
-```
-
-**Common issues:**
-- Disk space full: `df -h`
-- Memory limit: `docker stats`
-- Network timeout: Check HCAD website availability
-- File corruption: Re-download and try again
-
-**Re-run import:**
-```bash
-# Delete old downloads
-rm -rf counties/harris/var/extracted/Real_building_land/
-
-# Re-run import
-docker compose exec web python manage.py import_building_data
-```
-
-### Orphaned Records
-
-**Check for orphans:**
-```python
-from data.models import BuildingDetail, ExtraFeature
-
-orphaned_buildings = BuildingDetail.objects.filter(property__isnull=True).count()
-orphaned_features = ExtraFeature.objects.filter(property__isnull=True).count()
-```
-
-**Fix orphans:**
-```bash
-docker compose exec web python manage.py link_orphaned_records
-```
-
-**Why orphans exist:**
-- Property record not imported yet
-- Account number mismatch
-- Data quality issues in source files
-
-### Slow Queries
-
-**Add missing indexes:**
-```bash
-docker compose exec web python manage.py dbshell
-CREATE INDEX idx_name ON table_name (column_name);
-```
-
-**Analyze query performance:**
-```bash
-docker compose exec web python manage.py shell
-from django.db import connection
-from django.db import reset_queries
-
-# Enable query logging
-from django.conf import settings
-settings.DEBUG = True
-
-# Run your query
-from data.models import PropertyRecord
-props = PropertyRecord.objects.filter(zipcode='77040')
-
-# View queries
-for q in connection.queries:
-    print(q['sql'])
-    print(f"Time: {q['time']}s\n")
-```
-
-### Data Inconsistencies
-
-**Find records without buildings:**
-```python
-from data.models import PropertyRecord
-from django.db.models import Count
-
-props_without_buildings = PropertyRecord.objects.annotate(
-    bld_count=Count('buildings')
-).filter(bld_count=0)
-print(f"Properties without buildings: {props_without_buildings.count()}")
-```
-
-**Find duplicate account numbers:**
-```python
-from data.models import BuildingDetail
-from django.db.models import Count
-
-dupes = BuildingDetail.objects.values('account_number', 'building_number').annotate(
-    count=Count('id')
-).filter(count__gt=1)
-print(f"Duplicate buildings: {dupes.count()}")
-```
-
-### CSV Field Size Limit
-
-If you see `_csv.Error: field larger than field limit`:
-
-**Fixed in code:**
-```python
-import csv
-csv.field_size_limit(10485760)  # 10MB limit
-```
-
-This is already set in `counties/harris/etl.py`.
+Comprehensive guide to database management, multi-county schemas, data imports, and ETL processes for TaxProtest-Django.
 
 ---
 
-**For more information:**
-- [SETUP.md](SETUP.md) - Installation and configuration
-- [GIS.md](GIS.md) - GIS data and location features
-- [README.md](README.md) - Main documentation
+## Table of Contents
+
+- [1. Architecture Overview](#1-architecture-overview)
+- [2. Database Schemas](#2-database-schemas)
+  - [Harris County (HCAD)](#harris-county-hcad)
+  - [Brazos County (BCAD)](#brazos-county-bcad)
+- [3. Data Sources](#3-data-sources)
+- [4. Import Workflows](#4-import-workflows)
+  - [Harris County Production Path](#harris-county-production-path)
+  - [Brazos County Production Path](#brazos-county-production-path)
+  - [Tax Impact & Assessment History Ingestion](#tax-impact--assessment-history-ingestion)
+- [5. ETL Pipeline Architecture](#5-etl-pipeline-architecture)
+  - [Streaming Row Reader](#streaming-row-reader)
+  - [PostgreSQL COPY Fast Loader](#postgresql-copy-fast-loader)
+  - [GIS Centroid Loader](#gis-centroid-loader)
+  - [Extra Feature Detail Ingestion](#extra-feature-detail-ingestion)
+- [6. Scheduled Background Imports (Celery Beat)](#6-scheduled-background-imports-celery-beat)
+- [7. Verification & Diagnostic Commands](#7-verification--diagnostic-commands)
+
+---
+
+## 1. Architecture Overview
+
+TaxProtest-Django supports multiple Texas appraisal districts. Each county brings its own distinct data schemas, source file layouts, and ETL pipelines, but maps into a shared web interface ([`counties/common/`](file:///home/specter/dev/TaxProtest-Django/counties/common)):
+
+```
+counties/
+├── harris/               # App label: 'data' (table prefix: data_*)
+│   ├── models.py         # HCAD PropertyRecord, BuildingDetail, ExtraFeature, AssessmentHistory
+│   ├── etl_pipeline/     # RowReader, FastLoader (COPY), GISLoader, Readiness
+│   ├── similarity.py     # Harris similarity scoring implementation
+│   └── adapter.py        # Neutral Subject/Comp adapter
+├── brazos/               # App label: 'brazos_cad' (table prefix: brazos_cad_*)
+│   ├── models.py         # PACS PropertyAccount, PropertyImprovement, PropertyLand, etc.
+│   ├── parsers/          # PACS fixed-width & tab-delimited text parsers
+│   ├── similarity.py     # Brazos similarity scoring implementation
+│   └── adapter.py        # Neutral Subject/Comp adapter
+└── common/               # Shared contracts, similarity math, analysis, charts, exports
+```
+
+---
+
+## 2. Database Schemas
+
+### Harris County (HCAD)
+
+Database tables use the `data_` prefix (app label `data`):
+
+#### `PropertyRecord` (`data_propertyrecord`)
+- `account_number` (PK, `CharField(13)`): 13-digit HCAD account identifier.
+- `owner_name`, `address`, `city`, `zipcode`, `street_number`, `street_name`.
+- `assessed_value`, `building_area`, `land_area`.
+- `state_class`: Property use classification (e.g. `A1` single-family residential).
+- `is_residential` (`BooleanField`): Filtered flag derived from residential state classes.
+- `is_data_ready` (`BooleanField`): `True` when residential building, room-count, and GIS coordinates are fully populated.
+- `latitude`, `longitude` (`FloatField`): GIS coordinates calculated from parcel centroids.
+- `parcel_id` (`CharField(30)`): GIS parcel identifier.
+
+#### `BuildingDetail` (`data_buildingdetail`)
+- `property` (`ForeignKey(PropertyRecord)`): Associated property.
+- `account_number`, `building_number`: Compound identifier.
+- `building_type`, `building_style`, `building_class`.
+- `quality_code`: Ranked rating (`X`, `A`, `B`, `C`, `D`, `E`, `F`).
+- `condition_code`: Physical condition code.
+- `year_built`, `year_remodeled`, `effective_year`.
+- `heat_area`: Heated living area (sq ft).
+- `bedrooms`, `bathrooms`, `half_baths`, `fireplaces`.
+- `is_active` (`BooleanField`): Active record flag.
+- `import_date`, `import_batch_id`: Import metadata.
+
+#### `ExtraFeature` (`data_extrafeature`)
+- `property` (`ForeignKey(PropertyRecord)`).
+- `account_number`, `feature_code`, `feature_description`.
+- `quantity`, `length`, `width`, `quality_code`, `condition_code`, `year_built`, `value`.
+- `is_active`, `import_date`, `import_batch_id`.
+
+#### `AssessmentHistory` (`data_assessmenthistory`)
+- `account_number`, `year`, `county` (`harris`).
+- `market_value`, `appraised_value`, `assessed_value`.
+- `homestead_cap_loss`, `homestead_percent`: 10% annual homestead cap tracking.
+
+#### `TaxUnitRate` & `PropertyJurisdictionExemption`
+- Taxing entity tax rates and property-specific jurisdiction exemptions for tax impact calculations.
+
+---
+
+### Brazos County (BCAD)
+
+Database tables use the `brazos_cad_` prefix (app label `brazos_cad`):
+
+#### `PropertyAccount` (`brazos_cad_propertyaccount`)
+- `prop_id` (PK, `IntegerField`): BCAD property identifier.
+- `geo_id` (`CharField(50)`): Geographic parcel ID.
+- `owner_name`, `situs_street_pre`, `situs_street`, `situs_city`, `situs_zip`.
+- `market_value`, `appraised_value`, `assessed_value`, `land_acres`.
+- `class_code`, `is_residential`, `latitude`, `longitude`.
+
+#### `PropertyImprovement` & `PropertyBuildingCharacteristic`
+- Improvement type, state class, year built, living area, quality, condition, bedrooms, bathrooms, and second-floor flags.
+
+#### `PropertyExtraFeature` (`brazos_cad_propertyextrafeature`)
+- Additional structural amenities (garages, sheds, pools, porches).
+
+#### `PropertyEntity` & `BrazosAssessmentHistory`
+- Multi-year certified assessment history (2016–2025) and taxing jurisdiction tax rates.
+
+---
+
+## 3. Data Sources
+
+### Harris County (HCAD)
+- **Portal:** `https://download.hcad.org/data/` & `https://download.hcad.org/GIS/`
+- `Real_acct_owner.zip`: Accounts, owners, values (`real_acct.txt`).
+- `Real_building_land.zip`: Building characteristics (`building_res.txt`), extra features (`extra_features_detail1.txt`, `extra_features_detail2.txt`, `extra_features.txt`), room counts (`fixtures.txt`), land specs (`land.txt`).
+- `Real_jur_exempt.zip`: Tax rates and exemptions (`jur_tax_dist_exempt_value_rate.txt`, `jur_exempt.txt`).
+- `Parcels.zip`: GIS parcel boundary shapefiles (`ParcelsCity.shp`).
+
+### Brazos County (BCAD)
+- **Portal:** BCAD certified data downloads (`pacs_certified_data_*.zip`).
+- PACS fixed-width / tab-delimited files: `PROP.TXT`, `IMPRV.TXT`, `IMPRV_DET.TXT`, `LAND.TXT`, `APPRAISAL_ENTITY_INFO.TXT`.
+- GIS Parcel Shapefiles: `Parcels.shp`.
+
+---
+
+## 4. Import Workflows
+
+### Harris County Production Path
+
+The authoritative production ETL flow uses `import_all_data`, enforcing residential completeness before finishing:
+
+```bash
+# 1. Authoritative full import (downloads, extracts, parses, loads COPY, links GIS)
+docker compose exec web python manage.py import_all_data
+
+# 2. Strict dataset validation check
+docker compose exec web python manage.py validate_data
+
+# 3. Optional reconciliation check for legacy databases
+docker compose exec web python manage.py reconcile_property_data --apply
+```
+
+#### Individual Stage Commands (Harris)
+
+When updating specific slices:
+
+```bash
+# Load property records only
+docker compose exec web python manage.py load_hcad_real_acct
+
+# Load GIS coordinates only
+docker compose exec web python manage.py load_gis_data --skip-download
+
+# Load building specs, room counts, and extra features
+docker compose exec web python manage.py import_building_data
+
+# Ingest tax jurisdictions and exemption rates
+docker compose exec web python manage.py import_hcad_jur_exempt --tax-year 2025
+
+# Ingest multi-year historical assessment data
+docker compose exec web python manage.py import_assessment_history
+```
+
+---
+
+### Brazos County Production Path
+
+```bash
+# 1. Load Brazos PACS appraisal data
+docker compose exec web python manage.py load_brazos_cad
+
+# 2. Ingest Brazos GIS parcel shapefiles
+docker compose exec web python manage.py load_brazos_gis
+
+# 3. Ingest current tax unit rates
+docker compose exec web python manage.py import_brazos_tax_rates
+
+# 4. Ingest multi-year certified assessment history (2021-2025)
+docker compose exec web python manage.py import_brazos_assessment_history --start-year 2021 --end-year 2025
+
+# 5. Validate ingested database against source files
+docker compose exec web python manage.py validate_brazos_against_source
+```
+
+---
+
+## 5. ETL Pipeline Architecture
+
+The modern Harris ETL uses a single-path, high-performance architecture:
+
+```
+Source Files (.txt / .shp)
+          │
+          ▼
+┌──────────────────┐
+│  row_reader.py   │  Single source of truth for column mappings,
+└─────────┬────────┘  type coercion, and residential filters.
+          │ (RowResult stream)
+          ▼
+┌──────────────────┐
+│  fast_loader.py  │  PostgreSQL staging table + COPY format CSV +
+└─────────┬────────┘  INSERT ON CONFLICT DO NOTHING (batch size: 5,000-10,000)
+          │
+          ▼
+┌──────────────────┐
+│  readiness.py    │  Computes and indexes PropertyRecord.is_data_ready
+└──────────────────┘
+```
+
+### PostgreSQL COPY Fast Loader
+- Creates a temporary staging table (`CREATE TEMP TABLE ... AS SELECT ... LIMIT 0`).
+- Streams CSV formatted rows using `cursor.copy_expert("COPY staging_table FROM STDIN WITH (FORMAT CSV)")`.
+- Performs a set-based `INSERT INTO target_table SELECT * FROM staging_table ON CONFLICT (key) DO NOTHING`.
+- Eliminates duplicate key aborts and loads 4M+ records in under 12 minutes.
+
+### Extra Feature Detail Ingestion
+Detail files (`extra_features_detail1.txt`, `extra_features_detail2.txt`) take priority to capture human-readable descriptions (`Gunite Pool`, `Frame Detached Garage`, etc.), physical dimensions (`length`, `width`), and appraised feature values.
+
+---
+
+## 6. Scheduled Background Imports (Celery Beat)
+
+Configured in [`taxprotest/celery.py`](file:///home/specter/dev/TaxProtest-Django/taxprotest/celery.py):
+
+| Task Name | Schedule | Target Scope |
+|---|---|---|
+| `download-and-import-building-data-monthly` | 2nd Tuesday of month @ 2:00 AM Central | `run_etl_pipeline(scope="building-only", strict=True)` |
+| `download-and-import-gis-data-annually` | January 15th @ 3:00 AM Central | `run_etl_pipeline(scope="gis-only", strict=True)` |
+
+Monitor worker and beat logs:
+```bash
+docker compose logs -f beat
+docker compose logs -f worker
+```
+
+---
+
+## 7. Verification & Diagnostic Commands
+
+### Query Database Health & Readiness
+
+```bash
+docker compose exec web python manage.py shell -c "
+from counties.harris.models import PropertyRecord, BuildingDetail, ExtraFeature
+from counties.brazos.models import PropertyAccount
+
+print('=== HARRIS COUNTY ===')
+print(f'Total Properties:     {PropertyRecord.objects.count():,}')
+print(f'Residential:          {PropertyRecord.objects.filter(is_residential=True).count():,}')
+print(f'Data-Ready (Queryable):{PropertyRecord.objects.filter(is_data_ready=True).count():,}')
+print(f'Active Buildings:     {BuildingDetail.objects.filter(is_active=True).count():,}')
+print(f'Active Features:      {ExtraFeature.objects.filter(is_active=True).count():,}')
+
+print('\n=== BRAZOS COUNTY ===')
+print(f'Total Accounts:       {PropertyAccount.objects.count():,}')
+print(f'Residential Accounts: {PropertyAccount.objects.filter(is_residential=True).count():,}')
+print(f'With GIS Coordinates: {PropertyAccount.objects.filter(latitude__isnull=False).count():,}')
+"
+```
+
+### Validate Data Ready Integrity
+
+```bash
+docker compose exec web python manage.py validate_data
+```
