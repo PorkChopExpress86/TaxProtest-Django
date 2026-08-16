@@ -135,7 +135,7 @@ class Command(BaseCommand):
             f"  Features relinked:                 {link_results['features_linked']:>10,}"
         )
         self.stdout.write(
-            f"  Ready properties recomputed:       {readiness_results['ready_properties_set']:>10,}"
+            f"  Ready properties recomputed:       {readiness_results.ready_properties_set:>10,}"
         )
         self.stdout.write(
             f"  Properties deleted:                {deletion_totals.get('data.PropertyRecord', 0):>10,}"

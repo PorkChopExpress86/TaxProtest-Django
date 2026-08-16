@@ -113,7 +113,7 @@ class RefreshPropertyReadinessTests(TestCase):
         missing_gis_prop.refresh_from_db()
         non_residential.refresh_from_db()
 
-        self.assertEqual(results["ready_properties_set"], 1)
+        self.assertEqual(results.ready_properties_set, 1)
         self.assertTrue(ready_prop.is_data_ready)
         self.assertFalse(missing_gis_prop.is_data_ready)
         self.assertFalse(non_residential.is_data_ready)
@@ -131,14 +131,14 @@ class RefreshPropertyReadinessTests(TestCase):
         self._create_property(account_number="WAIT001", with_gis=False)
 
         first = refresh_property_readiness()
-        self.assertEqual(first["ready_properties_changed"], 1)
-        self.assertEqual(first["ready_properties_set"], 1)
+        self.assertEqual(first.ready_properties_changed, 1)
+        self.assertEqual(first.ready_properties_set, 1)
 
         second = refresh_property_readiness()
-        self.assertEqual(second["ready_properties_changed"], 0)
-        self.assertEqual(second["ready_properties_cleared"], 0)
+        self.assertEqual(second.ready_properties_changed, 0)
+        self.assertEqual(second.ready_properties_cleared, 0)
         # ...and the answer is unchanged, not merely unwritten.
-        self.assertEqual(second["ready_properties_set"], 1)
+        self.assertEqual(second.ready_properties_set, 1)
         ready_prop.refresh_from_db()
         self.assertTrue(ready_prop.is_data_ready)
 
@@ -156,8 +156,8 @@ class RefreshPropertyReadinessTests(TestCase):
 
         results = refresh_property_readiness()
 
-        self.assertEqual(results["ready_properties_cleared"], 1)
-        self.assertEqual(results["ready_properties_set"], 0)
+        self.assertEqual(results.ready_properties_cleared, 1)
+        self.assertEqual(results.ready_properties_set, 0)
         ready_prop.refresh_from_db()
         self.assertFalse(ready_prop.is_data_ready)
 

@@ -11,6 +11,7 @@ calls it once after a successful load (see
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 
 from django.db import connection
 from django.db.models import Exists, OuterRef
@@ -79,7 +80,28 @@ WHERE data_propertyrecord.id = b.property_id
 """
 
 
-def refresh_property_readiness() -> dict:
+@dataclass(frozen=True)
+class ReadinessSummary:
+    """What a readiness refresh evaluated and what it changed.
+
+    A dataclass rather than a dict because these field names are a contract --
+    ``reconcile_property_data`` prints ``ready_properties_set`` to users -- and
+    a dict makes that contract discoverable only by reading the function body.
+
+    ``ready_properties_set`` is the *total* number of ready properties, not a
+    delta: it is the number callers report. ``ready_properties_changed`` and
+    ``ready_properties_cleared`` are the deltas, and on a steady-state re-run
+    both are zero while the total stays put.
+    """
+
+    properties_evaluated: int
+    residential_properties: int
+    ready_properties_set: int
+    ready_properties_changed: int
+    ready_properties_cleared: int
+
+
+def refresh_property_readiness() -> ReadinessSummary:
     """Recompute PropertyRecord.is_data_ready from building, room, and GIS completeness.
 
     Writes only the rows whose readiness actually changes. ``ready_properties_set``
@@ -94,17 +116,15 @@ def refresh_property_readiness() -> dict:
     )
 
     residential_properties = PropertyRecord.objects.filter(is_residential=True)
-    results = {
-        "properties_evaluated": PropertyRecord.objects.count(),
-        "residential_properties": residential_properties.count(),
-    }
+    properties_evaluated = PropertyRecord.objects.count()
+    residential_count = residential_properties.count()
 
     if connection.vendor == "postgresql":
         with connection.cursor() as cursor:
             cursor.execute(_CLEAR_NO_LONGER_READY)
-            results["ready_properties_cleared"] = cursor.rowcount
+            cleared = cursor.rowcount
             cursor.execute(_SET_NEWLY_READY)
-            results["ready_properties_changed"] = cursor.rowcount
+            changed = cursor.rowcount
     else:
         should_be_ready = (
             PropertyRecord.objects.filter(is_residential=True)
@@ -114,25 +134,31 @@ def refresh_property_readiness() -> dict:
         )
         ready_ids = list(should_be_ready.values_list("pk", flat=True))
 
-        results["ready_properties_changed"] = (
+        changed = (
             PropertyRecord.objects.filter(pk__in=ready_ids)
             .exclude(is_data_ready=True)
             .update(is_data_ready=True)
         )
-        results["ready_properties_cleared"] = (
+        cleared = (
             PropertyRecord.objects.filter(is_data_ready=True)
             .exclude(pk__in=ready_ids)
             .update(is_data_ready=False)
         )
 
-    results["ready_properties_set"] = PropertyRecord.objects.filter(is_data_ready=True).count()
+    summary = ReadinessSummary(
+        properties_evaluated=properties_evaluated,
+        residential_properties=residential_count,
+        ready_properties_set=PropertyRecord.objects.filter(is_data_ready=True).count(),
+        ready_properties_changed=changed,
+        ready_properties_cleared=cleared,
+    )
 
     logger.info(
         "Refreshed property readiness: %s/%s residential properties ready "
         "(%s newly ready, %s cleared)",
-        results["ready_properties_set"],
-        results["residential_properties"],
-        results["ready_properties_changed"],
-        results["ready_properties_cleared"],
+        summary.ready_properties_set,
+        summary.residential_properties,
+        summary.ready_properties_changed,
+        summary.ready_properties_cleared,
     )
-    return results
+    return summary

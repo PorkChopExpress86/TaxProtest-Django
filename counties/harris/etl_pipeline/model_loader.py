@@ -25,10 +25,22 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ModelLoadResult:
-    """Result of loading records into a Django model."""
+    """Result of loading records into a Django model.
+
+    ``records_loaded`` is rows that actually reached the table, measured as a
+    row-count delta rather than as "rows handed to bulk_create". Those are not
+    the same number: every loader passes ``ignore_conflicts=True``, so a row
+    whose key already exists is dropped silently. Counting what was offered
+    made ``records_loaded`` read like a completeness signal while overstating
+    it — on a real HCAD run, 905,338 offered against 871,769 persisted.
+
+    ``records_conflicted`` is that gap, which is worth surfacing rather than
+    hiding: it counts duplicate keys within the source file.
+    """
 
     model_name: str
     records_loaded: int = 0
+    records_conflicted: int = 0
     records_invalid: int = 0
     records_skipped: int = 0
     batch_id: str = ""
@@ -129,12 +141,18 @@ class ModelLoader:
 
         try:
             buf: list[BuildingDetail] = []
+            offered = 0
 
             # Truncate and reload run in ONE transaction so a mid-load failure
             # rolls the truncate back instead of leaving the table empty.
             with transaction.atomic():
                 if truncate:
                     self._truncate_table(BuildingDetail)
+
+                # Snapshot inside the transaction, after any truncate: what
+                # lands is measured as a delta, because bulk_create's
+                # ignore_conflicts silently drops duplicate keys.
+                rows_before = BuildingDetail.objects.count()
 
                 for item in rows:
                     if item.skip:
@@ -180,9 +198,9 @@ class ModelLoader:
 
                     if len(buf) >= self.batch_size:
                         BuildingDetail.objects.bulk_create(buf, ignore_conflicts=True)
-                        result.records_loaded += len(buf)
+                        offered += len(buf)
                         self.logger.info(
-                            f"Loaded {result.records_loaded} building records "
+                            f"Offered {offered} building records "
                             f"(invalid: {result.records_invalid}, skipped: {result.records_skipped})"
                         )
                         buf.clear()
@@ -190,9 +208,15 @@ class ModelLoader:
                 # Load remaining records
                 if buf:
                     BuildingDetail.objects.bulk_create(buf, ignore_conflicts=True)
-                    result.records_loaded += len(buf)
+                    offered += len(buf)
 
-            self.logger.info(f"Completed: Loaded {result.records_loaded} building detail records")
+                result.records_loaded = BuildingDetail.objects.count() - rows_before
+                result.records_conflicted = offered - result.records_loaded
+
+            self.logger.info(
+                f"Completed: Loaded {result.records_loaded} building detail records"
+                f" ({result.records_conflicted} dropped as duplicate keys)"
+            )
 
         except Exception as e:
             result.error = str(e)
@@ -221,12 +245,18 @@ class ModelLoader:
 
         try:
             buf: list[ExtraFeature] = []
+            offered = 0
 
             # Truncate and reload run in ONE transaction so a mid-load failure
             # rolls the truncate back instead of leaving the table empty.
             with transaction.atomic():
                 if truncate:
                     self._truncate_table(ExtraFeature)
+
+                # Snapshot inside the transaction, after any truncate: what
+                # lands is measured as a delta, because bulk_create's
+                # ignore_conflicts silently drops duplicate keys.
+                rows_before = ExtraFeature.objects.count()
 
                 for item in rows:
                     if item.skip:
@@ -261,9 +291,9 @@ class ModelLoader:
 
                     if len(buf) >= self.batch_size:
                         ExtraFeature.objects.bulk_create(buf, ignore_conflicts=True)
-                        result.records_loaded += len(buf)
+                        offered += len(buf)
                         self.logger.info(
-                            f"Loaded {result.records_loaded} extra feature records "
+                            f"Offered {offered} extra feature records "
                             f"(invalid: {result.records_invalid}, skipped: {result.records_skipped})"
                         )
                         buf.clear()
@@ -271,9 +301,15 @@ class ModelLoader:
                 # Load remaining records
                 if buf:
                     ExtraFeature.objects.bulk_create(buf, ignore_conflicts=True)
-                    result.records_loaded += len(buf)
+                    offered += len(buf)
 
-            self.logger.info(f"Completed: Loaded {result.records_loaded} extra feature records")
+                result.records_loaded = ExtraFeature.objects.count() - rows_before
+                result.records_conflicted = offered - result.records_loaded
+
+            self.logger.info(
+                f"Completed: Loaded {result.records_loaded} extra feature records"
+                f" ({result.records_conflicted} dropped as duplicate keys)"
+            )
 
         except Exception as e:
             result.error = str(e)
@@ -301,6 +337,7 @@ class ModelLoader:
 
         try:
             buf: list[PropertyRecord] = []
+            offered = 0
 
             # Truncate and reload run in ONE transaction so a mid-load failure
             # rolls the truncate back instead of leaving the table empty.
@@ -309,6 +346,11 @@ class ModelLoader:
                     self._truncate_table(PropertyRecord)
                     # Clear cached account data since we're truncating
                     self.reset_cache()
+
+                # Snapshot inside the transaction, after any truncate: what
+                # lands is measured as a delta, because bulk_create's
+                # ignore_conflicts silently drops duplicate keys.
+                rows_before = PropertyRecord.objects.count()
 
                 for item in rows:
                     if item.skip:
@@ -339,9 +381,9 @@ class ModelLoader:
 
                     if len(buf) >= self.batch_size:
                         PropertyRecord.objects.bulk_create(buf, ignore_conflicts=True)
-                        result.records_loaded += len(buf)
+                        offered += len(buf)
                         self.logger.info(
-                            f"Loaded {result.records_loaded} property records "
+                            f"Offered {offered} property records "
                             f"(skipped: {result.records_skipped})"
                         )
                         buf.clear()
@@ -349,9 +391,15 @@ class ModelLoader:
                 # Load remaining records
                 if buf:
                     PropertyRecord.objects.bulk_create(buf, ignore_conflicts=True)
-                    result.records_loaded += len(buf)
+                    offered += len(buf)
 
-            self.logger.info(f"Completed: Loaded {result.records_loaded} property records")
+                result.records_loaded = PropertyRecord.objects.count() - rows_before
+                result.records_conflicted = offered - result.records_loaded
+
+            self.logger.info(
+                f"Completed: Loaded {result.records_loaded} property records"
+                f" ({result.records_conflicted} dropped as duplicate keys)"
+            )
 
             # Clear cached data since we've modified the table
             self.reset_cache()
