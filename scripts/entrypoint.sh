@@ -21,6 +21,14 @@ fi
 
 BAKED_DIR=/hcad_downloads_baked
 BAKED_STAMP=$(cat "$BAKED_DIR/.build_stamp" 2>/dev/null || echo "")
+
+# A rebuild that re-bakes the HCAD archives changes the stamp, which otherwise
+# triggers a full import_all_data *before the web server starts* — measured at
+# ~10 minutes on the real dataset, on top of migrations. That is the right
+# behaviour for a fresh box and the wrong behaviour for a routine code deploy,
+# so it is opt-out: set AUTO_IMPORT_ON_BUILD=0 to skip straight to the
+# lightweight check (which still imports if the database is actually empty).
+AUTO_IMPORT_ON_BUILD="${AUTO_IMPORT_ON_BUILD:-1}"
 # Each county owns its runtime data under counties/<slug>/var/ (see
 # taxprotest/runtime_paths.py). Only Harris has build-baked archives.
 HARRIS_RUNTIME_ROOT="${HARRIS_RUNTIME_ROOT:-/app/counties/harris/var}"
@@ -32,7 +40,7 @@ if [ "$SKIP_DATA_DOWNLOAD" = "1" ]; then
     echo "SKIP_DATA_DOWNLOAD=1 — skipping baked data sync/import startup path."
     echo "Checking data..."
     python manage.py check_and_import_data
-elif [ -n "$BAKED_STAMP" ] && [ "$BAKED_STAMP" != "$SYNCED_STAMP" ]; then
+elif [ -n "$BAKED_STAMP" ] && [ "$BAKED_STAMP" != "$SYNCED_STAMP" ] && [ "$AUTO_IMPORT_ON_BUILD" != "0" ]; then
     echo "Fresh build detected (stamp: $BAKED_STAMP) — syncing to $HCAD_DOWNLOAD_DIR..."
     mkdir -p "$HCAD_DOWNLOAD_DIR"
     if cp -a "$BAKED_DIR/." "$HCAD_DOWNLOAD_DIR/"; then

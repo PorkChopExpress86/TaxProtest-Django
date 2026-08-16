@@ -16,6 +16,7 @@ django.setup()
 
 from django.test import RequestFactory
 
+from counties.common.tax_models import ParcelGeometry
 from counties.common.views import similar_properties
 from counties.harris.adapter import adapter
 from counties.harris.models import PropertyRecord
@@ -34,10 +35,12 @@ def main():
         return
 
     print(f"\n✓ Property found: {prop.address}")
-    print(f"  Latitude: {prop.latitude}")
-    print(f"  Longitude: {prop.longitude}")
 
-    if not prop.latitude or not prop.longitude:
+    geom = ParcelGeometry.objects.filter(account_number=account, county="harris").first()
+    print(f"  Latitude: {geom.latitude if geom else None}")
+    print(f"  Longitude: {geom.longitude if geom else None}")
+
+    if not geom or not geom.latitude or not geom.longitude:
         print("\n✗ Property does not have location data")
         print("  Cannot test similarity search without coordinates")
         return
