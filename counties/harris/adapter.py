@@ -195,6 +195,12 @@ class HarrisAdapter(CountyAdapter):
         if prop.zipcode:
             locality = f"{locality} {prop.zipcode}".strip()
 
+        from counties.common.tax_models import ParcelGeometry
+
+        geom = ParcelGeometry.objects.filter(
+            account_number=prop.account_number, county="harris"
+        ).first()
+
         return Subject(
             key=prop.account_number,
             address_line=f"{prop.street_number or ''} {prop.street_name or ''}".strip(),
@@ -209,7 +215,7 @@ class HarrisAdapter(CountyAdapter):
             year_built=building.year_built if building else None,
             quality_code=building.quality_code if building else None,
             features=format_feature_list(features),
-            has_location=bool(prop.latitude and prop.longitude),
+            has_location=bool(geom and geom.latitude and geom.longitude),
         )
 
     def find_comps(

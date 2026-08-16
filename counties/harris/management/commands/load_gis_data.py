@@ -10,7 +10,7 @@ import requests
 from django.conf import settings
 from django.core.management.base import BaseCommand
 
-from counties.harris.etl import load_gis_parcels
+from counties.harris.etl_pipeline.gis_loader import load_gis_parcels
 
 
 def find_preferred_shapefile(extract_dir: str) -> str | None:

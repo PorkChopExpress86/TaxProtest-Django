@@ -85,8 +85,6 @@ PROPERTY_FIELDS_UPDATED = (
     "situs_address",
     "situs_state",
     "state_class",
-    "latitude",
-    "longitude",
     "living_area",
     "year_built",
     "class_code",
@@ -301,6 +299,34 @@ class Command(BaseCommand):
             logger.warning("No usable PROP_ID rows found in %s", shapefile_path)
             return {"matched": 0, "unmatched": 0}
 
+        # Upsert lat/long into ParcelGeometry (county-scoped, standalone table).
+        from counties.common.tax_models import ParcelGeometry
+
+        geom_batch: list[ParcelGeometry] = []
+        for prop_id, fields in updates.items():
+            lat = fields.get("latitude")
+            lon = fields.get("longitude")
+            if lat is None or lon is None:
+                continue
+            geom_batch.append(
+                ParcelGeometry(
+                    account_number=prop_id,
+                    county="brazos",
+                    latitude=lat,
+                    longitude=lon,
+                    parcel_id="",
+                )
+            )
+        if geom_batch:
+            ParcelGeometry.objects.bulk_create(
+                geom_batch,
+                update_conflicts=True,
+                update_fields=["latitude", "longitude", "updated_at"],
+                unique_fields=["account_number", "county"],
+                batch_size=5000,
+            )
+            logger.info("Upserted %d parcel geometries into ParcelGeometry", len(geom_batch))
+
         # Fetch every PropertyAccount row for this tax_year up front and match
         # in Python, rather than prop_id__in=updates.keys() -- with ~77k
         # shapefile parcels, that generates a single SQL IN clause with tens
@@ -317,8 +343,9 @@ class Command(BaseCommand):
             account = accounts_by_prop_id.get(prop_id)
             if account is None:
                 continue
-            for name, value in fields.items():
-                setattr(account, name, value)
+            # Only set non-coordinate fields here; lat/long went to ParcelGeometry.
+            for name in PROPERTY_FIELDS_UPDATED:
+                setattr(account, name, fields[name])
             accounts.append(account)
 
         # NOT batch_size=5000: unlike bulk_create (a plain multi-row INSERT),
@@ -441,6 +468,11 @@ class Command(BaseCommand):
             )
         )
 
-        if not skip_extract and not options["keep_extracted"] and not dry_run and extract_dir.exists():
+        if (
+            not skip_extract
+            and not options["keep_extracted"]
+            and not dry_run
+            and extract_dir.exists()
+        ):
             shutil.rmtree(extract_dir, ignore_errors=True)
             self.stdout.write(self.style.SUCCESS("Cleaned up uncompressed extracted files."))

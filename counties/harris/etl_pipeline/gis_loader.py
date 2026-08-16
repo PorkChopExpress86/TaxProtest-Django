@@ -1,9 +1,10 @@
-"""Load GIS parcel coordinates from a shapefile into PropertyRecord.
+"""Load GIS parcel coordinates from a shapefile into ParcelGeometry.
 
-Moved here from ``counties/harris/etl.py`` so the ETL pipeline no longer
-reaches across a package boundary for a function that is logically a
-pipeline load step. The orchestrator calls this when processing the GIS
-data source (see ``ETLOrchestrator._process_gis_source``).
+The single home for this loader. It moved out of ``counties/harris/etl.py``
+so the pipeline no longer reaches across a package boundary for what is
+logically a load step; the ``load_gis_data`` management command imports it
+from here too, and the orchestrator calls it when processing the GIS data
+source (see ``ETLOrchestrator._process_gis_source``).
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from collections.abc import Iterable
 
 from django.db import connection, transaction
 
-from counties.harris.models import PropertyRecord
+from .fast_loader import _copy_field
 
 logger = logging.getLogger(__name__)
 
@@ -40,13 +41,17 @@ def load_gis_parcels(
     chunk_size: int = 5000,
     refresh_readiness: bool = True,
 ) -> int:
-    """Load GIS parcel data from shapefile and update PropertyRecord with lat/long.
+    """Load GIS parcel data from shapefile into the ParcelGeometry table.
+
+    This is a bulk INSERT (upsert) into ``data_parcelgeometry``, not an
+    UPDATE of PropertyRecord — so it can run at any point in the ETL
+    pipeline, independent of whether properties have been loaded yet.
 
     Expected shapefile columns:
     - HCAD_NUM or ACCT or similar (account number)
     - Geometry (point or polygon centroid for lat/long)
 
-    Returns number of records updated.
+    Returns number of records upserted.
     """
     from .readiness import refresh_property_readiness
 
@@ -94,7 +99,6 @@ def load_gis_parcels(
             break
 
     updates_by_account: dict[str, tuple[float, float, str]] = {}
-    total_updated = 0
 
     logger.info("Processing %s parcel records from %s", len(gdf), shapefile_path)
 
@@ -116,13 +120,12 @@ def load_gis_parcels(
         logger.info("No valid GIS rows found in %s", shapefile_path)
         return 0
 
+    total_upserted = 0
+
     if connection.vendor == "postgresql":
-        # Set-based update: stage the parsed coordinates into a TEMP table via COPY,
-        # then apply them with a single UPDATE ... FROM join on account_number.
-        # This replaces a per-chunk bulk_update loop over ~1.2M rows (which emitted a
-        # giant CASE statement per batch and maintained the lat/long/parcel_id indexes
-        # row-by-row); the join-based update is roughly an order of magnitude faster.
-        logger.info("Staging %s GIS updates for set-based apply", len(updates_by_account))
+        # Upsert into ParcelGeometry via COPY into a temp staging table,
+        # then INSERT ... ON CONFLICT to handle re-runs.
+        logger.info("Staging %s GIS rows for upsert into ParcelGeometry", len(updates_by_account))
 
         with transaction.atomic(), connection.cursor() as cursor:
             cursor.execute("""
@@ -134,10 +137,16 @@ def load_gis_parcels(
                 ) ON COMMIT DROP
                 """)
 
+            # Escape before joining: COPY text format reads a backslash as an
+            # escape and a tab as a column break, so an account or parcel id
+            # carrying either would shift every following column on that row.
+            # HCAD's ids are numeric today, but the shapefile is third-party
+            # input and this costs nothing.
             def _copy_rows() -> Iterable[str]:
                 for account_num, (lat, lon, parcel_id) in updates_by_account.items():
-                    # Tab-delimited COPY; account numbers/parcel ids never contain tabs.
-                    yield f"{account_num}\t{lat}\t{lon}\t{parcel_id}\n"
+                    acct = _copy_field(account_num)
+                    parcel = _copy_field(parcel_id)
+                    yield f"{acct}\t{lat}\t{lon}\t{parcel}\n"
 
             copy_buffer = io.StringIO("".join(_copy_rows()))
             cursor.copy_expert(
@@ -146,57 +155,57 @@ def load_gis_parcels(
                 copy_buffer,
             )
 
-            # Only overwrite parcel_id when the staged value is non-empty, preserving the
-            # prior behavior where a blank shapefile parcel id did not clobber existing data.
             cursor.execute("""
-                UPDATE data_propertyrecord AS p
-                SET latitude = s.latitude,
-                    longitude = s.longitude,
-                    parcel_id = CASE WHEN s.parcel_id <> '' THEN s.parcel_id ELSE p.parcel_id END
-                FROM _gis_staging AS s
-                WHERE p.account_number = s.account_number
-                  AND p.is_residential
-                """)
-            total_updated = cursor.rowcount
+                INSERT INTO data_parcelgeometry
+                    (account_number, county, latitude, longitude, parcel_id, created_at, updated_at)
+                SELECT s.account_number, 'harris', s.latitude, s.longitude, s.parcel_id, NOW(), NOW()
+                FROM _gis_staging s
+                ON CONFLICT (account_number, county) DO UPDATE
+                SET latitude = EXCLUDED.latitude,
+                    longitude = EXCLUDED.longitude,
+                    parcel_id = CASE WHEN EXCLUDED.parcel_id <> '' THEN EXCLUDED.parcel_id
+                                ELSE data_parcelgeometry.parcel_id END,
+                    updated_at = NOW()
+            """)
+            total_upserted = cursor.rowcount
     else:
-        batch: list[PropertyRecord] = []
-        properties = PropertyRecord.objects.filter(
-            account_number__in=updates_by_account.keys(),
-            is_residential=True,
-        ).only("id", "account_number", "latitude", "longitude", "parcel_id")
+        from counties.common.tax_models import ParcelGeometry
 
+        batch: list[ParcelGeometry] = []
         with transaction.atomic():
-            for prop in properties.iterator(chunk_size=chunk_size):
-                update = updates_by_account.get(prop.account_number)
-                if not update:
-                    continue
-                lat, lon, parcel_id = update
-
-                prop.latitude = lat
-                prop.longitude = lon
-                if parcel_id:
-                    prop.parcel_id = parcel_id
-                batch.append(prop)
+            for account_num, (lat, lon, parcel_id) in updates_by_account.items():
+                geom = ParcelGeometry(
+                    account_number=account_num,
+                    county="harris",
+                    latitude=lat,
+                    longitude=lon,
+                    parcel_id=parcel_id,
+                )
+                batch.append(geom)
 
                 if len(batch) >= chunk_size:
-                    PropertyRecord.objects.bulk_update(
+                    ParcelGeometry.objects.bulk_create(
                         batch,
-                        ["latitude", "longitude", "parcel_id"],
+                        update_conflicts=True,
+                        update_fields=["latitude", "longitude", "parcel_id", "updated_at"],
+                        unique_fields=["account_number", "county"],
                         batch_size=chunk_size,
                     )
-                    total_updated += len(batch)
-                    logger.info("Updated %s properties with GIS data...", total_updated)
+                    total_upserted += len(batch)
+                    logger.info("Upserted %s parcel geometries...", total_upserted)
                     batch.clear()
 
             if batch:
-                PropertyRecord.objects.bulk_update(
+                ParcelGeometry.objects.bulk_create(
                     batch,
-                    ["latitude", "longitude", "parcel_id"],
+                    update_conflicts=True,
+                    update_fields=["latitude", "longitude", "parcel_id", "updated_at"],
+                    unique_fields=["account_number", "county"],
                     batch_size=chunk_size,
                 )
-                total_updated += len(batch)
+                total_upserted += len(batch)
 
-    logger.info("Completed: Updated %s properties with GIS coordinates", total_updated)
+    logger.info("Completed: Upserted %s parcel geometries", total_upserted)
     if refresh_readiness:
         refresh_property_readiness()
-    return total_updated
+    return total_upserted

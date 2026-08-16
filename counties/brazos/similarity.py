@@ -50,6 +50,11 @@ from .models import (
     PropertyLand,
 )
 
+# How many nearest parcels find_similar_properties() pulls out of the database
+# to score in Python. Every one of these slots must buy a scoreable comp, which
+# is why the PropertyAccount filter is applied before the cap, not after.
+MAX_GEOMETRY_CANDIDATES = 2000
+
 RESIDENTIAL_WEIGHTS = {
     "living_area": 24.0,
     "land_size": 10.0,
@@ -497,17 +502,21 @@ def find_similar_properties(
 ) -> list[dict]:
     """Find Brazos properties similar to the given prop_id. Mirrors
     data/similarity.py::find_similar_properties's DB-side haversine
-    bounding-box approach (that part of Harris's implementation has no
-    model coupling at all -- it's a pure lat/long query pattern, safe to
-    replicate structurally against PropertyAccount instead of
-    PropertyRecord)."""
+    bounding-box approach against ParcelGeometry, then joins back to
+    PropertyAccount by prop_id."""
+    from counties.common.tax_models import ParcelGeometry
+
     target = PropertyAccount.objects.order_by("-tax_year").filter(prop_id=prop_id).first()
-    if not target or not target.latitude or not target.longitude:
+    if not target:
+        return []
+
+    target_geom = ParcelGeometry.objects.filter(account_number=prop_id, county="brazos").first()
+    if not target_geom or not target_geom.latitude or not target_geom.longitude:
         return []
 
     tax_year = target.tax_year
-    target_lat = float(target.latitude)
-    target_lon = float(target.longitude)
+    target_lat = float(target_geom.latitude)
+    target_lon = float(target_geom.longitude)
 
     target_improvement, target_building = _primary_improvement(prop_id, tax_year)
     target_features = list(PropertyExtraFeature.objects.filter(prop_id=prop_id, tax_year=tax_year))
@@ -518,21 +527,30 @@ def find_similar_properties(
     min_lat, max_lat = target_lat - lat_range, target_lat + lat_range
     min_lon, max_lon = target_lon - lon_range, target_lon + lon_range
 
-    candidates = PropertyAccount.objects.filter(
-        tax_year=tax_year,
+    geom_candidates = ParcelGeometry.objects.filter(
+        county="brazos",
         latitude__gte=min_lat,
         latitude__lte=max_lat,
         longitude__gte=min_lon,
         longitude__lte=max_lon,
         latitude__isnull=False,
         longitude__isnull=False,
-    ).exclude(prop_id=prop_id)
+    ).exclude(account_number=prop_id)
+
+    # Restrict to parcels with a PropertyAccount row for this year, before the
+    # cap below rather than after. ParcelGeometry is keyed by prop_id alone --
+    # it carries no tax_year and holds every parcel in the shapefile -- so
+    # without this, geometry for a parcel absent from `tax_year` would consume
+    # a candidate slot and then vanish at the join, shrinking the comp pool.
+    geom_candidates = geom_candidates.filter(
+        account_number__in=PropertyAccount.objects.filter(tax_year=tax_year).values("prop_id")
+    )
 
     target_lat_rad = radians(target_lat)
     target_lon_rad = radians(target_lon)
 
-    candidates = (
-        candidates.annotate(
+    geom_candidates = (
+        geom_candidates.annotate(
             distance=ExpressionWrapper(
                 3959.0
                 * ACos(
@@ -551,14 +569,21 @@ def find_similar_properties(
             )
         )
         .filter(distance__lte=max_distance_miles)
-        .order_by("distance")[:2000]
+        .order_by("distance")[:MAX_GEOMETRY_CANDIDATES]
     )
 
-    candidate_list = list(candidates)
-    if not candidate_list:
+    geom_list = list(geom_candidates.values("account_number", "distance"))
+    if not geom_list:
         return []
 
-    candidate_prop_ids = [c.prop_id for c in candidate_list]
+    candidate_prop_ids = [g["account_number"] for g in geom_list]
+    distance_map = {g["account_number"]: g["distance"] for g in geom_list}
+
+    candidate_list = list(
+        PropertyAccount.objects.filter(prop_id__in=candidate_prop_ids, tax_year=tax_year)
+    )
+    if not candidate_list:
+        return []
 
     improvements_by_prop: dict[str, list[PropertyImprovement]] = defaultdict(list)
     for imp in PropertyImprovement.objects.filter(
@@ -588,7 +613,7 @@ def find_similar_properties(
 
     results = []
     for candidate in candidate_list:
-        dist = getattr(candidate, "distance", 0.0)
+        dist = distance_map.get(candidate.prop_id, 0.0)
 
         c_improvements = improvements_by_prop.get(candidate.prop_id, [])
         c_improvement = None

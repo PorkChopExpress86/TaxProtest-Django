@@ -17,6 +17,11 @@ if TYPE_CHECKING:
 
 QUALITY_RANK = {"X": 7, "A": 6, "B": 5, "C": 4, "D": 3, "E": 2, "F": 1}
 
+# How many nearest parcels find_similar_properties() pulls out of the database
+# to score in Python. Every one of these slots must buy a scoreable comp, which
+# is why the property-backed filter is applied before the cap, not after.
+MAX_GEOMETRY_CANDIDATES = 2000
+
 RESIDENTIAL_WEIGHTS = {
     "living_area": 24.0,
     "land_size": 10.0,
@@ -494,21 +499,30 @@ def find_similar_properties(
     """
     Find properties similar to the given account number.
     Optimized to perform distance calculation in the database.
+
+    Coordinates live in the ParcelGeometry table (not inline on PropertyRecord),
+    so the bounding-box filter and distance annotation run against that table,
+    then the top candidates are joined back to PropertyRecord by account_number.
     """
-    # Get the target property
+    from counties.common.tax_models import ParcelGeometry
+
+    # Get the target's coordinates from ParcelGeometry
+    target_geom = ParcelGeometry.objects.filter(
+        account_number=account_number, county="harris"
+    ).first()
+    if not target_geom or not target_geom.latitude or not target_geom.longitude:
+        return []
+
+    target_lat = float(target_geom.latitude)
+    target_lon = float(target_geom.longitude)
+
+    # Get the target property record
     try:
         target = PropertyRecord.objects.filter(account_number=account_number).first()
         if not target:
             return []
     except Exception:
         return []
-
-    # Check if target has coordinates
-    if not target.latitude or not target.longitude:
-        return []
-
-    target_lat = float(target.latitude)
-    target_lon = float(target.longitude)
 
     # Get target building and features
     target_building = target.buildings.filter(is_active=True).first()  # type: ignore[attr-defined]
@@ -524,11 +538,9 @@ def find_similar_properties(
     min_lon = target_lon - lon_range
     max_lon = target_lon + lon_range
 
-    # Query for nearby properties using Django ORM with annotations
-    # This avoids raw SQL issues and "GROUP BY" errors while still being efficient
-
-    # 1. Base filter by bounding box (uses database index)
-    candidates = PropertyRecord.objects.filter(
+    # 1. Base filter by bounding box on ParcelGeometry (uses lat/long index)
+    geom_candidates = ParcelGeometry.objects.filter(
+        county="harris",
         latitude__gte=min_lat,
         latitude__lte=max_lat,
         longitude__gte=min_lon,
@@ -537,28 +549,42 @@ def find_similar_properties(
         longitude__isnull=False,
     ).exclude(account_number=account_number)
 
-    # 2. Optional: Filter by size if we have target building data
+    # 2. Restrict to parcels that actually have a property behind them.
+    #
+    # This has to happen before the cap at (4), not after. ParcelGeometry holds
+    # every parcel in HCAD's shapefile — commercial and vacant included —
+    # whereas PropertyRecord is residential-only, so a geometry row with no
+    # property would otherwise consume one of the 2000 candidate slots and then
+    # be dropped at the join below, silently shrinking the pool of real comps.
+    #
+    # The heat_area branch already provides this transitively: BuildingDetail
+    # rows are only written for accounts in the residential account map. Adding
+    # the PropertyRecord semi-join on top of it measured ~2x slower (265ms vs
+    # 128ms on 1.17M rows) because the planner stops driving from the bounding
+    # box, so the two are deliberately exclusive rather than stacked.
+    candidate_accts: list[str]
     if target_building and target_building.heat_area:
         min_area = float(target_building.heat_area) * 0.5
         max_area = float(target_building.heat_area) * 1.5
 
-        # Use subquery to filter efficiently
         matching_buildings = BuildingDetail.objects.filter(
             is_active=True, heat_area__gte=min_area, heat_area__lte=max_area
         ).values("account_number")
 
-        candidates = candidates.filter(account_number__in=matching_buildings)
+        geom_candidates = geom_candidates.filter(account_number__in=matching_buildings)
+    else:
+        geom_candidates = geom_candidates.filter(
+            account_number__in=PropertyRecord.objects.values("account_number")
+        )
 
     # 3. Annotate with distance calculation and filter
     # Formula: 3959 * acos(cos(radians(lat1)) * cos(radians(lat2)) * cos(radians(long2) - radians(long1)) + sin(radians(lat1)) * sin(radians(lat2)))
 
-    # We use Value() for constants (target lat/lon) and F() for DB fields
-    # Ensure float conversion for constants to avoid type issues
     target_lat_rad = radians(target_lat)
     target_lon_rad = radians(target_lon)
 
-    candidates = (
-        candidates.annotate(
+    geom_candidates = (
+        geom_candidates.annotate(
             distance=ExpressionWrapper(
                 3959.0
                 * ACos(
@@ -580,22 +606,24 @@ def find_similar_properties(
         .order_by("distance")
     )
 
-    # Limit the number of candidates we process in Python
-    # We fetch more than max_results to allow for filtering by similarity score
-    candidates = candidates[:2000]
+    # 4. Cap the candidates we process in Python. Every row that survives to
+    # here is property-backed (see 2), so all the slots buy a real comp.
+    geom_candidates = geom_candidates[:MAX_GEOMETRY_CANDIDATES]
 
-    # Process candidates
-    results = []
+    # Evaluate the geometry queryset to get account_numbers + distances
+    geom_list = list(geom_candidates.values("account_number", "distance"))
 
-    # Fetch related data efficiently
-    # Since we sliced the queryset, we need to evaluate it to get the list of objects
-    # and then fetch related data for those specific objects
-    candidate_list = list(candidates)
+    if not geom_list:
+        return []
+
+    candidate_accts = [g["account_number"] for g in geom_list]
+    distance_map = {g["account_number"]: g["distance"] for g in geom_list}
+
+    # Bulk fetch the property records for these candidates
+    candidate_list = list(PropertyRecord.objects.filter(account_number__in=candidate_accts))
 
     if not candidate_list:
         return []
-
-    candidate_accts = [c.account_number for c in candidate_list]
 
     # Bulk fetch buildings
     buildings_map = {}
@@ -610,8 +638,9 @@ def find_similar_properties(
         features_map[f.account_number].append(f)
 
     # Calculate scores
+    results = []
     for candidate in candidate_list:
-        dist = getattr(candidate, "distance", 0.0)
+        dist = distance_map.get(candidate.account_number, 0.0)
 
         c_building = buildings_map.get(candidate.account_number)
         c_features = features_map.get(candidate.account_number, [])
