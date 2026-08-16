@@ -106,18 +106,27 @@ asserts every registered county exposes the identical route set — a new county
 - `AssessmentHistory` — per-year assessed/appraised/market values with cap fields; **county-scoped, shared with Brazos**
 - `TaxUnitRate` — annual adopted tax rate per taxing unit code; county-scoped
 - `PropertyJurisdictionExemption` — per-account jurisdiction/exemption rows used for tax impact; county-scoped
+- `ParcelGeometry` — parcel coordinates (`latitude`, `longitude`, `parcel_id`) keyed by account_number; **county-scoped, standalone table** — loaded by INSERT (not UPDATE of PropertyRecord), so GIS ETL has no dependency on the property table being populated first
 
 Physically defined in `counties/common/` (not Harris-owned), but `Meta.app_label = "data"` keeps their
 tables and migration history under Harris's pinned app label — see the Shared Web Layer section above.
 
 ### Harris ETL & analysis (`counties/harris/`)
-- `etl.py` — shared ETL helpers (bulk upsert, data-ready marking)
+- `etl.py` — shared ETL helpers (bulk upsert, orphan linking, fixtures room counts)
 - `residential.py` — `is_residential_state_class()`, `normalize_state_class()`
 - `tasks_new.py` — Celery tasks: `download_and_import_building_data`, `download_and_import_gis_data`
-- `similarity.py` — similarity scoring algorithm (see Similarity section below)
+- `similarity.py` — similarity scoring algorithm (see Similarity section below); filters `ParcelGeometry` by bounding box, then joins to `PropertyRecord` by account_number
 - `assessment_history.py` — `AssessmentHistoryImporter` for HCAD snapshot import (cap-status evaluation moved to `counties/common/cap_status.py`, tax-impact calculation to `counties/common/tax_impact.py` — both are shared, county-aware, not Harris-owned)
 - `query.py` — `build_property_search_queryset(params)`
 - `adapter.py` — `HARRIS_PROFILE` + `HarrisAdapter`
+
+### Harris ETL pipeline (`counties/harris/etl_pipeline/`)
+- `row_reader.py` — **single source of truth** for parsing HCAD source files into typed rows (`PropertyRow`, `BuildingRow`, `ExtraFeatureRow`); owns column mappings, type coercers, residential filter, address assembly, and fixtures-based bed/bath resolution; yields `RowResult` generators consumed by both the COPY and ORM paths
+- `fast_loader.py` — thin COPY serializer: consumes `RowResult` generators and streams typed rows into PostgreSQL via `cursor.copy_expert` (the fast path for `real_acct` and `building_res` on Postgres)
+- `model_loader.py` — thin ORM serializer: consumes `RowResult` generators and loads via `bulk_create` (the fallback for non-Postgres backends and for `extra_features`)
+- `gis_loader.py` — `load_gis_parcels`: shapefile → `ParcelGeometry` upsert (the only copy; `load_gis_data` imports it from here)
+- `readiness.py` — `refresh_property_readiness`: recomputes `is_data_ready` from building + rooms + `ParcelGeometry` (the only copy)
+- `orchestrator.py` — pipeline coordination; download+extract run as a **per-source pipeline** (each source downloads then extracts as a unit, with sources running concurrently via ThreadPoolExecutor — so the 224MB building_land download overlaps with the 201MB real_acct extract, instead of all downloads finishing before any extraction starts)
 
 ### Brazos (`counties/brazos/`)
 - `models.py` — `PropertyAccount`, `PropertyLand`, `PropertyImprovement`, `PropertyBuildingCharacteristic`, `PropertyExtraFeature`, `PropertyEntity`
@@ -145,7 +154,7 @@ Brazos (`counties/brazos/management/commands/`):
 | Command | Purpose |
 |---|---|
 | `load_brazos_cad` | Download + extract + ingest the certified BCAD archive |
-| `load_brazos_gis` | GIS coordinates from the BCAD parcel shapefile (run **after** `load_brazos_cad`) |
+| `load_brazos_gis` | GIS coordinates from the BCAD parcel shapefile (upserts into `ParcelGeometry`; no dependency on `load_brazos_cad` having run first) |
 | `import_brazos_tax_rates` | Per-entity adopted tax rates |
 | `import_brazos_assessment_history` | **Multi-year assessed/appraised/market value history** (`--start-year`, `--end-year`); downloads each year's own certified archive from BCAD's decade-deep portal — no diffing, each year already carries its own values |
 | `validate_brazos_against_source` | Cross-check ingested rows against the source files |

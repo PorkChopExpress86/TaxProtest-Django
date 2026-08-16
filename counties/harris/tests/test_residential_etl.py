@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import os
+import re
 import tempfile
 from decimal import Decimal
 from io import StringIO
@@ -12,7 +13,9 @@ from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import TestCase
 
-from counties.harris.etl import bulk_load_properties, iter_property_rows, refresh_property_readiness
+from counties.common.tax_models import ParcelGeometry
+from counties.harris.etl import bulk_load_properties, iter_property_rows
+from counties.harris.etl_pipeline.readiness import refresh_property_readiness
 from counties.harris.models import BuildingDetail, ExtraFeature, PropertyRecord
 from counties.harris.residential import is_residential_state_class
 
@@ -95,100 +98,6 @@ class ResidentialPropertyImportTests(TestCase):
             ["111"],
         )
 
-    def test_refresh_property_readiness_requires_rooms_building_and_gis(self) -> None:
-        ready_prop = PropertyRecord.objects.create(
-            address="111 READY ST",
-            city="Houston",
-            zipcode="77001",
-            value=Decimal("250000"),
-            account_number="READY001",
-            owner_name="Ready Owner",
-            assessed_value=Decimal("245000"),
-            building_area=Decimal("2000"),
-            land_area=Decimal("8000"),
-            state_class="A1",
-            is_residential=True,
-            latitude=Decimal("29.7600000"),
-            longitude=Decimal("-95.3700000"),
-        )
-        BuildingDetail.objects.create(
-            property=ready_prop,
-            account_number=ready_prop.account_number,
-            building_number=1,
-            quality_code="C",
-            condition_code="AV",
-            year_built=2005,
-            heat_area=Decimal("2000"),
-            bedrooms=3,
-            bathrooms=Decimal("2.0"),
-            is_active=True,
-        )
-
-        missing_gis_prop = PropertyRecord.objects.create(
-            address="222 WAITING ST",
-            city="Houston",
-            zipcode="77001",
-            value=Decimal("275000"),
-            account_number="WAIT001",
-            owner_name="Waiting Owner",
-            assessed_value=Decimal("270000"),
-            building_area=Decimal("2100"),
-            land_area=Decimal("8500"),
-            state_class="A1",
-            is_residential=True,
-        )
-        BuildingDetail.objects.create(
-            property=missing_gis_prop,
-            account_number=missing_gis_prop.account_number,
-            building_number=1,
-            quality_code="C",
-            condition_code="AV",
-            year_built=2005,
-            heat_area=Decimal("2100"),
-            bedrooms=3,
-            bathrooms=Decimal("2.0"),
-            is_active=True,
-        )
-
-        non_residential = PropertyRecord.objects.create(
-            address="333 OFFICE ST",
-            city="Houston",
-            zipcode="77002",
-            value=Decimal("450000"),
-            account_number="OFFICE001",
-            owner_name="Office Owner",
-            assessed_value=Decimal("430000"),
-            building_area=Decimal("5000"),
-            land_area=Decimal("12000"),
-            state_class="F1",
-            is_residential=False,
-            latitude=Decimal("29.7610000"),
-            longitude=Decimal("-95.3710000"),
-        )
-        BuildingDetail.objects.create(
-            property=non_residential,
-            account_number=non_residential.account_number,
-            building_number=1,
-            quality_code="C",
-            condition_code="AV",
-            year_built=2005,
-            heat_area=Decimal("5000"),
-            bedrooms=10,
-            bathrooms=Decimal("4.0"),
-            is_active=True,
-        )
-
-        results = refresh_property_readiness()
-
-        ready_prop = PropertyRecord.objects.get(pk=ready_prop.pk)
-        missing_gis_prop = PropertyRecord.objects.get(pk=missing_gis_prop.pk)
-        non_residential = PropertyRecord.objects.get(pk=non_residential.pk)
-
-        self.assertEqual(results["ready_properties_set"], 1)
-        self.assertTrue(ready_prop.is_data_ready)
-        self.assertFalse(missing_gis_prop.is_data_ready)
-        self.assertFalse(non_residential.is_data_ready)
-
 
 class ResidentialValidationCommandTests(TestCase):
     def _create_ready_property(self, account_number: str = "VALID001") -> PropertyRecord:
@@ -204,6 +113,10 @@ class ResidentialValidationCommandTests(TestCase):
             land_area=Decimal("8000"),
             state_class="A1",
             is_residential=True,
+        )
+        ParcelGeometry.objects.create(
+            account_number=account_number,
+            county="harris",
             latitude=Decimal("29.7600000"),
             longitude=Decimal("-95.3700000"),
         )
@@ -241,8 +154,6 @@ class ResidentialValidationCommandTests(TestCase):
             land_area=Decimal("12000"),
             state_class="F1",
             is_residential=False,
-            latitude=Decimal("29.7610000"),
-            longitude=Decimal("-95.3710000"),
         )
 
         with self.assertRaises(CommandError):
@@ -250,9 +161,7 @@ class ResidentialValidationCommandTests(TestCase):
 
     def test_validate_data_can_skip_gis_checks(self) -> None:
         prop = self._create_ready_property(account_number="NOGIS001")
-        prop.latitude = None
-        prop.longitude = None
-        prop.save(update_fields=["latitude", "longitude"])
+        ParcelGeometry.objects.filter(account_number="NOGIS001", county="harris").delete()
         refresh_property_readiness()
 
         call_command("validate_data", skip_gis_checks=True)
@@ -262,9 +171,7 @@ class ResidentialValidationCommandTests(TestCase):
         for i in range(199):
             self._create_ready_property(account_number=f"OK{i:04d}")
         missing = self._create_ready_property(account_number="NOGIS")
-        missing.latitude = None
-        missing.longitude = None
-        missing.save(update_fields=["latitude", "longitude"])
+        ParcelGeometry.objects.filter(account_number="NOGIS", county="harris").delete()
 
         # Should pass: the single missing-GIS row is within tolerance.
         call_command("validate_data")
@@ -273,9 +180,7 @@ class ResidentialValidationCommandTests(TestCase):
         # 1 complete + 1 missing GIS = 50% coverage, well below the floor.
         self._create_ready_property(account_number="OK0001")
         missing = self._create_ready_property(account_number="NOGIS")
-        missing.latitude = None
-        missing.longitude = None
-        missing.save(update_fields=["latitude", "longitude"])
+        ParcelGeometry.objects.filter(account_number="NOGIS", county="harris").delete()
 
         with self.assertRaises(CommandError):
             call_command("validate_data")
@@ -304,9 +209,15 @@ class ImportAllDataCommandTests(TestCase):
             land_area=Decimal("8000"),
             state_class=state_class,
             is_residential=is_residential,
-            latitude=Decimal("29.7600000") if with_gis else None,
-            longitude=Decimal("-95.3700000") if with_gis else None,
         )
+
+        if with_gis:
+            ParcelGeometry.objects.create(
+                account_number=account_number,
+                county="harris",
+                latitude=Decimal("29.7600000"),
+                longitude=Decimal("-95.3700000"),
+            )
 
         if with_building:
             BuildingDetail.objects.create(
@@ -592,106 +503,6 @@ class ETLLoaderOptimizationTests(TestCase):
         self.assertEqual(b2.bedrooms, 3)
         self.assertEqual(b2.bathrooms, Decimal("1"))
 
-    @patch("counties.harris.etl.gpd.read_file")
-    @patch("counties.harris.etl.GEOPANDAS_AVAILABLE", True)
-    def test_load_gis_parcels_updates_records_with_account_map(self, mocked_read_file) -> None:
-        from counties.harris.etl import load_gis_parcels
-
-        prop1 = PropertyRecord.objects.create(
-            address="4 MAIN ST",
-            city="Houston",
-            zipcode="77001",
-            account_number="GIS1",
-            state_class="A1",
-            is_residential=True,
-        )
-        prop2 = PropertyRecord.objects.create(
-            address="5 MAIN ST",
-            city="Houston",
-            zipcode="77001",
-            account_number="GIS2",
-            state_class="A1",
-            is_residential=True,
-        )
-        non_res = PropertyRecord.objects.create(
-            address="6 COMMERCE ST",
-            city="Houston",
-            zipcode="77002",
-            account_number="GIS_NON",
-            state_class="F1",
-            is_residential=False,
-        )
-
-        class _FakeCentroid:
-            def __init__(self, rows):
-                self.x = [row["x"] for row in rows]
-                self.y = [row["y"] for row in rows]
-
-        class _FakeGeometry:
-            def __init__(self, rows):
-                self.centroid = _FakeCentroid(rows)
-
-        class _FakeCRS:
-            def to_epsg(self):
-                return 4326
-
-        class _FakeGDF:
-            def __init__(self, rows):
-                self._rows = rows
-                self.columns = ["ACCT", "PARCEL_ID"]
-                self.crs = _FakeCRS()
-                self.geometry = _FakeGeometry(rows)
-                self._derived = {}
-
-            def __len__(self):
-                return len(self._rows)
-
-            def __setitem__(self, key, value):
-                self._derived[key] = value
-                if key in ("latitude", "longitude"):
-                    for row, v in zip(self._rows, value):
-                        row[key] = v
-
-            def __getitem__(self, key):
-                if key == "centroid":
-                    return self._derived.get("centroid", self.geometry.centroid)
-                return self._derived.get(key)
-
-            def to_crs(self, epsg):
-                return self
-
-            def itertuples(self, index=False):
-                for row in self._rows:
-                    yield SimpleNamespace(
-                        ACCT=row["ACCT"],
-                        PARCEL_ID=row["PARCEL_ID"],
-                        latitude=row.get("latitude"),
-                        longitude=row.get("longitude"),
-                    )
-
-        mocked_read_file.return_value = _FakeGDF(
-            [
-                {"ACCT": "GIS1", "PARCEL_ID": "P1", "x": -95.1, "y": 29.1},
-                {"ACCT": "GIS2", "PARCEL_ID": "P2", "x": -95.2, "y": 29.2},
-                {"ACCT": "GIS2", "PARCEL_ID": "P2B", "x": -95.25, "y": 29.25},
-                {"ACCT": "GIS_NON", "PARCEL_ID": "PNR", "x": -95.26, "y": 29.26},
-                {"ACCT": "MISSING", "PARCEL_ID": "P3", "x": -95.3, "y": 29.3},
-                {"ACCT": "", "PARCEL_ID": "P4", "x": -95.4, "y": 29.4},
-            ]
-        )
-
-        updated = load_gis_parcels("fake.shp", chunk_size=2, refresh_readiness=False)
-
-        self.assertEqual(updated, 2)
-        prop1.refresh_from_db()
-        prop2.refresh_from_db()
-        non_res.refresh_from_db()
-        self.assertEqual(prop1.parcel_id, "P1")
-        self.assertEqual(prop2.parcel_id, "P2B")
-        self.assertIsNone(non_res.latitude)
-        self.assertIsNone(non_res.longitude)
-        self.assertNotEqual(non_res.parcel_id, "PNR")
-
 
 class ReconcilePropertyDataCommandTests(TestCase):
     def _create_property(
@@ -716,9 +527,15 @@ class ReconcilePropertyDataCommandTests(TestCase):
             land_area=Decimal("8000"),
             state_class=state_class,
             is_residential=is_residential,
-            latitude=Decimal("29.7600000") if with_gis else None,
-            longitude=Decimal("-95.3700000") if with_gis else None,
         )
+
+        if with_gis:
+            ParcelGeometry.objects.create(
+                account_number=account_number,
+                county="harris",
+                latitude=Decimal("29.7600000"),
+                longitude=Decimal("-95.3700000"),
+            )
 
         if with_building:
             BuildingDetail.objects.create(
@@ -773,3 +590,34 @@ class ReconcilePropertyDataCommandTests(TestCase):
         self.assertTrue(kept.is_data_ready)
         self.assertFalse(PropertyRecord.objects.filter(account_number="DROP001").exists())
         self.assertFalse(PropertyRecord.objects.filter(account_number="DROP002").exists())
+
+    def _preview_counts(self) -> dict[str, int]:
+        """Run the dry-run report and pull the numbers back out of stdout."""
+        out = StringIO()
+        call_command("reconcile_property_data", stdout=out)
+        counts = {}
+        for line in out.getvalue().splitlines():
+            match = re.match(r"^(.*?):\s+([\d,]+)$", line)
+            if match:
+                counts[match.group(1).strip()] = int(match.group(2).replace(",", ""))
+        return counts
+
+    def test_preview_counts_a_property_without_geometry_as_incomplete(self) -> None:
+        # The preview resolves coordinates per row against ParcelGeometry. Both
+        # of these are residential with a room-complete building; only the GIS
+        # row separates them, so a preview that ignored geometry would report
+        # two ready properties and nothing to clean up.
+        self._create_property(account_number="READY001", state_class="A1", is_residential=True)
+        self._create_property(
+            account_number="NOGIS001",
+            state_class="A1",
+            is_residential=True,
+            with_gis=False,
+        )
+
+        counts = self._preview_counts()
+
+        self.assertEqual(counts["Properties examined"], 2)
+        self.assertEqual(counts["Ready properties after sync"], 1)
+        self.assertEqual(counts["Incomplete residential rows to remove"], 1)
+        self.assertEqual(counts["Non-residential rows to remove"], 0)

@@ -22,10 +22,12 @@ from counties.harris.etl_pipeline.download import DownloadManager
 from counties.harris.etl_pipeline.extract import ExtractManager
 from counties.harris.etl_pipeline.model_loader import ModelLoader
 from counties.harris.etl_pipeline.orchestrator import PipelineStatus
-from counties.harris.etl_pipeline.transform import (
-    EXTRA_FEATURES_SCHEMA,
-    REAL_ACCT_SCHEMA,
-    DataTransformer,
+from counties.harris.etl_pipeline.row_reader import (
+    BuildingRow,
+    ExtraFeatureRow,
+    PropertyRow,
+    RowResult,
+    iter_property_rows,
 )
 from counties.harris.models import BuildingDetail, ExtraFeature, PropertyRecord
 
@@ -192,92 +194,6 @@ class TestExtractManagerIntegration(TestCase):
         assert not manager.verify_archive(corrupt_zip)
 
 
-class TestDataTransformerIntegration(TestCase):
-    """Integration tests for data transformer."""
-
-    def setUp(self):
-        self.tmpdir = tempfile.mkdtemp()
-        self.config = ETLConfig(
-            download_dir=Path(self.tmpdir) / "downloads",
-            extract_dir=Path(self.tmpdir) / "extracted",
-            log_dir=Path(self.tmpdir) / "logs",
-        )
-
-    def tearDown(self):
-        shutil.rmtree(self.tmpdir, ignore_errors=True)
-
-    def test_transform_csv_file(self):
-        """Test transforming a CSV file."""
-        # Create test CSV
-        csv_path = Path(self.tmpdir) / "test.csv"
-        csv_path.write_text(
-            "acct,site_addr_1,zip,tot_appr_val\n"
-            "12345,123 Main St,77001,250000\n"
-            "67890,456 Oak Ave,77002,350000\n"
-        )
-
-        transformer = DataTransformer(self.config)
-
-        records = list(transformer.iter_records(csv_path, REAL_ACCT_SCHEMA))
-
-        assert len(records) == 2
-        assert records[0]["account_number"] == "12345"
-        assert records[0]["value"] == 250000.0
-
-    def test_transform_tab_delimited(self):
-        """Test transforming tab-delimited file."""
-        # Create test TSV
-        tsv_path = Path(self.tmpdir) / "test.txt"
-        tsv_path.write_text(
-            "acct\tsite_addr_1\tzip\ttot_appr_val\n" "12345\t123 Main St\t77001\t$250,000\n"
-        )
-
-        transformer = DataTransformer(self.config)
-
-        records = list(transformer.iter_records(tsv_path, REAL_ACCT_SCHEMA))
-
-        assert len(records) == 1
-        assert records[0]["account_number"] == "12345"
-        assert records[0]["value"] == 250000.0  # Currency parsed
-
-    def test_transform_extra_feature_detail_file_uses_detail_columns(self):
-        """Detail feature files should expose descriptions and dimensions."""
-        path = Path(self.tmpdir) / "extra_features_detail1.txt"
-        path.write_text(
-            "acct\tcd\tdscr\tgrade\tcond_cd\tbld_num\tlength\twidth\tunits\tact_yr\tasd_val\n"
-            "0020720000014\tRRP5  \tGunite Pool\t4   \tA \t0\t21\t11\t231.00\t2021\t10589\n"
-            "0021480000001\tRRG1  \tFrame Detached Garage\t5   \tF \t0\t30\t28\t840.00\t2004\t7317\n"
-        )
-
-        transformer = DataTransformer(self.config)
-        records = list(transformer.iter_records(path, EXTRA_FEATURES_SCHEMA))
-
-        assert records[0]["feature_code"] == "RRP5"
-        assert records[0]["feature_description"] == "Gunite Pool"
-        assert records[0]["quantity"] == 231.0
-        assert records[0]["length"] == 21.0
-        assert records[0]["width"] == 11.0
-        assert records[0]["condition_code"] == "A"
-        assert records[0]["year_built"] == 2021
-        assert records[0]["value"] == 10589.0
-        assert records[1]["feature_description"] == "Frame Detached Garage"
-
-    def test_transform_extra_feature_fallback_file_uses_long_description(self):
-        """Fallback extra_features.txt should still use l_dscr/count/uts."""
-        path = Path(self.tmpdir) / "extra_features.txt"
-        path.write_text(
-            "acct\tbld_num\tcount\tgrade\tcd\ts_dscr\tl_dscr\tcat\tdscr\tnote\tuts\n"
-            "0010020000001\t0\t1\t4   \tCPA1  \tPavAsp\tPaving - Asphalt\tMS\tMisc\t\t5000.00\n"
-        )
-
-        transformer = DataTransformer(self.config)
-        records = list(transformer.iter_records(path, EXTRA_FEATURES_SCHEMA))
-
-        assert records[0]["feature_description"] == "Paving - Asphalt"
-        assert records[0]["quantity"] == 1.0
-        assert records[0]["value"] == 5000.0
-
-
 class TestModelLoaderExtraFeatures(TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
@@ -304,20 +220,23 @@ class TestModelLoaderExtraFeatures(TestCase):
         result = loader.load_extra_features(
             iter(
                 [
-                    {
-                        "account_number": "ACC2",
-                        "feature_number": 1,
-                        "feature_code": "RRP5",
-                        "feature_description": None,
-                        "quantity": None,
-                        "area": None,
-                        "length": None,
-                        "width": None,
-                        "quality_code": None,
-                        "condition_code": None,
-                        "year_built": None,
-                        "value": None,
-                    }
+                    RowResult(
+                        row=ExtraFeatureRow(
+                            property_id=prop.id,
+                            account_number="ACC2",
+                            feature_number=1,
+                            feature_code="RRP5",
+                            feature_description="",
+                            quantity=None,
+                            length=None,
+                            width=None,
+                            quality_code="",
+                            condition_code="",
+                            year_built=None,
+                            value=None,
+                            is_active=True,
+                        )
+                    )
                 ]
             ),
             truncate=True,
@@ -351,15 +270,14 @@ class TestETLOrchestratorIntegration(TestCase):
 
         assert orchestrator.download_manager is not None
         assert orchestrator.extract_manager is not None
-        assert orchestrator.transformer is not None
         assert orchestrator.model_loader is not None
 
-    @patch("counties.harris.etl_pipeline.download.DownloadManager.download_batch")
-    @patch("counties.harris.etl_pipeline.extract.ExtractManager.extract_batch")
+    @patch("counties.harris.etl_pipeline.download.DownloadManager.download_file")
+    @patch("counties.harris.etl_pipeline.extract.ExtractManager.extract_archive")
     def test_pipeline_execution_skip_stages(self, mock_extract, mock_download):
         """Test pipeline execution with skipped stages."""
-        mock_download.return_value = []
-        mock_extract.return_value = []
+        mock_download.return_value = MagicMock(success=True, bytes_downloaded=0)
+        mock_extract.return_value = MagicMock(success=True, files_extracted=[], bytes_extracted=0)
 
         orchestrator = ETLOrchestrator(self.config)
 
@@ -395,7 +313,7 @@ class TestETLOrchestratorIntegration(TestCase):
         # Extract dir should be cleaned
         assert not any(self.config.extract_dir.iterdir())
 
-    @patch("counties.harris.etl.load_gis_parcels")
+    @patch("counties.harris.etl_pipeline.gis_loader.load_gis_parcels")
     def test_process_gis_source_prefers_parcelscity_from_legacy_extract(self, mock_load_gis):
         """GIS stage should prefer ParcelsCity shapefile when available."""
         mock_load_gis.return_value = 123
@@ -507,7 +425,7 @@ class TestETLOrchestratorIntegration(TestCase):
         )
         assert result.status == PipelineStatus.FAILED
 
-    def test_skip_load_transform_counts_do_not_materialize_list(self):
+    def test_skip_load_counts_do_not_materialize_list(self):
         source = DataSource(
             name="Real Account Owner",
             url_template="https://example.com/Real_acct_owner.zip",
@@ -516,26 +434,25 @@ class TestETLOrchestratorIntegration(TestCase):
         )
         extract_path = self.config.extract_dir / "Real_acct_owner"
         extract_path.mkdir(parents=True, exist_ok=True)
-        (extract_path / "real_acct.txt").write_text("acct\\tstr_num\\tstr\\nA\\t1\\tMAIN\\n")
+        (extract_path / "real_acct.txt").write_text(
+            "acct\tstr_num\tstr\tstate_class\n" "A\t1\tMAIN\tA1\n" "B\t2\tOAK\tA1\n"
+        )
 
         orchestrator = ETLOrchestrator(self.config)
-        with patch.object(
-            orchestrator.transformer,
-            "iter_records",
-            return_value=iter([{"account_number": "A"}, {"account_number": "B"}]),
-        ) as mocked_iter:
-            result = orchestrator._process_data_file(
-                extract_path / "real_acct.txt",
-                skip_load=True,
-                truncate=True,
-            )
+        result = orchestrator._process_data_file(
+            extract_path / "real_acct.txt",
+            skip_load=True,
+            truncate=True,
+        )
 
-        mocked_iter.assert_called_once()
         assert result == {"loaded": 2, "invalid": 0, "skipped": 0, "failed": 0}
 
-    def test_resolve_schema_name_maps_extra_feature_detail_files(self):
-        assert ETLOrchestrator._resolve_schema_name("extra_features_detail1") == "extra_features"
-        assert ETLOrchestrator._resolve_schema_name("extra_features_detail2") == "extra_features"
+    def test_resolve_file_kind_maps_extra_feature_detail_files(self):
+        assert ETLOrchestrator._resolve_file_kind("extra_features_detail1") == "extra_features"
+        assert ETLOrchestrator._resolve_file_kind("extra_features_detail2") == "extra_features"
+        assert ETLOrchestrator._resolve_file_kind("real_acct") == "real_acct"
+        assert ETLOrchestrator._resolve_file_kind("building_res") == "building_res"
+        assert ETLOrchestrator._resolve_file_kind("desc_r_01_state_class") is None
 
 
 class TestEndToEndPipeline(TestCase):
@@ -557,9 +474,9 @@ class TestEndToEndPipeline(TestCase):
         with zipfile.ZipFile(path, "w") as zf:
             # Create real_acct.txt
             real_acct_data = (
-                "acct\tstr_num\tstr\tsite_addr_1\tsite_addr_3\ttot_appr_val\n"
-                "1234567890123\t100\tMAIN ST\t100 MAIN ST\t77001\t250000\n"
-                "1234567890124\t200\tOAK AVE\t200 OAK AVE\t77002\t350000\n"
+                "acct\tstr_num\tstr\tsite_addr_1\tsite_addr_3\ttot_appr_val\tstate_class\n"
+                "1234567890123\t100\tMAIN ST\t100 MAIN ST\t77001\t250000\tA1\n"
+                "1234567890124\t200\tOAK AVE\t200 OAK AVE\t77002\t350000\tA1\n"
             )
             zf.writestr("real_acct.txt", real_acct_data)
 
@@ -617,13 +534,13 @@ class TestEndToEndPipeline(TestCase):
         assert len(extract_result.files_extracted) == 2
 
         # Transform
-        transformer = DataTransformer(self.config)
         real_acct_file = extract_result.extract_dir / "real_acct.txt"
 
-        records = list(transformer.iter_records(real_acct_file, REAL_ACCT_SCHEMA))
+        records = list(iter_property_rows(real_acct_file))
 
         assert len(records) == 2
-        assert records[0]["account_number"] == "1234567890123"
+        assert isinstance(records[0].row, PropertyRow)
+        assert records[0].row.account_number == "1234567890123"
 
 
 class TestModelLoaderIntegration(TestCase):
@@ -640,41 +557,33 @@ class TestModelLoaderIntegration(TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
-    def test_load_property_records_skips_non_residential_rows(self):
+    def test_load_property_records_counts_skipped_rows(self):
         loader = ModelLoader(self.config, batch_size=10)
-        records = iter(
+        rows = iter(
             [
-                {
-                    "account_number": "RES001",
-                    "state_class": "A1",
-                    "street_number": "100",
-                    "street_name": "MAIN",
-                    "street_suffix": "ST",
-                    "site_addr_1": "100 MAIN ST",
-                    "city": "HOUSTON",
-                    "zipcode": "77001",
-                    "owner_name": "OWNER A",
-                    "value": 250000,
-                    "assessed_value": 240000,
-                    "building_area": 2000,
-                    "land_area": 5000,
-                },
-                {
-                    "account_number": "NONRES001",
-                    "state_class": "F1",
-                    "street_number": "200",
-                    "street_name": "COMMERCE",
-                    "street_suffix": "ST",
-                    "site_addr_1": "200 COMMERCE ST",
-                    "city": "HOUSTON",
-                    "zipcode": "77002",
-                    "owner_name": "OWNER B",
-                    "value": 750000,
-                },
+                RowResult(
+                    row=PropertyRow(
+                        account_number="RES001",
+                        address="100 MAIN ST",
+                        city="HOUSTON",
+                        zipcode="77001",
+                        owner_name="OWNER A",
+                        value=250000,
+                        assessed_value=240000,
+                        building_area=2000,
+                        land_area=5000,
+                        state_class="A1",
+                        is_residential=True,
+                        is_data_ready=False,
+                        street_number="100",
+                        street_name="MAIN",
+                    )
+                ),
+                RowResult(row=None, skip=True),
             ]
         )
 
-        result = loader.load_property_records(records, truncate=True, batch_id="test_batch")
+        result = loader.load_property_records(rows, truncate=True, batch_id="test_batch")
 
         assert result.records_loaded == 1
         assert result.records_skipped == 1
@@ -684,7 +593,7 @@ class TestModelLoaderIntegration(TestCase):
         assert prop.is_residential is True
         assert prop.state_class == "A1"
 
-    def test_load_building_details_uses_residential_account_map(self):
+    def test_load_building_details_counts_invalid_rows(self):
         loader = ModelLoader(self.config, batch_size=10)
 
         residential = PropertyRecord.objects.create(
@@ -695,35 +604,42 @@ class TestModelLoaderIntegration(TestCase):
             state_class="A1",
             is_residential=True,
         )
-        PropertyRecord.objects.create(
-            account_number="NONRESB001",
-            address="200 COMMERCE ST",
-            city="HOUSTON",
-            zipcode="77002",
-            state_class="F1",
-            is_residential=False,
-        )
 
-        records = iter(
+        rows = iter(
             [
-                {
-                    "account_number": "RESB001",
-                    "building_number": 1,
-                    "building_type": "A1",
-                    "quality_code": "C",
-                    "condition_code": "AV",
-                },
-                {
-                    "account_number": "NONRESB001",
-                    "building_number": 1,
-                    "building_type": "A1",
-                    "quality_code": "C",
-                    "condition_code": "AV",
-                },
+                RowResult(
+                    row=BuildingRow(
+                        property_id=residential.id,
+                        account_number="RESB001",
+                        building_number=1,
+                        building_type="A1",
+                        building_style="",
+                        building_class="",
+                        quality_code="C",
+                        condition_code="AV",
+                        year_built=None,
+                        year_remodeled=None,
+                        effective_year=None,
+                        heat_area=None,
+                        base_area=None,
+                        gross_area=None,
+                        stories=None,
+                        foundation_type="",
+                        exterior_wall="",
+                        roof_cover="",
+                        roof_type="",
+                        bedrooms=None,
+                        bathrooms=None,
+                        half_baths=None,
+                        fireplaces=None,
+                        is_active=True,
+                    )
+                ),
+                RowResult(row=None, invalid=True),
             ]
         )
 
-        result = loader.load_building_details(records, truncate=True, batch_id="building_test")
+        result = loader.load_building_details(rows, truncate=True, batch_id="building_test")
 
         assert result.records_loaded == 1
         assert result.records_invalid == 1

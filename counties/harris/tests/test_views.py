@@ -6,7 +6,7 @@ from unittest.mock import patch
 from django.test import TestCase
 from django.urls import reverse
 
-from counties.common.tax_models import AssessmentHistory
+from counties.common.tax_models import AssessmentHistory, ParcelGeometry
 from counties.harris.models import BuildingDetail, ExtraFeature, PropertyRecord
 
 
@@ -184,8 +184,6 @@ class SimilarPropertiesViewTests(TestCase):
             street_name="Wall St",
             assessed_value=400000,
             building_area=2000,
-            latitude=29.8,
-            longitude=-95.5,
         )
         BuildingDetail.objects.create(
             property=self.target,
@@ -195,6 +193,36 @@ class SimilarPropertiesViewTests(TestCase):
             bedrooms=4,
             bathrooms=2,
             is_active=True,
+        )
+        ParcelGeometry.objects.create(
+            account_number="EXPORT_TGT",
+            county="harris",
+            latitude=29.760,
+            longitude=-95.370,
+        )
+        ParcelGeometry.objects.create(
+            account_number="PROTEST_TGT",
+            county="harris",
+            latitude=29.760,
+            longitude=-95.370,
+        )
+        ParcelGeometry.objects.create(
+            account_number="TARGET001",
+            county="harris",
+            latitude=29.760,
+            longitude=-95.370,
+        )
+        ParcelGeometry.objects.create(
+            account_number="TGT123",
+            county="harris",
+            latitude=29.760,
+            longitude=-95.370,
+        )
+        ParcelGeometry.objects.create(
+            account_number="0001",
+            county="harris",
+            latitude=29.760,
+            longitude=-95.370,
         )
         AssessmentHistory.objects.create(
             account_number=self.target.account_number,
@@ -354,8 +382,6 @@ class ProtestRecommendationTests(TestCase):
             street_number="100",
             street_name="Target St",
             assessed_value=300000,
-            latitude=29.760,
-            longitude=-95.370,
         )
         BuildingDetail.objects.create(
             property=self.target_high,
@@ -363,6 +389,12 @@ class ProtestRecommendationTests(TestCase):
             building_number=1,
             heat_area=2000,
             is_active=True,
+        )
+        ParcelGeometry.objects.create(
+            account_number="TARGET001",
+            county="harris",
+            latitude=29.760,
+            longitude=-95.370,
         )
 
         # Target property: $120/sqft (near median)
@@ -375,8 +407,6 @@ class ProtestRecommendationTests(TestCase):
             street_number="200",
             street_name="Target St",
             assessed_value=240000,
-            latitude=29.761,
-            longitude=-95.371,
         )
         BuildingDetail.objects.create(
             property=self.target_neutral,
@@ -384,6 +414,12 @@ class ProtestRecommendationTests(TestCase):
             building_number=1,
             heat_area=2000,
             is_active=True,
+        )
+        ParcelGeometry.objects.create(
+            account_number="TARGET002",
+            county="harris",
+            latitude=29.760,
+            longitude=-95.370,
         )
 
         # Comparable properties with various PPSF values
@@ -405,8 +441,6 @@ class ProtestRecommendationTests(TestCase):
                 street_number=str(street_num),
                 street_name="Comp St",
                 assessed_value=value,
-                latitude=29.760 + (street_num - 100) * 0.001,
-                longitude=-95.370,
             )
             BuildingDetail.objects.create(
                 property=prop,
@@ -526,8 +560,6 @@ class ProtestRecommendationTests(TestCase):
             street_number="999",
             street_name="No Value St",
             assessed_value=None,  # Missing value
-            latitude=29.765,
-            longitude=-95.370,
         )
         BuildingDetail.objects.create(
             property=prop_no_value,
@@ -589,8 +621,6 @@ class ProtestAnalysisViewTests(TestCase):
             street_name="Wall St",
             assessed_value=370000,
             building_area=2000,
-            latitude=29.8,
-            longitude=-95.5,
         )
         self.target_building = BuildingDetail.objects.create(
             property=self.target,
@@ -602,6 +632,12 @@ class ProtestAnalysisViewTests(TestCase):
             quality_code="B",
             year_built=2005,
             is_active=True,
+        )
+        ParcelGeometry.objects.create(
+            account_number=self.target.account_number,
+            county="harris",
+            latitude=29.760,
+            longitude=-95.370,
         )
         AssessmentHistory.objects.create(
             account_number=self.target.account_number,
@@ -631,8 +667,6 @@ class ProtestAnalysisViewTests(TestCase):
             street_name="Similar Ln",
             assessed_value=320000,
             building_area=2000,
-            latitude=29.81,
-            longitude=-95.5,
         )
         self.comp_building = BuildingDetail.objects.create(
             property=self.comp,
@@ -820,8 +854,6 @@ class ProtestAnalysisExportTests(TestCase):
             street_name="Export Ave",
             assessed_value=350000,
             building_area=2000,
-            latitude=29.8,
-            longitude=-95.5,
         )
         self.target_building = BuildingDetail.objects.create(
             property=self.target,
@@ -834,6 +866,12 @@ class ProtestAnalysisExportTests(TestCase):
             year_built=2000,
             is_active=True,
         )
+        ParcelGeometry.objects.create(
+            account_number=self.target.account_number,
+            county="harris",
+            latitude=29.760,
+            longitude=-95.370,
+        )
         self.comp = PropertyRecord.objects.create(
             address="201 Export Ave",
             city="Houston",
@@ -844,8 +882,6 @@ class ProtestAnalysisExportTests(TestCase):
             street_name="Export Ave",
             assessed_value=300000,
             building_area=2000,
-            latitude=29.81,
-            longitude=-95.5,
         )
         self.comp_building = BuildingDetail.objects.create(
             property=self.comp,
