@@ -381,6 +381,7 @@ diffing consecutive years — nothing in the export carries a prior-year value c
 | `docs/guides/GIS.md` | GIS data handling, coordinate storage, similarity distance |
 | `docs/guides/SIMILARITY.md` | Similarity scoring engine, mathematical curves, and factor weights |
 | `docs/hcad_docs/HCAD_DATA_REFERENCE.md` | HCAD data archives, codebooks, and table reference |
+| `docs/performance/` | Dated full-run ETL profiles — stage timings, row counts, and the query-shape traps found at production data volume |
 
 ---
 
