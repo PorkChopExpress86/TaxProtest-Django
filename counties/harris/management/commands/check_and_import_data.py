@@ -25,9 +25,7 @@ class Command(BaseCommand):
         # PropertyRecord never holds, so counting the table directly would let
         # coverage exceed 100% and hide a genuinely missing GIS load.
         total_props = prop_count if prop_count > 0 else 1
-        coords_count = PropertyRecord.objects.filter(
-            coordinates_exist(county="harris")
-        ).count()
+        coords_count = PropertyRecord.objects.filter(coordinates_exist(county="harris")).count()
         coord_coverage = coords_count / total_props
 
         missing_data = []

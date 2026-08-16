@@ -248,6 +248,51 @@ class TestModelLoaderExtraFeatures(TestCase):
         assert feature.quality_code == ""
         assert feature.condition_code == ""
 
+    def test_records_loaded_counts_rows_that_landed_not_rows_offered(self):
+        """bulk_create(ignore_conflicts=True) drops duplicate keys silently.
+
+        Counting what was handed to bulk_create made records_loaded read like a
+        completeness signal while overstating it -- on a real HCAD run, 905,338
+        offered against 871,769 actually persisted. The gap is now reported as
+        records_conflicted rather than absorbed into the success count.
+        """
+        prop = PropertyRecord.objects.create(
+            address="3 MAIN ST",
+            city="Houston",
+            zipcode="77001",
+            account_number="ACC3",
+            state_class="A1",
+            is_residential=True,
+        )
+
+        def _row():
+            # Same (account_number, feature_code, feature_number) each time, so
+            # every row after the first collides with unique_feature_per_account.
+            return RowResult(
+                row=ExtraFeatureRow(
+                    property_id=prop.id,
+                    account_number="ACC3",
+                    feature_number=1,
+                    feature_code="RRP5",
+                    feature_description="Gunite Pool",
+                    quantity=None,
+                    length=None,
+                    width=None,
+                    quality_code="",
+                    condition_code="",
+                    year_built=None,
+                    value=None,
+                    is_active=True,
+                )
+            )
+
+        loader = ModelLoader(self.config, batch_size=10)
+        result = loader.load_extra_features(iter([_row(), _row(), _row()]), truncate=True)
+
+        assert ExtraFeature.objects.count() == 1
+        assert result.records_loaded == 1
+        assert result.records_conflicted == 2
+
 
 class TestETLOrchestratorIntegration(TestCase):
     """Integration tests for ETL orchestrator."""
