@@ -6,6 +6,7 @@ and metrics collection.
 """
 
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -20,7 +21,11 @@ from .download import DownloadManager, DownloadResult
 from .extract import ExtractManager, ExtractResult
 from .logging import ETLLogger
 from .model_loader import ModelLoader
-from .transform import DataTransformer, get_schema
+from .row_reader import (
+    iter_building_rows,
+    iter_extra_feature_rows,
+    iter_property_rows,
+)
 
 
 class PipelineStage(Enum):
@@ -131,7 +136,6 @@ class ETLOrchestrator:
         # Initialize managers
         self.download_manager = DownloadManager(self.config, self.logger)
         self.extract_manager = ExtractManager(self.config, self.logger)
-        self.transformer = DataTransformer(self.config, self.logger)
         self.model_loader = ModelLoader(self.config, self.logger)
 
         # Pipeline state
@@ -232,20 +236,20 @@ class ETLOrchestrator:
         )
 
         try:
-            # Download stage
-            if not skip_download:
-                stage_result = self._execute_download(sources)
-                self.result.stages[PipelineStage.DOWNLOAD] = stage_result
+            # Download + Extract stages (pipelined per-source for I/O overlap).
+            # Each source downloads then extracts as a unit, with sources
+            # running concurrently so the big real_acct download overlaps with
+            # the building_land extract, etc.
+            if not skip_download or not skip_extract:
+                download_result, extract_result = self._execute_download_extract(
+                    sources, skip_download=skip_download, skip_extract=skip_extract
+                )
+                self.result.stages[PipelineStage.DOWNLOAD] = download_result
+                self.result.stages[PipelineStage.EXTRACT] = extract_result
 
-                if not stage_result.success and strict:
+                if not download_result.success and strict:
                     raise RuntimeError("Download stage failed")
-
-            # Extract stage
-            if not skip_extract:
-                stage_result = self._execute_extract(sources)
-                self.result.stages[PipelineStage.EXTRACT] = stage_result
-
-                if not stage_result.success and strict:
+                if not extract_result.success and strict:
                     raise RuntimeError("Extract stage failed")
 
             # Transform and Load stages (combined for efficiency)
@@ -312,7 +316,7 @@ class ETLOrchestrator:
 
     def _refresh_readiness_once(self) -> None:
         """Refresh property readiness exactly once per successful load run."""
-        from counties.harris.etl import refresh_property_readiness
+        from .readiness import refresh_property_readiness
 
         self.logger.info("Refreshing property readiness once after load stage")
         refresh_property_readiness()
@@ -335,78 +339,133 @@ class ETLOrchestrator:
             self.result.warnings.append(msg)
             self.logger.warning(msg)
 
-    def _execute_download(self, sources: list[DataSource]) -> StageResult:
-        """Execute download stage."""
-        stage_result = StageResult(stage=PipelineStage.DOWNLOAD, success=True)
+    def _execute_download_extract(
+        self,
+        sources: list[DataSource],
+        *,
+        skip_download: bool = False,
+        skip_extract: bool = False,
+    ) -> tuple[StageResult, StageResult]:
+        """Execute download and extract stages as a per-source pipeline.
+
+        Each source downloads then extracts as a unit. Sources run concurrently
+        via a thread pool, so the download of one source overlaps with the
+        extract of another — the main cold-run speedup, since the 224MB
+        building_land download no longer blocks extraction of the already-
+        finished 201MB real_acct archive.
+        """
+        download_result = StageResult(stage=PipelineStage.DOWNLOAD, success=True)
+        extract_result = StageResult(stage=PipelineStage.EXTRACT, success=True)
         self.current_stage = PipelineStage.DOWNLOAD
 
-        self.logger.info(f"Download stage: {len(sources)} sources")
+        self.logger.info(
+            f"Download+Extract pipeline: {len(sources)} sources "
+            f"(skip_download={skip_download}, skip_extract={skip_extract})"
+        )
 
-        with self.logger.stage("download") as metrics:
-            results = self.download_manager.download_batch(sources)
+        download_results: list[DownloadResult] = []
+        extract_results: list[ExtractResult] = []
 
-            # Collect metrics
-            success_count = sum(1 for r in results if r.success)
-            total_bytes = sum(r.bytes_downloaded for r in results)
+        with self.logger.stage("download_extract") as metrics:
+            max_parallel = self.download_manager.download_config.max_parallel
 
-            metrics.records_processed = len(results)
-            metrics.records_success = success_count
-            metrics.records_failed = len(results) - success_count
-            metrics.bytes_downloaded = total_bytes
+            def _process_source(source: DataSource) -> tuple[DownloadResult, ExtractResult]:
+                """Download then extract a single source."""
+                dl_result = DownloadResult(source=source, success=True, bytes_downloaded=0)
+                if not skip_download:
+                    dl_result = self.download_manager.download_file(source)
 
-            stage_result.metrics = {
+                if skip_extract:
+                    ex_result = ExtractResult(source=source, success=True, files_extracted=[])
+                elif not dl_result.success:
+                    # Never reached the archive, so this is not a clean extract.
+                    # Reporting success here would hide the source in the
+                    # extract metrics while only the download stage flagged it.
+                    ex_result = ExtractResult(
+                        source=source,
+                        success=False,
+                        files_extracted=[],
+                        error=f"Skipped: download failed ({dl_result.error or 'unknown error'})",
+                    )
+                else:
+                    ex_result = self.extract_manager.extract_archive(source)
+
+                return dl_result, ex_result
+
+            # Sort by priority (lowest = highest priority = starts first).
+            ordered = sorted(sources, key=lambda s: s.priority)
+
+            with ThreadPoolExecutor(max_workers=max_parallel) as executor:
+                future_to_source = {
+                    executor.submit(_process_source, source): source for source in ordered
+                }
+
+                for future in as_completed(future_to_source):
+                    source = future_to_source[future]
+                    try:
+                        dl, ex = future.result()
+                        download_results.append(dl)
+                        extract_results.append(ex)
+                    except Exception as e:
+                        self.logger.error(f"Source {source.name} failed: {e}")
+                        download_results.append(
+                            DownloadResult(source=source, success=False, error=str(e))
+                        )
+                        extract_results.append(
+                            ExtractResult(source=source, success=False, error=str(e))
+                        )
+
+            # Aggregate download metrics
+            dl_success = sum(1 for r in download_results if r.success)
+            dl_bytes = sum(r.bytes_downloaded for r in download_results)
+            metrics.records_processed = len(download_results)
+            metrics.bytes_downloaded = dl_bytes
+
+            download_result.metrics = {
                 "sources_total": len(sources),
-                "sources_success": success_count,
-                "bytes_downloaded": total_bytes,
+                "sources_success": dl_success,
+                "bytes_downloaded": dl_bytes,
             }
+            if dl_success < len(sources):
+                failed = [r.source.name for r in download_results if not r.success]
+                download_result.error = f"Failed downloads: {', '.join(failed)}"
+                required_failed = [
+                    r for r in download_results if not r.success and r.source.required
+                ]
+                download_result.success = len(required_failed) == 0
 
-            if success_count < len(sources):
-                failed = [r.source.name for r in results if not r.success]
-                stage_result.error = f"Failed downloads: {', '.join(failed)}"
+            # Aggregate extract metrics
+            ex_success = sum(1 for r in extract_results if r.success)
+            ex_bytes = sum(r.bytes_extracted for r in extract_results)
+            ex_files = sum(len(r.files_extracted or []) for r in extract_results)
+            metrics.bytes_extracted = ex_bytes
+            # One shared metrics record covers both halves of this stage, so
+            # count a source as a success only when it downloaded *and*
+            # extracted — assigning each half in turn just left the last one.
+            metrics.records_success = sum(
+                1 for dl, ex in zip(download_results, extract_results) if dl.success and ex.success
+            )
+            metrics.records_failed = len(download_results) - metrics.records_success
 
-                # Only fail if required sources failed
-                required_failed = [r for r in results if not r.success and r.source.required]
-                stage_result.success = len(required_failed) == 0
-
-        stage_result.completed_at = datetime.now()
-        self._run_stage_callbacks(PipelineStage.DOWNLOAD, stage_result)
-        return stage_result
-
-    def _execute_extract(self, sources: list[DataSource]) -> StageResult:
-        """Execute extract stage."""
-        stage_result = StageResult(stage=PipelineStage.EXTRACT, success=True)
-        self.current_stage = PipelineStage.EXTRACT
-
-        self.logger.info(f"Extract stage: {len(sources)} archives")
-
-        with self.logger.stage("extract") as metrics:
-            results = self.extract_manager.extract_batch(sources)
-
-            success_count = sum(1 for r in results if r.success)
-            total_bytes = sum(r.bytes_extracted for r in results)
-            total_files = sum(len(r.files_extracted or []) for r in results)
-
-            metrics.records_processed = len(results)
-            metrics.records_success = success_count
-            metrics.bytes_extracted = total_bytes
-
-            stage_result.metrics = {
+            extract_result.metrics = {
                 "archives_total": len(sources),
-                "archives_success": success_count,
-                "files_extracted": total_files,
-                "bytes_extracted": total_bytes,
+                "archives_success": ex_success,
+                "files_extracted": ex_files,
+                "bytes_extracted": ex_bytes,
             }
+            if ex_success < len(sources):
+                failed = [r.source.name for r in extract_results if not r.success]
+                extract_result.error = f"Failed extractions: {', '.join(failed)}"
+                required_failed = [
+                    r for r in extract_results if not r.success and r.source.required
+                ]
+                extract_result.success = len(required_failed) == 0
 
-            if success_count < len(sources):
-                failed = [r.source.name for r in results if not r.success]
-                stage_result.error = f"Failed extractions: {', '.join(failed)}"
-
-                required_failed = [r for r in results if not r.success and r.source.required]
-                stage_result.success = len(required_failed) == 0
-
-        stage_result.completed_at = datetime.now()
-        self._run_stage_callbacks(PipelineStage.EXTRACT, stage_result)
-        return stage_result
+        download_result.completed_at = datetime.now()
+        extract_result.completed_at = datetime.now()
+        self._run_stage_callbacks(PipelineStage.DOWNLOAD, download_result)
+        self._run_stage_callbacks(PipelineStage.EXTRACT, extract_result)
+        return download_result, extract_result
 
     def _preload_fixtures(self, sources: list[DataSource]) -> None:
         """
@@ -457,7 +516,7 @@ class ETLOrchestrator:
         """Execute transform and load stages.
 
         These are combined for memory efficiency - records are streamed
-        from transform directly to load without buffering.
+        from the row reader directly to load without buffering.
         """
         stage_result = StageResult(stage=PipelineStage.LOAD, success=True)
         self.current_stage = PipelineStage.LOAD
@@ -532,12 +591,12 @@ class ETLOrchestrator:
                         ]
 
                 for file_path in data_files:
-                    schema_name = self._resolve_schema_name(file_path.stem)
-                    if schema_name is None:
+                    kind = self._resolve_file_kind(file_path.stem)
+                    if kind is None:
                         continue
-                    truncate = not schema_loaded.get(schema_name, False)
+                    truncate = not schema_loaded.get(kind, False)
                     result = self._process_data_file(file_path, skip_load, truncate=truncate)
-                    schema_loaded[schema_name] = True
+                    schema_loaded[kind] = True
                     total_loaded += result.get("loaded", 0)
                     total_invalid += result.get("invalid", 0)
                     total_skipped += result.get("skipped", 0)
@@ -577,45 +636,40 @@ class ETLOrchestrator:
 
         Args:
             file_path: Path to the data file
-            skip_load: If True, only transform without loading to database
+            skip_load: If True, only count rows without loading to database
             truncate: If True, truncate the table before loading
 
         Returns:
             Dictionary with loaded/invalid/skipped/failed counts
         """
-        # Determine schema based on filename
-        filename = file_path.stem.lower()
-        schema_name = self._resolve_schema_name(filename)
-
-        if not schema_name:
-            self.logger.debug(f"No schema for {file_path.name}, skipping")
+        kind = self._resolve_file_kind(file_path.stem)
+        if kind is None:
+            self.logger.debug(f"No loader for {file_path.name}, skipping")
             return {"loaded": 0, "invalid": 0, "skipped": 0, "failed": 0}
 
-        schema = get_schema(schema_name)
-        if not schema:
-            return {"loaded": 0, "invalid": 0, "skipped": 0, "failed": 0}
+        self.logger.info(f"Processing {file_path.name} as {kind}")
 
-        self.logger.info(f"Processing {file_path.name} with schema {schema_name}")
+        rows = self._iter_rows(kind, file_path)
 
         if skip_load:
-            # Stream transform-only counts without materializing all rows.
-            transformed = 0
-            for record in self.transformer.iter_records(file_path, schema):
-                if record is not None:
-                    transformed += 1
-            return {"loaded": transformed, "invalid": 0, "skipped": 0, "failed": 0}
+            # Stream count-only without materializing all rows.
+            loaded = 0
+            for result in rows:
+                if result.row is not None:
+                    loaded += 1
+            return {"loaded": loaded, "invalid": 0, "skipped": 0, "failed": 0}
 
         # Fast path: real_acct/building_res stream straight into PostgreSQL via
-        # COPY, skipping the generic DictReader/transform_row + bulk_create path.
+        # COPY, skipping the row-by-row bulk_create path.
         from .fast_loader import (
             copy_load_building_details,
             copy_load_property_records,
             postgres_backend,
         )
 
-        if postgres_backend() and schema_name in ("real_acct", "building_res"):
-            if schema_name == "real_acct":
-                fast = copy_load_property_records(file_path, truncate=truncate)
+        if postgres_backend() and kind in ("real_acct", "building_res"):
+            if kind == "real_acct":
+                fast = copy_load_property_records(rows, truncate=truncate)
                 # PropertyRecord ids changed; rebuild the account caches that the
                 # building/extra-feature loaders depend on.
                 self.model_loader.reset_cache()
@@ -625,12 +679,7 @@ class ETLOrchestrator:
                     "skipped": fast["skipped"],
                     "failed": 0,
                 }
-            fast = copy_load_building_details(
-                file_path,
-                account_map=self.model_loader._get_account_to_property_map(),
-                fixtures_aggregator=self.model_loader.fixtures_aggregator,
-                truncate=truncate,
-            )
+            fast = copy_load_building_details(rows, truncate=truncate)
             return {
                 "loaded": fast["loaded"],
                 "invalid": fast["invalid"],
@@ -638,16 +687,13 @@ class ETLOrchestrator:
                 "failed": 0,
             }
 
-        # Transform and load records to Django models
-        # Filter out None values from the generator
-        records_gen = (r for r in self.transformer.iter_records(file_path, schema) if r is not None)
-
-        if schema_name == "real_acct":
-            result = self.model_loader.load_property_records(records_gen, truncate=truncate)
-        elif schema_name == "building_res":
-            result = self.model_loader.load_building_details(records_gen, truncate=truncate)
-        elif schema_name == "extra_features":
-            result = self.model_loader.load_extra_features(records_gen, truncate=truncate)
+        # ORM path: load typed rows into Django models.
+        if kind == "real_acct":
+            result = self.model_loader.load_property_records(rows, truncate=truncate)
+        elif kind == "building_res":
+            result = self.model_loader.load_building_details(rows, truncate=truncate)
+        elif kind == "extra_features":
+            result = self.model_loader.load_extra_features(rows, truncate=truncate)
         else:
             return {"loaded": 0, "invalid": 0, "skipped": 0, "failed": 0}
 
@@ -658,9 +704,26 @@ class ETLOrchestrator:
             "failed": 1 if result.error else 0,
         }
 
+    def _iter_rows(self, kind: str, file_path: Path):
+        """Yield RowResults for a data file, wiring the account map and fixtures."""
+        if kind == "real_acct":
+            return iter_property_rows(file_path)
+        if kind == "building_res":
+            return iter_building_rows(
+                file_path,
+                account_map=self.model_loader._get_account_to_property_map(),
+                fixtures_aggregator=self.model_loader.fixtures_aggregator,
+            )
+        if kind == "extra_features":
+            return iter_extra_feature_rows(
+                file_path,
+                account_map=self.model_loader._get_account_to_property_map(),
+            )
+        return iter(())
+
     @staticmethod
-    def _resolve_schema_name(filename_stem: str) -> str | None:
-        """Map a source filename stem to a transform schema name."""
+    def _resolve_file_kind(filename_stem: str) -> str | None:
+        """Map a source filename stem to a row-reader kind."""
         filename = filename_stem.lower()
 
         # Skip code description files (lookup tables, not actual data)
@@ -679,7 +742,9 @@ class ETLOrchestrator:
         """Process GIS data source.
 
         Finds shapefiles in the extracted GIS data and loads coordinates
-        into PropertyRecord latitude/longitude fields.
+        into the ParcelGeometry table. This is a bulk INSERT/upsert, not an
+        UPDATE of PropertyRecord, so it can run at any point in the pipeline
+        — independent of whether properties have been loaded yet.
 
         Args:
             source: The GIS data source configuration
@@ -716,7 +781,7 @@ class ETLOrchestrator:
 
         try:
             # Import and call the GIS loading function
-            from counties.harris.etl import load_gis_parcels
+            from .gis_loader import load_gis_parcels
 
             count = load_gis_parcels(str(shapefile_path), refresh_readiness=False)
             self.logger.info(f"Updated {count} properties with GIS coordinates")

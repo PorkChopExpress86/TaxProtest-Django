@@ -1,15 +1,38 @@
-"""Tests for the COPY-based fast loaders (PostgreSQL only)."""
+"""Tests for the COPY-based fast loaders (PostgreSQL only) and COPY/ORM parity."""
 
 from __future__ import annotations
 
+import tempfile
 import unittest
 from pathlib import Path
-from tempfile import TemporaryDirectory
 
 from django.db import connection
 from django.test import TestCase
 
+from counties.harris.etl_pipeline.config import ETLConfig
+from counties.harris.etl_pipeline.model_loader import ModelLoader
+from counties.harris.etl_pipeline.row_reader import (
+    iter_building_rows,
+    iter_property_rows,
+)
 from counties.harris.models import BuildingDetail, PropertyRecord
+
+
+def _write(directory: str, name: str, lines: list[str]) -> Path:
+    path = Path(directory) / name
+    path.write_text("\n".join(lines) + "\n", encoding="latin-1")
+    return path
+
+
+class _Fixtures:
+    def get_bedroom_count(self, acct, bnum):
+        return 4 if acct == "B1" else 0
+
+    def get_bathroom_count(self, acct, bnum):
+        return 2.5 if acct == "B1" else 0
+
+    def get_fixtures(self, acct, bnum):
+        return {"half_baths": 1 if acct == "B1" else 0}
 
 
 @unittest.skipUnless(
@@ -17,16 +40,11 @@ from counties.harris.models import BuildingDetail, PropertyRecord
     "fast_loader uses PostgreSQL COPY; skipped on other backends",
 )
 class FastLoaderTests(TestCase):
-    def _write(self, directory: str, name: str, lines: list[str]) -> Path:
-        path = Path(directory) / name
-        path.write_text("\n".join(lines) + "\n", encoding="latin-1")
-        return path
-
     def test_copy_load_property_records_filters_and_loads(self) -> None:
         from counties.harris.etl_pipeline.fast_loader import copy_load_property_records
 
-        with TemporaryDirectory() as d:
-            path = self._write(
+        with tempfile.TemporaryDirectory() as d:
+            path = _write(
                 d,
                 "real_acct.txt",
                 [
@@ -41,7 +59,7 @@ class FastLoaderTests(TestCase):
                     "\tNOBODY\t\t\t\t\t\t\tA1\t\t\t\t",
                 ],
             )
-            result = copy_load_property_records(path, truncate=True)
+            result = copy_load_property_records(iter_property_rows(path), truncate=True)
 
         self.assertEqual(result["loaded"], 2)
         self.assertEqual(result["skipped"], 2)
@@ -54,7 +72,6 @@ class FastLoaderTests(TestCase):
         self.assertEqual(r1.city, "Houston")
         self.assertEqual(r1.zipcode, "77001")
         self.assertEqual(float(r1.value), 250000.0)
-        self.assertEqual(r1.parcel_id, "")
         self.assertEqual(r1.source_url, "")
         self.assertIsNotNone(r1.created_at)
 
@@ -76,18 +93,8 @@ class FastLoaderTests(TestCase):
         # Account with no PropertyRecord -> counted invalid.
         account_map = {"B1": prop.id}
 
-        class _Fixtures:
-            def get_bedroom_count(self, acct, bnum):
-                return 4 if acct == "B1" else 0
-
-            def get_bathroom_count(self, acct, bnum):
-                return 2.5 if acct == "B1" else 0
-
-            def get_fixtures(self, acct, bnum):
-                return {"half_baths": 1 if acct == "B1" else 0}
-
-        with TemporaryDirectory() as d:
-            path = self._write(
+        with tempfile.TemporaryDirectory() as d:
+            path = _write(
                 d,
                 "building_res.txt",
                 [
@@ -97,7 +104,7 @@ class FastLoaderTests(TestCase):
                 ],
             )
             result = copy_load_building_details(
-                path, account_map=account_map, fixtures_aggregator=_Fixtures(), truncate=True
+                iter_building_rows(path, account_map, _Fixtures()), truncate=True
             )
 
         self.assertEqual(result["loaded"], 1)
@@ -114,3 +121,132 @@ class FastLoaderTests(TestCase):
         self.assertEqual(b.half_baths, 1)
         self.assertTrue(b.is_active)
         self.assertIsNotNone(b.created_at)
+
+
+@unittest.skipUnless(
+    connection.vendor == "postgresql",
+    "COPY/ORM parity requires PostgreSQL COPY; skipped on other backends",
+)
+class CopyOrmParityTests(TestCase):
+    """The COPY and ORM loaders must produce identical DB rows from one source file."""
+
+    def _config(self, tmpdir: str) -> ETLConfig:
+        return ETLConfig(
+            download_dir=Path(tmpdir) / "d",
+            extract_dir=Path(tmpdir) / "e",
+            log_dir=Path(tmpdir) / "l",
+        )
+
+    def _property_snapshot(self) -> list[dict]:
+        return list(
+            PropertyRecord.objects.order_by("account_number").values(
+                "account_number",
+                "address",
+                "city",
+                "zipcode",
+                "owner_name",
+                "value",
+                "assessed_value",
+                "building_area",
+                "land_area",
+                "state_class",
+                "is_residential",
+                "is_data_ready",
+                "street_number",
+                "street_name",
+            )
+        )
+
+    def test_property_copy_and_orm_produce_identical_rows(self) -> None:
+        from counties.harris.etl_pipeline.fast_loader import copy_load_property_records
+
+        with tempfile.TemporaryDirectory() as d:
+            path = _write(
+                d,
+                "real_acct.txt",
+                [
+                    "acct\tmailto\tstr_num\tstr\tstr_sfx\tsite_addr_1\tsite_addr_2\tsite_addr_3\tstate_class\ttot_appr_val\tassessed_val\tbld_ar\tland_ar",
+                    "R1\tDOE JOHN\t100\tMAIN\tST\t\tHouston\t77001\tA1\t250000\t240000\t1800\t6000",
+                    "R2\tSMITH JANE\t200\tELM\tAVE\t200 ELM AVE\tHouston\t77002\tA2\t350000\t340000\t2200\t7000",
+                    "C1\tACME LLC\t1\tCOMMERCE\tST\t\tHouston\t77003\tF1\t900000\t900000\t5000\t10000",
+                ],
+            )
+
+            copy_load_property_records(iter_property_rows(path), truncate=True)
+            copy_snapshot = self._property_snapshot()
+
+            loader = ModelLoader(self._config(d), batch_size=10)
+            loader.load_property_records(iter_property_rows(path), truncate=True)
+            orm_snapshot = self._property_snapshot()
+
+        self.assertEqual(copy_snapshot, orm_snapshot)
+        self.assertEqual(len(copy_snapshot), 2)
+
+    def test_building_copy_and_orm_produce_identical_rows(self) -> None:
+        from counties.harris.etl_pipeline.fast_loader import copy_load_building_details
+
+        prop = PropertyRecord.objects.create(
+            address="1 MAIN ST",
+            city="Houston",
+            zipcode="77001",
+            account_number="B1",
+            state_class="A1",
+            is_residential=True,
+        )
+        account_map = {"B1": prop.id}
+
+        with tempfile.TemporaryDirectory() as d:
+            path = _write(
+                d,
+                "building_res.txt",
+                [
+                    "acct\tbld_num\timprv_type\tbldg_class\tqa_cd\tcndtn_cd\tdate_erected\theat_ar\tsty\tbed_rm\tfull_bath\thalf_bath",
+                    "B1\t1\tA1\tR3\tA\tG\t1995\t1800\t1\t3\t2\t0",
+                ],
+            )
+
+            copy_load_building_details(
+                iter_building_rows(path, account_map, _Fixtures()), truncate=True
+            )
+            copy_snapshot = list(
+                BuildingDetail.objects.order_by("account_number").values(
+                    "account_number",
+                    "building_number",
+                    "building_type",
+                    "building_class",
+                    "quality_code",
+                    "condition_code",
+                    "year_built",
+                    "heat_area",
+                    "stories",
+                    "bedrooms",
+                    "bathrooms",
+                    "half_baths",
+                    "is_active",
+                )
+            )
+
+            loader = ModelLoader(self._config(d), batch_size=10)
+            loader.load_building_details(
+                iter_building_rows(path, account_map, _Fixtures()), truncate=True
+            )
+            orm_snapshot = list(
+                BuildingDetail.objects.order_by("account_number").values(
+                    "account_number",
+                    "building_number",
+                    "building_type",
+                    "building_class",
+                    "quality_code",
+                    "condition_code",
+                    "year_built",
+                    "heat_area",
+                    "stories",
+                    "bedrooms",
+                    "bathrooms",
+                    "half_baths",
+                    "is_active",
+                )
+            )
+
+        self.assertEqual(copy_snapshot, orm_snapshot)
+        self.assertEqual(len(copy_snapshot), 1)

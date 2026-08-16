@@ -34,7 +34,12 @@ class PropertyRecord(models.Model):
     street_number = models.CharField(max_length=16, blank=True)
     street_name = models.CharField(max_length=128, blank=True)
 
-    # GIS fields
+    # DEPRECATED — coordinates now live in ParcelGeometry
+    # (counties/common/tax_models.py). Nothing reads these three columns any
+    # more; migration 0017 back-fills ParcelGeometry from them. They are kept
+    # in place for one release so this deploy is purely additive and can be
+    # rolled back without data loss — a follow-up migration drops them once the
+    # new read path is confirmed healthy in production.
     latitude = models.DecimalField(
         max_digits=10, decimal_places=7, null=True, blank=True, db_index=True
     )

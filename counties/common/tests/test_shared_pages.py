@@ -16,6 +16,7 @@ from counties.brazos.adapter import adapter as brazos_adapter
 from counties.brazos.models import PropertyAccount
 from counties.common.analysis import recommend_protest, summarize_equity
 from counties.common.contracts import Comp, Subject
+from counties.common.tax_models import ParcelGeometry
 from counties.common.urls import _ROUTES
 from counties.harris.adapter import adapter as harris_adapter
 from counties.harris.models import BuildingDetail, PropertyRecord
@@ -128,11 +129,15 @@ class BrazosGainsTheSharedPagesTests(TestCase):
             owner_name="TARGET OWNER",
             situs_address="100 MAIN ST",
             situs_zip="77801",
-            latitude=Decimal("30.6700000"),
-            longitude=Decimal("-96.3700000"),
             living_area=Decimal("2000"),
             assessed_value=Decimal("300000"),
             class_code="RV3",
+        )
+        ParcelGeometry.objects.create(
+            account_number="000000010013",
+            county="brazos",
+            latitude=30.585,
+            longitude=-96.298,
         )
 
     def test_comparables_page_renders(self):
@@ -186,8 +191,6 @@ class NoLocationSubjectTests(TestCase):
             street_name="No Location St",
             assessed_value=300000,
             building_area=2000,
-            latitude=None,
-            longitude=None,
         )
 
     def test_html_report_shows_the_no_location_banner(self):
@@ -220,8 +223,6 @@ class HarrisPagesStillUseTheirOwnLabelsTests(TestCase):
             street_name="Shared St",
             assessed_value=300000,
             building_area=2000,
-            latitude=29.8,
-            longitude=-95.5,
         )
         BuildingDetail.objects.create(
             property=prop,
@@ -229,6 +230,12 @@ class HarrisPagesStillUseTheirOwnLabelsTests(TestCase):
             building_number=1,
             heat_area=2000,
             is_active=True,
+        )
+        ParcelGeometry.objects.create(
+            account_number=prop.account_number,
+            county="harris",
+            latitude=29.760,
+            longitude=-95.370,
         )
 
     def test_harris_report_says_harris(self):

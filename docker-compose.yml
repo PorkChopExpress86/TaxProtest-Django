@@ -3,6 +3,13 @@ services:
     container_name: taxprotest-postgres
     image: postgres:15
     restart: unless-stopped
+    # Docker's default /dev/shm is 64MB, which is where PostgreSQL allocates
+    # segments for parallel workers. At this data volume (1.2M+ row tables) both
+    # parallel query plans and VACUUM exceed it and fail outright with
+    # "could not resize shared memory segment ... No space left on device" —
+    # VACUUM (ANALYZE) on data_propertyrecord only completes with
+    # max_parallel_maintenance_workers = 0 until this is raised.
+    shm_size: 1gb
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-taxprotest}
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}"

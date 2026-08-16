@@ -144,22 +144,33 @@ class BrazosAdapter(CountyAdapter):
         if not records:
             return []
 
+        from counties.common.tax_models import ParcelGeometry
+
         # No FK from PropertyAccount to PropertyLand (both key on a plain
         # prop_id string), so land totals are merged in manually.
         year = records[0].tax_year
+        prop_ids = [record.prop_id for record in records]
         land_by_prop = {
             row["prop_id"]: row
-            for row in PropertyLand.objects.filter(
-                prop_id__in=[record.prop_id for record in records], tax_year=year
-            )
+            for row in PropertyLand.objects.filter(prop_id__in=prop_ids, tax_year=year)
             .values("prop_id")
             .annotate(total_land_value=Sum("land_value"), total_acreage=Sum("acreage"))
         }
 
+        # Bulk-fetch coordinates to determine has_location for each row.
+        accts_with_coords = set(
+            ParcelGeometry.objects.filter(
+                account_number__in=prop_ids,
+                county="brazos",
+                latitude__isnull=False,
+                longitude__isnull=False,
+            ).values_list("account_number", flat=True)
+        )
+
         rows = []
         for account in records:
             land = land_by_prop.get(account.prop_id, {})
-            has_location = bool(account.latitude and account.longitude)
+            has_location = account.prop_id in accts_with_coords
             rows.append(
                 {
                     "prop_id": account.prop_id,
@@ -205,6 +216,12 @@ class BrazosAdapter(CountyAdapter):
         if account.situs_zip:
             locality = f"{locality} {account.situs_zip}".strip()
 
+        from counties.common.tax_models import ParcelGeometry
+
+        geom = ParcelGeometry.objects.filter(
+            account_number=account.prop_id, county="brazos"
+        ).first()
+
         return Subject(
             key=account.prop_id,
             address_line=account.situs_address or "Address not on file",
@@ -217,7 +234,7 @@ class BrazosAdapter(CountyAdapter):
             bathrooms=building.bathrooms if building else None,
             year_built=year_built,
             features=_format_feature_list(features),
-            has_location=bool(account.latitude and account.longitude),
+            has_location=bool(geom and geom.latitude and geom.longitude),
             tax_year=year,
             detail_rows=detail_rows,
         )

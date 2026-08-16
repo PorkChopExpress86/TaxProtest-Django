@@ -1,11 +1,14 @@
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.test import TestCase
 
+from counties.common.tax_models import ParcelGeometry
 from counties.harris.models import BuildingDetail, PropertyRecord
 from counties.harris.similarity import (
     calculate_similarity_details,
     calculate_similarity_score,
+    find_similar_properties,
     get_similarity_label,
 )
 
@@ -29,13 +32,18 @@ class SimilarityScoringTests(TestCase):
             "assessed_value": Decimal("350000"),
             "building_area": Decimal("2200"),
             "land_area": Decimal("9000"),
-            "latitude": Decimal("29.8000000"),
-            "longitude": Decimal("-95.5000000"),
         }
         if property_overrides:
             property_defaults.update(property_overrides)
 
         property_record = PropertyRecord.objects.create(**property_defaults)
+
+        ParcelGeometry.objects.create(
+            account_number=account_number,
+            county="harris",
+            latitude=Decimal("29.8000000"),
+            longitude=Decimal("-95.5000000"),
+        )
 
         building_defaults = {
             "property": property_record,
@@ -220,3 +228,93 @@ class SimilarityScoringTests(TestCase):
         self.assertEqual(get_similarity_label(58), "Good match")
         self.assertEqual(get_similarity_label(40), "OK match")
         self.assertEqual(get_similarity_label(20), "Broad match")
+
+
+class GeometryCandidateCapTests(TestCase):
+    """ParcelGeometry rows with no PropertyRecord must not consume cap slots.
+
+    The table holds every parcel in HCAD's shapefile, including the
+    non-residential ones PropertyRecord never carries. Since the cap is applied
+    to the geometry queryset, a parcel with no property behind it has to be
+    filtered out in SQL — if it survives to the cap it takes a slot and is then
+    dropped at the join, costing a real comparable.
+    """
+
+    TARGET = "CAPTGT000001"
+    ORPHAN = "CAPORPHAN001"
+    COMP = "CAPCOMP00001"
+
+    def _property(self, account_number: str, **overrides) -> PropertyRecord:
+        defaults = {
+            "address": f"{account_number} Cap St",
+            "city": "Houston",
+            "zipcode": "77040",
+            "account_number": account_number,
+            "state_class": "A1",
+            "is_residential": True,
+            "assessed_value": Decimal("350000"),
+            "building_area": Decimal("2200"),
+            "land_area": Decimal("9000"),
+        }
+        defaults.update(overrides)
+        return PropertyRecord.objects.create(**defaults)
+
+    def _geometry(self, account_number: str, *, longitude: str) -> ParcelGeometry:
+        return ParcelGeometry.objects.create(
+            account_number=account_number,
+            county="harris",
+            latitude=Decimal("29.8000000"),
+            longitude=Decimal(longitude),
+        )
+
+    def test_orphan_geometry_does_not_crowd_out_a_real_comp(self) -> None:
+        # Target has no building, so scoring takes the land-only path — the
+        # branch where the PropertyRecord semi-join is the only thing keeping
+        # property-less parcels out of the candidate cap.
+        self._property(self.TARGET)
+        self._geometry(self.TARGET, longitude="-95.5000000")
+
+        # Nearer than the real comp, but backed by no PropertyRecord at all.
+        self._geometry(self.ORPHAN, longitude="-95.5000100")
+
+        self._property(self.COMP)
+        self._geometry(self.COMP, longitude="-95.5001000")
+
+        with patch("counties.harris.similarity.MAX_GEOMETRY_CANDIDATES", 1):
+            results = find_similar_properties(self.TARGET, min_score=0.0)
+
+        self.assertEqual([r["property"].account_number for r in results], [self.COMP])
+
+    def test_building_filter_also_keeps_orphans_out_of_the_cap(self) -> None:
+        # The heat_area branch gets the same guarantee transitively: a
+        # BuildingDetail row only exists for an account that has a property.
+        target = self._property(self.TARGET)
+        self._geometry(self.TARGET, longitude="-95.5000000")
+        BuildingDetail.objects.create(
+            property=target,
+            account_number=self.TARGET,
+            building_number=1,
+            heat_area=Decimal("2200"),
+            bedrooms=4,
+            bathrooms=Decimal("2.5"),
+            is_active=True,
+        )
+
+        self._geometry(self.ORPHAN, longitude="-95.5000100")
+
+        comp = self._property(self.COMP)
+        self._geometry(self.COMP, longitude="-95.5001000")
+        BuildingDetail.objects.create(
+            property=comp,
+            account_number=self.COMP,
+            building_number=1,
+            heat_area=Decimal("2200"),
+            bedrooms=4,
+            bathrooms=Decimal("2.5"),
+            is_active=True,
+        )
+
+        with patch("counties.harris.similarity.MAX_GEOMETRY_CANDIDATES", 1):
+            results = find_similar_properties(self.TARGET, min_score=0.0)
+
+        self.assertEqual([r["property"].account_number for r in results], [self.COMP])

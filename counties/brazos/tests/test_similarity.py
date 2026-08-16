@@ -10,6 +10,7 @@ docstring for why condition isn't a separate component here).
 from __future__ import annotations
 
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.test import TestCase
 
@@ -33,6 +34,7 @@ from counties.brazos.similarity import (
     find_similar_properties,
     get_similarity_label,
 )
+from counties.common.tax_models import ParcelGeometry
 
 TAX_YEAR = 2025
 
@@ -157,8 +159,6 @@ class CalculateSimilarityDetailsTests(TestCase):
             "prop_id": prop_id,
             "tax_year": TAX_YEAR,
             "living_area": Decimal("2200"),
-            "latitude": Decimal("30.6700000"),
-            "longitude": Decimal("-96.3700000"),
             "class_code": "RV3",
             "year_built": 2005,
         }
@@ -261,8 +261,6 @@ class FindSimilarPropertiesTests(TestCase):
             prop_id="000000010001",
             tax_year=TAX_YEAR,
             living_area=Decimal("2200"),
-            latitude=Decimal("30.6700000"),
-            longitude=Decimal("-96.3700000"),
             class_code="RV3",
             year_built=2005,
         )
@@ -279,13 +277,17 @@ class FindSimilarPropertiesTests(TestCase):
         PropertyLand.objects.create(
             prop_id="000000010001", tax_year=TAX_YEAR, land_seq=1, acreage=Decimal("0.25")
         )
+        ParcelGeometry.objects.create(
+            account_number="000000010001",
+            county="brazos",
+            latitude=30.585,
+            longitude=-96.298,
+        )
 
         nearby = PropertyAccount.objects.create(
             prop_id="000000010002",
             tax_year=TAX_YEAR,
             living_area=Decimal("2150"),
-            latitude=Decimal("30.6710000"),
-            longitude=Decimal("-96.3710000"),
             class_code="RV3",
             year_built=2004,
         )
@@ -302,15 +304,25 @@ class FindSimilarPropertiesTests(TestCase):
         PropertyLand.objects.create(
             prop_id="000000010002", tax_year=TAX_YEAR, land_seq=1, acreage=Decimal("0.27")
         )
+        ParcelGeometry.objects.create(
+            account_number="000000010002",
+            county="brazos",
+            latitude=30.586,
+            longitude=-96.297,
+        )
 
         # Far away -- outside the 10-mile default radius.
         PropertyAccount.objects.create(
             prop_id="000000099999",
             tax_year=TAX_YEAR,
             living_area=Decimal("2200"),
-            latitude=Decimal("31.5000000"),
-            longitude=Decimal("-97.5000000"),
             class_code="RV3",
+        )
+        ParcelGeometry.objects.create(
+            account_number="000000099999",
+            county="brazos",
+            latitude=31.000,
+            longitude=-97.000,
         )
 
         results = find_similar_properties("000000010001")
@@ -325,3 +337,58 @@ class FindSimilarPropertiesTests(TestCase):
 
     def test_unknown_prop_id_returns_empty(self):
         self.assertEqual(find_similar_properties("NOPE"), [])
+
+
+class GeometryCandidateCapTests(TestCase):
+    """ParcelGeometry rows with no PropertyAccount must not consume cap slots.
+
+    ParcelGeometry is keyed by prop_id alone — it carries no tax_year and holds
+    every parcel in the shapefile. Since the cap is applied to the geometry
+    queryset, a parcel with no PropertyAccount row for the target's year has to
+    be filtered out in SQL; otherwise it takes a slot and is then dropped at the
+    join, costing a real comparable.
+    """
+
+    TARGET = "000000020001"
+    STALE = "000000020002"
+    COMP = "000000020003"
+
+    def _account(self, prop_id: str, *, tax_year: int = TAX_YEAR) -> PropertyAccount:
+        return PropertyAccount.objects.create(
+            prop_id=prop_id,
+            tax_year=tax_year,
+            living_area=Decimal("2200"),
+            class_code="RV3",
+            year_built=2005,
+        )
+
+    def _geometry(self, prop_id: str, *, longitude: float) -> ParcelGeometry:
+        return ParcelGeometry.objects.create(
+            account_number=prop_id,
+            county="brazos",
+            latitude=30.585,
+            longitude=longitude,
+        )
+
+    def test_geometry_without_an_account_this_year_does_not_crowd_out_a_comp(self):
+        self._account(self.TARGET)
+        self._geometry(self.TARGET, longitude=-96.298)
+        PropertyLand.objects.create(
+            prop_id=self.TARGET, tax_year=TAX_YEAR, land_seq=1, acreage=Decimal("0.25")
+        )
+
+        # Nearer than the real comp, but its only PropertyAccount row is for a
+        # different year, so the target year's join will never find it.
+        self._account(self.STALE, tax_year=TAX_YEAR - 1)
+        self._geometry(self.STALE, longitude=-96.29801)
+
+        self._account(self.COMP)
+        self._geometry(self.COMP, longitude=-96.2981)
+        PropertyLand.objects.create(
+            prop_id=self.COMP, tax_year=TAX_YEAR, land_seq=1, acreage=Decimal("0.25")
+        )
+
+        with patch("counties.brazos.similarity.MAX_GEOMETRY_CANDIDATES", 1):
+            results = find_similar_properties(self.TARGET, min_score=0.0)
+
+        self.assertEqual([r["property"].prop_id for r in results], [self.COMP])

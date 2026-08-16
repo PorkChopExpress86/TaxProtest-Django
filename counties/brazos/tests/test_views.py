@@ -8,6 +8,7 @@ from django.test import TestCase
 from django.urls import reverse
 
 from counties.brazos.models import PropertyAccount, PropertyLand
+from counties.common.tax_models import ParcelGeometry
 
 
 class BrazosIndexViewTests(TestCase):
@@ -106,12 +107,16 @@ class ProtestAnalysisViewTests(TestCase):
             tax_year=2025,
             owner_name="TARGET OWNER",
             situs_address="100 MAIN ST",
-            latitude=Decimal("30.6700000"),
-            longitude=Decimal("-96.3700000"),
             living_area=Decimal("2000"),
             assessed_value=Decimal("300000"),
             class_code="RV3",
             year_built=2005,
+        )
+        ParcelGeometry.objects.create(
+            account_number="000000010013",
+            county="brazos",
+            latitude=30.585,
+            longitude=-96.298,
         )
 
     def test_unknown_prop_id_404s(self):

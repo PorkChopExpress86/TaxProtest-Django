@@ -95,12 +95,13 @@ class PropertyAccount(models.Model):
     state_class = models.CharField(max_length=10, blank=True, db_index=True)
     is_residential = models.BooleanField(default=False, db_index=True, db_default=False)
 
-    # Coordinates (reprojected from the shapefile's native EPSG:2277 to
-    # WGS84) and basic building characteristics, also GIS-sourced -- no
-    # bedroom/bathroom equivalent exists in the shapefile (see
-    # docs/research/brazos-building-characteristics.md).
+    # DEPRECATED — coordinates now live in ParcelGeometry
+    # (counties/common/tax_models.py). Kept for one release so the deploy is
+    # purely additive; a follow-up migration drops them. See the Harris
+    # PropertyRecord equivalent for the full rationale.
     latitude = models.DecimalField(max_digits=10, decimal_places=7, null=True, blank=True)
     longitude = models.DecimalField(max_digits=10, decimal_places=7, null=True, blank=True)
+
     living_area = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     year_built = models.IntegerField(null=True, blank=True)
     class_code = models.CharField(max_length=16, blank=True)

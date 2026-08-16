@@ -1,6 +1,7 @@
-"""Shared tax-data models: AssessmentHistory, TaxUnitRate, PropertyJurisdictionExemption.
+"""Shared tax-data models: AssessmentHistory, TaxUnitRate, PropertyJurisdictionExemption,
+ParcelGeometry.
 
-These three tables are the tax-impact data model reused verbatim across
+These tables are the tax-impact and GIS data model reused verbatim across
 counties (wayfinder ticket #9) — each carries a ``county`` column because
 account_number/prop_id and tax_unit_code formats aren't guaranteed
 collision-proof across counties, so ``county`` disambiguates real key
@@ -126,3 +127,55 @@ class PropertyJurisdictionExemption(models.Model):
 
     def __str__(self):
         return f"{self.account_number} {self.tax_year} {self.tax_unit_code}"
+
+
+class ParcelGeometry(models.Model):
+    """Parcel coordinates (latitude, longitude, parcel_id) keyed by account.
+
+    Lives in a standalone table rather than inline on the property model so
+    the GIS ETL can INSERT at any time — it doesn't depend on the property
+    table being populated first, and its download/extract overlaps the
+    property sources' (see ``ETLOrchestrator._execute_download_extract``).
+    The load stage itself still runs the sources one at a time; removing the
+    ordering constraint is what makes loading them concurrently *possible*,
+    not something the orchestrator does today.
+
+    County-scoped via ``county`` (same convention as AssessmentHistory et al).
+    The similarity query filters this table by bounding box, then joins to
+    the property model by ``account_number``; measured against 1.17M rows the
+    bounding-box scan costs the same as it did with inline columns (~115ms),
+    with the join adding no measurable time — Postgres resolves it as a lazy
+    nested-loop probe above the sort.
+    """
+
+    account_number = models.CharField(max_length=20, db_index=True)
+    county = models.CharField(
+        max_length=16, choices=COUNTY_CHOICES, default="harris", db_index=True
+    )
+    latitude = models.DecimalField(
+        max_digits=10, decimal_places=7, null=True, blank=True, db_index=True
+    )
+    longitude = models.DecimalField(
+        max_digits=10, decimal_places=7, null=True, blank=True, db_index=True
+    )
+    # No db_index: parcel_id is carried for reference and never filtered on.
+    parcel_id = models.CharField(max_length=50, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        app_label = "data"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["account_number", "county"],
+                name="unique_parcel_geometry_per_account",
+            )
+        ]
+        # Deliberately no composite (latitude, longitude) index. A btree can
+        # only range-scan its leading column, so for a two-sided bounding box it
+        # buys nothing over the single-column indexes above — measured on 1.17M
+        # rows, Postgres declined to use it even as the only candidate and chose
+        # a seq scan instead (227ms vs 117ms with the single-column indexes).
+
+    def __str__(self):
+        return f"{self.account_number} ({self.latitude}, {self.longitude})"

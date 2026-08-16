@@ -22,6 +22,7 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
+from counties.common.tax_models import ParcelGeometry
 from counties.harris.etl_pipeline.fixtures_aggregator import FixturesAggregator
 from counties.harris.etl_pipeline.gis_loader import load_gis_parcels
 from counties.harris.etl_pipeline.readiness import refresh_property_readiness
@@ -60,7 +61,7 @@ class RefreshPropertyReadinessTests(TestCase):
     def _create_property(
         self, *, account_number, with_gis=True, state_class="A1"
     ) -> PropertyRecord:
-        return PropertyRecord.objects.create(
+        prop = PropertyRecord.objects.create(
             address=f"{account_number} ST",
             city="Houston",
             zipcode="77001",
@@ -72,9 +73,15 @@ class RefreshPropertyReadinessTests(TestCase):
             land_area=Decimal("8000"),
             state_class=state_class,
             is_residential=state_class != "F1",
-            latitude=Decimal("29.7600000") if with_gis else None,
-            longitude=Decimal("-95.3700000") if with_gis else None,
         )
+        if with_gis:
+            ParcelGeometry.objects.create(
+                account_number=account_number,
+                county="harris",
+                latitude=Decimal("29.7600000"),
+                longitude=Decimal("-95.3700000"),
+            )
+        return prop
 
     def _create_building(self, prop, with_rooms=True) -> BuildingDetail:
         return BuildingDetail.objects.create(
@@ -110,6 +117,49 @@ class RefreshPropertyReadinessTests(TestCase):
         self.assertTrue(ready_prop.is_data_ready)
         self.assertFalse(missing_gis_prop.is_data_ready)
         self.assertFalse(non_residential.is_data_ready)
+
+    def test_refresh_only_writes_rows_whose_readiness_changes(self) -> None:
+        """The refresh is delta-only: a second run must write nothing.
+
+        The previous implementation cleared every ready row and set them all
+        again, so a no-op re-run still rewrote the whole table (measured at
+        538s on 1.17M rows). Re-running must now report zero changes while
+        leaving the same rows ready.
+        """
+        ready_prop = self._create_property(account_number="READY001")
+        self._create_building(ready_prop)
+        self._create_property(account_number="WAIT001", with_gis=False)
+
+        first = refresh_property_readiness()
+        self.assertEqual(first["ready_properties_changed"], 1)
+        self.assertEqual(first["ready_properties_set"], 1)
+
+        second = refresh_property_readiness()
+        self.assertEqual(second["ready_properties_changed"], 0)
+        self.assertEqual(second["ready_properties_cleared"], 0)
+        # ...and the answer is unchanged, not merely unwritten.
+        self.assertEqual(second["ready_properties_set"], 1)
+        ready_prop.refresh_from_db()
+        self.assertTrue(ready_prop.is_data_ready)
+
+    def test_refresh_clears_a_property_that_stopped_qualifying(self) -> None:
+        ready_prop = self._create_property(account_number="READY001")
+        building = self._create_building(ready_prop)
+        refresh_property_readiness()
+        ready_prop.refresh_from_db()
+        self.assertTrue(ready_prop.is_data_ready)
+
+        # Room data goes away -> the property is no longer data-ready.
+        building.bedrooms = None
+        building.bathrooms = None
+        building.save(update_fields=["bedrooms", "bathrooms"])
+
+        results = refresh_property_readiness()
+
+        self.assertEqual(results["ready_properties_cleared"], 1)
+        self.assertEqual(results["ready_properties_set"], 0)
+        ready_prop.refresh_from_db()
+        self.assertFalse(ready_prop.is_data_ready)
 
 
 class FixturesAggregatorTests(TestCase):
@@ -184,6 +234,59 @@ class FixturesAggregatorTests(TestCase):
         self.assertEqual(stats["total_buildings"], 3)
 
 
+class _FakeCentroid:
+    def __init__(self, rows):
+        self.x = [row["x"] for row in rows]
+        self.y = [row["y"] for row in rows]
+
+
+class _FakeGeometry:
+    def __init__(self, rows):
+        self.centroid = _FakeCentroid(rows)
+
+
+class _FakeCRS:
+    def to_epsg(self):
+        return 4326
+
+
+class _FakeGDF:
+    """Minimal stand-in for a geopandas GeoDataFrame of parcel polygons."""
+
+    def __init__(self, rows):
+        self._rows = rows
+        self.columns = ["ACCT", "PARCEL_ID"]
+        self.crs = _FakeCRS()
+        self.geometry = _FakeGeometry(rows)
+        self._derived = {}
+
+    def __len__(self):
+        return len(self._rows)
+
+    def __setitem__(self, key, value):
+        self._derived[key] = value
+        if key in ("latitude", "longitude"):
+            for row, v in zip(self._rows, value):
+                row[key] = v
+
+    def __getitem__(self, key):
+        if key == "centroid":
+            return self._derived.get("centroid", self.geometry.centroid)
+        return self._derived.get(key)
+
+    def to_crs(self, epsg):
+        return self
+
+    def itertuples(self, index=False):
+        for row in self._rows:
+            yield SimpleNamespace(
+                ACCT=row["ACCT"],
+                PARCEL_ID=row["PARCEL_ID"],
+                latitude=row.get("latitude"),
+                longitude=row.get("longitude"),
+            )
+
+
 class LoadGisParcelsTests(TestCase):
     """Ported from test_load_gis_parcels_updates_records_with_account_map.
 
@@ -220,53 +323,6 @@ class LoadGisParcelsTests(TestCase):
             is_residential=False,
         )
 
-        class _FakeCentroid:
-            def __init__(self, rows):
-                self.x = [row["x"] for row in rows]
-                self.y = [row["y"] for row in rows]
-
-        class _FakeGeometry:
-            def __init__(self, rows):
-                self.centroid = _FakeCentroid(rows)
-
-        class _FakeCRS:
-            def to_epsg(self):
-                return 4326
-
-        class _FakeGDF:
-            def __init__(self, rows):
-                self._rows = rows
-                self.columns = ["ACCT", "PARCEL_ID"]
-                self.crs = _FakeCRS()
-                self.geometry = _FakeGeometry(rows)
-                self._derived = {}
-
-            def __len__(self):
-                return len(self._rows)
-
-            def __setitem__(self, key, value):
-                self._derived[key] = value
-                if key in ("latitude", "longitude"):
-                    for row, v in zip(self._rows, value):
-                        row[key] = v
-
-            def __getitem__(self, key):
-                if key == "centroid":
-                    return self._derived.get("centroid", self.geometry.centroid)
-                return self._derived.get(key)
-
-            def to_crs(self, epsg):
-                return self
-
-            def itertuples(self, index=False):
-                for row in self._rows:
-                    yield SimpleNamespace(
-                        ACCT=row["ACCT"],
-                        PARCEL_ID=row["PARCEL_ID"],
-                        latitude=row.get("latitude"),
-                        longitude=row.get("longitude"),
-                    )
-
         mocked_read_file.return_value = _FakeGDF(
             [
                 {"ACCT": "GIS1", "PARCEL_ID": "P1", "x": -95.1, "y": 29.1},
@@ -280,15 +336,21 @@ class LoadGisParcelsTests(TestCase):
 
         updated = load_gis_parcels("fake.shp", chunk_size=2, refresh_readiness=False)
 
-        self.assertEqual(updated, 2)
-        prop1.refresh_from_db()
-        prop2.refresh_from_db()
-        non_res.refresh_from_db()
-        self.assertEqual(prop1.parcel_id, "P1")
-        self.assertEqual(prop2.parcel_id, "P2B")
-        self.assertIsNone(non_res.latitude)
-        self.assertIsNone(non_res.longitude)
-        self.assertNotEqual(non_res.parcel_id, "PNR")
+        # 4 unique accounts with valid ACCT are upserted into ParcelGeometry
+        # (GIS2's duplicate row is collapsed by the account-keyed dict, last value wins).
+        self.assertEqual(updated, 4)
+
+        from counties.common.tax_models import ParcelGeometry
+
+        geom1 = ParcelGeometry.objects.get(account_number="GIS1", county="harris")
+        self.assertEqual(geom1.parcel_id, "P1")
+        geom2 = ParcelGeometry.objects.get(account_number="GIS2", county="harris")
+        self.assertEqual(geom2.parcel_id, "P2B")  # last value wins
+        # Non-residential accounts also get geometry. They are kept out of the
+        # comparables search by the property-backed filter that runs *before*
+        # the candidate cap — see GeometryCandidateCapTests.
+        geom_non = ParcelGeometry.objects.get(account_number="GIS_NON", county="harris")
+        self.assertEqual(geom_non.parcel_id, "PNR")
 
 
 class CentroidCrsTests(TestCase):
@@ -339,6 +401,43 @@ class CentroidCrsTests(TestCase):
             "taking a centroid in EPSG:4326 warns; compute it in the projected CRS first",
         )
 
-        record = PropertyRecord.objects.get(account_number="GISCRS001")
+        from counties.common.tax_models import ParcelGeometry
+
+        record = ParcelGeometry.objects.get(account_number="GISCRS001", county="harris")
         self.assertAlmostEqual(float(record.latitude), float(expected.y.iloc[0]), places=6)
         self.assertAlmostEqual(float(record.longitude), float(expected.x.iloc[0]), places=6)
+
+
+class GisCopyEscapingTests(TestCase):
+    """Ids carrying COPY metacharacters must survive the staging-table load.
+
+    The Postgres path streams rows into a temp table as COPY text, where a raw
+    tab ends a column and a raw backslash starts an escape — an unescaped id
+    would shift every column after it on that row, or abort the COPY.
+    """
+
+    @patch("counties.harris.etl_pipeline.gis_loader.gpd.read_file")
+    @patch("counties.harris.etl_pipeline.gis_loader.GEOPANDAS_AVAILABLE", True)
+    def test_tabs_and_backslashes_in_ids_round_trip(self, mocked_read_file) -> None:
+        mocked_read_file.return_value = _FakeGDF(
+            [
+                {"ACCT": "ESC1", "PARCEL_ID": "A\tB", "x": -95.1, "y": 29.1},
+                {"ACCT": "ESC2", "PARCEL_ID": "C\\D", "x": -95.2, "y": 29.2},
+                {"ACCT": "ESC3", "PARCEL_ID": "E\nF", "x": -95.3, "y": 29.3},
+            ]
+        )
+
+        updated = load_gis_parcels("fake.shp", refresh_readiness=False)
+
+        self.assertEqual(updated, 3)
+        from counties.common.tax_models import ParcelGeometry
+
+        self.assertEqual(
+            ParcelGeometry.objects.get(account_number="ESC1", county="harris").parcel_id, "A\tB"
+        )
+        self.assertEqual(
+            ParcelGeometry.objects.get(account_number="ESC2", county="harris").parcel_id, "C\\D"
+        )
+        self.assertEqual(
+            ParcelGeometry.objects.get(account_number="ESC3", county="harris").parcel_id, "E\nF"
+        )

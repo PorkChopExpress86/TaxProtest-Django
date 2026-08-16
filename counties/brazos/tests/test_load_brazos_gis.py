@@ -26,6 +26,7 @@ from django.test import TestCase
 
 from counties.brazos.management.commands.load_brazos_gis import Command
 from counties.brazos.models import PropertyAccount
+from counties.common.tax_models import ParcelGeometry
 
 # Real page structure (see docs/research/brazos-gis-parcel-shapefile.md):
 # certified-year links, a non-year-labeled monthly variant, and unrelated
@@ -132,11 +133,12 @@ class LoadGisDataTests(TestCase):
         self.assertEqual(row.state_class, "E1")
         self.assertEqual(row.year_built, 1980)
         self.assertEqual(row.class_code, "RV3")
-        self.assertIsNotNone(row.latitude)
-        self.assertIsNotNone(row.longitude)
+        geom = ParcelGeometry.objects.get(account_number="000000010013", county="brazos")
+        self.assertIsNotNone(geom.latitude)
+        self.assertIsNotNone(geom.longitude)
         # Real Brazos County coordinates: roughly 30.5-30.8N, -96.2 to -96.5W.
-        self.assertTrue(30 < row.latitude < 31)
-        self.assertTrue(-97 < row.longitude < -96)
+        self.assertTrue(30 < float(geom.latitude) < 31)
+        self.assertTrue(-97 < float(geom.longitude) < -96)
 
         row2 = PropertyAccount.objects.get(prop_id="000000010055", tax_year=2025)
         self.assertEqual(row2.situs_address, "")
@@ -287,9 +289,9 @@ class CentroidCrsTests(TestCase):
         )
 
         expected_lat, expected_lon = self._expected_lat_lon()
-        row = PropertyAccount.objects.get(prop_id="000000010013", tax_year=2025)
-        self.assertAlmostEqual(float(row.latitude), expected_lat, places=6)
-        self.assertAlmostEqual(float(row.longitude), expected_lon, places=6)
+        geom = ParcelGeometry.objects.get(account_number="000000010013", county="brazos")
+        self.assertAlmostEqual(float(geom.latitude), expected_lat, places=6)
+        self.assertAlmostEqual(float(geom.longitude), expected_lon, places=6)
 
 
 class LoadBrazosGisCommandTests(TestCase):
@@ -341,7 +343,8 @@ class OfflineRerunTests(TestCase):
 
         row = PropertyAccount.objects.get(prop_id="000000010013", tax_year=2025)
         self.assertEqual(row.situs_address, "5000 SILVER HILL RD")
-        self.assertIsNotNone(row.latitude)
+        geom = ParcelGeometry.objects.get(account_number="000000010013", county="brazos")
+        self.assertIsNotNone(geom.latitude)
 
     def test_resolves_year_from_the_downloaded_archive_name(self):
         self._stage_archive(2025)
@@ -385,7 +388,9 @@ class OfflineRerunTests(TestCase):
         with self._settings():
             call_command("load_brazos_gis", "--skip-download", "--skip-extract")
 
-        self.assertIsNotNone(PropertyAccount.objects.get(prop_id="000000010013").latitude)
+        self.assertIsNotNone(
+            ParcelGeometry.objects.get(account_number="000000010013", county="brazos").latitude
+        )
 
     def test_error_names_the_real_path_when_nothing_is_on_disk(self):
         with self._settings(), self.assertRaises(CommandError) as ctx:

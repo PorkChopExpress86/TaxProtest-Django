@@ -4,6 +4,7 @@ from pathlib import Path
 from django.core.management import call_command
 from django.core.management.base import BaseCommand
 
+from counties.common.tax_models import ParcelGeometry
 from counties.harris.models import BuildingDetail, PropertyRecord
 
 logger = logging.getLogger(__name__)
@@ -18,9 +19,17 @@ class Command(BaseCommand):
         # Check counts
         prop_count = PropertyRecord.objects.count()
         building_count = BuildingDetail.objects.count()
-        # GIS check: check if we have a reasonable percentage of coordinates
+        # GIS check: check if we have a reasonable percentage of coordinates.
+        # Count *properties that have geometry*, not geometry rows — ParcelGeometry
+        # carries every parcel in the shapefile, including the non-residential ones
+        # PropertyRecord never holds, so counting the table directly would let
+        # coverage exceed 100% and hide a genuinely missing GIS load.
         total_props = prop_count if prop_count > 0 else 1
-        coords_count = PropertyRecord.objects.filter(latitude__isnull=False).count()
+        coords_count = PropertyRecord.objects.filter(
+            account_number__in=ParcelGeometry.objects.filter(
+                county="harris", latitude__isnull=False, longitude__isnull=False
+            ).values("account_number")
+        ).count()
         coord_coverage = coords_count / total_props
 
         missing_data = []
