@@ -7,7 +7,8 @@ These cover:
 - ``refresh_property_readiness`` three-tier logic (rooms + building + GIS)
 - ``FixturesAggregator`` bedroom/bathroom counting + not-found tracking
 - ``load_gis_parcels`` account-map linking, non-residential exclusion,
-  parcel-id clobbering, and centroid-before-reprojection CRS ordering
+  last-row-wins on duplicate accounts, and centroid-before-reprojection
+  CRS ordering
 """
 
 from __future__ import annotations
@@ -292,7 +293,7 @@ class LoadGisParcelsTests(TestCase):
 
     The GIS loading logic moved from etl.py to etl_pipeline/gis_loader.py.
     This test verifies account-map linking, non-residential exclusion,
-    and parcel-id clobbering behavior.
+    and last-row-wins behaviour when an account appears twice.
     """
 
     @patch("counties.harris.etl_pipeline.gis_loader.gpd.read_file")
@@ -343,14 +344,17 @@ class LoadGisParcelsTests(TestCase):
         from counties.common.tax_models import ParcelGeometry
 
         geom1 = ParcelGeometry.objects.get(account_number="GIS1", county="harris")
-        self.assertEqual(geom1.parcel_id, "P1")
+        self.assertAlmostEqual(float(geom1.longitude), -95.1, places=4)
+        # GIS2 appears twice; the account-keyed dict keeps the last row's
+        # coordinates, not the first.
         geom2 = ParcelGeometry.objects.get(account_number="GIS2", county="harris")
-        self.assertEqual(geom2.parcel_id, "P2B")  # last value wins
+        self.assertAlmostEqual(float(geom2.longitude), -95.25, places=4)
         # Non-residential accounts also get geometry. They are kept out of the
         # comparables search by the property-backed filter that runs *before*
         # the candidate cap — see GeometryCandidateCapTests.
-        geom_non = ParcelGeometry.objects.get(account_number="GIS_NON", county="harris")
-        self.assertEqual(geom_non.parcel_id, "PNR")
+        self.assertTrue(
+            ParcelGeometry.objects.filter(account_number="GIS_NON", county="harris").exists()
+        )
 
 
 class CentroidCrsTests(TestCase):
@@ -418,12 +422,15 @@ class GisCopyEscapingTests(TestCase):
 
     @patch("counties.harris.etl_pipeline.gis_loader.gpd.read_file")
     @patch("counties.harris.etl_pipeline.gis_loader.GEOPANDAS_AVAILABLE", True)
-    def test_tabs_and_backslashes_in_ids_round_trip(self, mocked_read_file) -> None:
+    def test_tabs_and_backslashes_in_account_numbers_round_trip(self, mocked_read_file) -> None:
+        # The account number is the only string the loader writes now, and it is
+        # the conflict key -- a shifted column here would corrupt the upsert
+        # target rather than just a descriptive field.
         mocked_read_file.return_value = _FakeGDF(
             [
-                {"ACCT": "ESC1", "PARCEL_ID": "A\tB", "x": -95.1, "y": 29.1},
-                {"ACCT": "ESC2", "PARCEL_ID": "C\\D", "x": -95.2, "y": 29.2},
-                {"ACCT": "ESC3", "PARCEL_ID": "E\nF", "x": -95.3, "y": 29.3},
+                {"ACCT": "A\tB", "PARCEL_ID": "", "x": -95.1, "y": 29.1},
+                {"ACCT": "C\\D", "PARCEL_ID": "", "x": -95.2, "y": 29.2},
+                {"ACCT": "E\nF", "PARCEL_ID": "", "x": -95.3, "y": 29.3},
             ]
         )
 
@@ -432,12 +439,6 @@ class GisCopyEscapingTests(TestCase):
         self.assertEqual(updated, 3)
         from counties.common.tax_models import ParcelGeometry
 
-        self.assertEqual(
-            ParcelGeometry.objects.get(account_number="ESC1", county="harris").parcel_id, "A\tB"
-        )
-        self.assertEqual(
-            ParcelGeometry.objects.get(account_number="ESC2", county="harris").parcel_id, "C\\D"
-        )
-        self.assertEqual(
-            ParcelGeometry.objects.get(account_number="ESC3", county="harris").parcel_id, "E\nF"
-        )
+        for account_number, longitude in (("A\tB", -95.1), ("C\\D", -95.2), ("E\nF", -95.3)):
+            geom = ParcelGeometry.objects.get(account_number=account_number, county="harris")
+            self.assertAlmostEqual(float(geom.longitude), longitude, places=4)

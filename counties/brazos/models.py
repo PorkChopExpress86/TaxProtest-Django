@@ -17,9 +17,9 @@ export; see ``counties/brazos/parsers/pacs.py`` for the fixed-width field layout
     (NOT a brazos_cad model — shared with Harris, see wayfinder ticket #9);
     also rolls up PropertyAccount.assessed_value (see below)
 
-PropertyAccount.state_class/latitude/longitude/living_area/year_built/
+PropertyAccount.state_class/living_area/year_built/
 class_code/situs_* are NOT sourced from APPRAISAL_INFO.TXT (values/
-state_class/coordinates/building basics were never located in that file's
+state_class/building basics were never located in that file's
 decoded fields — see docs/research/brazos-values.md, wayfinder ticket #5).
 They're populated separately by ``load_brazos_gis`` from BCAD's GIS parcel
 shapefile (see docs/research/brazos-gis-parcel-shapefile.md, wayfinder
@@ -95,12 +95,8 @@ class PropertyAccount(models.Model):
     state_class = models.CharField(max_length=10, blank=True, db_index=True)
     is_residential = models.BooleanField(default=False, db_index=True, db_default=False)
 
-    # DEPRECATED — coordinates now live in ParcelGeometry
-    # (counties/common/tax_models.py). Kept for one release so the deploy is
-    # purely additive; a follow-up migration drops them. See the Harris
-    # PropertyRecord equivalent for the full rationale.
-    latitude = models.DecimalField(max_digits=10, decimal_places=7, null=True, blank=True)
-    longitude = models.DecimalField(max_digits=10, decimal_places=7, null=True, blank=True)
+    # GIS coordinates live in ParcelGeometry (counties/common/tax_models.py);
+    # the inline columns were dropped once the new read path was confirmed.
 
     living_area = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     year_built = models.IntegerField(null=True, blank=True)
