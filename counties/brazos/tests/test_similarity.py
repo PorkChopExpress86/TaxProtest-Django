@@ -388,7 +388,7 @@ class GeometryCandidateCapTests(TestCase):
             prop_id=self.COMP, tax_year=TAX_YEAR, land_seq=1, acreage=Decimal("0.25")
         )
 
-        with patch("counties.brazos.similarity.MAX_GEOMETRY_CANDIDATES", 1):
+        with patch("counties.common.geometry.MAX_NEARBY_PARCELS", 1):
             results = find_similar_properties(self.TARGET, min_score=0.0)
 
         self.assertEqual([r["property"].prop_id for r in results], [self.COMP])

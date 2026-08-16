@@ -280,7 +280,7 @@ class GeometryCandidateCapTests(TestCase):
         self._property(self.COMP)
         self._geometry(self.COMP, longitude="-95.5001000")
 
-        with patch("counties.harris.similarity.MAX_GEOMETRY_CANDIDATES", 1):
+        with patch("counties.common.geometry.MAX_NEARBY_PARCELS", 1):
             results = find_similar_properties(self.TARGET, min_score=0.0)
 
         self.assertEqual([r["property"].account_number for r in results], [self.COMP])
@@ -314,7 +314,7 @@ class GeometryCandidateCapTests(TestCase):
             is_active=True,
         )
 
-        with patch("counties.harris.similarity.MAX_GEOMETRY_CANDIDATES", 1):
+        with patch("counties.common.geometry.MAX_NEARBY_PARCELS", 1):
             results = find_similar_properties(self.TARGET, min_score=0.0)
 
         self.assertEqual([r["property"].account_number for r in results], [self.COMP])

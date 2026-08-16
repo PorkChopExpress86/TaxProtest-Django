@@ -38,9 +38,6 @@ import re
 from collections import defaultdict
 from math import asin, cos, radians, sin, sqrt
 
-from django.db.models import ExpressionWrapper, F, FloatField, Value
-from django.db.models.functions import ACos, Cos, Greatest, Least, Radians, Sin
-
 from .models import (
     PropertyAccount,
     PropertyBuildingCharacteristic,
@@ -49,11 +46,6 @@ from .models import (
     PropertyImprovementDetail,
     PropertyLand,
 )
-
-# How many nearest parcels find_similar_properties() pulls out of the database
-# to score in Python. Every one of these slots must buy a scoreable comp, which
-# is why the PropertyAccount filter is applied before the cap, not after.
-MAX_GEOMETRY_CANDIDATES = 2000
 
 RESIDENTIAL_WEIGHTS = {
     "living_area": 24.0,
@@ -504,8 +496,7 @@ def find_similar_properties(
     data/similarity.py::find_similar_properties's DB-side haversine
     bounding-box approach against ParcelGeometry, then joins back to
     PropertyAccount by prop_id."""
-    from counties.common.geometry import coordinates_for
-    from counties.common.tax_models import ParcelGeometry
+    from counties.common.geometry import coordinates_for, nearest_parcels
 
     target = PropertyAccount.objects.order_by("-tax_year").filter(prop_id=prop_id).first()
     if not target:
@@ -523,62 +514,21 @@ def find_similar_properties(
     target_features = list(PropertyExtraFeature.objects.filter(prop_id=prop_id, tax_year=tax_year))
     target_acreage = _total_acreage(prop_id, tax_year)
 
-    lat_range = max_distance_miles / 69.0
-    lon_range = max_distance_miles / (69.0 * cos(radians(target_lat)))
-    min_lat, max_lat = target_lat - lat_range, target_lat + lat_range
-    min_lon, max_lon = target_lon - lon_range, target_lon + lon_range
-
-    geom_candidates = ParcelGeometry.objects.filter(
+    # Restrict to parcels that have a PropertyAccount row for this year:
+    # ParcelGeometry is keyed by prop_id alone and carries no tax_year, so
+    # without this a parcel absent from `tax_year` would take a candidate slot
+    # and then vanish at the join below.
+    distance_map = nearest_parcels(
+        location,
         county="brazos",
-        latitude__gte=min_lat,
-        latitude__lte=max_lat,
-        longitude__gte=min_lon,
-        longitude__lte=max_lon,
-        latitude__isnull=False,
-        longitude__isnull=False,
-    ).exclude(account_number=prop_id)
-
-    # Restrict to parcels with a PropertyAccount row for this year, before the
-    # cap below rather than after. ParcelGeometry is keyed by prop_id alone --
-    # it carries no tax_year and holds every parcel in the shapefile -- so
-    # without this, geometry for a parcel absent from `tax_year` would consume
-    # a candidate slot and then vanish at the join, shrinking the comp pool.
-    geom_candidates = geom_candidates.filter(
-        account_number__in=PropertyAccount.objects.filter(tax_year=tax_year).values("prop_id")
+        within_miles=max_distance_miles,
+        backed_by=PropertyAccount.objects.filter(tax_year=tax_year).values("prop_id"),
+        exclude_account=prop_id,
     )
-
-    target_lat_rad = radians(target_lat)
-    target_lon_rad = radians(target_lon)
-
-    geom_candidates = (
-        geom_candidates.annotate(
-            distance=ExpressionWrapper(
-                3959.0
-                * ACos(
-                    Least(
-                        1.0,
-                        Greatest(
-                            -1.0,
-                            Cos(Value(target_lat_rad))
-                            * Cos(Radians(F("latitude")))
-                            * Cos(Radians(F("longitude")) - Value(target_lon_rad))
-                            + Sin(Value(target_lat_rad)) * Sin(Radians(F("latitude"))),
-                        ),
-                    )
-                ),
-                output_field=FloatField(),
-            )
-        )
-        .filter(distance__lte=max_distance_miles)
-        .order_by("distance")[:MAX_GEOMETRY_CANDIDATES]
-    )
-
-    geom_list = list(geom_candidates.values("account_number", "distance"))
-    if not geom_list:
+    if not distance_map:
         return []
 
-    candidate_prop_ids = [g["account_number"] for g in geom_list]
-    distance_map = {g["account_number"]: g["distance"] for g in geom_list}
+    candidate_prop_ids = list(distance_map)
 
     candidate_list = list(
         PropertyAccount.objects.filter(prop_id__in=candidate_prop_ids, tax_year=tax_year)
