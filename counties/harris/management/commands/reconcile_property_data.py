@@ -13,7 +13,9 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.db.models import Exists, OuterRef
 
-from counties.harris.etl import link_orphaned_records, refresh_property_readiness
+from counties.common.tax_models import ParcelGeometry
+from counties.harris.etl import link_orphaned_records
+from counties.harris.etl_pipeline.readiness import refresh_property_readiness
 from counties.harris.models import BuildingDetail, ExtraFeature, PropertyRecord
 from counties.harris.residential import is_residential_state_class, normalize_state_class
 
@@ -166,9 +168,22 @@ class Command(BaseCommand):
             bathrooms__isnull=False,
         )
 
-        queryset = PropertyRecord.objects.annotate(has_ready_building=Exists(ready_buildings)).only(
-            "pk", "state_class", "is_residential", "latitude", "longitude"
+        # Coordinates live in ParcelGeometry now, but they still have to be
+        # resolved per row *without* pulling the whole table into memory — this
+        # command streams with .iterator() precisely because PropertyRecord is
+        # ~1.2M rows, and a Python set of every account with coordinates would
+        # give that memory straight back.
+        has_geometry = ParcelGeometry.objects.filter(
+            account_number=OuterRef("account_number"),
+            county="harris",
+            latitude__isnull=False,
+            longitude__isnull=False,
         )
+
+        queryset = PropertyRecord.objects.annotate(
+            has_ready_building=Exists(ready_buildings),
+            has_coords=Exists(has_geometry),
+        ).only("pk", "account_number", "state_class", "is_residential")
 
         results = {
             "properties_examined": 0,
@@ -185,7 +200,7 @@ class Command(BaseCommand):
         for prop in queryset.iterator(chunk_size=chunk_size):
             normalized_state_class = normalize_state_class(prop.state_class)
             effective_is_residential = is_residential_state_class(normalized_state_class)
-            has_coords = prop.latitude is not None and prop.longitude is not None
+            has_coords = bool(getattr(prop, "has_coords", False))
             effective_is_ready = (
                 effective_is_residential
                 and bool(getattr(prop, "has_ready_building", False))
