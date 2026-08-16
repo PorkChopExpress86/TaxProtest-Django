@@ -8,7 +8,7 @@ Modules:
     config: Configuration management for data sources and settings
     download: Download manager with retry logic and validation
     extract: Archive extraction with streaming support
-    transform: Data parsing, validation, and normalization
+    row_reader: Source-file parsing into typed rows (single source of truth)
     model_loader: Django model loading for PropertyRecord, BuildingDetail, ExtraFeature
     orchestrator: Pipeline coordination and error handling
     logging: Structured logging infrastructure
@@ -27,14 +27,12 @@ from .extract import ExtractManager
 from .logging import ETLLogger
 from .model_loader import ModelLoader
 from .orchestrator import ETLOrchestrator
-from .transform import DataTransformer
 
 __all__ = [
     "ETLConfig",
     "DataSource",
     "DownloadManager",
     "ExtractManager",
-    "DataTransformer",
     "ModelLoader",
     "ETLOrchestrator",
     "ETLLogger",

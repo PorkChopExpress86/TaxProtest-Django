@@ -1,19 +1,25 @@
-"""Single source of truth for parsing HCAD source files into loadable rows.
+"""Single source of truth for parsing HCAD source files into typed rows.
 
-Both the COPY path (``fast_loader.copy_load``) and the ORM path
-(``model_loader.ModelLoader.bulk_load``) consume the same
-``RowResult`` generators from this module.  This eliminates the
-~325 lines of duplicated column mappings, type coercers, and
-business logic that previously lived in both ``fast_loader.py`` and
-``model_loader.py``.
+Both the COPY path (``fast_loader.copy_load_*``) and the ORM path
+(``model_loader.ModelLoader.load_*``) consume the same ``RowResult``
+generators from this module.  This concentrates the column mappings, type
+coercers, and business logic (residential filter, address assembly,
+fixtures-based bed/bath resolution) that previously lived in three places.
 
 Each ``iter_*_rows`` function:
 1. Opens the source file as a positional ``csv.reader`` (QUOTE_NONE).
 2. Resolves source columns to field indices from the header row.
-3. Applies business logic (residential filter, address building,
-   account validation, fixtures-based bed/bath resolution).
-4. Yields ``RowResult`` instances whose ``values`` list is in
-   the same order as the corresponding ``FIELD_ORDER`` tuple.
+3. Applies business logic and yields ``RowResult`` instances whose ``row``
+   is a typed dataclass (``PropertyRow`` / ``BuildingRow`` /
+   ``ExtraFeatureRow``), or ``None`` when the row was filtered.
+
+Rows are filtered into two buckets, counted separately by the loaders:
+
+- ``skip``    — non-residential or blank account; not an error.
+- ``invalid`` — account not in the residential account map; not an error.
+
+The loaders serialize the typed rows: ``fast_loader`` to COPY text,
+``model_loader`` to Django model instances.
 """
 
 from __future__ import annotations
@@ -29,32 +35,105 @@ from counties.harris.residential import is_residential_state_class, normalize_st
 
 logger = logging.getLogger(__name__)
 
+# HCAD free-text fields (inspector notes, addresses) contain raw, unescaped
+# quote characters.  With default quoting, csv treats an unbalanced `"` as
+# opening a quoted field that swallows subsequent lines until a closing quote
+# turns up, silently corrupting row boundaries and dropping real records.
+# These files have no quoting convention, so quotes must be read literally.
+csv.field_size_limit(10485760)  # 10MB limit
+
 
 # ---------------------------------------------------------------------------
-# Public dataclasses
+# Typed row dataclasses
 # ---------------------------------------------------------------------------
+
+
+@dataclass
+class PropertyRow:
+    """A residential PropertyRecord row, ready for COPY or ORM consumption."""
+
+    account_number: str
+    address: str
+    city: str
+    zipcode: str
+    owner_name: str
+    value: float | None
+    assessed_value: float | None
+    building_area: float | None
+    land_area: float | None
+    state_class: str
+    is_residential: bool
+    is_data_ready: bool
+    street_number: str
+    street_name: str
+
+
+@dataclass
+class BuildingRow:
+    """A residential BuildingDetail row, ready for COPY or ORM consumption."""
+
+    property_id: int
+    account_number: str
+    building_number: int
+    building_type: str
+    building_style: str
+    building_class: str
+    quality_code: str
+    condition_code: str
+    year_built: int | None
+    year_remodeled: int | None
+    effective_year: int | None
+    heat_area: float | None
+    base_area: float | None
+    gross_area: float | None
+    stories: float | None
+    foundation_type: str
+    exterior_wall: str
+    roof_cover: str
+    roof_type: str
+    bedrooms: int | None
+    bathrooms: float | None
+    half_baths: int | None
+    fireplaces: int | None
+    is_active: bool
+
+
+@dataclass
+class ExtraFeatureRow:
+    """A residential ExtraFeature row, ready for COPY or ORM consumption."""
+
+    property_id: int
+    account_number: str
+    feature_number: int | None
+    feature_code: str
+    feature_description: str
+    quantity: float | None
+    length: float | None
+    width: float | None
+    quality_code: str
+    condition_code: str
+    year_built: int | None
+    value: float | None
+    is_active: bool
 
 
 @dataclass
 class RowResult:
     """A single processed row, ready for COPY or ORM consumption.
 
-    Attributes:
-        values: Field values in ``FIELD_ORDER`` order (strings for COPY,
-            already coerced; the ORM path converts as needed).
-        field_names: The ordered field names matching ``values``.
-        skip: Row was filtered (non-residential, blank account) — count and ignore.
-        invalid: Row failed validation (account not in map) — count and ignore.
+    ``row`` is the typed payload, or ``None`` when the row was filtered.
+    ``skip`` marks non-residential / blank-account rows; ``invalid`` marks
+    rows whose account is not in the residential account map.  Loaders count
+    the flags and serialize ``row``.
     """
 
-    values: list[str]
-    field_names: list[str]
+    row: PropertyRow | BuildingRow | ExtraFeatureRow | None
     skip: bool = False
     invalid: bool = False
 
 
 # ---------------------------------------------------------------------------
-# Column-source mappings (consolidated from fast_loader + transform.py)
+# Column-source mappings
 # ---------------------------------------------------------------------------
 
 REAL_ACCT_SOURCES: dict[str, list[str]] = {
@@ -110,80 +189,11 @@ EXTRA_FEATURES_SOURCES: dict[str, list[str]] = {
     "condition_code": ["cond_cd"],
     "year_built": ["act_yr"],
     "value": ["uts", "asd_val"],
-    "area": ["area"],
 }
 
 
-# Field order for each file type — matches the model's column order
-# (excluding id, timestamps, and auto-managed fields which the loader
-# or the database supplies).
-
-PROPERTY_FIELD_ORDER = [
-    "account_number",
-    "address",
-    "city",
-    "zipcode",
-    "owner_name",
-    "value",
-    "assessed_value",
-    "building_area",
-    "land_area",
-    "state_class",
-    "is_residential",
-    "is_data_ready",
-    "street_number",
-    "street_name",
-    "source_url",
-    "parcel_id",
-]
-
-BUILDING_FIELD_ORDER = [
-    "property_id",
-    "account_number",
-    "building_number",
-    "building_type",
-    "building_style",
-    "building_class",
-    "quality_code",
-    "condition_code",
-    "year_built",
-    "year_remodeled",
-    "effective_year",
-    "heat_area",
-    "base_area",
-    "gross_area",
-    "stories",
-    "foundation_type",
-    "exterior_wall",
-    "roof_cover",
-    "roof_type",
-    "bedrooms",
-    "bathrooms",
-    "half_baths",
-    "fireplaces",
-    "is_active",
-]
-
-EXTRA_FEATURE_FIELD_ORDER = [
-    "property_id",
-    "account_number",
-    "feature_number",
-    "feature_code",
-    "feature_description",
-    "quantity",
-    "area",
-    "length",
-    "width",
-    "quality_code",
-    "condition_code",
-    "year_built",
-    "value",
-    "is_active",
-]
-
-
 # ---------------------------------------------------------------------------
-# Shared type coercers (consolidated from fast_loader + model_loader)
+# Shared type coercers
 # ---------------------------------------------------------------------------
 
 
@@ -269,7 +279,6 @@ def iter_property_rows(filepath: Path) -> Iterator[RowResult]:
     with ``skip=True`` so callers can count them.
     """
     reader, fh = _open_text(filepath)
-    field_names = list(PROPERTY_FIELD_ORDER)
     try:
         header = next(reader, None)
         if header is None:
@@ -280,12 +289,12 @@ def iter_property_rows(filepath: Path) -> Iterator[RowResult]:
         for row in reader:
             acct = coerce_str(get(row, "account_number"), 20)
             if not acct:
-                yield RowResult(values=[], field_names=field_names, skip=True)
+                yield RowResult(row=None, skip=True)
                 continue
 
             state_class = normalize_state_class(get(row, "state_class"))[:10]
             if not is_residential_state_class(state_class):
-                yield RowResult(values=[], field_names=field_names, skip=True)
+                yield RowResult(row=None, skip=True)
                 continue
 
             street_num = coerce_str(get(row, "street_number"), 16)
@@ -298,25 +307,24 @@ def iter_property_rows(filepath: Path) -> Iterator[RowResult]:
             site_addr = coerce_str(get(row, "site_addr_1"), 255)
             address = site_addr or f"{street_num} {street_name}".strip()
 
-            values = [
-                acct,
-                address[:255],
-                coerce_str(get(row, "city"), 100),
-                coerce_str(get(row, "zipcode"), 20),
-                coerce_str(get(row, "owner_name"), 255),
-                coerce_decimal(get(row, "value")),
-                coerce_decimal(get(row, "assessed_value")),
-                coerce_decimal(get(row, "building_area")),
-                coerce_decimal(get(row, "land_area")),
-                state_class,
-                True,  # is_residential
-                False,  # is_data_ready
-                street_num,
-                street_name,
-                "",  # source_url
-                "",  # parcel_id
-            ]
-            yield RowResult(values=values, field_names=field_names)
+            yield RowResult(
+                row=PropertyRow(
+                    account_number=acct,
+                    address=address[:255],
+                    city=coerce_str(get(row, "city"), 100),
+                    zipcode=coerce_str(get(row, "zipcode"), 20),
+                    owner_name=coerce_str(get(row, "owner_name"), 255),
+                    value=coerce_decimal(get(row, "value")),
+                    assessed_value=coerce_decimal(get(row, "assessed_value")),
+                    building_area=coerce_decimal(get(row, "building_area")),
+                    land_area=coerce_decimal(get(row, "land_area")),
+                    state_class=state_class,
+                    is_residential=True,
+                    is_data_ready=False,
+                    street_number=street_num,
+                    street_name=street_name,
+                )
+            )
     finally:
         fh.close()
 
@@ -339,7 +347,6 @@ def iter_building_rows(
     yielded with ``invalid=True``.
     """
     reader, fh = _open_text(filepath)
-    field_names = list(BUILDING_FIELD_ORDER)
     try:
         header = next(reader, None)
         if header is None:
@@ -350,19 +357,20 @@ def iter_building_rows(
         for row in reader:
             acct = coerce_str(get(row, "account_number"), 20)
             if not acct:
-                yield RowResult(values=[], field_names=field_names, skip=True)
+                yield RowResult(row=None, skip=True)
                 continue
 
             property_id = account_map.get(acct)
             if not property_id:
-                yield RowResult(values=[], field_names=field_names, invalid=True)
+                yield RowResult(row=None, invalid=True)
                 continue
 
             bnum = coerce_int(get(row, "building_number"))
             if bnum is None:
                 bnum = 1
 
-            # Fixtures-based bed/bath resolution
+            # Fixtures-based bed/bath resolution: fixtures.txt wins, fall back
+            # to the building_res.txt columns when fixtures are absent.
             bedroom_count = fixtures_aggregator.get_bedroom_count(acct, bnum)
             if bedroom_count > 0:
                 bedrooms_val = bedroom_count
@@ -385,33 +393,34 @@ def iter_building_rows(
             else:
                 half_baths_val = coerce_int(get(row, "half_baths"))
 
-            values = [
-                str(property_id),
-                acct,
-                str(bnum),
-                coerce_str(get(row, "building_type"), 10),
-                coerce_str(get(row, "building_style"), 10),
-                coerce_str(get(row, "building_class"), 10),
-                coerce_str(get(row, "quality_code"), 10),
-                coerce_str(get(row, "condition_code"), 10),
-                coerce_int(get(row, "year_built")),
-                coerce_int(get(row, "year_remodeled")),
-                coerce_int(get(row, "effective_year")),
-                coerce_decimal(get(row, "heat_area")),
-                coerce_decimal(get(row, "base_area")),
-                coerce_decimal(get(row, "gross_area")),
-                coerce_decimal(get(row, "stories")),
-                coerce_str(get(row, "foundation_type"), 10),
-                coerce_str(get(row, "exterior_wall"), 10),
-                coerce_str(get(row, "roof_cover"), 10),
-                coerce_str(get(row, "roof_type"), 10),
-                bedrooms_val,
-                bathrooms_val,
-                half_baths_val,
-                coerce_int(get(row, "fireplaces")),
-                True,  # is_active
-            ]
-            yield RowResult(values=values, field_names=field_names)
+            yield RowResult(
+                row=BuildingRow(
+                    property_id=property_id,
+                    account_number=acct,
+                    building_number=bnum,
+                    building_type=coerce_str(get(row, "building_type"), 10),
+                    building_style=coerce_str(get(row, "building_style"), 10),
+                    building_class=coerce_str(get(row, "building_class"), 10),
+                    quality_code=coerce_str(get(row, "quality_code"), 10),
+                    condition_code=coerce_str(get(row, "condition_code"), 10),
+                    year_built=coerce_int(get(row, "year_built")),
+                    year_remodeled=coerce_int(get(row, "year_remodeled")),
+                    effective_year=coerce_int(get(row, "effective_year")),
+                    heat_area=coerce_decimal(get(row, "heat_area")),
+                    base_area=coerce_decimal(get(row, "base_area")),
+                    gross_area=coerce_decimal(get(row, "gross_area")),
+                    stories=coerce_decimal(get(row, "stories")),
+                    foundation_type=coerce_str(get(row, "foundation_type"), 10),
+                    exterior_wall=coerce_str(get(row, "exterior_wall"), 10),
+                    roof_cover=coerce_str(get(row, "roof_cover"), 10),
+                    roof_type=coerce_str(get(row, "roof_type"), 10),
+                    bedrooms=bedrooms_val,
+                    bathrooms=bathrooms_val,
+                    half_baths=half_baths_val,
+                    fireplaces=coerce_int(get(row, "fireplaces")),
+                    is_active=True,
+                )
+            )
     finally:
         fh.close()
 
@@ -425,14 +434,13 @@ def iter_extra_feature_rows(
     filepath: Path,
     account_map: dict[str, int],
 ) -> Iterator[RowResult]:
-    """Yield RowResults for ExtraFeature rows from extra_features.txt.
+    """Yield RowResults for ExtraFeature rows from extra_features*.txt.
 
     ``account_map`` maps account numbers to PropertyRecord ids (residential
     only). Rows whose account is not in ``account_map`` are yielded with
     ``invalid=True``.
     """
     reader, fh = _open_text(filepath)
-    field_names = list(EXTRA_FEATURE_FIELD_ORDER)
     try:
         header = next(reader, None)
         if header is None:
@@ -443,30 +451,30 @@ def iter_extra_feature_rows(
         for row in reader:
             acct = coerce_str(get(row, "account_number"), 20)
             if not acct:
-                yield RowResult(values=[], field_names=field_names, skip=True)
+                yield RowResult(row=None, skip=True)
                 continue
 
             property_id = account_map.get(acct)
             if not property_id:
-                yield RowResult(values=[], field_names=field_names, invalid=True)
+                yield RowResult(row=None, invalid=True)
                 continue
 
-            values = [
-                str(property_id),
-                acct,
-                coerce_int(get(row, "feature_number")),
-                coerce_str(get(row, "feature_code"), 10),
-                coerce_str(get(row, "feature_description"), 255),
-                coerce_decimal(get(row, "quantity")),
-                coerce_decimal(get(row, "area")),
-                coerce_decimal(get(row, "length")),
-                coerce_decimal(get(row, "width")),
-                coerce_str(get(row, "quality_code"), 10),
-                coerce_str(get(row, "condition_code"), 10),
-                coerce_int(get(row, "year_built")),
-                coerce_decimal(get(row, "value")),
-                True,  # is_active
-            ]
-            yield RowResult(values=values, field_names=field_names)
+            yield RowResult(
+                row=ExtraFeatureRow(
+                    property_id=property_id,
+                    account_number=acct,
+                    feature_number=coerce_int(get(row, "feature_number")),
+                    feature_code=coerce_str(get(row, "feature_code"), 10),
+                    feature_description=coerce_str(get(row, "feature_description"), 255),
+                    quantity=coerce_decimal(get(row, "quantity")),
+                    length=coerce_decimal(get(row, "length")),
+                    width=coerce_decimal(get(row, "width")),
+                    quality_code=coerce_str(get(row, "quality_code"), 10),
+                    condition_code=coerce_str(get(row, "condition_code"), 10),
+                    year_built=coerce_int(get(row, "year_built")),
+                    value=coerce_decimal(get(row, "value")),
+                    is_active=True,
+                )
+            )
     finally:
         fh.close()
