@@ -23,6 +23,7 @@ from counties.common.contracts import (
     SearchField,
     Subject,
 )
+from counties.common.geometry import coordinates_for
 from counties.common.history import assessment_history_rows
 from counties.common.tax_impact import calculate_tax_impact
 from counties.harris.models import BuildingDetail, ExtraFeature, PropertyRecord
@@ -195,11 +196,7 @@ class HarrisAdapter(CountyAdapter):
         if prop.zipcode:
             locality = f"{locality} {prop.zipcode}".strip()
 
-        from counties.common.tax_models import ParcelGeometry
-
-        geom = ParcelGeometry.objects.filter(
-            account_number=prop.account_number, county="harris"
-        ).first()
+        location = coordinates_for(prop.account_number, county="harris")
 
         return Subject(
             key=prop.account_number,
@@ -215,7 +212,7 @@ class HarrisAdapter(CountyAdapter):
             year_built=building.year_built if building else None,
             quality_code=building.quality_code if building else None,
             features=format_feature_list(features),
-            has_location=bool(geom and geom.latitude and geom.longitude),
+            has_location=location is not None,
         )
 
     def find_comps(

@@ -6,9 +6,6 @@ Uses location (lat/long), size, age, and features to find similar properties.
 from math import asin, cos, radians, sin, sqrt
 from typing import TYPE_CHECKING, Optional
 
-from django.db.models import ExpressionWrapper, F, FloatField, Value
-from django.db.models.functions import ACos, Cos, Greatest, Least, Radians, Sin
-
 from .models import BuildingDetail, ExtraFeature, PropertyRecord
 
 if TYPE_CHECKING:
@@ -16,11 +13,6 @@ if TYPE_CHECKING:
 
 
 QUALITY_RANK = {"X": 7, "A": 6, "B": 5, "C": 4, "D": 3, "E": 2, "F": 1}
-
-# How many nearest parcels find_similar_properties() pulls out of the database
-# to score in Python. Every one of these slots must buy a scoreable comp, which
-# is why the property-backed filter is applied before the cap, not after.
-MAX_GEOMETRY_CANDIDATES = 2000
 
 RESIDENTIAL_WEIGHTS = {
     "living_area": 24.0,
@@ -504,17 +496,14 @@ def find_similar_properties(
     so the bounding-box filter and distance annotation run against that table,
     then the top candidates are joined back to PropertyRecord by account_number.
     """
-    from counties.common.tax_models import ParcelGeometry
+    from counties.common.geometry import coordinates_for, nearest_parcels
 
-    # Get the target's coordinates from ParcelGeometry
-    target_geom = ParcelGeometry.objects.filter(
-        account_number=account_number, county="harris"
-    ).first()
-    if not target_geom or not target_geom.latitude or not target_geom.longitude:
+    location = coordinates_for(account_number, county="harris")
+    if location is None:
         return []
 
-    target_lat = float(target_geom.latitude)
-    target_lon = float(target_geom.longitude)
+    target_lat = float(location.latitude)
+    target_lon = float(location.longitude)
 
     # Get the target property record
     try:
@@ -528,96 +517,32 @@ def find_similar_properties(
     target_building = target.buildings.filter(is_active=True).first()  # type: ignore[attr-defined]
     target_features = list(target.extra_features.filter(is_active=True))  # type: ignore[attr-defined]
 
-    # Calculate bounding box for initial index-based filtering
-    # 1 degree lat =~ 69 miles
-    lat_range = max_distance_miles / 69.0
-    lon_range = max_distance_miles / (69.0 * cos(radians(target_lat)))
-
-    min_lat = target_lat - lat_range
-    max_lat = target_lat + lat_range
-    min_lon = target_lon - lon_range
-    max_lon = target_lon + lon_range
-
-    # 1. Base filter by bounding box on ParcelGeometry (uses lat/long index)
-    geom_candidates = ParcelGeometry.objects.filter(
-        county="harris",
-        latitude__gte=min_lat,
-        latitude__lte=max_lat,
-        longitude__gte=min_lon,
-        longitude__lte=max_lon,
-        latitude__isnull=False,
-        longitude__isnull=False,
-    ).exclude(account_number=account_number)
-
-    # 2. Restrict to parcels that actually have a property behind them.
-    #
-    # This has to happen before the cap at (4), not after. ParcelGeometry holds
-    # every parcel in HCAD's shapefile — commercial and vacant included —
-    # whereas PropertyRecord is residential-only, so a geometry row with no
-    # property would otherwise consume one of the 2000 candidate slots and then
-    # be dropped at the join below, silently shrinking the pool of real comps.
-    #
-    # The heat_area branch already provides this transitively: BuildingDetail
-    # rows are only written for accounts in the residential account map. Adding
-    # the PropertyRecord semi-join on top of it measured ~2x slower (265ms vs
-    # 128ms on 1.17M rows) because the planner stops driving from the bounding
-    # box, so the two are deliberately exclusive rather than stacked.
-    candidate_accts: list[str]
+    # Restrict candidates to parcels with a property behind them. When the
+    # subject has a living area we can be stricter and require a building in a
+    # comparable size range -- BuildingDetail rows only exist for accounts in
+    # the residential map, so that is property-backed too, and narrowing here
+    # rather than stacking both restrictions keeps the planner driving from the
+    # bounding box (measured 128ms against 265ms when both were applied).
     if target_building and target_building.heat_area:
-        min_area = float(target_building.heat_area) * 0.5
-        max_area = float(target_building.heat_area) * 1.5
-
-        matching_buildings = BuildingDetail.objects.filter(
-            is_active=True, heat_area__gte=min_area, heat_area__lte=max_area
+        backed_by = BuildingDetail.objects.filter(
+            is_active=True,
+            heat_area__gte=float(target_building.heat_area) * 0.5,
+            heat_area__lte=float(target_building.heat_area) * 1.5,
         ).values("account_number")
-
-        geom_candidates = geom_candidates.filter(account_number__in=matching_buildings)
     else:
-        geom_candidates = geom_candidates.filter(
-            account_number__in=PropertyRecord.objects.values("account_number")
-        )
+        backed_by = PropertyRecord.objects.values("account_number")
 
-    # 3. Annotate with distance calculation and filter
-    # Formula: 3959 * acos(cos(radians(lat1)) * cos(radians(lat2)) * cos(radians(long2) - radians(long1)) + sin(radians(lat1)) * sin(radians(lat2)))
-
-    target_lat_rad = radians(target_lat)
-    target_lon_rad = radians(target_lon)
-
-    geom_candidates = (
-        geom_candidates.annotate(
-            distance=ExpressionWrapper(
-                3959.0
-                * ACos(
-                    Least(
-                        1.0,
-                        Greatest(
-                            -1.0,
-                            Cos(Value(target_lat_rad))
-                            * Cos(Radians(F("latitude")))
-                            * Cos(Radians(F("longitude")) - Value(target_lon_rad))
-                            + Sin(Value(target_lat_rad)) * Sin(Radians(F("latitude"))),
-                        ),
-                    )
-                ),
-                output_field=FloatField(),
-            )
-        )
-        .filter(distance__lte=max_distance_miles)
-        .order_by("distance")
+    distance_map = nearest_parcels(
+        location,
+        county="harris",
+        within_miles=max_distance_miles,
+        backed_by=backed_by,
+        exclude_account=account_number,
     )
-
-    # 4. Cap the candidates we process in Python. Every row that survives to
-    # here is property-backed (see 2), so all the slots buy a real comp.
-    geom_candidates = geom_candidates[:MAX_GEOMETRY_CANDIDATES]
-
-    # Evaluate the geometry queryset to get account_numbers + distances
-    geom_list = list(geom_candidates.values("account_number", "distance"))
-
-    if not geom_list:
+    if not distance_map:
         return []
 
-    candidate_accts = [g["account_number"] for g in geom_list]
-    distance_map = {g["account_number"]: g["distance"] for g in geom_list}
+    candidate_accts = list(distance_map)
 
     # Bulk fetch the property records for these candidates
     candidate_list = list(PropertyRecord.objects.filter(account_number__in=candidate_accts))

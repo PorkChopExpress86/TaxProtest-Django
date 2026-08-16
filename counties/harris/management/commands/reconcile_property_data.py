@@ -13,7 +13,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.db.models import Exists, OuterRef
 
-from counties.common.tax_models import ParcelGeometry
+from counties.common.geometry import coordinates_exist
 from counties.harris.etl import link_orphaned_records
 from counties.harris.etl_pipeline.readiness import refresh_property_readiness
 from counties.harris.models import BuildingDetail, ExtraFeature, PropertyRecord
@@ -168,21 +168,11 @@ class Command(BaseCommand):
             bathrooms__isnull=False,
         )
 
-        # Coordinates live in ParcelGeometry now, but they still have to be
-        # resolved per row *without* pulling the whole table into memory — this
-        # command streams with .iterator() precisely because PropertyRecord is
-        # ~1.2M rows, and a Python set of every account with coordinates would
-        # give that memory straight back.
-        has_geometry = ParcelGeometry.objects.filter(
-            account_number=OuterRef("account_number"),
-            county="harris",
-            latitude__isnull=False,
-            longitude__isnull=False,
-        )
-
+        # Resolved per row in SQL, not via a Python set: this command streams
+        # with .iterator() precisely because PropertyRecord runs to ~1.2M rows.
         queryset = PropertyRecord.objects.annotate(
             has_ready_building=Exists(ready_buildings),
-            has_coords=Exists(has_geometry),
+            has_coords=coordinates_exist(county="harris"),
         ).only("pk", "account_number", "state_class", "is_residential")
 
         results = {

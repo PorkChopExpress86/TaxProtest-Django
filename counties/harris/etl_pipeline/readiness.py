@@ -15,6 +15,7 @@ import logging
 from django.db import connection
 from django.db.models import Exists, OuterRef
 
+from counties.common.geometry import coordinates_exist
 from counties.harris.models import BuildingDetail, PropertyRecord
 
 logger = logging.getLogger(__name__)
@@ -105,17 +106,9 @@ def refresh_property_readiness() -> dict:
             cursor.execute(_SET_NEWLY_READY)
             results["ready_properties_changed"] = cursor.rowcount
     else:
-        from counties.common.tax_models import ParcelGeometry
-
-        accounts_with_coords = ParcelGeometry.objects.filter(
-            county="harris", latitude__isnull=False, longitude__isnull=False
-        ).values_list("account_number", flat=True)
-
         should_be_ready = (
-            PropertyRecord.objects.filter(
-                is_residential=True,
-                account_number__in=accounts_with_coords,
-            )
+            PropertyRecord.objects.filter(is_residential=True)
+            .filter(coordinates_exist(county="harris"))
             .annotate(has_ready_building=Exists(ready_buildings))
             .filter(has_ready_building=True)
         )
