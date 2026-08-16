@@ -13,30 +13,10 @@ from __future__ import annotations
 import os
 
 from django.core.management.base import BaseCommand, CommandError
-from django.db.models import Count, Exists, OuterRef
+from django.db.models import Count
 
-from counties.common.tax_models import ParcelGeometry
+from counties.common.geometry import coordinates_exist
 from counties.harris.models import BuildingDetail, ExtraFeature, PropertyRecord
-
-
-def _harris_geometry_for_property():
-    """Correlated subquery: does this PropertyRecord have Harris coordinates?
-
-    Deliberately ``Exists`` rather than ``account_number__in=<queryset>``.
-    Django renders the ``__in`` form as ``IN (subquery)`` and its negation as
-    ``NOT IN (subquery)``, and ``NOT IN`` has to honour SQL's three-valued
-    logic — a single NULL in the subquery makes the whole predicate NULL — so
-    Postgres cannot use a hash anti-join and falls back to re-checking the
-    subquery per row. Against 1.17M properties x 1.55M parcels that took over
-    an hour without completing; ``NOT EXISTS`` plans as a hash anti-join and
-    returns in well under a second.
-    """
-    return ParcelGeometry.objects.filter(
-        account_number=OuterRef("account_number"),
-        county="harris",
-        latitude__isnull=False,
-        longitude__isnull=False,
-    )
 
 
 def _env_float(name: str, default: float) -> float:
@@ -143,7 +123,7 @@ class Command(BaseCommand):
             )
             residential_missing_gis = (
                 PropertyRecord.objects.filter(is_residential=True)
-                .filter(~Exists(_harris_geometry_for_property()))
+                .filter(~coordinates_exist(county="harris"))
                 .count()
             )
 
@@ -341,7 +321,7 @@ class Command(BaseCommand):
         elif residential_prop_count > 0:
             with_coords = (
                 PropertyRecord.objects.filter(is_residential=True)
-                .filter(Exists(_harris_geometry_for_property()))
+                .filter(coordinates_exist(county="harris"))
                 .count()
             )
             coord_pct = with_coords / residential_prop_count * 100

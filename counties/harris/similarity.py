@@ -504,17 +504,15 @@ def find_similar_properties(
     so the bounding-box filter and distance annotation run against that table,
     then the top candidates are joined back to PropertyRecord by account_number.
     """
+    from counties.common.geometry import coordinates_for
     from counties.common.tax_models import ParcelGeometry
 
-    # Get the target's coordinates from ParcelGeometry
-    target_geom = ParcelGeometry.objects.filter(
-        account_number=account_number, county="harris"
-    ).first()
-    if not target_geom or not target_geom.latitude or not target_geom.longitude:
+    location = coordinates_for(account_number, county="harris")
+    if location is None:
         return []
 
-    target_lat = float(target_geom.latitude)
-    target_lon = float(target_geom.longitude)
+    target_lat = float(location.latitude)
+    target_lon = float(location.longitude)
 
     # Get the target property record
     try:

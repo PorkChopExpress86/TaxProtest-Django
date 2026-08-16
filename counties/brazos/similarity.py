@@ -504,19 +504,20 @@ def find_similar_properties(
     data/similarity.py::find_similar_properties's DB-side haversine
     bounding-box approach against ParcelGeometry, then joins back to
     PropertyAccount by prop_id."""
+    from counties.common.geometry import coordinates_for
     from counties.common.tax_models import ParcelGeometry
 
     target = PropertyAccount.objects.order_by("-tax_year").filter(prop_id=prop_id).first()
     if not target:
         return []
 
-    target_geom = ParcelGeometry.objects.filter(account_number=prop_id, county="brazos").first()
-    if not target_geom or not target_geom.latitude or not target_geom.longitude:
+    location = coordinates_for(prop_id, county="brazos")
+    if location is None:
         return []
 
     tax_year = target.tax_year
-    target_lat = float(target_geom.latitude)
-    target_lon = float(target_geom.longitude)
+    target_lat = float(location.latitude)
+    target_lon = float(location.longitude)
 
     target_improvement, target_building = _primary_improvement(prop_id, tax_year)
     target_features = list(PropertyExtraFeature.objects.filter(prop_id=prop_id, tax_year=tax_year))
