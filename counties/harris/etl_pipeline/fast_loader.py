@@ -81,7 +81,6 @@ def _property_fields(row: PropertyRow, now_iso: str) -> list[str]:
         _s(row.street_number, 16),
         _s(row.street_name, 128),
         "",  # source_url — NOT NULL with no source column; matches the ORM path
-        "",  # parcel_id — deprecated NOT NULL column, dropped in a follow-up
         _copy_field(now_iso),  # created_at
         _copy_field(now_iso),  # updated_at
     ]
@@ -146,14 +145,11 @@ def copy_load_property_records(rows: Iterator[RowResult], truncate: bool = True)
             loaded += 1
             yield "\t".join(_property_fields(result.row, now_iso)) + "\n"
 
-    # parcel_id is deprecated and unread, but still NOT NULL until the
-    # follow-up migration drops it — COPY bypasses Django, so it must be
-    # supplied explicitly or the load fails on the not-null constraint.
     columns = (
         "account_number, address, city, zipcode, owner_name, value, "
         "assessed_value, building_area, land_area, state_class, "
         "is_residential, is_data_ready, street_number, street_name, "
-        "source_url, parcel_id, created_at, updated_at"
+        "source_url, created_at, updated_at"
     )
 
     with transaction.atomic(), connection.cursor() as cursor:
