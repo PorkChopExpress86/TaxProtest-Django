@@ -90,15 +90,7 @@ def load_gis_parcels(
             f"Could not find account number column in shapefile. Available columns: {list(gdf.columns)}"
         )
 
-    # Identify parcel ID column
-    parcel_col = None
-    for col in gdf.columns:
-        col_upper = col.upper()
-        if col_upper in ["PARCEL_ID", "PARCELID", "PRCL_ID", "HCAD_NUM"]:
-            parcel_col = col
-            break
-
-    updates_by_account: dict[str, tuple[float, float, str]] = {}
+    updates_by_account: dict[str, tuple[float, float]] = {}
 
     logger.info("Processing %s parcel records from %s", len(gdf), shapefile_path)
 
@@ -112,9 +104,7 @@ def load_gis_parcels(
         if lat is None or lon is None or _is_nan(lat) or _is_nan(lon):
             continue
 
-        parcel_raw = getattr(row, parcel_col) if parcel_col else ""
-        parcel_id = str(parcel_raw).strip() if parcel_raw is not None else ""
-        updates_by_account[account_num] = (lat, lon, parcel_id)
+        updates_by_account[account_num] = (lat, lon)
 
     if not updates_by_account:
         logger.info("No valid GIS rows found in %s", shapefile_path)
@@ -132,39 +122,34 @@ def load_gis_parcels(
                 CREATE TEMP TABLE _gis_staging (
                     account_number varchar(20) PRIMARY KEY,
                     latitude numeric,
-                    longitude numeric,
-                    parcel_id varchar(50)
+                    longitude numeric
                 ) ON COMMIT DROP
                 """)
 
             # Escape before joining: COPY text format reads a backslash as an
-            # escape and a tab as a column break, so an account or parcel id
-            # carrying either would shift every following column on that row.
-            # HCAD's ids are numeric today, but the shapefile is third-party
-            # input and this costs nothing.
+            # escape and a tab as a column break, so an account number carrying
+            # either would shift every following column on that row. HCAD's ids
+            # are numeric today, but the shapefile is third-party input and this
+            # costs nothing.
             def _copy_rows() -> Iterable[str]:
-                for account_num, (lat, lon, parcel_id) in updates_by_account.items():
-                    acct = _copy_field(account_num)
-                    parcel = _copy_field(parcel_id)
-                    yield f"{acct}\t{lat}\t{lon}\t{parcel}\n"
+                for account_num, (lat, lon) in updates_by_account.items():
+                    yield f"{_copy_field(account_num)}\t{lat}\t{lon}\n"
 
             copy_buffer = io.StringIO("".join(_copy_rows()))
             cursor.copy_expert(
-                "COPY _gis_staging (account_number, latitude, longitude, parcel_id) "
+                "COPY _gis_staging (account_number, latitude, longitude) "
                 "FROM STDIN WITH (FORMAT text)",
                 copy_buffer,
             )
 
             cursor.execute("""
                 INSERT INTO data_parcelgeometry
-                    (account_number, county, latitude, longitude, parcel_id, created_at, updated_at)
-                SELECT s.account_number, 'harris', s.latitude, s.longitude, s.parcel_id, NOW(), NOW()
+                    (account_number, county, latitude, longitude, created_at, updated_at)
+                SELECT s.account_number, 'harris', s.latitude, s.longitude, NOW(), NOW()
                 FROM _gis_staging s
                 ON CONFLICT (account_number, county) DO UPDATE
                 SET latitude = EXCLUDED.latitude,
                     longitude = EXCLUDED.longitude,
-                    parcel_id = CASE WHEN EXCLUDED.parcel_id <> '' THEN EXCLUDED.parcel_id
-                                ELSE data_parcelgeometry.parcel_id END,
                     updated_at = NOW()
             """)
             total_upserted = cursor.rowcount
@@ -173,13 +158,12 @@ def load_gis_parcels(
 
         batch: list[ParcelGeometry] = []
         with transaction.atomic():
-            for account_num, (lat, lon, parcel_id) in updates_by_account.items():
+            for account_num, (lat, lon) in updates_by_account.items():
                 geom = ParcelGeometry(
                     account_number=account_num,
                     county="harris",
                     latitude=lat,
                     longitude=lon,
-                    parcel_id=parcel_id,
                 )
                 batch.append(geom)
 
@@ -187,7 +171,7 @@ def load_gis_parcels(
                     ParcelGeometry.objects.bulk_create(
                         batch,
                         update_conflicts=True,
-                        update_fields=["latitude", "longitude", "parcel_id", "updated_at"],
+                        update_fields=["latitude", "longitude", "updated_at"],
                         unique_fields=["account_number", "county"],
                         batch_size=chunk_size,
                     )
@@ -199,7 +183,7 @@ def load_gis_parcels(
                 ParcelGeometry.objects.bulk_create(
                     batch,
                     update_conflicts=True,
-                    update_fields=["latitude", "longitude", "parcel_id", "updated_at"],
+                    update_fields=["latitude", "longitude", "updated_at"],
                     unique_fields=["account_number", "county"],
                     batch_size=chunk_size,
                 )

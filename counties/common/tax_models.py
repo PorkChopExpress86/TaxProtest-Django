@@ -130,7 +130,7 @@ class PropertyJurisdictionExemption(models.Model):
 
 
 class ParcelGeometry(models.Model):
-    """Parcel coordinates (latitude, longitude, parcel_id) keyed by account.
+    """Parcel coordinates (latitude, longitude) keyed by account.
 
     Lives in a standalone table rather than inline on the property model so
     the GIS ETL can INSERT at any time — it doesn't depend on the property
@@ -158,8 +158,11 @@ class ParcelGeometry(models.Model):
     longitude = models.DecimalField(
         max_digits=10, decimal_places=7, null=True, blank=True, db_index=True
     )
-    # No db_index: parcel_id is carried for reference and never filtered on.
-    parcel_id = models.CharField(max_length=50, blank=True)
+    # No parcel_id: the shapefiles carry no identifier distinct from the
+    # account number. HCAD's parcel id column *is* HCAD_NUM, so the value was a
+    # verbatim copy of account_number on all 1,546,749 Harris rows, and Brazos
+    # wrote an empty string on all 77,235. Nothing read it. Re-add it only if a
+    # source ever supplies a genuinely different identifier.
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

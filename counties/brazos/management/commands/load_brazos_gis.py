@@ -314,7 +314,6 @@ class Command(BaseCommand):
                     county="brazos",
                     latitude=lat,
                     longitude=lon,
-                    parcel_id="",
                 )
             )
         if geom_batch:
