@@ -5,7 +5,7 @@ Coordinates all ETL stages with strict validation, robust error handling,
 and metrics collection.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -20,7 +20,8 @@ from .download import DownloadManager, DownloadResult
 from .extract import ExtractManager, ExtractResult
 from .logging import ETLLogger
 from .model_loader import ModelLoader
-from .transform import DataTransformer, get_schema
+from .row_reader import RowResult, iter_building_rows, iter_extra_feature_rows, iter_property_rows
+from .transform import DataTransformer
 
 
 class PipelineStage(Enum):
@@ -131,6 +132,8 @@ class ETLOrchestrator:
         # Initialize managers
         self.download_manager = DownloadManager(self.config, self.logger)
         self.extract_manager = ExtractManager(self.config, self.logger)
+        # Kept for direct callers of the generic transformer. The core Harris
+        # import path below uses row_reader for all three property-data files.
         self.transformer = DataTransformer(self.config, self.logger)
         self.model_loader = ModelLoader(self.config, self.logger)
 
@@ -567,6 +570,26 @@ class ETLOrchestrator:
         self._run_stage_callbacks(PipelineStage.LOAD, stage_result)
         return stage_result
 
+    def _iter_translated_rows(
+        self,
+        schema_name: str,
+        file_path: Path,
+    ) -> Iterator[RowResult]:
+        """Return the shared translation stream for one supported source file."""
+        if schema_name == "real_acct":
+            return iter_property_rows(file_path)
+
+        account_map = self.model_loader._get_account_to_property_map()
+        if schema_name == "building_res":
+            return iter_building_rows(
+                file_path,
+                account_map,
+                self.model_loader.fixtures_aggregator,
+            )
+        if schema_name == "extra_features":
+            return iter_extra_feature_rows(file_path, account_map)
+        raise ValueError(f"Unsupported translated schema: {schema_name}")
+
     def _process_data_file(
         self,
         file_path: Path,
@@ -591,31 +614,29 @@ class ETLOrchestrator:
             self.logger.debug(f"No schema for {file_path.name}, skipping")
             return {"loaded": 0, "invalid": 0, "skipped": 0, "failed": 0}
 
-        schema = get_schema(schema_name)
-        if not schema:
-            return {"loaded": 0, "invalid": 0, "skipped": 0, "failed": 0}
-
         self.logger.info(f"Processing {file_path.name} with schema {schema_name}")
 
         if skip_load:
-            # Stream transform-only counts without materializing all rows.
-            transformed = 0
-            for record in self.transformer.iter_records(file_path, schema):
-                if record is not None:
-                    transformed += 1
-            return {"loaded": transformed, "invalid": 0, "skipped": 0, "failed": 0}
+            counts = {"loaded": 0, "invalid": 0, "skipped": 0, "failed": 0}
+            for row in self._iter_translated_rows(schema_name, file_path):
+                if row.skip:
+                    counts["skipped"] += 1
+                elif row.invalid:
+                    counts["invalid"] += 1
+                else:
+                    counts["loaded"] += 1
+            return counts
 
-        # Fast path: real_acct/building_res stream straight into PostgreSQL via
-        # COPY, skipping the generic DictReader/transform_row + bulk_create path.
+        rows = self._iter_translated_rows(schema_name, file_path)
         from .fast_loader import (
-            copy_load_building_details,
-            copy_load_property_records,
+            copy_load_building_rows,
+            copy_load_property_rows,
             postgres_backend,
         )
 
         if postgres_backend() and schema_name in ("real_acct", "building_res"):
             if schema_name == "real_acct":
-                fast = copy_load_property_records(file_path, truncate=truncate)
+                fast = copy_load_property_rows(rows, truncate=truncate)
                 # PropertyRecord ids changed; rebuild the account caches that the
                 # building/extra-feature loaders depend on.
                 self.model_loader.reset_cache()
@@ -625,12 +646,7 @@ class ETLOrchestrator:
                     "skipped": fast["skipped"],
                     "failed": 0,
                 }
-            fast = copy_load_building_details(
-                file_path,
-                account_map=self.model_loader._get_account_to_property_map(),
-                fixtures_aggregator=self.model_loader.fixtures_aggregator,
-                truncate=truncate,
-            )
+            fast = copy_load_building_rows(rows, truncate=truncate)
             return {
                 "loaded": fast["loaded"],
                 "invalid": fast["invalid"],
@@ -638,16 +654,12 @@ class ETLOrchestrator:
                 "failed": 0,
             }
 
-        # Transform and load records to Django models
-        # Filter out None values from the generator
-        records_gen = (r for r in self.transformer.iter_records(file_path, schema) if r is not None)
-
         if schema_name == "real_acct":
-            result = self.model_loader.load_property_records(records_gen, truncate=truncate)
+            result = self.model_loader.load_property_records(rows, truncate=truncate)
         elif schema_name == "building_res":
-            result = self.model_loader.load_building_details(records_gen, truncate=truncate)
+            result = self.model_loader.load_building_details(rows, truncate=truncate)
         elif schema_name == "extra_features":
-            result = self.model_loader.load_extra_features(records_gen, truncate=truncate)
+            result = self.model_loader.load_extra_features(rows, truncate=truncate)
         else:
             return {"loaded": 0, "invalid": 0, "skipped": 0, "failed": 0}
 

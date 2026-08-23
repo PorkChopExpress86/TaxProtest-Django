@@ -1,70 +1,19 @@
 #!/usr/bin/env bash
-# Smart deployment script for TaxProtest-Django.
+# Deployment module for TaxProtest-Django.
 #
-# Runs on the remote Linux server after the GitHub Actions workflow
-# SSHes in. Classifies the set of files changed on origin/main vs. HEAD
-# and chooses the lightest-weight rebuild that still picks up the changes.
-#
-# Classification order:
-#   1. FULL — any infrastructure / schema / settings change triggers a
-#      full container rebuild via `docker compose up -d --build`.
-#   2. PARTIAL — only ETL / parser / loader code changed; rebuild just
-#      the `etl` service.
-#   3. SKIP — only docs, comments, or CI config changed; `git pull` only.
-#   4. Default (anything else) — FULL rebuild (safe).
-#
-# After every classification, `git pull --ff-only` runs and dangling
-# Docker image layers are pruned.
-#
-# Migrations and `collectstatic` are intentionally NOT run here — they
-# are handled by scripts/entrypoint.sh on container start and at Docker
-# build time respectively. Keeping that responsibility in one place
-# avoids double-application races.
+# The external entry point snapshots the deployment-complete and target
+# revisions, chooses a plan, synchronizes the checkout, then re-executes the
+# target revision of this module to apply that plan. This keeps deployment
+# policy local and makes policy changes effective in the delivery run.
 
 set -euo pipefail
 
-# --- preconditions -----------------------------------------------------------
+readonly STATE_DIRECTORY_NAME=".deploy-state"
+readonly STATE_FILE_NAME="last-complete-revision"
+# A full image with baked HCAD data can take roughly eleven minutes to start.
+readonly READINESS_ATTEMPTS=180
+readonly READINESS_DELAY_SECONDS=5
 
-for cmd in git docker; do
-    if ! command -v "$cmd" >/dev/null 2>&1; then
-        echo "ERROR: required command not found in PATH: $cmd" >&2
-        exit 1
-    fi
-done
-
-if ! docker compose version >/dev/null 2>&1; then
-    echo "ERROR: 'docker compose' plugin not available; install Docker Compose v2+" >&2
-    exit 1
-fi
-
-# --- locate the project root -------------------------------------------------
-
-PROJECT_PATH="${PROJECT_PATH:-$(pwd)}"
-if [[ ! -d "$PROJECT_PATH/.git" ]]; then
-    echo "ERROR: $PROJECT_PATH is not a git working tree" >&2
-    exit 1
-fi
-cd "$PROJECT_PATH"
-
-echo "==> Deploying in $PROJECT_PATH"
-echo "    HEAD:   $(git rev-parse --short HEAD)"
-echo "    remote: $(git rev-parse --short origin/main 2>/dev/null || echo 'unknown')"
-
-# --- classify changed files ---------------------------------------------------
-
-git fetch --quiet origin main
-
-if git diff --quiet HEAD origin/main --; then
-    echo "==> No changes between HEAD and origin/main. Nothing to deploy."
-    exit 0
-fi
-
-mapfile -t CHANGED_FILES < <(git diff --name-only HEAD origin/main)
-echo "==> Changed files since HEAD:"
-printf '    - %s\n' "${CHANGED_FILES[@]}"
-
-# Full-rebuild patterns: infrastructure, schema, or anything the
-# web/worker/beat services must pick up on restart.
 FULL_PATTERNS=(
     '^docker-compose\.yml$'
     '^docker-compose\.prod\.yml$'
@@ -74,8 +23,8 @@ FULL_PATTERNS=(
     '^requirements/'
     '^counties/[^/]+/migrations/'
     '^counties/[^/]+/models\.py$'
-    # The shared web layer and every county's adapter/urls are imported by
-    # web/worker/beat, so any change there needs a full rebuild. Matched
+    # The shared web module and every county's adapter/urls are imported by
+    # web/worker/beat, so any change needs a full rebuild. Matched
     # module-by-module so counties/common/tests/ stays skippable.
     '^counties/common/[^/]+\.py$'
     '^counties/common/templatetags/'
@@ -97,17 +46,8 @@ FULL_PATTERNS=(
     '^static/'
 )
 
-# Partial-rebuild patterns: code that is only run by the `etl` service.
-# If web/worker/beat ever import any of these paths, classify as FULL.
-PARTIAL_PATTERNS=(
-    '^counties/[^/]+/management/'
-    '^counties/[^/]+/parsers/'
-    '^counties/[^/]+/etl\.py$'
-    '^counties/[^/]+/etl_pipeline/'
-    '^counties/[^/]+/residential\.py$'
-)
-
-# Skip patterns: docs, CI config, tests, repo housekeeping only.
+# Only paths with no runtime effect can skip a rebuild. All former PARTIAL
+# paths are deliberately FULL until process ownership can be proven exactly.
 SKIP_PATTERNS=(
     '\.md$'
     '^docs/'
@@ -125,8 +65,21 @@ SKIP_PATTERNS=(
     '^taxprotest/var/'
 )
 
+die() {
+    echo "ERROR: $*" >&2
+    exit 1
+}
+
+usage() {
+    cat >&2 <<'EOF'
+Usage: scripts/deploy.sh
+       scripts/deploy.sh --apply --from <revision> --to <revision> [--force-full <reason>]
+EOF
+}
+
 matches_any() {
-    local file="$1"; shift
+    local file="$1"
+    shift
     local pattern
     for pattern in "$@"; do
         if [[ "$file" =~ $pattern ]]; then
@@ -136,82 +89,261 @@ matches_any() {
     return 1
 }
 
-# Start undecided: seeding this with "FULL" made the check below always true,
-# leaving the PARTIAL and SKIP branches unreachable and every deploy a full
-# rebuild.
-classification="UNDECIDED"
-for f in "${CHANGED_FILES[@]}"; do
-    if matches_any "$f" "${FULL_PATTERNS[@]}"; then
-        classification="FULL"
-        break
-    fi
-done
+require_dependencies() {
+    local command_name
+    for command_name in git docker; do
+        command -v "$command_name" >/dev/null 2>&1 || die "required command not found in PATH: $command_name"
+    done
 
-if [[ "$classification" == "FULL" ]]; then
-    :
-else
-    # PARTIAL only if every change is in PARTIAL_PATTERNS (no mixed changes).
-    all_partial=true
-    for f in "${CHANGED_FILES[@]}"; do
-        if ! matches_any "$f" "${PARTIAL_PATTERNS[@]}"; then
-            all_partial=false
-            break
+    docker compose version >/dev/null 2>&1 || die "'docker compose' plugin not available; install Docker Compose v2+"
+}
+
+initialize_project() {
+    PROJECT_PATH="${PROJECT_PATH:-$(pwd)}"
+    cd "$PROJECT_PATH"
+    git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "$PROJECT_PATH is not a git working tree"
+    PROJECT_PATH="$(git rev-parse --show-toplevel)"
+    export PROJECT_PATH
+
+    STATE_DIRECTORY="$PROJECT_PATH/$STATE_DIRECTORY_NAME"
+    STATE_FILE="$STATE_DIRECTORY/$STATE_FILE_NAME"
+}
+
+read_deployment_complete_revision() {
+    [[ -f "$STATE_FILE" ]] || return 1
+
+    local revision
+    IFS= read -r revision < "$STATE_FILE" || true
+    if [[ ! "$revision" =~ ^[0-9a-f]{40}$ ]] || ! git cat-file -e "${revision}^{commit}" 2>/dev/null; then
+        echo "==> Warning: deployment state is invalid; selecting a full rebuild." >&2
+        return 1
+    fi
+
+    printf '%s\n' "$revision"
+}
+
+write_deployment_complete_revision() {
+    local target_revision="$1"
+    local temporary_file
+
+    umask 077
+    mkdir -p "$STATE_DIRECTORY"
+    temporary_file="$STATE_FILE.tmp.$$"
+    printf '%s\n' "$target_revision" > "$temporary_file"
+    mv -f "$temporary_file" "$STATE_FILE"
+}
+
+worktree_is_clean() {
+    git diff --quiet -- && git diff --cached --quiet --
+}
+
+synchronize_checkout() {
+    local target_revision="$1"
+    local current_revision
+
+    current_revision="$(git rev-parse HEAD)"
+    if [[ "$current_revision" == "$target_revision" ]] && worktree_is_clean; then
+        return
+    fi
+
+    if worktree_is_clean && git merge-base --is-ancestor "$current_revision" "$target_revision"; then
+        echo "==> Fast-forwarding checkout to ${target_revision:0:12}"
+        git merge --ff-only "$target_revision"
+    else
+        echo "==> Warning: checkout cannot fast-forward cleanly. Resetting to ${target_revision:0:12}..."
+        git reset --hard "$target_revision"
+    fi
+
+    [[ "$(git rev-parse HEAD)" == "$target_revision" ]] || die "checkout did not reach the target revision"
+    worktree_is_clean || die "checkout remains modified after synchronization"
+}
+
+classify_revision_range() {
+    local from_revision="$1"
+    local target_revision="$2"
+    local -a changed_files=()
+    local file
+    local all_skip=true
+
+    mapfile -t changed_files < <(git diff --name-only "$from_revision" "$target_revision")
+    if ((${#changed_files[@]} == 0)); then
+        printf '%s\n' "SKIP"
+        return
+    fi
+
+    {
+        echo "==> Changed files since deployment-complete revision:"
+        printf '    - %s\n' "${changed_files[@]}"
+    } >&2
+
+    for file in "${changed_files[@]}"; do
+        if matches_any "$file" "${FULL_PATTERNS[@]}"; then
+            printf '%s\n' "FULL"
+            return
+        fi
+        if ! matches_any "$file" "${SKIP_PATTERNS[@]}"; then
+            all_skip=false
         fi
     done
-    if $all_partial; then
-        classification="PARTIAL"
+
+    if [[ "$all_skip" == true ]]; then
+        printf '%s\n' "SKIP"
     else
-        # Everything else: SKIP only if every change is in SKIP_PATTERNS.
-        all_skip=true
-        for f in "${CHANGED_FILES[@]}"; do
-            if ! matches_any "$f" "${SKIP_PATTERNS[@]}"; then
-                all_skip=false
-                break
-            fi
-        done
-        if $all_skip; then
-            classification="SKIP"
-        else
-            classification="FULL"
-        fi
+        printf '%s\n' "FULL"
     fi
-fi
+}
 
-echo "==> Classification: $classification"
+wait_for_readiness() {
+    local attempt
 
-# --- pull + rebuild ----------------------------------------------------------
-
-# Attempt fast-forward pull first; if history diverged (e.g. after history sanitization/force push),
-# reset hard to origin/main to align the production tree with remote.
-if ! git pull --ff-only origin main 2>/dev/null; then
-    echo "==> Warning: git pull --ff-only failed (diverged history). Resetting hard to origin/main..."
-    git reset --hard origin/main
-fi
-
-case "$classification" in
-    FULL)
-        echo "==> Full rebuild: docker compose up -d --build"
-        docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
-        ;;
-    PARTIAL)
-        echo "==> Partial rebuild: docker compose up -d --build etl"
-        if docker compose -f docker-compose.yml config --services 2>/dev/null | grep -qx 'etl'; then
-            docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build etl
-            echo "    NOTE: only the 'etl' service image was rebuilt."
-            echo "          web/worker/beat are running the previous image until their next restart."
-        else
-            echo "    WARN: 'etl' service is not defined in compose; falling back to full rebuild."
-            docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+    echo "==> Waiting for web readiness"
+    for ((attempt = 1; attempt <= READINESS_ATTEMPTS; attempt++)); do
+        if docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T web \
+            python -c 'from urllib.request import urlopen; response = urlopen("http://127.0.0.1:8000/readiness/", timeout=5); raise SystemExit(0 if response.status == 200 else 1)' \
+            >/dev/null 2>&1; then
+            echo "==> Web readiness confirmed"
+            return
         fi
-        ;;
-    SKIP)
-        echo "==> Skipping rebuild (docs/comments/CI only)."
-        ;;
-esac
+        if ((attempt % 12 == 0)); then
+            echo "    readiness is not available yet (attempt $attempt/$READINESS_ATTEMPTS)"
+        fi
+        sleep "$READINESS_DELAY_SECONDS"
+    done
 
-# --- image prune -------------------------------------------------------------
+    die "web did not become ready before the deployment timeout"
+}
 
-echo "==> Pruning dangling build layers"
-docker image prune -f
+apply_plan() {
+    local from_revision="$1"
+    local target_revision="$2"
+    local force_full_reason="$3"
+    local classification
 
-echo "==> Deploy complete"
+    [[ "$(git rev-parse HEAD)" == "$target_revision" ]] || die "target checkout changed before applying the deployment plan"
+
+    if [[ -n "$force_full_reason" ]]; then
+        classification="FULL"
+        echo "==> Classification: FULL ($force_full_reason)"
+    else
+        classification="$(classify_revision_range "$from_revision" "$target_revision")"
+        echo "==> Classification: $classification"
+    fi
+
+    case "$classification" in
+        FULL)
+            echo "==> Full rebuild: docker compose up -d --build"
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+            wait_for_readiness
+            echo "==> Pruning dangling build layers"
+            docker image prune -f
+            ;;
+        SKIP)
+            echo "==> Skipping rebuild (runtime-irrelevant changes only)."
+            ;;
+        *)
+            die "unsupported deployment classification: $classification"
+            ;;
+    esac
+
+    write_deployment_complete_revision "$target_revision"
+    echo "==> Deployment complete: ${target_revision:0:12}"
+}
+
+plan_deployment() {
+    local target_revision
+    local deployment_complete_revision
+    local from_revision
+    local force_full_reason=""
+    local current_revision
+    local -a apply_arguments
+
+    git fetch --quiet origin main
+    target_revision="$(git rev-parse origin/main)"
+    current_revision="$(git rev-parse HEAD)"
+
+    echo "==> Deploying in $PROJECT_PATH"
+    echo "    HEAD:   ${current_revision:0:12}"
+    echo "    target: ${target_revision:0:12}"
+
+    if deployment_complete_revision="$(read_deployment_complete_revision)"; then
+        from_revision="$deployment_complete_revision"
+        if ! git merge-base --is-ancestor "$from_revision" "$target_revision"; then
+            force_full_reason="nonlinear-history"
+        fi
+    else
+        from_revision="$target_revision"
+        force_full_reason="missing-deployment-state"
+    fi
+
+    if [[ -z "$force_full_reason" && "$from_revision" == "$target_revision" && "$current_revision" == "$target_revision" ]] && worktree_is_clean; then
+        echo "==> Target is already deployment-complete. Nothing to deploy."
+        return
+    fi
+
+    if [[ -z "$force_full_reason" && "$from_revision" == "$target_revision" ]]; then
+        force_full_reason="checkout-drift"
+    fi
+    if ! worktree_is_clean && [[ -z "$force_full_reason" ]]; then
+        force_full_reason="modified-checkout"
+    fi
+
+    synchronize_checkout "$target_revision"
+
+    apply_arguments=(--apply --from "$from_revision" --to "$target_revision")
+    if [[ -n "$force_full_reason" ]]; then
+        apply_arguments+=(--force-full "$force_full_reason")
+    fi
+
+    exec "$PROJECT_PATH/scripts/deploy.sh" "${apply_arguments[@]}"
+}
+
+MODE="plan"
+FROM_REVISION=""
+TARGET_REVISION=""
+FORCE_FULL_REASON=""
+
+while (($# > 0)); do
+    case "$1" in
+        --apply)
+            [[ "$MODE" == "plan" ]] || die "--apply may be provided only once"
+            MODE="apply"
+            shift
+            ;;
+        --from)
+            (($# >= 2)) || die "--from requires a revision"
+            FROM_REVISION="$2"
+            shift 2
+            ;;
+        --to)
+            (($# >= 2)) || die "--to requires a revision"
+            TARGET_REVISION="$2"
+            shift 2
+            ;;
+        --force-full)
+            (($# >= 2)) || die "--force-full requires a reason"
+            FORCE_FULL_REASON="$2"
+            shift 2
+            ;;
+        --help|-h)
+            usage
+            exit 0
+            ;;
+        *)
+            usage
+            die "unknown argument: $1"
+            ;;
+    esac
+done
+
+require_dependencies
+initialize_project
+
+if [[ "$MODE" == "apply" ]]; then
+    [[ -n "$FROM_REVISION" && -n "$TARGET_REVISION" ]] || die "--apply requires --from and --to"
+    git cat-file -e "${FROM_REVISION}^{commit}" 2>/dev/null || die "unknown source revision: $FROM_REVISION"
+    git cat-file -e "${TARGET_REVISION}^{commit}" 2>/dev/null || die "unknown target revision: $TARGET_REVISION"
+    apply_plan "$FROM_REVISION" "$TARGET_REVISION" "$FORCE_FULL_REASON"
+else
+    [[ -z "$FROM_REVISION$TARGET_REVISION$FORCE_FULL_REASON" ]] || die "internal deployment arguments require --apply"
+    plan_deployment
+fi

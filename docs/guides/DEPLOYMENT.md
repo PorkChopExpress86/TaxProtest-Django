@@ -1,9 +1,9 @@
 # Deployment Guide
 
 This project deploys automatically to a Linux production server via GitHub
-Actions on every push to `main`. The workflow SSHes into the server and
-executes `scripts/deploy.sh`, which classifies the diff and applies the
-lightest-weight rebuild that still picks up the changes.
+Actions on every push to `main`. The workflow SSHes into the server, fetches
+only the target deployment module, and runs it. That module owns the revision
+snapshot, checkout update, classification, rebuild, and readiness verification.
 
 ## 1. Server prerequisites
 
@@ -96,34 +96,37 @@ cd "$PROJECT_PATH"
 ## 6. What `scripts/deploy.sh` actually does
 
 1. Verifies `git` and `docker compose` are available; exits hard if not.
-2. `cd "$PROJECT_PATH"` and `git fetch origin main`.
-3. Computes the changed-file set via `git diff --name-only HEAD origin/main`.
-4. Classifies each commit as one of:
-   - **FULL** — any change to `docker-compose*.yml`, `Dockerfile`,
-     `requirements*.txt`, `taxprotest/settings.py`, Django migrations,
-     `counties/harris/models.py`, `counties/brazos/models.py`, templates, or static
-     files. Runs `docker compose up -d --build`.
-   - **PARTIAL** — only BCAD/ETL-only code changed (`counties/brazos/management/`,
-     `counties/brazos/parsers/`, `counties/harris/etl_pipeline/`, `counties/harris/etl.py`).
-     Runs `docker compose up -d --build etl`. If the `etl` service is
-     not defined, falls back to FULL.
-   - **SKIP** — only docs, comments, `.github/`, tests, or repo
-     housekeeping files changed. No container restart.
-5. `git pull --ff-only origin main`.
-6. Executes the chosen rebuild (or no-op for SKIP).
-7. `docker image prune -f` to remove dangling build layers.
+2. Reads `.deploy-state/last-complete-revision`, the last
+   deployment-complete revision, then fetches `origin/main` as the target.
+   The first run, an invalid marker, or non-linear history selects **FULL**.
+3. Captures that revision pair before changing the checkout. It fast-forwards a
+   clean checkout to the target or resets it hard to the target when it cannot
+   fast-forward cleanly.
+4. Re-executes the target revision's `scripts/deploy.sh` with the captured
+   revision pair, so a deployment-policy change takes effect in the deployment
+   that delivers it. The Action starts from the fetched target module for the
+   same reason, including during this rollout's bootstrap.
+5. Classifies the pair as one of:
+    - **FULL** — any change to `docker-compose*.yml`, `Dockerfile`,
+      `requirements*.txt`, `taxprotest/settings.py`, Django migrations,
+      `counties/harris/models.py`, `counties/brazos/models.py`, templates, or static
+      files. All current ETL and parser changes also select FULL because the
+      long-lived processes can import them.
+    - **SKIP** — only docs, comments, `.github/`, tests, or repo
+      housekeeping files changed. No container restart.
+6. For **FULL**, runs `docker compose up -d --build`, waits for the web
+   process to return success from `/readiness/`, then prunes dangling images.
+7. Writes the target revision to the marker only after **FULL** passes
+   readiness or **SKIP** completes. A build or readiness failure leaves the
+   prior marker in place for safe recovery on the next run.
 
 Migrations and `collectstatic` are intentionally **not** run here; they
 are handled by `scripts/entrypoint.sh` on container start and at Docker
 build time respectively.
 
-Anything matching none of the three pattern sets falls through to **FULL**,
-which is deliberate: an unrecognised path is assumed to matter. `deploy.sh`
-itself is one of those, so editing the deploy script triggers a full rebuild.
-
-Note also that the classification runs from the copy of `deploy.sh` already on
-the server, *before* `git pull` — so a change to the classification logic takes
-effect on the deploy after the one that delivers it.
+Anything matching neither pattern set falls through to **FULL**, which is
+deliberate: an unrecognised path is assumed to matter. `deploy.sh` itself is
+one of those, so editing the deployment module triggers a full rebuild.
 
 ## 7. Troubleshooting
 
@@ -131,8 +134,9 @@ effect on the deploy after the one that delivers it.
 |---|---|---|
 | `Permission denied` running `docker compose` on the server | `$SERVER_USER` not in the `docker` group | `sudo usermod -aG docker $SERVER_USER` and re-login |
 | Workflow fails at `Validate SSH connectivity` | Wrong host/port/key/secret | Re-check secrets; re-test `ssh -i ~/.ssh/github_deploy -p $PORT $USER@$HOST` from a workstation |
-| `non-fast-forward` from `git pull --ff-only` | Server's local commits ahead of `origin/main` | `git fetch origin && git reset --hard origin/main` on the server (or resolve manually) |
-| Rebuild succeeds but the new code is not active in `web` | A PARTIAL classification ran; `web`/`worker`/`beat` still hold the previous image | Re-run the deploy or `docker compose up -d --no-deps web worker beat` |
+| Checkout is reset during a deploy | The checkout has local commits, tracked edits, or non-linear history | Expected recovery behavior: the deployment module resets tracked Git content to the fetched target. Keep server configuration in ignored files such as `.env`. |
+| First deploy performs a full rebuild | No deployment-complete revision exists yet | Expected bootstrap behavior; successful completion creates `.deploy-state/last-complete-revision`. |
+| Deploy times out waiting for `/readiness/` | The web process, database, or Redis did not become ready | Inspect `docker compose logs web postgres redis`; the prior deployment-complete revision remains recorded, so the next deploy retries safely. |
 | First deploy fails with `set -euo pipefail` and a cryptic line | `docker compose` plugin missing on the server | Install Compose v2: `apt install docker-compose-plugin` |
 | Workflow fails instantly (0s) with "This run likely failed because of a workflow file issue" and no job is created | The workflow references a context where it is not allowed — `secrets` in `jobs.<id>.name`, for example. Schema validation happens before any job exists, so there are no step logs to read | Validate the file; keep `secrets.*` to `steps`, `env`, and `with` |
 | `Set up SSH key` hangs the full `ssh-keyscan` timeout, then fails | Nothing reached the server's SSH port from the public internet. Testing from your own LAN proves little — most routers hairpin internal traffic on a path that outside traffic never takes | Test from off-network (phone on cellular). Check for a second NAT (ISP modem in front of the router) and for CGNAT |

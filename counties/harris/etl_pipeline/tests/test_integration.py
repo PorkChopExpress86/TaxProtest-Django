@@ -8,12 +8,14 @@ They use mocking for network operations but test real file operations.
 import os
 import shutil
 import tempfile
+import unittest
 import zipfile
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
 from django.core.management.base import CommandError as DjangoCommandError
+from django.db import connection
 from django.test import TestCase
 
 from counties.harris.etl_pipeline import ETLConfig, ETLOrchestrator
@@ -22,6 +24,11 @@ from counties.harris.etl_pipeline.download import DownloadManager
 from counties.harris.etl_pipeline.extract import ExtractManager
 from counties.harris.etl_pipeline.model_loader import ModelLoader
 from counties.harris.etl_pipeline.orchestrator import PipelineStatus
+from counties.harris.etl_pipeline.row_reader import (
+    iter_building_rows,
+    iter_extra_feature_rows,
+    iter_property_rows,
+)
 from counties.harris.etl_pipeline.transform import (
     EXTRA_FEATURES_SCHEMA,
     REAL_ACCT_SCHEMA,
@@ -301,25 +308,10 @@ class TestModelLoaderExtraFeatures(TestCase):
         )
         loader = ModelLoader(self.config, batch_size=10)
 
+        path = Path(self.tmpdir) / "extra_features.txt"
+        path.write_text("acct\tbld_num\tcd\nACC2\t1\tRRP5\n", encoding="latin-1")
         result = loader.load_extra_features(
-            iter(
-                [
-                    {
-                        "account_number": "ACC2",
-                        "feature_number": 1,
-                        "feature_code": "RRP5",
-                        "feature_description": None,
-                        "quantity": None,
-                        "area": None,
-                        "length": None,
-                        "width": None,
-                        "quality_code": None,
-                        "condition_code": None,
-                        "year_built": None,
-                        "value": None,
-                    }
-                ]
-            ),
+            iter_extra_feature_rows(path, {"ACC2": prop.id}),
             truncate=True,
         )
 
@@ -516,22 +508,47 @@ class TestETLOrchestratorIntegration(TestCase):
         )
         extract_path = self.config.extract_dir / "Real_acct_owner"
         extract_path.mkdir(parents=True, exist_ok=True)
-        (extract_path / "real_acct.txt").write_text("acct\\tstr_num\\tstr\\nA\\t1\\tMAIN\\n")
+        source_file = extract_path / "real_acct.txt"
+        source_file.write_text("acct\tstate_class\nA\tA1\n", encoding="latin-1")
 
         orchestrator = ETLOrchestrator(self.config)
-        with patch.object(
-            orchestrator.transformer,
-            "iter_records",
-            return_value=iter([{"account_number": "A"}, {"account_number": "B"}]),
-        ) as mocked_iter:
-            result = orchestrator._process_data_file(
-                extract_path / "real_acct.txt",
-                skip_load=True,
-                truncate=True,
-            )
+        result = orchestrator._process_data_file(source_file, skip_load=True, truncate=True)
 
-        mocked_iter.assert_called_once()
-        assert result == {"loaded": 2, "invalid": 0, "skipped": 0, "failed": 0}
+        assert result == {"loaded": 1, "invalid": 0, "skipped": 0, "failed": 0}
+
+    @unittest.skipUnless(
+        connection.vendor == "postgresql",
+        "full Harris import smoke requires the PostgreSQL COPY adapter",
+    )
+    def test_shared_reader_smoke_loads_all_core_harris_files(self):
+        extract_path = self.config.extract_dir / "shared_reader_smoke"
+        extract_path.mkdir(parents=True, exist_ok=True)
+        property_file = extract_path / "real_acct.txt"
+        property_file.write_text(
+            "acct\tsite_addr_1\tsite_addr_3\tstate_class\ttot_appr_val\n"
+            "P1\t100 MAIN ST\t77001\tA1\t250000\n",
+            encoding="latin-1",
+        )
+        building_file = extract_path / "building_res.txt"
+        building_file.write_text(
+            "acct\tbld_num\timprv_type\tfull_bath\thalf_bath\nP1\t1\tA1\t1.5\t1\n",
+            encoding="latin-1",
+        )
+        feature_file = extract_path / "extra_features_detail1.txt"
+        feature_file.write_text(
+            "acct\tbld_num\tcd\tdscr\tarea\tunits\nP1\t0\tRRP5\tGunite Pool\t231\t1\n",
+            encoding="latin-1",
+        )
+
+        orchestrator = ETLOrchestrator(self.config)
+        property_result = orchestrator._process_data_file(property_file, truncate=True)
+        building_result = orchestrator._process_data_file(building_file, truncate=True)
+        feature_result = orchestrator._process_data_file(feature_file, truncate=True)
+
+        assert property_result == {"loaded": 1, "invalid": 0, "skipped": 0, "failed": 0}
+        assert building_result == {"loaded": 1, "invalid": 0, "skipped": 0, "failed": 0}
+        assert feature_result == {"loaded": 1, "invalid": 0, "skipped": 0, "failed": 0}
+        assert ExtraFeature.objects.get(account_number="P1").area == 231
 
     def test_resolve_schema_name_maps_extra_feature_detail_files(self):
         assert ETLOrchestrator._resolve_schema_name("extra_features_detail1") == "extra_features"
@@ -642,39 +659,22 @@ class TestModelLoaderIntegration(TestCase):
 
     def test_load_property_records_skips_non_residential_rows(self):
         loader = ModelLoader(self.config, batch_size=10)
-        records = iter(
-            [
-                {
-                    "account_number": "RES001",
-                    "state_class": "A1",
-                    "street_number": "100",
-                    "street_name": "MAIN",
-                    "street_suffix": "ST",
-                    "site_addr_1": "100 MAIN ST",
-                    "city": "HOUSTON",
-                    "zipcode": "77001",
-                    "owner_name": "OWNER A",
-                    "value": 250000,
-                    "assessed_value": 240000,
-                    "building_area": 2000,
-                    "land_area": 5000,
-                },
-                {
-                    "account_number": "NONRES001",
-                    "state_class": "F1",
-                    "street_number": "200",
-                    "street_name": "COMMERCE",
-                    "street_suffix": "ST",
-                    "site_addr_1": "200 COMMERCE ST",
-                    "city": "HOUSTON",
-                    "zipcode": "77002",
-                    "owner_name": "OWNER B",
-                    "value": 750000,
-                },
-            ]
+        path = Path(self.tmpdir) / "real_acct.txt"
+        path.write_text(
+            "acct\tstate_class\tstr_num\tstr\tstr_sfx\tsite_addr_1\tsite_addr_2\t"
+            "site_addr_3\tmailto\ttot_appr_val\tassessed_val\tbld_ar\tland_ar\n"
+            "RES001\tA1\t100\tMAIN\tST\t100 MAIN ST\tHOUSTON\t77001\tOWNER A\t"
+            "250000\t240000\t2000\t5000\n"
+            "NONRES001\tF1\t200\tCOMMERCE\tST\t200 COMMERCE ST\tHOUSTON\t77002\t"
+            "OWNER B\t750000\t\t\t\n",
+            encoding="latin-1",
         )
 
-        result = loader.load_property_records(records, truncate=True, batch_id="test_batch")
+        result = loader.load_property_records(
+            iter_property_rows(path),
+            truncate=True,
+            batch_id="test_batch",
+        )
 
         assert result.records_loaded == 1
         assert result.records_skipped == 1
@@ -704,26 +704,19 @@ class TestModelLoaderIntegration(TestCase):
             is_residential=False,
         )
 
-        records = iter(
-            [
-                {
-                    "account_number": "RESB001",
-                    "building_number": 1,
-                    "building_type": "A1",
-                    "quality_code": "C",
-                    "condition_code": "AV",
-                },
-                {
-                    "account_number": "NONRESB001",
-                    "building_number": 1,
-                    "building_type": "A1",
-                    "quality_code": "C",
-                    "condition_code": "AV",
-                },
-            ]
+        path = Path(self.tmpdir) / "building_res.txt"
+        path.write_text(
+            "acct\tbld_num\timprv_type\tqa_cd\tcndtn_cd\n"
+            "RESB001\t1\tA1\tC\tAV\n"
+            "NONRESB001\t1\tA1\tC\tAV\n",
+            encoding="latin-1",
         )
 
-        result = loader.load_building_details(records, truncate=True, batch_id="building_test")
+        result = loader.load_building_details(
+            iter_building_rows(path, {"RESB001": residential.id}, loader.fixtures_aggregator),
+            truncate=True,
+            batch_id="building_test",
+        )
 
         assert result.records_loaded == 1
         assert result.records_invalid == 1

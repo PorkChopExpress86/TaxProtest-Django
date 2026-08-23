@@ -1,64 +1,78 @@
-"""Single source of truth for parsing HCAD source files into loadable rows.
+"""Translate HCAD source files into database-neutral load rows.
 
-Both the COPY path (``fast_loader.copy_load``) and the ORM path
-(``model_loader.ModelLoader.bulk_load``) consume the same
-``RowResult`` generators from this module.  This eliminates the
-~325 lines of duplicated column mappings, type coercers, and
-business logic that previously lived in both ``fast_loader.py`` and
-``model_loader.py``.
+This module is the single source of truth for the three Harris property-data
+files. It owns source-column aliases, parsing, filtering, account linkage,
+and derived fields. The PostgreSQL COPY and ORM modules are persistence
+adapters that consume :class:`RowResult` objects.
 
-Each ``iter_*_rows`` function:
-1. Opens the source file as a positional ``csv.reader`` (QUOTE_NONE).
-2. Resolves source columns to field indices from the header row.
-3. Applies business logic (residential filter, address building,
-   account validation, fixtures-based bed/bath resolution).
-4. Yields ``RowResult`` instances whose ``values`` list is in
-   the same order as the corresponding ``FIELD_ORDER`` tuple.
+Each ``iter_*_rows`` function reads a latin-1, tab-delimited HCAD file with
+literal quote handling, then yields rows in the matching ``*_FIELD_ORDER``.
+Rows that are intentionally filtered or cannot be linked to a residential
+property carry an explicit status rather than being silently discarded.
 """
 
 from __future__ import annotations
 
 import csv
-import logging
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Protocol, TextIO, TypeAlias
 
 from counties.harris.residential import is_residential_state_class, normalize_state_class
 
-logger = logging.getLogger(__name__)
+RowValue: TypeAlias = str | int | float | bool | None
 
 
-# ---------------------------------------------------------------------------
-# Public dataclasses
-# ---------------------------------------------------------------------------
+class FixtureLookup(Protocol):
+    """The fixture-derived counts needed while translating building rows."""
+
+    def get_bedroom_count(self, account_number: str, building_number: int) -> int: ...
+
+    def get_bathroom_count(self, account_number: str, building_number: int) -> float: ...
+
+    def get_fixtures(self, account_number: str, building_number: int) -> Mapping[str, float]: ...
 
 
-@dataclass
+@dataclass(frozen=True)
 class RowResult:
-    """A single processed row, ready for COPY or ORM consumption.
+    """One translated row for either persistence adapter.
 
-    Attributes:
-        values: Field values in ``FIELD_ORDER`` order (strings for COPY,
-            already coerced; the ORM path converts as needed).
-        field_names: The ordered field names matching ``values``.
-        skip: Row was filtered (non-residential, blank account) — count and ignore.
-        invalid: Row failed validation (account not in map) — count and ignore.
+    ``values`` match ``field_names`` in order and contain database-neutral
+    Python values. ``skip`` represents an intentional filter and ``invalid``
+    means the source row cannot be linked to a residential property.
     """
 
-    values: list[str]
-    field_names: list[str]
+    values: tuple[RowValue, ...]
+    field_names: tuple[str, ...]
     skip: bool = False
     invalid: bool = False
 
+    def __post_init__(self) -> None:
+        if self.skip and self.invalid:
+            raise ValueError("A translated row cannot be both skipped and invalid")
+        if not self.skip and not self.invalid and len(self.values) != len(self.field_names):
+            raise ValueError("Translated row values must match their field names")
+
+    @property
+    def is_loadable(self) -> bool:
+        """Return whether this row is ready for a persistence adapter."""
+        return not self.skip and not self.invalid
+
+    def as_dict(self) -> dict[str, RowValue]:
+        """Return the translated fields keyed by their canonical model names."""
+        if not self.is_loadable:
+            raise ValueError("Filtered and invalid rows do not have loadable values")
+        return dict(zip(self.field_names, self.values, strict=True))
+
 
 # ---------------------------------------------------------------------------
-# Column-source mappings (consolidated from fast_loader + transform.py)
+# Column-source aliases are the union historically accepted by the COPY and
+# ORM paths. First match wins, case-insensitively.
 # ---------------------------------------------------------------------------
 
 REAL_ACCT_SOURCES: dict[str, list[str]] = {
-    "account_number": ["acct", "account_num", "account"],
+    "account_number": ["acct", "account_num", "account_number", "account"],
     "owner_name": ["mailto", "owner_name", "owner"],
     "street_number": ["str_num", "site_addr_num"],
     "street_name": ["str", "site_addr_street"],
@@ -118,7 +132,7 @@ EXTRA_FEATURES_SOURCES: dict[str, list[str]] = {
 # (excluding id, timestamps, and auto-managed fields which the loader
 # or the database supplies).
 
-PROPERTY_FIELD_ORDER = [
+PROPERTY_FIELD_ORDER = (
     "account_number",
     "address",
     "city",
@@ -135,9 +149,9 @@ PROPERTY_FIELD_ORDER = [
     "street_name",
     "source_url",
     "parcel_id",
-]
+)
 
-BUILDING_FIELD_ORDER = [
+BUILDING_FIELD_ORDER = (
     "property_id",
     "account_number",
     "building_number",
@@ -162,9 +176,9 @@ BUILDING_FIELD_ORDER = [
     "half_baths",
     "fireplaces",
     "is_active",
-]
+)
 
-EXTRA_FEATURE_FIELD_ORDER = [
+EXTRA_FEATURE_FIELD_ORDER = (
     "property_id",
     "account_number",
     "feature_number",
@@ -179,11 +193,11 @@ EXTRA_FEATURE_FIELD_ORDER = [
     "year_built",
     "value",
     "is_active",
-]
+)
 
 
 # ---------------------------------------------------------------------------
-# Shared type coercers (consolidated from fast_loader + model_loader)
+# Canonical type coercers
 # ---------------------------------------------------------------------------
 
 
@@ -225,14 +239,14 @@ def coerce_decimal(value: str | None) -> float | None:
 # ---------------------------------------------------------------------------
 
 
-def _open_text(filepath: Path) -> tuple[Any, Any]:
+def _open_text(filepath: Path) -> tuple[Iterator[list[str]], TextIO]:
     """Open a HCAD data file as a tab-delimited positional csv.reader."""
     fh = open(filepath, encoding="latin-1", errors="ignore", newline="")
     reader = csv.reader(fh, delimiter="\t", quoting=csv.QUOTE_NONE)
     return reader, fh
 
 
-def _resolve_indices(header: list[str], source_names: dict[str, list[str]]) -> dict[str, int]:
+def _resolve_indices(header: list[str], source_names: Mapping[str, list[str]]) -> dict[str, int]:
     """Map each logical field to its column index using the header row."""
     lower_to_idx = {name.lower(): i for i, name in enumerate(header) if name is not None}
     indices: dict[str, int] = {}
@@ -245,7 +259,7 @@ def _resolve_indices(header: list[str], source_names: dict[str, list[str]]) -> d
     return indices
 
 
-def _make_getter(idx: dict[str, int]):
+def _make_getter(idx: Mapping[str, int]):
     """Return a positional accessor for a resolved column-index map."""
 
     def get(row: list[str], field_name: str) -> str | None:
@@ -269,7 +283,7 @@ def iter_property_rows(filepath: Path) -> Iterator[RowResult]:
     with ``skip=True`` so callers can count them.
     """
     reader, fh = _open_text(filepath)
-    field_names = list(PROPERTY_FIELD_ORDER)
+    field_names = PROPERTY_FIELD_ORDER
     try:
         header = next(reader, None)
         if header is None:
@@ -280,12 +294,12 @@ def iter_property_rows(filepath: Path) -> Iterator[RowResult]:
         for row in reader:
             acct = coerce_str(get(row, "account_number"), 20)
             if not acct:
-                yield RowResult(values=[], field_names=field_names, skip=True)
+                yield RowResult(values=(), field_names=field_names, skip=True)
                 continue
 
-            state_class = normalize_state_class(get(row, "state_class"))[:10]
+            state_class = coerce_str(normalize_state_class(get(row, "state_class")), 10)
             if not is_residential_state_class(state_class):
-                yield RowResult(values=[], field_names=field_names, skip=True)
+                yield RowResult(values=(), field_names=field_names, skip=True)
                 continue
 
             street_num = coerce_str(get(row, "street_number"), 16)
@@ -298,7 +312,7 @@ def iter_property_rows(filepath: Path) -> Iterator[RowResult]:
             site_addr = coerce_str(get(row, "site_addr_1"), 255)
             address = site_addr or f"{street_num} {street_name}".strip()
 
-            values = [
+            values = (
                 acct,
                 address[:255],
                 coerce_str(get(row, "city"), 100),
@@ -315,7 +329,7 @@ def iter_property_rows(filepath: Path) -> Iterator[RowResult]:
                 street_name,
                 "",  # source_url
                 "",  # parcel_id
-            ]
+            )
             yield RowResult(values=values, field_names=field_names)
     finally:
         fh.close()
@@ -328,8 +342,8 @@ def iter_property_rows(filepath: Path) -> Iterator[RowResult]:
 
 def iter_building_rows(
     filepath: Path,
-    account_map: dict[str, int],
-    fixtures_aggregator: Any,
+    account_map: Mapping[str, int],
+    fixtures_aggregator: FixtureLookup,
 ) -> Iterator[RowResult]:
     """Yield RowResults for BuildingDetail rows from building_res.txt.
 
@@ -339,7 +353,7 @@ def iter_building_rows(
     yielded with ``invalid=True``.
     """
     reader, fh = _open_text(filepath)
-    field_names = list(BUILDING_FIELD_ORDER)
+    field_names = BUILDING_FIELD_ORDER
     try:
         header = next(reader, None)
         if header is None:
@@ -350,12 +364,12 @@ def iter_building_rows(
         for row in reader:
             acct = coerce_str(get(row, "account_number"), 20)
             if not acct:
-                yield RowResult(values=[], field_names=field_names, skip=True)
+                yield RowResult(values=(), field_names=field_names, skip=True)
                 continue
 
             property_id = account_map.get(acct)
-            if not property_id:
-                yield RowResult(values=[], field_names=field_names, invalid=True)
+            if property_id is None:
+                yield RowResult(values=(), field_names=field_names, invalid=True)
                 continue
 
             bnum = coerce_int(get(row, "building_number"))
@@ -385,10 +399,10 @@ def iter_building_rows(
             else:
                 half_baths_val = coerce_int(get(row, "half_baths"))
 
-            values = [
-                str(property_id),
+            values = (
+                property_id,
                 acct,
-                str(bnum),
+                bnum,
                 coerce_str(get(row, "building_type"), 10),
                 coerce_str(get(row, "building_style"), 10),
                 coerce_str(get(row, "building_class"), 10),
@@ -410,7 +424,7 @@ def iter_building_rows(
                 half_baths_val,
                 coerce_int(get(row, "fireplaces")),
                 True,  # is_active
-            ]
+            )
             yield RowResult(values=values, field_names=field_names)
     finally:
         fh.close()
@@ -423,7 +437,7 @@ def iter_building_rows(
 
 def iter_extra_feature_rows(
     filepath: Path,
-    account_map: dict[str, int],
+    account_map: Mapping[str, int],
 ) -> Iterator[RowResult]:
     """Yield RowResults for ExtraFeature rows from extra_features.txt.
 
@@ -432,7 +446,7 @@ def iter_extra_feature_rows(
     ``invalid=True``.
     """
     reader, fh = _open_text(filepath)
-    field_names = list(EXTRA_FEATURE_FIELD_ORDER)
+    field_names = EXTRA_FEATURE_FIELD_ORDER
     try:
         header = next(reader, None)
         if header is None:
@@ -443,16 +457,16 @@ def iter_extra_feature_rows(
         for row in reader:
             acct = coerce_str(get(row, "account_number"), 20)
             if not acct:
-                yield RowResult(values=[], field_names=field_names, skip=True)
+                yield RowResult(values=(), field_names=field_names, skip=True)
                 continue
 
             property_id = account_map.get(acct)
-            if not property_id:
-                yield RowResult(values=[], field_names=field_names, invalid=True)
+            if property_id is None:
+                yield RowResult(values=(), field_names=field_names, invalid=True)
                 continue
 
-            values = [
-                str(property_id),
+            values = (
+                property_id,
                 acct,
                 coerce_int(get(row, "feature_number")),
                 coerce_str(get(row, "feature_code"), 10),
@@ -466,7 +480,7 @@ def iter_extra_feature_rows(
                 coerce_int(get(row, "year_built")),
                 coerce_decimal(get(row, "value")),
                 True,  # is_active
-            ]
+            )
             yield RowResult(values=values, field_names=field_names)
     finally:
         fh.close()

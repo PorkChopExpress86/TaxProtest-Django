@@ -35,6 +35,10 @@ jobs:
         if: steps.skip.outputs.skip != 'true'
         run: bash -n scripts/deploy.sh
 
+      - name: Validate deployment behavior
+        if: steps.skip.outputs.skip != 'true'
+        run: bash scripts/tests/test_deploy.sh
+
       - name: Set up SSH key
         if: steps.skip.outputs.skip != 'true'
         env:
@@ -73,4 +77,4 @@ jobs:
               -o ServerAliveInterval=30 \
               -o ServerAliveCountMax=6 \
               "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}" \
-              "cd '${{ secrets.PROJECT_PATH }}' && git fetch origin main && (git pull --ff-only origin main 2>/dev/null || git reset --hard origin/main) && ./scripts/deploy.sh"
+              "cd '${{ secrets.PROJECT_PATH }}' && git fetch --quiet origin main && mkdir -p .deploy-state && git show origin/main:scripts/deploy.sh > .deploy-state/target-deploy.sh && bash .deploy-state/target-deploy.sh && rm -f .deploy-state/target-deploy.sh"
