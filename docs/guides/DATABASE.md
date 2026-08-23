@@ -171,21 +171,21 @@ docker compose exec web python manage.py import_assessment_history
 ### Brazos County Production Path
 
 ```bash
-# 1. Load Brazos PACS appraisal data
-docker compose exec web python manage.py load_brazos_cad
+# 1. Publish the current year-matched CAD and GIS property snapshot atomically
+docker compose exec web python manage.py refresh_brazos_annual
 
-# 2. Ingest Brazos GIS parcel shapefiles
-docker compose exec web python manage.py load_brazos_gis
-
-# 3. Ingest current tax unit rates
+# 2. Ingest current tax unit rates
 docker compose exec web python manage.py import_brazos_tax_rates
 
-# 4. Ingest multi-year certified assessment history (2021-2025)
+# 3. Ingest multi-year certified assessment history (2021-2025)
 docker compose exec web python manage.py import_brazos_assessment_history --start-year 2021 --end-year 2025
 
-# 5. Validate ingested database against source files
+# 4. Validate ingested database against source files
 docker compose exec web python manage.py validate_brazos_against_source
 ```
+
+`load_brazos_cad` and `load_brazos_gis` remain available for targeted source
+recovery. They do not publish a complete annual property snapshot on their own.
 
 ---
 

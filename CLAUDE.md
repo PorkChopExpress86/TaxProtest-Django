@@ -144,8 +144,9 @@ Brazos (`counties/brazos/management/commands/`):
 
 | Command | Purpose |
 |---|---|
-| `load_brazos_cad` | Download + extract + ingest the certified BCAD archive |
-| `load_brazos_gis` | GIS coordinates from the BCAD parcel shapefile (run **after** `load_brazos_cad`) |
+| `refresh_brazos_annual` | **Production refresh:** atomically publishes a year-matched certified CAD rebuild followed by GIS enrichment |
+| `load_brazos_cad` | Targeted certified CAD source recovery; run GIS enrichment again after use |
+| `load_brazos_gis` | Targeted GIS source recovery for an already-loaded Brazos year |
 | `import_brazos_tax_rates` | Per-entity adopted tax rates |
 | `import_brazos_assessment_history` | **Multi-year assessed/appraised/market value history** (`--start-year`, `--end-year`); downloads each year's own certified archive from BCAD's decade-deep portal — no diffing, each year already carries its own values |
 | `validate_brazos_against_source` | Cross-check ingested rows against the source files |

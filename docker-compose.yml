@@ -221,9 +221,9 @@ services:
         condition: service_healthy
     command: python manage.py check_and_import_data
 
-  # One-off BCAD ETL service. Pulls the latest certified Brazos CAD
-  # archive into counties/brazos/var/, extracts it there, and ingests each
-  # APPRAISAL_*.TXT file into PostgreSQL via raw COPY.
+  # One-off BCAD ETL service. Publishes the latest year-matched Brazos CAD
+  # and GIS sources as one complete property snapshot. Archives and temporary
+  # extraction output live under counties/brazos/var/.
   # Lives under the `etl` profile so it is not started by `docker compose
   # up`; invoke explicitly with `docker compose --profile etl up etl` or
   # `docker compose up etl`.
@@ -246,7 +246,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    command: python manage.py load_brazos_cad
+    command: python manage.py refresh_brazos_annual
 
 volumes:
   pgdata:

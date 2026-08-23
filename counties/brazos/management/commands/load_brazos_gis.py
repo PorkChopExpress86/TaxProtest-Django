@@ -27,11 +27,11 @@ This command UPDATES existing PropertyAccount rows (via bulk_update, joined
 on prop_id + tax_year) rather than the delete-then-recreate pattern
 load_brazos_cad uses for the fixed-width files -- PropertyAccount rows must
 already exist (from load_brazos_cad) before this command has anything to
-join against. Always run this AFTER load_brazos_cad, and re-run it again
-any time load_brazos_cad is re-run for the same year -- load_brazos_cad's
-APPRAISAL_INFO.TXT step fully deletes and recreates PropertyAccount rows,
-which silently wipes whatever this command wrote (see load_brazos_cad's
-docstring for the ordering note).
+join against. The production entry point is ``refresh_brazos_annual``, which
+coordinates this enrichment after the CAD rebuild in one transaction. This
+low-level command remains for targeted recovery and must be run after any
+direct use of ``load_brazos_cad`` for the same year, because its
+APPRAISAL_INFO.TXT step fully recreates PropertyAccount rows.
 
 Pipeline:
   1. Scrape https://brazoscad.org/tax-information/gis/ for the latest
@@ -59,6 +59,7 @@ import logging
 import math
 import re
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -67,6 +68,7 @@ from bs4 import BeautifulSoup
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
+from counties.brazos.annual_refresh import RefreshOptions, StagePreparation, StageResult
 from counties.brazos.models import PropertyAccount
 from counties.brazos.portal import USER_AGENT, download_archive, extract_zip
 
@@ -367,52 +369,88 @@ class Command(BaseCommand):
                     years.add(int(label))
         return max(years) if years else None
 
-    def handle(self, *args, **options):
-        force: bool = options["force"]
-        skip_download: bool = options["skip_download"]
-        skip_extract: bool = options["skip_extract"]
-        dry_run: bool = options["dry_run"]
-        requested_year: int | None = options.get("year")
+    @classmethod
+    def _selected_offline_source_year(
+        cls,
+        requested_year: int | None,
+        download_dir: Path,
+        extract_root: Path,
+    ) -> int | None:
+        """Prefer a retained requested source; otherwise expose the actual newest one."""
+        if requested_year is not None:
+            archive = download_dir / f"bcad_gis_{requested_year}.zip"
+            extracted = extract_root / str(requested_year)
+            if archive.exists() or extracted.is_dir():
+                return requested_year
+        return cls._offline_archive_label(download_dir, extract_root)
 
+    def handle(self, *args, **options):
+        GisRefreshStage(self).run(
+            RefreshOptions(
+                tax_year=options.get("year"),
+                force=options["force"],
+                skip_download=options["skip_download"],
+                skip_extract=options["skip_extract"],
+                dry_run=options["dry_run"],
+                keep_extracted=options["keep_extracted"],
+            )
+        )
+
+
+@dataclass(frozen=True)
+class _GisStagePayload:
+    shapefile_path: Path | None
+    extract_dir: Path
+
+
+class GisRefreshStage:
+    """Source-specific GIS adapter for an individual or annual refresh."""
+
+    name = "gis"
+
+    def __init__(self, command: Command):
+        self._command = command
+
+    def prepare(self, options: RefreshOptions) -> StagePreparation:
+        """Stage a parcel shapefile without changing database rows."""
         download_dir = Path(settings.BCAD_DOWNLOAD_DIR)
         extract_root = Path(settings.BCAD_EXTRACT_DIR) / "gis"
 
-        if not skip_download:
-            url, scraped_year = self._scrape_archive(GIS_PORTAL_URL)
-            archive_label = scraped_year
-        else:
-            url = ""
-            archive_label = requested_year or self._offline_archive_label(
-                download_dir, extract_root
+        if options.skip_download:
+            source_year = self._command._selected_offline_source_year(
+                options.tax_year, download_dir, extract_root
             )
-            if archive_label is None:
+            if source_year is None:
                 raise CommandError(
                     f"--skip-download set but no BCAD GIS archive or extracted parcel "
                     f"directory was found under {download_dir} or {extract_root}. "
                     "Drop --skip-download so the archive can be fetched, or pass --year "
                     "to name one explicitly."
                 )
+            url = ""
+        else:
+            url, source_year = self._command._scrape_archive(GIS_PORTAL_URL)
 
-        archive = download_dir / f"bcad_gis_{archive_label}.zip"
-        extract_dir = extract_root / str(archive_label)
+        archive = download_dir / f"bcad_gis_{source_year}.zip"
+        extract_dir = extract_root / str(source_year)
+        if options.skip_download:
+            if not archive.exists() and not options.skip_extract:
+                raise CommandError(
+                    f"--skip-download set but archive not found: {archive}. "
+                    "Drop --skip-download so it can be fetched, or pass --year to name "
+                    "an archive already on disk."
+                )
+        else:
+            self._command._download(url, archive, force=options.force, dry_run=options.dry_run)
 
-        if not skip_download:
-            self._download(url, archive, force=force, dry_run=dry_run)
-        elif not archive.exists() and not skip_extract:
-            raise CommandError(
-                f"--skip-download set but archive not found: {archive}. "
-                "Drop --skip-download so it can be fetched, or pass --year to name "
-                "an archive already on disk."
-            )
+        if not options.skip_extract:
+            self._command._extract(archive, extract_dir, dry_run=options.dry_run)
 
-        if not skip_extract:
-            self._extract(archive, extract_dir, dry_run=dry_run)
-
-        shapefile_path = self._find_shapefile(extract_dir)
-        if shapefile_path is None and not dry_run:
+        shapefile_path = self._command._find_shapefile(extract_dir)
+        if shapefile_path is None and not options.dry_run:
             raise CommandError(f"No .shp file found under {extract_dir}. Did extraction succeed?")
 
-        target_year = requested_year
+        target_year = options.tax_year
         if target_year is None:
             latest = (
                 PropertyAccount.objects.order_by("-tax_year")
@@ -426,21 +464,58 @@ class Command(BaseCommand):
                 )
             target_year = latest
 
-        if dry_run:
-            self.stdout.write(
-                f"[dry-run] would update PropertyAccount rows for tax_year={target_year}"
-            )
-            return
+        return StagePreparation(
+            name=self.name,
+            source_year=source_year,
+            target_year=target_year,
+            payload=_GisStagePayload(shapefile_path=shapefile_path, extract_dir=extract_dir),
+            cleanup_paths=(extract_dir,),
+        )
 
-        results = self._load(shapefile_path, target_year, dry_run=dry_run)
-        self.stdout.write(
-            self.style.SUCCESS(
-                f"GIS load complete for tax_year={target_year}: "
+    def persist(self, preparation: StagePreparation) -> StageResult:
+        """Enrich the target year's CAD rows inside the caller's transaction."""
+        payload = preparation.payload
+        if not isinstance(payload, _GisStagePayload):
+            raise TypeError("GIS stage received a preparation from another adapter")
+        if payload.shapefile_path is None:
+            raise CommandError("No GIS shapefile was prepared for persistence.")
+
+        results = self._command._load(
+            payload.shapefile_path,
+            preparation.target_year,
+            dry_run=False,
+        )
+        self._command.stdout.write(
+            self._command.style.SUCCESS(
+                f"GIS load complete for tax_year={preparation.target_year}: "
                 f"{results['matched']} PropertyAccount rows updated, "
                 f"{results['unmatched']} shapefile parcels had no match."
             )
         )
+        return StageResult(name=self.name, metrics=results)
 
-        if not skip_extract and not options["keep_extracted"] and not dry_run and extract_dir.exists():
-            shutil.rmtree(extract_dir, ignore_errors=True)
-            self.stdout.write(self.style.SUCCESS("Cleaned up uncompressed extracted files."))
+    def cleanup(self, preparation: StagePreparation) -> None:
+        """Remove GIS extraction output after a completed refresh."""
+        payload = preparation.payload
+        if not isinstance(payload, _GisStagePayload):
+            raise TypeError("GIS stage received a preparation from another adapter")
+        if payload.extract_dir.exists():
+            shutil.rmtree(payload.extract_dir, ignore_errors=True)
+            self._command.stdout.write(
+                self._command.style.SUCCESS("Cleaned up GIS extracted files.")
+            )
+
+    def run(self, options: RefreshOptions) -> StageResult:
+        """Run the legacy GIS command through the reusable stage adapter."""
+        preparation = self.prepare(options)
+        if options.dry_run:
+            self._command.stdout.write(
+                f"[dry-run] GIS source staged for tax_year={preparation.target_year}; "
+                "no database rows were changed."
+            )
+            return StageResult(name=self.name, metrics={})
+
+        result = self.persist(preparation)
+        if not options.keep_extracted and not options.skip_extract:
+            self.cleanup(preparation)
+        return result

@@ -29,14 +29,12 @@ Harris's rows in the same tables.
 
 IMPORTANT ordering dependency: this command's APPRAISAL_INFO.TXT step does a
 full delete-then-recreate of ALL PropertyAccount rows for --year (see
-_load_file). load_brazos_gis (a separate command) supplements those same
-rows afterward with situs address/coordinates/values/state_class/
-living_area/year_built/class_code from the GIS shapefile. Re-running THIS
-command after load_brazos_gis has run silently wipes those GIS-sourced
-fields back to blank/null (confirmed: this happened once during development
-and required re-running load_brazos_gis to fix). Always run load_brazos_gis
-again after any re-run of this command, or run it in a chain:
-    load_brazos_cad --year YYYY && load_brazos_gis --year YYYY
+_load_file). GIS enrichment must therefore run afterward. For a normal
+current-year refresh, use ``refresh_brazos_annual`` instead: it prepares
+year-matched CAD and GIS sources, publishes both stages in one transaction,
+and cleans extraction output only after that transaction succeeds. This
+low-level command remains for targeted CAD source recovery; after using it,
+run ``load_brazos_gis --year YYYY`` before relying on GIS fields.
 
 Usage:
   python manage.py load_brazos_cad [--year YYYY] [--force]
@@ -58,6 +56,7 @@ from bs4 import BeautifulSoup
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
+from counties.brazos.annual_refresh import RefreshOptions, StagePreparation, StageResult
 from counties.brazos.models import (
     PropertyAccount,
     PropertyBuildingCharacteristic,
@@ -713,73 +712,169 @@ class Command(BaseCommand):
     # ------------------------------------------------------------------ main
 
     def handle(self, *args, **options):
-        force: bool = options["force"]
-        skip_download: bool = options["skip_download"]
-        skip_extract: bool = options["skip_extract"]
-        skip_ingest: bool = options["skip_ingest"]
-        dry_run: bool = options["dry_run"]
-        requested_year: int | None = options.get("year")
-
-        download_dir: Path = Path(settings.BCAD_DOWNLOAD_DIR)
-        extract_root: Path = Path(settings.BCAD_EXTRACT_DIR)
-
-        if not skip_download:
-            url, year = self._scrape_archive(BCAD_PORTAL_URL)
-            if requested_year and year and year != requested_year:
-                self.stdout.write(
-                    self.style.WARNING(
-                        f"Requested year {requested_year} but latest on portal is {year}. "
-                        f"Using latest ({year})."
-                    )
+        if options["skip_ingest"]:
+            CadRefreshStage(self).prepare(
+                RefreshOptions(
+                    tax_year=options.get("year"),
+                    force=options["force"],
+                    skip_download=options["skip_download"],
+                    skip_extract=options["skip_extract"],
+                    dry_run=options["dry_run"],
+                    keep_extracted=True,
                 )
-            target_year = requested_year or year or 0
-            if not target_year:
-                raise CommandError(
-                    "Could not determine a tax year for the archive. Pass --year YYYY."
-                )
-        else:
-            if requested_year:
-                target_year = requested_year
-            elif extract_root.exists():
-                # Best-effort: take the most recent year subdirectory.
-                years = [int(p.name) for p in extract_root.iterdir() if p.name.isdigit()]
-                target_year = max(years) if years else 0
-            else:
-                target_year = 0
-            url = ""
-
-        if not target_year:
-            raise CommandError(
-                "Cannot determine target year; use --year when --skip-download is set."
             )
-
-        archive = download_dir / f"bcad_certified_{target_year}.zip"
-        extract_dir = extract_root / str(target_year)
-
-        if not skip_download:
-            self._download(url, archive, force=force, dry_run=dry_run)
-        elif not archive.exists():
-            raise CommandError(
-                f"--skip-download set but archive not found: {archive}. "
-                "Remove --skip-download or pass --force."
-            )
-
-        text_files: dict[str, Path] = {}
-        if not skip_extract:
-            self._extract(archive, extract_dir, dry_run=dry_run)
-        text_files = self._resolve_text_files(extract_dir)
-        if not text_files and not dry_run:
-            raise CommandError(
-                f"No APPRAISAL_*.TXT files found under {extract_dir}. " "Did extraction succeed?"
-            )
-
-        if not skip_ingest:
-            results = self._ingest_all(text_files, target_year, dry_run=dry_run)
-            self.stdout.write(self.style.SUCCESS("Ingest complete:"))
-            for filename, count in results.items():
-                self.stdout.write(f"  {filename}: {count} rows")
-            if not skip_extract and not options["keep_extracted"] and not dry_run and extract_dir.exists():
-                shutil.rmtree(extract_dir, ignore_errors=True)
-                self.stdout.write(self.style.SUCCESS("Cleaned up uncompressed extracted files."))
-        else:
             self.stdout.write("Skipped ingest (--skip-ingest).")
+            return
+
+        CadRefreshStage(self).run(
+            RefreshOptions(
+                tax_year=options.get("year"),
+                force=options["force"],
+                skip_download=options["skip_download"],
+                skip_extract=options["skip_extract"],
+                dry_run=options["dry_run"],
+                keep_extracted=options["keep_extracted"],
+            )
+        )
+
+
+@dataclass(frozen=True)
+class _CadStagePayload:
+    text_files: dict[str, Path]
+    extract_dir: Path
+
+
+class CadRefreshStage:
+    """Source-specific CAD adapter for an individual or annual refresh."""
+
+    name = "cad"
+
+    def __init__(self, command: Command):
+        self._command = command
+
+    @staticmethod
+    def _offline_source_year(download_dir: Path, extract_root: Path) -> int | None:
+        """Return the newest source label retained locally for an offline run."""
+        years: set[int] = set()
+        if extract_root.is_dir():
+            years.update(int(path.name) for path in extract_root.iterdir() if path.name.isdigit())
+        if download_dir.is_dir():
+            for archive in download_dir.glob("bcad_certified_*.zip"):
+                label = archive.stem.removeprefix("bcad_certified_")
+                if label.isdigit():
+                    years.add(int(label))
+        return max(years) if years else None
+
+    @classmethod
+    def _selected_offline_source_year(
+        cls,
+        requested_year: int | None,
+        download_dir: Path,
+        extract_root: Path,
+    ) -> int | None:
+        """Prefer a retained requested source; otherwise expose the actual newest one."""
+        if requested_year is not None:
+            archive = download_dir / f"bcad_certified_{requested_year}.zip"
+            extracted = extract_root / str(requested_year)
+            if archive.exists() or extracted.is_dir():
+                return requested_year
+        return cls._offline_source_year(download_dir, extract_root)
+
+    def prepare(self, options: RefreshOptions) -> StagePreparation:
+        """Stage the certified source without changing database rows."""
+        download_dir = Path(settings.BCAD_DOWNLOAD_DIR)
+        extract_root = Path(settings.BCAD_EXTRACT_DIR)
+
+        if options.skip_download:
+            source_year = self._selected_offline_source_year(
+                options.tax_year, download_dir, extract_root
+            )
+            if source_year is None:
+                raise CommandError(
+                    "Cannot determine the certified source year; use --year when --skip-download "
+                    "is set."
+                )
+            url = ""
+        else:
+            url, source_year = self._command._scrape_archive(BCAD_PORTAL_URL)
+            if not source_year:
+                raise CommandError(
+                    "Could not determine a tax year for the certified archive. Pass --year YYYY."
+                )
+
+        target_year = options.tax_year or source_year
+        if options.tax_year and options.tax_year != source_year:
+            self._command.stdout.write(
+                self._command.style.WARNING(
+                    f"Requested year {options.tax_year} differs from certified source year "
+                    f"{source_year}."
+                )
+            )
+
+        archive = download_dir / f"bcad_certified_{source_year}.zip"
+        extract_dir = extract_root / str(source_year)
+        if options.skip_download:
+            if not archive.exists() and not options.skip_extract:
+                raise CommandError(
+                    f"--skip-download set but archive not found: {archive}. "
+                    "Remove --skip-download or pass --year for an archive already on disk."
+                )
+        else:
+            self._command._download(url, archive, force=options.force, dry_run=options.dry_run)
+
+        if not options.skip_extract:
+            self._command._extract(archive, extract_dir, dry_run=options.dry_run)
+        text_files = self._command._resolve_text_files(extract_dir)
+        if not text_files and not options.dry_run:
+            raise CommandError(
+                f"No APPRAISAL_*.TXT files found under {extract_dir}. Did extraction succeed?"
+            )
+
+        return StagePreparation(
+            name=self.name,
+            source_year=source_year,
+            target_year=target_year,
+            payload=_CadStagePayload(text_files=text_files, extract_dir=extract_dir),
+            cleanup_paths=(extract_dir,),
+        )
+
+    def persist(self, preparation: StagePreparation) -> StageResult:
+        """Replace the target year's certified rows inside the caller's transaction."""
+        payload = preparation.payload
+        if not isinstance(payload, _CadStagePayload):
+            raise TypeError("CAD stage received a preparation from another adapter")
+
+        results = self._command._ingest_all(
+            payload.text_files,
+            preparation.target_year,
+            dry_run=False,
+        )
+        self._command.stdout.write(self._command.style.SUCCESS("CAD ingest complete:"))
+        for filename, count in results.items():
+            self._command.stdout.write(f"  {filename}: {count} rows")
+        return StageResult(name=self.name, metrics=results)
+
+    def cleanup(self, preparation: StagePreparation) -> None:
+        """Remove CAD extraction output after a completed refresh."""
+        payload = preparation.payload
+        if not isinstance(payload, _CadStagePayload):
+            raise TypeError("CAD stage received a preparation from another adapter")
+        if payload.extract_dir.exists():
+            shutil.rmtree(payload.extract_dir, ignore_errors=True)
+            self._command.stdout.write(
+                self._command.style.SUCCESS("Cleaned up CAD extracted files.")
+            )
+
+    def run(self, options: RefreshOptions) -> StageResult:
+        """Run the legacy CAD command through the reusable stage adapter."""
+        preparation = self.prepare(options)
+        if options.dry_run:
+            self._command.stdout.write(
+                "[dry-run] CAD source staged; no database rows were changed."
+            )
+            return StageResult(name=self.name, metrics={})
+
+        result = self.persist(preparation)
+        if not options.keep_extracted and not options.skip_extract:
+            self.cleanup(preparation)
+        return result
