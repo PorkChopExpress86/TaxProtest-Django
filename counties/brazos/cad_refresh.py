@@ -754,13 +754,18 @@ class CadRefreshStage:
         else:
             self._download(url, archive, force=options.force, dry_run=options.dry_run)
 
-        if not options.skip_extract:
-            self._extract(archive, extract_dir, dry_run=options.dry_run)
-        text_files = self._resolve_text_files(extract_dir)
-        if not text_files and not options.dry_run:
-            raise CommandError(
-                f"No APPRAISAL_*.TXT files found under {extract_dir}. Did extraction succeed?"
-            )
+        if options.dry_run:
+            if not options.skip_extract:
+                self.stdout.write(f"[dry-run] would extract {archive} -> {extract_dir}")
+            text_files = {}
+        else:
+            if not options.skip_extract:
+                self._extract(archive, extract_dir, dry_run=False)
+            text_files = self._resolve_text_files(extract_dir)
+            if not text_files:
+                raise CommandError(
+                    f"No APPRAISAL_*.TXT files found under {extract_dir}. Did extraction succeed?"
+                )
 
         return StagePreparation(
             name=self.name,

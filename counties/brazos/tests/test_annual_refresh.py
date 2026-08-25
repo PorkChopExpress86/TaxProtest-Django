@@ -78,6 +78,37 @@ class AnnualRefreshWiringTests(SimpleTestCase):
         self.assertIsInstance(refresh._gis, GisRefreshStage)
 
 
+class AnnualRefreshOnlineDryRunTests(SimpleTestCase):
+    def test_dry_run_selects_online_sources_without_creating_archives(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cad = CadRefreshStage()
+            gis = GisRefreshStage()
+
+            with (
+                self.settings(
+                    BCAD_DOWNLOAD_DIR=str(root / "downloads"),
+                    BCAD_EXTRACT_DIR=str(root / "extracted"),
+                ),
+                patch.object(
+                    cad,
+                    "_scrape_archive",
+                    return_value=("https://example.test/cad.zip", 2026),
+                ),
+                patch.object(
+                    gis,
+                    "_scrape_archive",
+                    return_value=("https://example.test/gis.zip", 2026),
+                ),
+            ):
+                result = BrazosAnnualRefresh(cad, gis).run(RefreshOptions(dry_run=True))
+
+            self.assertEqual(result.tax_year, 2026)
+            self.assertTrue(result.dry_run)
+            self.assertFalse((root / "downloads" / "bcad_certified_2026.zip").exists())
+            self.assertFalse((root / "downloads" / "bcad_gis_2026.zip").exists())
+
+
 class AnnualRefreshYearContractTests(SimpleTestCase):
     def test_source_year_mismatch_stops_before_any_persistence(self):
         cad = _Stage("cad", source_year=2025, target_year=2025)

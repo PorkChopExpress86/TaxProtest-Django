@@ -397,12 +397,18 @@ class GisRefreshStage:
         else:
             self._download(url, archive, force=options.force, dry_run=options.dry_run)
 
-        if not options.skip_extract:
-            self._extract(archive, extract_dir, dry_run=options.dry_run)
-
-        shapefile_path = self._find_shapefile(extract_dir)
-        if shapefile_path is None and not options.dry_run:
-            raise CommandError(f"No .shp file found under {extract_dir}. Did extraction succeed?")
+        if options.dry_run:
+            if not options.skip_extract:
+                self.stdout.write(f"[dry-run] would extract {archive} -> {extract_dir}")
+            shapefile_path = None
+        else:
+            if not options.skip_extract:
+                self._extract(archive, extract_dir, dry_run=False)
+            shapefile_path = self._find_shapefile(extract_dir)
+            if shapefile_path is None:
+                raise CommandError(
+                    f"No .shp file found under {extract_dir}. Did extraction succeed?"
+                )
 
         target_year = options.tax_year
         if target_year is None:
