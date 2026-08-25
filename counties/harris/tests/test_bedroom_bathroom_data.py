@@ -5,11 +5,12 @@ from __future__ import annotations
 import os
 import tempfile
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 from django.test import Client, TestCase
 
-from counties.harris.etl import load_fixtures_room_counts
+from counties.harris.etl_pipeline.fixtures_aggregator import update_building_room_counts
 from counties.harris.models import BuildingDetail, ExtraFeature, PropertyRecord
 
 TEST_ACCOUNT = "1074380000028"
@@ -192,7 +193,7 @@ class ETLLogicTest(TestCase):
             temp_path = tmp_file.name
 
         try:
-            stats = load_fixtures_room_counts(temp_path, chunk_size=10)
+            stats = update_building_room_counts(Path(temp_path), chunk_size=10)
         finally:
             os.unlink(temp_path)
 
@@ -202,6 +203,27 @@ class ETLLogicTest(TestCase):
         self.assertEqual(building.bathrooms, Decimal("2.5"))
         self.assertEqual(stats["buildings_updated"], 1)
         self.assertEqual(stats["buildings_not_found"], 1)
+
+    def test_fixture_recovery_preserves_room_values_not_present_in_the_source(self) -> None:
+        self.building.bedrooms = 2
+        self.building.bathrooms = Decimal("2.5")
+        self.building.half_baths = 1
+        self.building.save(update_fields=["bedrooms", "bathrooms", "half_baths"])
+
+        with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8") as tmp_file:
+            tmp_file.write("acct\tbld_num\ttype\tunits\n")
+            tmp_file.write(f"{TEST_ACCOUNT}\t1\tRMB\t4\n")
+            temp_path = tmp_file.name
+
+        try:
+            update_building_room_counts(Path(temp_path), refresh_readiness=False)
+        finally:
+            os.unlink(temp_path)
+
+        self.building.refresh_from_db()
+        self.assertEqual(self.building.bedrooms, 4)
+        self.assertEqual(self.building.bathrooms, Decimal("2.5"))
+        self.assertEqual(self.building.half_baths, 1)
 
 
 class ViewDisplayTest(TestCase):

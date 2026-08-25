@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import csv
 import os
 import tempfile
 from decimal import Decimal
-from io import StringIO
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -12,8 +11,20 @@ from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import TestCase
 
-from counties.harris.etl import bulk_load_properties, iter_property_rows, refresh_property_readiness
+from counties.harris.etl_pipeline.config import ETLConfig
+from counties.harris.etl_pipeline.fast_loader import (
+    copy_load_building_details,
+    copy_load_property_records,
+)
+from counties.harris.etl_pipeline.fixtures_aggregator import (
+    FixturesAggregator,
+    update_building_room_counts,
+)
+from counties.harris.etl_pipeline.gis_loader import load_gis_parcels
 from counties.harris.etl_pipeline.import_plan import HarrisImportPlan
+from counties.harris.etl_pipeline.model_loader import ModelLoader
+from counties.harris.etl_pipeline.readiness import refresh_property_readiness
+from counties.harris.etl_pipeline.row_reader import iter_extra_feature_rows, iter_property_rows
 from counties.harris.models import BuildingDetail, ExtraFeature, PropertyRecord
 from counties.harris.residential import is_residential_state_class
 
@@ -31,21 +42,18 @@ class ResidentialPropertyImportTests(TestCase):
         return handle.name
 
     def test_iter_property_rows_marks_residential_state_class(self) -> None:
-        reader = csv.DictReader(
-            StringIO(
-                "acct\tsite_addr_1\tsite_addr_2\tsite_addr_3\tstate_class\ttot_appr_val\tbld_ar\tland_ar\tmailto\tstr_num\tstr\n"
-                "111\t111 MAIN ST\tHOUSTON\t77001\tA1\t250000\t2000\t8000\tOWNER ONE\t111\tMAIN\n"
-                "222\t222 COMMERCE ST\tHOUSTON\t77002\tF1\t450000\t5000\t12000\tOWNER TWO\t222\tCOMMERCE\n"
-            ),
-            delimiter="\t",
+        filepath = self._create_real_acct_file(
+            [
+                "111\t111 MAIN ST\tHOUSTON\t77001\tA1\t250000\t2000\t8000\tOWNER ONE\t111\tMAIN",
+                "222\t222 COMMERCE ST\tHOUSTON\t77002\tF1\t450000\t5000\t12000\tOWNER TWO\t222\tCOMMERCE",
+            ]
         )
 
-        rows = list(iter_property_rows(reader))
+        rows = list(iter_property_rows(Path(filepath)))
 
-        self.assertEqual(rows[0]["state_class"], "A1")
-        self.assertTrue(rows[0]["is_residential"])
-        self.assertEqual(rows[1]["state_class"], "F1")
-        self.assertFalse(rows[1]["is_residential"])
+        self.assertEqual(rows[0].as_dict()["state_class"], "A1")
+        self.assertTrue(rows[0].as_dict()["is_residential"])
+        self.assertTrue(rows[1].skip)
 
     def test_house_focused_residential_classes_exclude_condo_multifamily_and_auxiliary(
         self,
@@ -68,9 +76,9 @@ class ResidentialPropertyImportTests(TestCase):
             ]
         )
 
-        inserted = bulk_load_properties(filepath, chunk_size=10, truncate=True)
+        result = copy_load_property_records(Path(filepath), truncate=True)
 
-        self.assertEqual(inserted, 1)
+        self.assertEqual(result["loaded"], 1)
         self.assertEqual(PropertyRecord.objects.count(), 1)
 
         prop = PropertyRecord.objects.get(account_number="111")
@@ -88,9 +96,9 @@ class ResidentialPropertyImportTests(TestCase):
             ]
         )
 
-        inserted = bulk_load_properties(filepath, chunk_size=10, truncate=True)
+        result = copy_load_property_records(Path(filepath), truncate=True)
 
-        self.assertEqual(inserted, 1)
+        self.assertEqual(result["loaded"], 1)
         self.assertEqual(
             list(PropertyRecord.objects.values_list("account_number", flat=True)),
             ["111"],
@@ -451,9 +459,25 @@ class ETLLoaderOptimizationTests(TestCase):
         self.addCleanup(lambda: os.path.exists(handle.name) and os.unlink(handle.name))
         return handle.name
 
-    def test_load_building_details_uses_cached_property_map(self) -> None:
-        from counties.harris.etl import load_building_details
+    @staticmethod
+    def _residential_account_map() -> dict[str, int]:
+        return dict(
+            PropertyRecord.objects.filter(is_residential=True).values_list("account_number", "id")
+        )
 
+    @staticmethod
+    def _model_loader(source_path: str) -> ModelLoader:
+        source_dir = Path(source_path).parent
+        return ModelLoader(
+            ETLConfig(
+                download_dir=source_dir / "downloads",
+                extract_dir=source_dir / "extracted",
+                log_dir=source_dir / "logs",
+            ),
+            batch_size=50,
+        )
+
+    def test_load_building_details_uses_cached_property_map(self) -> None:
         prop = PropertyRecord.objects.create(
             address="1 MAIN ST",
             city="Houston",
@@ -480,17 +504,20 @@ class ETLLoaderOptimizationTests(TestCase):
             ],
         )
 
-        result = load_building_details(path, chunk_size=50, import_batch_id="b1")
+        result = copy_load_building_details(
+            Path(path),
+            account_map=self._residential_account_map(),
+            fixtures_aggregator=FixturesAggregator(),
+            truncate=True,
+        )
 
-        self.assertEqual(result["imported"], 1)
+        self.assertEqual(result["loaded"], 1)
         self.assertEqual(result["invalid"], 2)
         self.assertEqual(result["skipped"], 1)
         building = BuildingDetail.objects.get(account_number="ACC1")
         self.assertEqual(building.property_id, prop.id)
 
     def test_load_extra_features_uses_cached_property_map(self) -> None:
-        from counties.harris.etl import load_extra_features
-
         prop = PropertyRecord.objects.create(
             address="2 MAIN ST",
             city="Houston",
@@ -517,11 +544,15 @@ class ETLLoaderOptimizationTests(TestCase):
             ],
         )
 
-        result = load_extra_features(path, chunk_size=50, import_batch_id="b2", truncate=True)
+        result = self._model_loader(path).load_extra_features(
+            iter_extra_feature_rows(Path(path), self._residential_account_map()),
+            batch_id="b2",
+            truncate=True,
+        )
 
-        self.assertEqual(result["imported"], 1)
-        self.assertEqual(result["invalid"], 2)
-        self.assertEqual(result["skipped"], 1)
+        self.assertEqual(result.records_loaded, 1)
+        self.assertEqual(result.records_invalid, 2)
+        self.assertEqual(result.records_skipped, 1)
         feature = ExtraFeature.objects.get(account_number="ACC2")
         self.assertEqual(feature.property_id, prop.id)
         self.assertEqual(feature.feature_description, "Pool")
@@ -533,8 +564,6 @@ class ETLLoaderOptimizationTests(TestCase):
         self.assertEqual(feature.value, Decimal("5000"))
 
     def test_load_extra_features_supports_fallback_long_description_file(self) -> None:
-        from counties.harris.etl import load_extra_features
-
         PropertyRecord.objects.create(
             address="4 MAIN ST",
             city="Houston",
@@ -550,17 +579,19 @@ class ETLLoaderOptimizationTests(TestCase):
             ],
         )
 
-        result = load_extra_features(path, chunk_size=50, import_batch_id="b3", truncate=True)
+        result = self._model_loader(path).load_extra_features(
+            iter_extra_feature_rows(Path(path), self._residential_account_map()),
+            batch_id="b3",
+            truncate=True,
+        )
 
-        self.assertEqual(result["imported"], 1)
+        self.assertEqual(result.records_loaded, 1)
         feature = ExtraFeature.objects.get(account_number="ACC4")
         self.assertEqual(feature.feature_description, "Paving - Asphalt")
         self.assertEqual(feature.quantity, Decimal("1"))
         self.assertEqual(feature.value, Decimal("5000"))
 
     def test_load_fixtures_room_counts_bulk_updates_and_not_found_tracking(self) -> None:
-        from counties.harris.etl import load_fixtures_room_counts
-
         prop = PropertyRecord.objects.create(
             address="3 MAIN ST",
             city="Houston",
@@ -593,7 +624,11 @@ class ETLLoaderOptimizationTests(TestCase):
             ],
         )
 
-        result = load_fixtures_room_counts(path, chunk_size=2, refresh_readiness=False)
+        result = update_building_room_counts(
+            Path(path),
+            chunk_size=2,
+            refresh_readiness=False,
+        )
 
         b1.refresh_from_db()
         b2.refresh_from_db()
@@ -605,11 +640,9 @@ class ETLLoaderOptimizationTests(TestCase):
         self.assertEqual(b2.bedrooms, 3)
         self.assertEqual(b2.bathrooms, Decimal("1"))
 
-    @patch("counties.harris.etl.gpd.read_file")
-    @patch("counties.harris.etl.GEOPANDAS_AVAILABLE", True)
+    @patch("counties.harris.etl_pipeline.gis_loader.gpd.read_file")
+    @patch("counties.harris.etl_pipeline.gis_loader.GEOPANDAS_AVAILABLE", True)
     def test_load_gis_parcels_updates_records_with_account_map(self, mocked_read_file) -> None:
-        from counties.harris.etl import load_gis_parcels
-
         prop1 = PropertyRecord.objects.create(
             address="4 MAIN ST",
             city="Houston",

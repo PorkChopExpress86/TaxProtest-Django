@@ -111,7 +111,7 @@ Physically defined in `counties/common/` (not Harris-owned), but `Meta.app_label
 tables and migration history under Harris's pinned app label — see the Shared Web Layer section above.
 
 ### Harris ETL & analysis (`counties/harris/`)
-- `etl.py` — shared ETL helpers (bulk upsert, data-ready marking)
+- `etl_pipeline/` — translated-row ETL, persistence adapters, readiness, GIS, and fixture updates
 - `residential.py` — `is_residential_state_class()`, `normalize_state_class()`
 - `tasks_new.py` — Celery tasks: `download_and_import_building_data`, `download_and_import_gis_data`
 - `similarity.py` — similarity scoring algorithm (see Similarity section below)
@@ -385,8 +385,8 @@ diffing consecutive years — nothing in the export carries a prior-year value c
   never hardcode a path or write to the project root.
 - Use environment variables for all secrets/configuration — never hardcode.
 - `is_residential=True` and `is_data_ready=True` are the contract for queryable Harris properties.
-- The authoritative Harris ETL path lives in `counties/harris/etl_pipeline/`; `etl.py` is a
-  compatibility path only. Do not add Harris ETL logic inline in management commands.
+- The authoritative Harris ETL path lives in `counties/harris/etl_pipeline/`; the legacy `etl.py`
+  module has been retired. Do not add Harris ETL logic inline in management commands.
 - Celery tasks import from `counties.harris.tasks_new`.
 - Tax impact calculations require `TaxUnitRate` and `PropertyJurisdictionExemption` rows before the
   protest analysis views show meaningful results; missing data degrades gracefully to

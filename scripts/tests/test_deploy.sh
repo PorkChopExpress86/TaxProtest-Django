@@ -6,6 +6,7 @@ set -euo pipefail
 
 SCRIPT_DIRECTORY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_SCRIPT="$(cd "$SCRIPT_DIRECTORY/.." && pwd)/deploy.sh"
+DEPLOY_WORKFLOW="$(cd "$SCRIPT_DIRECTORY/../.." && pwd)/.github/workflows/deploy.yml"
 TEST_ROOT="$(mktemp -d)"
 readonly SOURCE_REVISION="1111111111111111111111111111111111111111"
 readonly TARGET_REVISION="2222222222222222222222222222222222222222"
@@ -32,6 +33,12 @@ assert_file_does_not_contain() {
     if grep -Fq "$unexpected" "$file"; then
         fail "did not expect '$unexpected' in $file"
     fi
+}
+
+assert_file_contains_text() {
+    local file="$1"
+    local expected="$2"
+    grep -Fq "$expected" "$file" || fail "expected text '$expected' in $file"
 }
 
 prepare_case() {
@@ -204,9 +211,17 @@ test_readiness_failure_keeps_prior_state() {
     assert_file_contains "$CASE_LOG" "compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build"
 }
 
+test_workflow_runs_the_target_revision_deployment_module() {
+    [[ -f "$DEPLOY_WORKFLOW" ]] || fail "deployment workflow not found"
+
+    assert_file_contains_text "$DEPLOY_WORKFLOW" \
+        'git fetch --quiet origin main && mkdir -p .deploy-state && git show origin/main:scripts/deploy.sh > .deploy-state/target-deploy.sh && bash .deploy-state/target-deploy.sh && rm -f .deploy-state/target-deploy.sh'
+}
+
 test_missing_state_forces_full_rebuild
 test_docs_only_change_skips_rebuild_and_advances_state
 test_former_partial_path_now_forces_full_rebuild
 test_no_change_is_a_no_op
 test_readiness_failure_keeps_prior_state
+test_workflow_runs_the_target_revision_deployment_module
 echo "PASS: deployment module behavior"
