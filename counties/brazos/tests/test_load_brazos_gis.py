@@ -24,7 +24,7 @@ from unittest.mock import MagicMock, patch
 from django.core.management import CommandError, call_command
 from django.test import TestCase
 
-from counties.brazos.management.commands.load_brazos_gis import Command
+from counties.brazos.gis_refresh import GisRefreshStage
 from counties.brazos.models import PropertyAccount
 
 # Real page structure (see docs/research/brazos-gis-parcel-shapefile.md):
@@ -50,10 +50,12 @@ def _mock_response(html: str) -> MagicMock:
 class ScrapeGisArchiveTests(TestCase):
     def test_picks_latest_certified_year_not_monthly_or_map_book(self):
         with patch(
-            "counties.brazos.management.commands.load_brazos_gis.requests.get",
+            "counties.brazos.gis_refresh.requests.get",
             return_value=_mock_response(GIS_PORTAL_FIXTURE_HTML),
         ):
-            url, year = Command()._scrape_archive("https://brazoscad.org/tax-information/gis/")
+            url, year = GisRefreshStage()._scrape_archive(
+                "https://brazoscad.org/tax-information/gis/"
+            )
 
         self.assertTrue(url.endswith("BrazosCADParcels_20260422.zip"))
         self.assertEqual(year, 2025)
@@ -65,11 +67,11 @@ class ScrapeGisArchiveTests(TestCase):
         </body></html>
         """
         with patch(
-            "counties.brazos.management.commands.load_brazos_gis.requests.get",
+            "counties.brazos.gis_refresh.requests.get",
             return_value=_mock_response(html),
         ):
             with self.assertRaises(CommandError):
-                Command()._scrape_archive("https://brazoscad.org/tax-information/gis/")
+                GisRefreshStage()._scrape_archive("https://brazoscad.org/tax-information/gis/")
 
 
 def write_fixture_shapefile(path: Path) -> None:
@@ -121,7 +123,7 @@ class LoadGisDataTests(TestCase):
                 shp_path = Path(tmp) / "parcels.shp"
                 self._write_fixture_shapefile(shp_path)
 
-                results = Command()._load(shp_path, 2025, dry_run=False)
+                results = GisRefreshStage()._load(shp_path, 2025, dry_run=False)
 
         self.assertEqual(results["matched"], 2)
         self.assertEqual(results["unmatched"], 0)
@@ -159,7 +161,7 @@ class LoadGisDataTests(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             shp_path = Path(tmp) / "parcels.shp"
             self._write_fixture_shapefile(shp_path)
-            Command()._load(shp_path, 2025, dry_run=False)
+            GisRefreshStage()._load(shp_path, 2025, dry_run=False)
 
         row = PropertyAccount.objects.get(prop_id="000000010013", tax_year=2025)
         self.assertIsNone(row.total_value)
@@ -182,7 +184,7 @@ class LoadGisDataTests(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             shp_path = Path(tmp) / "parcels.shp"
             self._write_fixture_shapefile(shp_path)
-            Command()._load(shp_path, 2025, dry_run=False)
+            GisRefreshStage()._load(shp_path, 2025, dry_run=False)
 
         row = PropertyAccount.objects.get(prop_id="000000010013", tax_year=2025)
         self.assertEqual(row.situs_city, "")
@@ -216,7 +218,7 @@ class LoadGisDataTests(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             shp_path = Path(tmp) / "parcels.shp"
             gdf.to_file(shp_path)
-            Command()._load(shp_path, 2025, dry_run=False)
+            GisRefreshStage()._load(shp_path, 2025, dry_run=False)
 
         row = PropertyAccount.objects.get(prop_id="000000010013", tax_year=2025)
         self.assertEqual(row.situs_address, "5160 TWIN HILL (PVT) DR")
@@ -238,7 +240,7 @@ class LoadGisDataTests(TestCase):
             shp_path = Path(tmp) / "parcels.shp"
             gdf.to_file(shp_path)
 
-            results = Command()._load(shp_path, 2025, dry_run=False)
+            results = GisRefreshStage()._load(shp_path, 2025, dry_run=False)
 
         self.assertEqual(results["matched"], 0)
 
@@ -277,7 +279,7 @@ class CentroidCrsTests(TestCase):
             self._write_polygon_shapefile(shp)
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
-                Command()._load(shp, 2025, dry_run=False)
+                GisRefreshStage()._load(shp, 2025, dry_run=False)
 
         geographic_crs_warnings = [w for w in caught if "geographic CRS" in str(w.message)]
         self.assertEqual(

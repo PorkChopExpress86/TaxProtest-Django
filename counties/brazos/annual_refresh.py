@@ -125,26 +125,13 @@ class BrazosAnnualRefresh:
 
 
 def build_default_refresh(reporter: object) -> BrazosAnnualRefresh:
-    """Build the production coordinator from the two established source adapters.
+    """Build the production coordinator from county-owned source stages.
 
-    The imports are deliberately local: the low-level command modules import this
-    module for the stage contracts, while this factory is needed only by the
-    annual command. Their command instances retain the existing source helpers;
-    sharing the outer command's output wrappers keeps one operator-facing stream.
+    Management commands are CLI adapters over these stage modules.  Keeping the
+    coordinator independent of command classes lets the annual and targeted
+    refresh paths share exactly the same source implementation.
     """
-    from counties.brazos.management.commands.load_brazos_cad import (
-        CadRefreshStage,
-        Command as CadCommand,
-    )
-    from counties.brazos.management.commands.load_brazos_gis import (
-        Command as GisCommand,
-        GisRefreshStage,
-    )
+    from counties.brazos.cad_refresh import CadRefreshStage
+    from counties.brazos.gis_refresh import GisRefreshStage
 
-    cad_command = CadCommand()
-    gis_command = GisCommand()
-    cad_command.stdout = reporter.stdout  # type: ignore[attr-defined]
-    cad_command.stderr = reporter.stderr  # type: ignore[attr-defined]
-    gis_command.stdout = reporter.stdout  # type: ignore[attr-defined]
-    gis_command.stderr = reporter.stderr  # type: ignore[attr-defined]
-    return BrazosAnnualRefresh(CadRefreshStage(cad_command), GisRefreshStage(gis_command))
+    return BrazosAnnualRefresh(CadRefreshStage(reporter), GisRefreshStage(reporter))

@@ -122,7 +122,8 @@ tables and migration history under Harris's pinned app label — see the Shared 
 ### Brazos (`counties/brazos/`)
 - `models.py` — `PropertyAccount`, `PropertyLand`, `PropertyImprovement`, `PropertyBuildingCharacteristic`, `PropertyExtraFeature`, `PropertyEntity`
 - `parsers/pacs.py` — fixed-width offsets for BCAD's certified PACS export
-- `portal.py` — `download_archive()` / `extract_zip()`, shared by `load_brazos_cad`, `load_brazos_gis`, and `import_brazos_assessment_history`; each command still owns its own portal-scraping logic (which URL, which links are real archives), since that varies genuinely per portal
+- `portal.py` — `download_archive()` / `extract_zip()`, shared by the CAD/GIS refresh stages and `import_brazos_assessment_history`; each source stage owns its portal-scraping logic (which URL, which links are real archives), since that varies genuinely per portal
+- `cad_refresh.py` / `gis_refresh.py` — county-owned source stages: acquisition, source-year validation, persistence, and cleanup; the corresponding management commands are CLI adapters only
 - `similarity.py` — Brazos scoring against `PropertyAccount`
 - `adapter.py` — `BRAZOS_PROFILE` + `BrazosAdapter`
 

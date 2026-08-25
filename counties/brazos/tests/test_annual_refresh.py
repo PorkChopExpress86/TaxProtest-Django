@@ -16,8 +16,12 @@ from counties.brazos.annual_refresh import (
     RefreshOptions,
     StagePreparation,
     StageResult,
+    build_default_refresh,
 )
+from counties.brazos.cad_refresh import CadRefreshStage
+from counties.brazos.gis_refresh import GisRefreshStage
 from counties.brazos.models import PropertyAccount
+from counties.brazos.stage_reporting import SilentStageReporter
 
 
 class _Stage:
@@ -64,6 +68,14 @@ class _FailingGisStage(_Stage):
     def persist(self, preparation: StagePreparation) -> StageResult:
         self.persisted = True
         raise RuntimeError("GIS enrichment failed")
+
+
+class AnnualRefreshWiringTests(SimpleTestCase):
+    def test_factory_constructs_county_owned_stages(self):
+        refresh = build_default_refresh(SilentStageReporter())
+
+        self.assertIsInstance(refresh._cad, CadRefreshStage)
+        self.assertIsInstance(refresh._gis, GisRefreshStage)
 
 
 class AnnualRefreshYearContractTests(SimpleTestCase):
@@ -242,13 +254,15 @@ class AnnualRefreshCommandTests(TestCase):
             root = Path(tmp)
             download_dir, cad_extract, gis_extract = self._stage_sources(root)
 
-            with self.settings(
-                BCAD_DOWNLOAD_DIR=str(download_dir),
-                BCAD_EXTRACT_DIR=str(root / "extracted"),
-            ), patch(
-                "counties.brazos.management.commands.load_brazos_gis."
-                "GisRefreshStage.persist",
-                side_effect=RuntimeError("forced GIS failure"),
+            with (
+                self.settings(
+                    BCAD_DOWNLOAD_DIR=str(download_dir),
+                    BCAD_EXTRACT_DIR=str(root / "extracted"),
+                ),
+                patch(
+                    "counties.brazos.gis_refresh." "GisRefreshStage.persist",
+                    side_effect=RuntimeError("forced GIS failure"),
+                ),
             ):
                 with self.assertRaisesRegex(RuntimeError, "forced GIS failure"):
                     call_command(

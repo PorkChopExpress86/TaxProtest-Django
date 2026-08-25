@@ -12,7 +12,7 @@ import requests
 from django.core.management import CommandError
 from django.test import SimpleTestCase
 
-from counties.brazos.management.commands.load_brazos_cad import BCAD_PORTAL_URL, Command
+from counties.brazos.cad_refresh import BCAD_PORTAL_URL, CadRefreshStage
 
 
 class ScrapeArchiveTests(SimpleTestCase):
@@ -31,10 +31,10 @@ class ScrapeArchiveTests(SimpleTestCase):
         </body></html>
         """
         with patch(
-            "counties.brazos.management.commands.load_brazos_cad.requests.get",
+            "counties.brazos.cad_refresh.requests.get",
             return_value=self._mock_response(html),
         ) as mock_get:
-            url, year = Command()._scrape_archive(BCAD_PORTAL_URL)
+            url, year = CadRefreshStage()._scrape_archive(BCAD_PORTAL_URL)
 
         self.assertTrue(url.endswith("certified_2024.zip"))
         self.assertEqual(year, 2024)
@@ -48,10 +48,10 @@ class ScrapeArchiveTests(SimpleTestCase):
         </body></html>
         """
         with patch(
-            "counties.brazos.management.commands.load_brazos_cad.requests.get",
+            "counties.brazos.cad_refresh.requests.get",
             return_value=self._mock_response(html),
         ):
-            url, year = Command()._scrape_archive(BCAD_PORTAL_URL)
+            url, year = CadRefreshStage()._scrape_archive(BCAD_PORTAL_URL)
 
         self.assertTrue(url.endswith("certified_latest.zip"))
         # Year is unknown — falls back to 0, indicating caller should pass --year.
@@ -60,16 +60,16 @@ class ScrapeArchiveTests(SimpleTestCase):
     def test_raises_when_no_zip_links_found(self):
         html = "<html><body><p>No downloads yet.</p></body></html>"
         with patch(
-            "counties.brazos.management.commands.load_brazos_cad.requests.get",
+            "counties.brazos.cad_refresh.requests.get",
             return_value=self._mock_response(html),
         ):
             with self.assertRaises(CommandError):
-                Command()._scrape_archive(BCAD_PORTAL_URL)
+                CadRefreshStage()._scrape_archive(BCAD_PORTAL_URL)
 
     def test_raises_when_request_fails(self):
         with patch(
-            "counties.brazos.management.commands.load_brazos_cad.requests.get",
+            "counties.brazos.cad_refresh.requests.get",
             side_effect=requests.ConnectionError("connection refused"),
         ):
             with self.assertRaises(CommandError):
-                Command()._scrape_archive(BCAD_PORTAL_URL)
+                CadRefreshStage()._scrape_archive(BCAD_PORTAL_URL)

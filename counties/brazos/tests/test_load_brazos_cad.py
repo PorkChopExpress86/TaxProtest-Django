@@ -12,14 +12,15 @@ import tempfile
 from decimal import Decimal
 from pathlib import Path
 
+from django.core.management import call_command
 from django.test import TestCase
 
-from counties.brazos.management.commands.load_brazos_cad import (
+from counties.brazos.cad_refresh import (
     ENTITY_INFO_FILENAME,
     IMPROVEMENT_DETAIL_ATTR_FILENAME,
     IMPROVEMENT_DETAIL_FILENAME,
     INGEST_SPECS,
-    Command,
+    CadRefreshStage,
     _parse_bathrooms,
 )
 from counties.brazos.models import (
@@ -31,6 +32,30 @@ from counties.brazos.models import (
     PropertyLand,
 )
 from counties.common.tax_models import PropertyJurisdictionExemption
+
+
+class CadCommandAdapterTests(TestCase):
+    def test_skip_ingest_stages_a_retained_source_without_database_writes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            extract_dir = root / "extracted" / "2025"
+            extract_dir.mkdir(parents=True)
+            (extract_dir / "APPRAISAL_INFO.TXT").write_text("retained", encoding="utf-8")
+
+            with self.settings(
+                BCAD_DOWNLOAD_DIR=str(root / "downloads"),
+                BCAD_EXTRACT_DIR=str(root / "extracted"),
+            ):
+                call_command(
+                    "load_brazos_cad",
+                    "--skip-ingest",
+                    "--skip-download",
+                    "--skip-extract",
+                    "--year",
+                    "2025",
+                )
+
+        self.assertFalse(PropertyAccount.objects.filter(tax_year=2025).exists())
 
 
 def _line(length: int, fields: dict[tuple[int, int], str]) -> str:
@@ -133,7 +158,7 @@ class ResolveTextFilesTests(TestCase):
                 "x", encoding="utf-8"
             )
 
-            resolved = Command._resolve_text_files(root)
+            resolved = CadRefreshStage._resolve_text_files(root)
 
             for spec in INGEST_SPECS:
                 self.assertIn(spec.filename, resolved)
@@ -147,7 +172,7 @@ class ResolveTextFilesTests(TestCase):
             (root / f"2024-01-01_000000_{filename}").write_text("stale", encoding="utf-8")
             (root / f"2025-07-23_002022_{filename}").write_text("fresh", encoding="utf-8")
 
-            resolved = Command._resolve_text_files(root)
+            resolved = CadRefreshStage._resolve_text_files(root)
 
             self.assertEqual(resolved[filename].name, f"2025-07-23_002022_{filename}")
 
@@ -165,7 +190,7 @@ class LoadFileTests(TestCase):
                 encoding="utf-8",
             )
 
-            count = Command()._load_file(spec, path, 2025, dry_run=False)
+            count = CadRefreshStage()._load_file(spec, path, 2025, dry_run=False)
 
         self.assertEqual(count, 1)
         row = PropertyLand.objects.get(prop_id="000000010002", tax_year=2025)
@@ -183,8 +208,8 @@ class LoadFileTests(TestCase):
                 + "\r\n",
                 encoding="utf-8",
             )
-            Command()._load_file(spec, path, 2025, dry_run=False)
-            Command()._load_file(spec, path, 2025, dry_run=False)
+            CadRefreshStage()._load_file(spec, path, 2025, dry_run=False)
+            CadRefreshStage()._load_file(spec, path, 2025, dry_run=False)
 
         self.assertEqual(PropertyLand.objects.filter(tax_year=2025).count(), 1)
 
@@ -200,7 +225,7 @@ class LoadFileTests(TestCase):
                 + "\r\n",
                 encoding="utf-8",
             )
-            Command()._load_file(spec, path, 2025, dry_run=False)
+            CadRefreshStage()._load_file(spec, path, 2025, dry_run=False)
 
         self.assertTrue(PropertyLand.objects.filter(tax_year=2024).exists())
         self.assertTrue(PropertyLand.objects.filter(tax_year=2025).exists())
@@ -217,7 +242,7 @@ class LoadFileTests(TestCase):
                 + "\r\n",
                 encoding="utf-8",
             )
-            count = Command()._load_file(spec, path, 2025, dry_run=False)
+            count = CadRefreshStage()._load_file(spec, path, 2025, dry_run=False)
 
         self.assertEqual(count, 0)
         self.assertFalse(PropertyLand.objects.filter(tax_year=2025).exists())
@@ -236,7 +261,7 @@ class LoadImprovementDetailRollupTests(TestCase):
                 _improvement_info_line("000000010002", "2025", "000000100000") + "\r\n",
                 encoding="utf-8",
             )
-            Command()._load_file(improvement_spec, info_path, 2025, dry_run=False)
+            CadRefreshStage()._load_file(improvement_spec, info_path, 2025, dry_run=False)
 
             detail_path = root / IMPROVEMENT_DETAIL_FILENAME
             lines = [
@@ -251,7 +276,7 @@ class LoadImprovementDetailRollupTests(TestCase):
             ]
             detail_path.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
 
-            count = Command()._load_improvement_detail(detail_path, 2025, dry_run=False)
+            count = CadRefreshStage()._load_improvement_detail(detail_path, 2025, dry_run=False)
 
         self.assertEqual(count, 2)
         self.assertEqual(PropertyImprovementDetail.objects.filter(tax_year=2025).count(), 2)
@@ -269,7 +294,7 @@ class LoadImprovementDetailRollupTests(TestCase):
                 _improvement_info_line("000000010002", "2025", "000000100000") + "\r\n",
                 encoding="utf-8",
             )
-            Command()._load_file(improvement_spec, info_path, 2025, dry_run=False)
+            CadRefreshStage()._load_file(improvement_spec, info_path, 2025, dry_run=False)
 
             detail_path = root / IMPROVEMENT_DETAIL_FILENAME
             detail_path.write_text(
@@ -279,7 +304,7 @@ class LoadImprovementDetailRollupTests(TestCase):
                 + "\r\n",
                 encoding="utf-8",
             )
-            Command()._load_improvement_detail(detail_path, 2025, dry_run=False)
+            CadRefreshStage()._load_improvement_detail(detail_path, 2025, dry_run=False)
 
         improvement = PropertyImprovement.objects.get(imp_id="000000100000", tax_year=2025)
         self.assertIsNone(improvement.year_built)
@@ -302,7 +327,7 @@ class LoadEntityInfoTests(TestCase):
                 encoding="utf-8",
             )
 
-            count = Command()._load_entity_info(path, 2025, dry_run=False)
+            count = CadRefreshStage()._load_entity_info(path, 2025, dry_run=False)
 
         self.assertEqual(count, 2)
         rows = PropertyJurisdictionExemption.objects.filter(
@@ -341,7 +366,7 @@ class LoadEntityInfoTests(TestCase):
                 encoding="utf-8",
             )
 
-            Command()._load_entity_info(path, 2025, dry_run=False)
+            CadRefreshStage()._load_entity_info(path, 2025, dry_run=False)
 
         account = PropertyAccount.objects.get(prop_id="000000010013", tax_year=2025)
         self.assertEqual(account.assessed_value, Decimal("242613"))
@@ -364,7 +389,7 @@ class LoadEntityInfoTests(TestCase):
             ]
             path.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
 
-            Command()._load_entity_info(path, 2025, dry_run=False)
+            CadRefreshStage()._load_entity_info(path, 2025, dry_run=False)
 
         account = PropertyAccount.objects.get(prop_id="000000010013", tax_year=2025)
         self.assertEqual(account.assessed_value, Decimal("242613"))
@@ -380,7 +405,7 @@ class LoadEntityInfoTests(TestCase):
                 encoding="utf-8",
             )
 
-            count = Command()._load_entity_info(path, 2025, dry_run=False)
+            count = CadRefreshStage()._load_entity_info(path, 2025, dry_run=False)
 
         self.assertEqual(count, 1)
         row = PropertyJurisdictionExemption.objects.get(
@@ -406,8 +431,8 @@ class LoadEntityInfoTests(TestCase):
                 + "\r\n",
                 encoding="utf-8",
             )
-            Command()._load_entity_info(path, 2025, dry_run=False)
-            Command()._load_entity_info(path, 2025, dry_run=False)
+            CadRefreshStage()._load_entity_info(path, 2025, dry_run=False)
+            CadRefreshStage()._load_entity_info(path, 2025, dry_run=False)
 
         self.assertTrue(
             PropertyJurisdictionExemption.objects.filter(
@@ -432,7 +457,7 @@ class LoadEntityInfoTests(TestCase):
                 encoding="utf-8",
             )
 
-            count = Command()._load_entity_info(path, 2025, dry_run=False)
+            count = CadRefreshStage()._load_entity_info(path, 2025, dry_run=False)
 
         self.assertEqual(count, 0)
         self.assertFalse(
@@ -516,7 +541,7 @@ class LoadImprovementDetailAttrTests(TestCase):
             ]
             path.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
 
-            count = Command()._load_improvement_detail_attr(path, 2025, dry_run=False)
+            count = CadRefreshStage()._load_improvement_detail_attr(path, 2025, dry_run=False)
 
         self.assertEqual(count, 1)
         row = PropertyBuildingCharacteristic.objects.get(
@@ -540,7 +565,7 @@ class LoadImprovementDetailAttrTests(TestCase):
             ]
             path.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
 
-            Command()._load_improvement_detail_attr(path, 2025, dry_run=False)
+            CadRefreshStage()._load_improvement_detail_attr(path, 2025, dry_run=False)
 
         row = PropertyBuildingCharacteristic.objects.get(
             prop_id="000000010085", imp_id="000001165787", tax_year=2025
@@ -572,7 +597,7 @@ class LoadImprovementDetailAttrTests(TestCase):
             ]
             path.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
 
-            Command()._load_improvement_detail_attr(path, 2025, dry_run=False)
+            CadRefreshStage()._load_improvement_detail_attr(path, 2025, dry_run=False)
 
         self.assertEqual(
             PropertyExtraFeature.objects.filter(
@@ -606,7 +631,7 @@ class LoadImprovementDetailAttrTests(TestCase):
             ]
             path.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
 
-            Command()._load_improvement_detail_attr(path, 2025, dry_run=False)
+            CadRefreshStage()._load_improvement_detail_attr(path, 2025, dry_run=False)
 
         row = PropertyBuildingCharacteristic.objects.get(
             prop_id="000000010008", imp_id="000000100002", tax_year=2025
@@ -622,7 +647,7 @@ class LoadImprovementDetailAttrTests(TestCase):
                 + "\r\n",
                 encoding="utf-8",
             )
-            Command()._load_improvement_detail_attr(path, 2025, dry_run=False)
-            Command()._load_improvement_detail_attr(path, 2025, dry_run=False)
+            CadRefreshStage()._load_improvement_detail_attr(path, 2025, dry_run=False)
+            CadRefreshStage()._load_improvement_detail_attr(path, 2025, dry_run=False)
 
         self.assertEqual(PropertyExtraFeature.objects.filter(tax_year=2025).count(), 1)
