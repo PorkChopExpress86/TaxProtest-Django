@@ -17,7 +17,9 @@ import requests
 from celery import shared_task
 from django.conf import settings
 
+from .etl_pipeline.import_plan import HarrisImportPlan
 from .models import DownloadRecord
+from .source_catalog import DEFAULT_HCAD_SOURCE_CATALOG
 
 logger = logging.getLogger(__name__)
 
@@ -26,45 +28,20 @@ logger = logging.getLogger(__name__)
 # Legacy Tasks (kept for backward compatibility during migration)
 # =============================================================================
 
-HCAD_ARCHIVE_SOURCES = [
-    {"filename": "Real_acct_owner.zip", "required": True, "timeout": 300},
-    {"filename": "Real_acct_ownership_history.zip", "required": False, "timeout": 300},
-    {"filename": "Real_building_land.zip", "required": True, "timeout": 300},
-    {"filename": "Code_description_real.zip", "required": False, "timeout": 120},
-    {"filename": "PP_files.zip", "required": False, "timeout": 300},
-    {"filename": "Code_description_pp.zip", "required": False, "timeout": 120},
-    {"filename": "Hearing_files.zip", "required": False, "timeout": 300},
-    {
-        "filename": "Parcels.zip",
-        "required": True,
-        "timeout": 600,
-        "url": "https://download.hcad.org/data/GIS/Parcels.zip",
-    },
-]
+HCAD_ARCHIVE_SOURCES = DEFAULT_HCAD_SOURCE_CATALOG.legacy_archives()
 
 
 def candidate_cama_years(reference_year: int | None = None) -> list[int]:
     """Return candidate CAMA data years, preferring the current year then previous year."""
-    year = reference_year or datetime.now().year
-    years = [year]
-    if year > 2000:
-        years.append(year - 1)
-    return years
+    return DEFAULT_HCAD_SOURCE_CATALOG.candidate_years(reference_year or datetime.now().year)
 
 
 def build_archive_candidate_urls(
     source: dict[str, Any], reference_year: int | None = None
 ) -> list[str]:
     """Build candidate download URLs for an HCAD archive source."""
-    explicit_url = source.get("url")
-    if explicit_url:
-        return [explicit_url]
-
-    filename = source["filename"]
-    return [
-        f"https://download.hcad.org/data/CAMA/{year}/{filename}"
-        for year in candidate_cama_years(reference_year)
-    ]
+    catalog_source = DEFAULT_HCAD_SOURCE_CATALOG.source_for_archive(source)
+    return DEFAULT_HCAD_SOURCE_CATALOG.candidate_urls(catalog_source, reference_year)
 
 
 def download_archive_with_fallback(
@@ -195,7 +172,7 @@ def download_and_import_building_data(self):
         skip_extract=False,
         skip_load=False,
         data_year=None,
-        scope="building-only",
+        plan=HarrisImportPlan.from_legacy_scope("building-only"),
         strict=True,
     )
 
@@ -209,7 +186,7 @@ def download_and_import_gis_data(self):
         skip_extract=False,
         skip_load=False,
         data_year=None,
-        scope="gis-only",
+        plan=HarrisImportPlan.from_legacy_scope("gis-only"),
         strict=True,
     )
 
@@ -226,8 +203,11 @@ def _run_authoritative_pipeline(
     skip_extract: bool,
     skip_load: bool,
     data_year: int | None,
-    scope: str,
     strict: bool,
+    scope: str | None = None,
+    plan: HarrisImportPlan | None = None,
+    refresh_readiness: bool = True,
+    validate_contract: bool | None = None,
 ) -> dict[str, Any]:
     """Execute the authoritative modern ETL pipeline and propagate failures."""
     from .etl_pipeline import ETLConfig, ETLOrchestrator
@@ -238,6 +218,9 @@ def _run_authoritative_pipeline(
         config.data_year = data_year
     if skip_load:
         config.dry_run = True
+
+    if validate_contract is None:
+        validate_contract = not config.dry_run
 
     orchestrator = ETLOrchestrator(config)
 
@@ -253,13 +236,15 @@ def _run_authoritative_pipeline(
         for stage in PipelineStage:
             orchestrator.register_stage_callback(stage, update_stage_state)
 
+    resolved_plan = plan or HarrisImportPlan.from_legacy_scope(scope or "full")
     result = orchestrator.execute(
         skip_download=skip_download,
         skip_extract=skip_extract,
         skip_load=skip_load,
-        scope=scope,
+        plan=resolved_plan,
         strict=strict,
-        validate_contract=not config.dry_run,
+        validate_contract=validate_contract,
+        refresh_readiness=refresh_readiness,
     )
 
     result_dict = result.to_dict()
@@ -295,6 +280,8 @@ def run_etl_pipeline(
     data_year: int | None = None,
     scope: str = "full",
     strict: bool = True,
+    refresh_readiness: bool = True,
+    validate_contract: bool | None = None,
 ):
     """
     Run the full ETL pipeline using the new modular system.
@@ -317,6 +304,8 @@ def run_etl_pipeline(
         data_year=data_year,
         scope=scope,
         strict=strict,
+        refresh_readiness=refresh_readiness,
+        validate_contract=validate_contract,
     )
 
 

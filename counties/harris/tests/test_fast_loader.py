@@ -6,8 +6,8 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from django.db import connection
-from django.test import TestCase
+from django.db import IntegrityError, connection
+from django.test import TransactionTestCase
 
 from counties.harris.etl_pipeline.config import ETLConfig
 from counties.harris.etl_pipeline.model_loader import ModelLoader
@@ -24,7 +24,7 @@ from counties.harris.models import BuildingDetail, PropertyRecord
     connection.vendor == "postgresql",
     "fast_loader uses PostgreSQL COPY; skipped on other backends",
 )
-class FastLoaderTests(TestCase):
+class FastLoaderTests(TransactionTestCase):
     def _write(self, directory: str, name: str, lines: list[str]) -> Path:
         path = Path(directory) / name
         path.write_text("\n".join(lines) + "\n", encoding="latin-1")
@@ -110,7 +110,7 @@ class FastLoaderTests(TestCase):
                 [
                     "account_num\tmailto\tsite_addr_1\tsite_addr_3\tstate_class\ttot_appr_val",
                     'P1\tOwner "One"\t100 MAIN ST\t12345678901234567890\tA1\t$250,000',
-                    'P1\tDuplicate\t100 MAIN ST\t12345678901234567890\tA1\t$250,000',
+                    "P1\tDuplicate\t100 MAIN ST\t12345678901234567890\tA1\t$250,000",
                     "C1\tCommercial\t1 COMMERCE ST\t77001\tF1\t900000",
                 ],
             )
@@ -319,7 +319,7 @@ class FastLoaderTests(TestCase):
             PROPERTY_FIELD_ORDER,
         )
 
-        with self.assertRaises(Exception):
+        with self.assertRaises(IntegrityError):
             copy_load_property_rows(iter([invalid_row]), truncate=True)
         self.assertTrue(PropertyRecord.objects.filter(pk=existing.pk).exists())
 

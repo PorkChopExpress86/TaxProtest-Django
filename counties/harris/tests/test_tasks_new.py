@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 import requests
 from django.test import TestCase, override_settings
 
+from counties.harris.etl_pipeline.import_plan import HarrisImportPlan
 from counties.harris.models import DownloadRecord
 from counties.harris.tasks_new import (
     download_and_extract_hcad,
@@ -122,7 +123,7 @@ class DownloadAndExtractHCADTests(TestCase):
 
 class AuthoritativeTaskDelegationTests(TestCase):
     @patch("counties.harris.tasks_new._run_authoritative_pipeline")
-    def test_legacy_building_task_delegates_to_building_scope(self, mocked_run):
+    def test_legacy_building_task_delegates_to_building_plan(self, mocked_run):
         mocked_run.return_value = {"status": "completed"}
 
         result = download_and_import_building_data.run()
@@ -130,11 +131,11 @@ class AuthoritativeTaskDelegationTests(TestCase):
         self.assertEqual(result["status"], "completed")
         mocked_run.assert_called_once()
         _, kwargs = mocked_run.call_args
-        self.assertEqual(kwargs["scope"], "building-only")
+        self.assertEqual(kwargs["plan"], HarrisImportPlan.from_legacy_scope("building-only"))
         self.assertTrue(kwargs["strict"])
 
     @patch("counties.harris.tasks_new._run_authoritative_pipeline")
-    def test_legacy_gis_task_delegates_to_gis_scope(self, mocked_run):
+    def test_legacy_gis_task_delegates_to_gis_plan(self, mocked_run):
         mocked_run.return_value = {"status": "completed"}
 
         result = download_and_import_gis_data.run()
@@ -142,7 +143,7 @@ class AuthoritativeTaskDelegationTests(TestCase):
         self.assertEqual(result["status"], "completed")
         mocked_run.assert_called_once()
         _, kwargs = mocked_run.call_args
-        self.assertEqual(kwargs["scope"], "gis-only")
+        self.assertEqual(kwargs["plan"], HarrisImportPlan.from_legacy_scope("gis-only"))
         self.assertTrue(kwargs["strict"])
 
     @patch("counties.harris.tasks_new._run_authoritative_pipeline")

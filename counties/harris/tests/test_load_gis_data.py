@@ -59,7 +59,7 @@ class CentroidCrsTests(TestCase):
     def test_centroid_is_computed_before_reprojection(self):
         import geopandas as gpd
 
-        from counties.harris.etl import load_gis_parcels
+        from counties.harris.etl_pipeline.gis_loader import load_gis_parcels
 
         PropertyRecord.objects.create(
             address="1 Centroid St",

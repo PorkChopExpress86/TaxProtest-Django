@@ -385,8 +385,8 @@ diffing consecutive years — nothing in the export carries a prior-year value c
   never hardcode a path or write to the project root.
 - Use environment variables for all secrets/configuration — never hardcode.
 - `is_residential=True` and `is_data_ready=True` are the contract for queryable Harris properties.
-- All Harris ETL helper logic goes in `counties/harris/etl.py` or `counties/harris/residential.py`,
-  not inline in management commands.
+- The authoritative Harris ETL path lives in `counties/harris/etl_pipeline/`; `etl.py` is a
+  compatibility path only. Do not add Harris ETL logic inline in management commands.
 - Celery tasks import from `counties.harris.tasks_new`.
 - Tax impact calculations require `TaxUnitRate` and `PropertyJurisdictionExemption` rows before the
   protest analysis views show meaningful results; missing data degrades gracefully to

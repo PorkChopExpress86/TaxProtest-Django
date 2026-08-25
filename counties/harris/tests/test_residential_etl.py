@@ -13,6 +13,7 @@ from django.core.management.base import CommandError
 from django.test import TestCase
 
 from counties.harris.etl import bulk_load_properties, iter_property_rows, refresh_property_readiness
+from counties.harris.etl_pipeline.import_plan import HarrisImportPlan
 from counties.harris.models import BuildingDetail, ExtraFeature, PropertyRecord
 from counties.harris.residential import is_residential_state_class
 
@@ -354,7 +355,14 @@ class ImportAllDataCommandTests(TestCase):
 
         mocked_execute.assert_called_once()
         _, kwargs = mocked_execute.call_args
-        self.assertEqual(kwargs["scope"], "full")
+        self.assertEqual(
+            kwargs["plan"],
+            HarrisImportPlan.from_stage_flags(
+                include_property=False,
+                include_building=True,
+                include_gis=True,
+            ),
+        )
         self.assertTrue(kwargs["strict"])
         self.assertTrue(kwargs["validate_contract"])
         self.assertTrue(kwargs["skip_download"])
@@ -387,9 +395,7 @@ class ImportAllDataCommandTests(TestCase):
         self.assertTrue(kwargs["skip_extract"])
 
     @patch("counties.harris.management.commands.import_all_data.ETLOrchestrator.execute")
-    def test_import_all_data_uses_property_only_scope_when_gis_is_skipped(
-        self, mocked_execute
-    ) -> None:
+    def test_import_all_data_keeps_building_stage_when_gis_is_skipped(self, mocked_execute) -> None:
         mocked_execute.return_value = SimpleNamespace(
             success=True,
             status=SimpleNamespace(value="completed"),
@@ -402,7 +408,14 @@ class ImportAllDataCommandTests(TestCase):
 
         mocked_execute.assert_called_once()
         _, kwargs = mocked_execute.call_args
-        self.assertEqual(kwargs["scope"], "property-only")
+        self.assertEqual(
+            kwargs["plan"],
+            HarrisImportPlan.from_stage_flags(
+                include_property=True,
+                include_building=True,
+                include_gis=False,
+            ),
+        )
 
     @patch("counties.harris.management.commands.import_all_data.ETLOrchestrator.execute")
     def test_import_all_data_can_skip_contract_validation_for_startup_refresh(

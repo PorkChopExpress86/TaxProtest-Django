@@ -26,6 +26,16 @@ The COPY or ORM implementation that writes translated rows and supplies
 database-owned metadata. It does not own HCAD source aliases or business rules.
 _Avoid_: source parser, business-rule loader
 
+**Harris import plan**:
+The explicit selection of property, building, and GIS stages for one Harris
+refresh, including the completeness expectations appropriate to that selection.
+_Avoid_: scope string, flag combination
+
+**HCAD source catalog**:
+The authoritative identity and acquisition facts for HCAD source archives used
+by build-time and runtime Harris imports.
+_Avoid_: per-caller archive manifest, hard-coded source alias
+
 ## Brazos annual refresh
 
 **Annual refresh**:

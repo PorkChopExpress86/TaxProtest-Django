@@ -11,7 +11,8 @@ from __future__ import annotations
 import io
 import logging
 import math
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
+from pathlib import Path
 
 from django.db import connection, transaction
 
@@ -33,6 +34,51 @@ def _is_nan(value: object) -> bool:
         return math.isnan(value)  # type: ignore[arg-type]
     except TypeError:
         return False
+
+
+def select_preferred_gis_shapefile(search_roots: Sequence[Path]) -> Path | None:
+    """Choose the best parcel layer from one or more extracted GIS roots."""
+    shapefiles: list[Path] = []
+    seen: set[str] = set()
+
+    for root in search_roots:
+        if not root.exists():
+            continue
+        for path in root.rglob("*.shp"):
+            normalized = str(path).replace("\\", "/")
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            shapefiles.append(path)
+
+    if not shapefiles:
+        geodatabases: list[Path] = []
+        for root in search_roots:
+            if not root.exists():
+                continue
+            for path in root.rglob("*.gdb"):
+                if path.is_dir():
+                    normalized = str(path).replace("\\", "/")
+                    if normalized not in seen:
+                        seen.add(normalized)
+                        geodatabases.append(path)
+        if geodatabases:
+            return min(
+                geodatabases,
+                key=lambda path: (0 if "parcels.gdb" in path.name.lower() else 1, len(path.parts)),
+            )
+        return None
+
+    def priority(path: Path) -> tuple[int, int, int]:
+        normalized = str(path).replace("\\", "/").lower()
+        name = path.name.lower()
+        return (
+            2 if name == "parcelscity.shp" else 1 if "parcelscity" in name else 0,
+            1 if "/gis/pdata/" in normalized else 0,
+            -len(path.parts),
+        )
+
+    return max(shapefiles, key=priority)
 
 
 def load_gis_parcels(

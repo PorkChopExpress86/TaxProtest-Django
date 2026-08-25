@@ -8,8 +8,7 @@ from __future__ import annotations
 
 from django.core.management.base import BaseCommand, CommandError
 
-from counties.harris.etl_pipeline import ETLConfig, ETLOrchestrator
-from counties.harris.etl_pipeline.config import DataSource, DataSourceType
+from counties.harris.etl_pipeline import ETLConfig, ETLOrchestrator, HarrisImportPlan
 
 
 class Command(BaseCommand):
@@ -55,43 +54,6 @@ class Command(BaseCommand):
             help="Keep uncompressed extracted data files on disk after loading (default: false, cleans up)",
         )
 
-    @staticmethod
-    def _select_sources(
-        config: ETLConfig, *, include_property: bool, include_building: bool, include_gis: bool
-    ) -> list[DataSource]:
-        selected: list[DataSource] = []
-        for source in config.get_required_sources():
-            if source.source_type == DataSourceType.GIS_DATA:
-                if include_gis:
-                    selected.append(source)
-                continue
-
-            if source.name == "Real Account Owner":
-                if include_property:
-                    selected.append(source)
-                continue
-
-            if source.name == "Real Building Land":
-                if include_building:
-                    selected.append(source)
-                continue
-
-        return selected
-
-    @staticmethod
-    def _resolve_scope(*, include_property: bool, include_building: bool, include_gis: bool) -> str:
-        if include_property and include_building and include_gis:
-            return "full"
-        if include_building and not include_property and not include_gis:
-            return "building-only"
-        if include_gis and not include_property and not include_building:
-            return "gis-only"
-        if include_property and not include_building and not include_gis:
-            return "property-only"
-        if include_property and include_building and not include_gis:
-            return "property-only"
-        return "full"
-
     def handle(self, *args, **options):
         include_property = not options["skip_property"]
         include_building = not options["skip_building"]
@@ -100,22 +62,12 @@ class Command(BaseCommand):
         if not any([include_property, include_building, include_gis]):
             raise CommandError("Nothing to import: all import stages were skipped.")
 
+        plan = HarrisImportPlan.from_stage_flags(
+            include_property=include_property,
+            include_building=include_building,
+            include_gis=include_gis,
+        )
         config = ETLConfig.from_env()
-        sources = self._select_sources(
-            config,
-            include_property=include_property,
-            include_building=include_building,
-            include_gis=include_gis,
-        )
-
-        if not sources:
-            raise CommandError("No required modern ETL sources matched the selected import stages.")
-
-        scope = self._resolve_scope(
-            include_property=include_property,
-            include_building=include_building,
-            include_gis=include_gis,
-        )
 
         self.stdout.write(self.style.SUCCESS("=" * 70))
         self.stdout.write(self.style.SUCCESS("COMPLETE DATA IMPORT (MODERN ETL)"))
@@ -123,8 +75,7 @@ class Command(BaseCommand):
 
         orchestrator = ETLOrchestrator(config)
         result = orchestrator.execute(
-            sources=sources,
-            scope=scope,
+            plan=plan,
             strict=True,
             validate_contract=not options["skip_contract_validation"],
             skip_download=options["skip_download"],

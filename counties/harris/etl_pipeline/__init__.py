@@ -24,6 +24,7 @@ Usage:
 from .config import DataSource, ETLConfig
 from .download import DownloadManager
 from .extract import ExtractManager
+from .import_plan import HarrisImportPlan
 from .logging import ETLLogger
 from .model_loader import ModelLoader
 from .orchestrator import ETLOrchestrator
@@ -38,6 +39,7 @@ __all__ = [
     "ModelLoader",
     "ETLOrchestrator",
     "ETLLogger",
+    "HarrisImportPlan",
 ]
 
 __version__ = "1.0.0"

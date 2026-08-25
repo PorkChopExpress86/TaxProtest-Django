@@ -387,7 +387,7 @@ class TestETLOrchestratorIntegration(TestCase):
         # Extract dir should be cleaned
         assert not any(self.config.extract_dir.iterdir())
 
-    @patch("counties.harris.etl.load_gis_parcels")
+    @patch("counties.harris.etl_pipeline.gis_loader.load_gis_parcels")
     def test_process_gis_source_prefers_parcelscity_from_legacy_extract(self, mock_load_gis):
         """GIS stage should prefer ParcelsCity shapefile when available."""
         mock_load_gis.return_value = 123

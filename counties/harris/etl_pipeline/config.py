@@ -5,163 +5,27 @@ Provides configuration management for data sources, settings, and pipeline behav
 Supports environment variables, settings files, and programmatic configuration.
 """
 
-import logging
 import os
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
 from pathlib import Path
 from typing import Any
 
 from django.conf import settings
 
-logger = logging.getLogger(__name__)
+from counties.harris.source_catalog import (
+    DEFAULT_HCAD_SOURCE_CATALOG,
+    DataSource,
+    DataSourceType,
+    FileFormat,
+)
 
+__all__ = ["DataSource", "DataSourceType", "ETLConfig", "FileFormat"]
 
-class DataSourceType(Enum):
-    """Types of data sources supported by the ETL pipeline."""
-
-    PROPERTY_DATA = "property_data"
-    GIS_DATA = "gis_data"
-    CODE_DESCRIPTIONS = "code_descriptions"
-    HEARING_DATA = "hearing_data"
-
-
-class FileFormat(Enum):
-    """Supported file formats for data sources."""
-
-    ZIP = "zip"
-    TAR = "tar"
-    TAR_GZ = "tar.gz"
-    CSV = "csv"
-    TXT = "txt"
-    SHP = "shp"  # Shapefile
-
-
-@dataclass
-class DataSource:
-    """Configuration for a single data source.
-
-    Attributes:
-        name: Human-readable name for the data source
-        url_template: URL template with {year} placeholder
-        filename: Expected filename after download
-        source_type: Type of data this source contains
-        file_format: Format of the downloaded file
-        required: Whether this source is required for the pipeline
-        checksum: Optional expected SHA256 checksum
-        extract_patterns: Optional patterns to filter extraction
-        priority: Processing priority (lower = higher priority)
-    """
-
-    name: str
-    url_template: str
-    filename: str
-    source_type: DataSourceType
-    file_format: FileFormat = FileFormat.ZIP
-    required: bool = True
-    checksum: str | None = None
-    extract_patterns: list[str] = field(default_factory=list)
-    priority: int = 100
-
-    def get_url(self, year: int | None = None) -> str:
-        """Get the actual URL for a specific year."""
-        if year is None:
-            year = datetime.now().year
-        return self.url_template.format(year=year)
-
-    def __post_init__(self):
-        """Validate data source configuration."""
-        if not self.name:
-            raise ValueError("DataSource name cannot be empty")
-        if not self.url_template:
-            raise ValueError("DataSource url_template cannot be empty")
-        if "{year}" not in self.url_template and "GIS" not in self.url_template:
-            logger.warning(f"DataSource {self.name} URL does not contain {{year}} placeholder")
-
-
-# Default HCAD data sources
-DEFAULT_PROPERTY_SOURCES: list[DataSource] = [
-    DataSource(
-        name="Real Account Owner",
-        url_template="https://download.hcad.org/data/CAMA/{year}/Real_acct_owner.zip",
-        filename="Real_acct_owner.zip",
-        source_type=DataSourceType.PROPERTY_DATA,
-        priority=10,
-        extract_patterns=["real_acct.txt", "owners.txt", "deeds.txt"],
-    ),
-    DataSource(
-        name="Real Account Ownership History",
-        url_template="https://download.hcad.org/data/CAMA/{year}/Real_acct_ownership_history.zip",
-        filename="Real_acct_ownership_history.zip",
-        source_type=DataSourceType.PROPERTY_DATA,
-        required=False,
-        priority=90,
-    ),
-    DataSource(
-        name="Real Building Land",
-        url_template="https://download.hcad.org/data/CAMA/{year}/Real_building_land.zip",
-        filename="Real_building_land.zip",
-        source_type=DataSourceType.PROPERTY_DATA,
-        priority=20,
-        extract_patterns=[
-            "building_res.txt",
-            "fixtures.txt",
-            "extra_features.txt",
-            "extra_features_detail*.txt",
-            "land.txt",
-        ],
-    ),
-    DataSource(
-        name="Real Jur Exempt",
-        url_template="https://download.hcad.org/data/CAMA/{year}/Real_jur_exempt.zip",
-        filename="Real_jur_exempt.zip",
-        source_type=DataSourceType.PROPERTY_DATA,
-        required=False,
-        priority=80,
-    ),
-    DataSource(
-        name="Code Description Real",
-        url_template="https://download.hcad.org/data/CAMA/{year}/Code_description_real.zip",
-        filename="Code_description_real.zip",
-        source_type=DataSourceType.CODE_DESCRIPTIONS,
-        priority=5,
-    ),
-    DataSource(
-        name="PP Files",
-        url_template="https://download.hcad.org/data/CAMA/{year}/PP_files.zip",
-        filename="PP_files.zip",
-        source_type=DataSourceType.PROPERTY_DATA,
-        required=False,
-        priority=85,
-    ),
-    DataSource(
-        name="Code Description PP",
-        url_template="https://download.hcad.org/data/CAMA/{year}/Code_description_pp.zip",
-        filename="Code_description_pp.zip",
-        source_type=DataSourceType.CODE_DESCRIPTIONS,
-        required=False,
-        priority=6,
-    ),
-    DataSource(
-        name="Hearing Files",
-        url_template="https://download.hcad.org/data/CAMA/{year}/Hearing_files.zip",
-        filename="Hearing_files.zip",
-        source_type=DataSourceType.HEARING_DATA,
-        required=False,
-        priority=95,
-    ),
-]
-
-DEFAULT_GIS_SOURCES: list[DataSource] = [
-    DataSource(
-        name="GIS Parcels",
-        url_template="https://download.hcad.org/data/GIS/Parcels.zip",
-        filename="Parcels.zip",
-        source_type=DataSourceType.GIS_DATA,
-        priority=50,
-    ),
-]
+# Compatibility exports for existing callers. The catalog is the source of
+# truth, while ETLConfig gets caller-owned copies from it below.
+DEFAULT_PROPERTY_SOURCES = DEFAULT_HCAD_SOURCE_CATALOG.property_sources()
+DEFAULT_GIS_SOURCES = DEFAULT_HCAD_SOURCE_CATALOG.gis_sources()
 
 
 @dataclass
@@ -258,9 +122,9 @@ class ETLConfig:
 
     # Data sources
     property_sources: list[DataSource] = field(
-        default_factory=lambda: DEFAULT_PROPERTY_SOURCES.copy()
+        default_factory=DEFAULT_HCAD_SOURCE_CATALOG.property_sources
     )
-    gis_sources: list[DataSource] = field(default_factory=lambda: DEFAULT_GIS_SOURCES.copy())
+    gis_sources: list[DataSource] = field(default_factory=DEFAULT_HCAD_SOURCE_CATALOG.gis_sources)
 
     # Component configs
     download: DownloadConfig = field(default_factory=DownloadConfig)

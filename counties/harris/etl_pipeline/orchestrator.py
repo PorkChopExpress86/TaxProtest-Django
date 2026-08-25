@@ -15,9 +15,12 @@ from typing import Any
 from django.core.management import call_command
 from django.core.management.base import CommandError as DjangoCommandError
 
+from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG, HcadSourceId
+
 from .config import DataSource, DataSourceType, ETLConfig
 from .download import DownloadManager, DownloadResult
 from .extract import ExtractManager, ExtractResult
+from .import_plan import HarrisImportPlan
 from .logging import ETLLogger
 from .model_loader import ModelLoader
 from .row_reader import RowResult, iter_building_rows, iter_extra_feature_rows, iter_property_rows
@@ -181,33 +184,36 @@ class ETLOrchestrator:
     def execute(
         self,
         sources: list[DataSource] | None = None,
+        plan: HarrisImportPlan | None = None,
         skip_download: bool | None = None,
         skip_extract: bool | None = None,
         skip_transform: bool | None = None,
         skip_load: bool | None = None,
         cleanup_extracted: bool | None = None,
-        scope: str = "full",
+        scope: str | None = None,
         strict: bool = True,
         validate_contract: bool = True,
+        refresh_readiness: bool = True,
     ) -> PipelineResult:
         """Execute the full ETL pipeline.
 
         Args:
             sources: Specific sources to process (default: all required)
+            plan: Harris import intent that owns source selection and validation skips
             skip_download: Skip download stage
             skip_extract: Skip extract stage
             skip_transform: Skip transform stage
             skip_load: Skip load stage
             cleanup_extracted: Delete uncompressed extracted files after successful load
-            scope: Pipeline scope (full, building-only, gis-only, property-only)
+            scope: Deprecated compatibility spelling for a Harris import plan
             strict: Fail run on required gaps/errors
             validate_contract: Run post-load validate_data checks
+            refresh_readiness: Recompute readiness after a successful data write
 
         Returns:
             PipelineResult with execution status and metrics
         """
-        if scope not in {"full", "building-only", "gis-only", "property-only"}:
-            raise ValueError(f"Unsupported pipeline scope: {scope}")
+        plan = self._resolve_import_plan(plan=plan, scope=scope)
 
         # Apply overrides
         skip_download = skip_download if skip_download is not None else self.config.skip_download
@@ -227,11 +233,14 @@ class ETLOrchestrator:
             started_at=datetime.now(),
         )
 
-        sources = self._select_sources_for_scope(scope, sources)
+        sources = plan.select_sources(sources or self.config.get_required_sources())
+        if not sources:
+            raise ValueError(f"No ETL sources match Harris import plan {plan.legacy_scope}")
 
         self.logger.info(
             f"Starting ETL pipeline for {len(sources)} sources "
-            f"(year={self.config.data_year}, scope={scope}, strict={strict}, dry_run={self.config.dry_run})"
+            f"(year={self.config.data_year}, plan={plan.legacy_scope}, "
+            f"strict={strict}, dry_run={self.config.dry_run})"
         )
 
         try:
@@ -268,11 +277,11 @@ class ETLOrchestrator:
                 and not skip_load
                 and not self.config.dry_run
             )
-            if wrote_data:
+            if wrote_data and refresh_readiness:
                 self._refresh_readiness_once()
 
             if validate_contract and wrote_data:
-                self._validate_completeness_contract(scope=scope, strict=strict)
+                self._validate_completeness_contract(plan=plan, strict=strict)
 
             all_success = all(r.success for r in self.result.stages.values())
             self.result.status = PipelineStatus.COMPLETED if all_success else PipelineStatus.PARTIAL
@@ -296,40 +305,35 @@ class ETLOrchestrator:
 
         return self.result
 
-    def _select_sources_for_scope(
-        self,
-        scope: str,
-        sources: list[DataSource] | None,
-    ) -> list[DataSource]:
-        """Return the source list for a pipeline scope."""
-        selected = list(sources or self.config.get_required_sources())
-        if scope == "full":
-            return selected
-        if scope == "building-only":
-            return [s for s in selected if s.name == "Real Building Land"]
-        if scope == "gis-only":
-            return [s for s in selected if s.source_type == DataSourceType.GIS_DATA]
-        if scope == "property-only":
-            return [s for s in selected if s.source_type == DataSourceType.PROPERTY_DATA]
-        return selected
+    @staticmethod
+    def _resolve_import_plan(
+        *,
+        plan: HarrisImportPlan | None,
+        scope: str | None,
+    ) -> HarrisImportPlan:
+        """Resolve the modern import-plan interface and legacy scope adapter."""
+        if plan is None:
+            return HarrisImportPlan.from_legacy_scope(scope or "full")
+        if scope is not None and plan != HarrisImportPlan.from_legacy_scope(scope):
+            raise ValueError(
+                "Pass either a Harris import plan or a matching legacy scope, not both"
+            )
+        return plan
 
     def _refresh_readiness_once(self) -> None:
         """Refresh property readiness exactly once per successful load run."""
-        from counties.harris.etl import refresh_property_readiness
+        from .readiness import refresh_property_readiness
 
         self.logger.info("Refreshing property readiness once after load stage")
         refresh_property_readiness()
 
-    def _validate_completeness_contract(self, scope: str, strict: bool) -> None:
+    def _validate_completeness_contract(self, plan: HarrisImportPlan, strict: bool) -> None:
         """Run validate_data with scope-aware skip flags."""
-        skip_building_checks = scope in {"gis-only", "property-only"}
-        skip_gis_checks = scope in {"building-only", "property-only"}
 
         try:
             call_command(
                 "validate_data",
-                skip_building_checks=skip_building_checks,
-                skip_gis_checks=skip_gis_checks,
+                **plan.contract_validation_options(),
             )
         except DjangoCommandError as exc:
             msg = f"Completeness validation failed: {exc}"
@@ -425,7 +429,7 @@ class ETLOrchestrator:
 
         # Find the Real Building Land source
         for source in sources:
-            if source.name == "Real Building Land":
+            if DEFAULT_HCAD_SOURCE_CATALOG.is_source(source, HcadSourceId.REAL_BUILDING_LAND):
                 extract_path = self.extract_manager.get_extract_path(source)
                 fixtures_path = extract_path / "fixtures.txt"
 
@@ -525,7 +529,7 @@ class ETLOrchestrator:
                     continue
 
                 # Prefer detailed extra feature files when present (legacy parity).
-                if source.name == "Real Building Land":
+                if DEFAULT_HCAD_SOURCE_CATALOG.is_source(source, HcadSourceId.REAL_BUILDING_LAND):
                     has_extra_feature_details = any(
                         path.stem.lower().startswith("extra_features_detail") for path in data_files
                     )
@@ -727,8 +731,7 @@ class ETLOrchestrator:
         self.logger.info(f"Loading GIS data from: {shapefile_path}")
 
         try:
-            # Import and call the GIS loading function
-            from counties.harris.etl import load_gis_parcels
+            from .gis_loader import load_gis_parcels
 
             count = load_gis_parcels(str(shapefile_path), refresh_readiness=False)
             self.logger.info(f"Updated {count} properties with GIS coordinates")
@@ -744,79 +747,17 @@ class ETLOrchestrator:
     @staticmethod
     def _missing_required_files(source: DataSource, data_files: list[Path]) -> list[str]:
         """Return missing required files for core required property sources."""
-        stems = {path.stem.lower() for path in data_files}
-        missing: list[str] = []
-
-        if source.name == "Real Account Owner":
-            if "real_acct" not in stems:
-                missing.append("real_acct.txt")
-
-        if source.name == "Real Building Land":
-            if "building_res" not in stems:
-                missing.append("building_res.txt")
-            if "fixtures" not in stems:
-                missing.append("fixtures.txt")
-
-            has_extra_features = "extra_features" in stems or any(
-                stem.startswith("extra_features_detail") for stem in stems
-            )
-            if not has_extra_features:
-                missing.append("extra_features*.txt")
-
-        return missing
+        return DEFAULT_HCAD_SOURCE_CATALOG.missing_required_files(
+            source,
+            [str(path) for path in data_files],
+        )
 
     @staticmethod
     def _select_preferred_gis_shapefile(search_roots: list[Path]) -> Path | None:
-        """Select the best shapefile candidate from one or more roots.
+        """Compatibility adapter for the shared GIS selection rule."""
+        from .gis_loader import select_preferred_gis_shapefile
 
-        Preference order matches the legacy GIS loader behavior:
-        1) Exact `ParcelsCity.shp`
-        2) Any shapefile containing `ParcelsCity`
-        3) Paths under `/Gis/pdata/`
-        4) Shorter path depth as stable tie-breaker
-        """
-        shapefiles: list[Path] = []
-        seen: set[str] = set()
-
-        for root in search_roots:
-            if not root.exists():
-                continue
-            for path in root.rglob("*.shp"):
-                normalized = str(path).replace("\\", "/")
-                if normalized in seen:
-                    continue
-                seen.add(normalized)
-                shapefiles.append(path)
-
-        if not shapefiles:
-            gdb_dirs: list[Path] = []
-            for root in search_roots:
-                if not root.exists():
-                    continue
-                for path in root.rglob("*.gdb"):
-                    if path.is_dir():
-                        normalized = str(path).replace("\\", "/")
-                        if normalized not in seen:
-                            seen.add(normalized)
-                            gdb_dirs.append(path)
-
-            if gdb_dirs:
-                return min(
-                    gdb_dirs,
-                    key=lambda p: (0 if "parcels.gdb" in p.name.lower() else 1, len(p.parts)),
-                )
-            return None
-
-        def priority(path: Path) -> tuple[int, int, int]:
-            normalized = str(path).replace("\\", "/").lower()
-            name = path.name.lower()
-            return (
-                2 if name == "parcelscity.shp" else 1 if "parcelscity" in name else 0,
-                1 if "/gis/pdata/" in normalized else 0,
-                -len(path.parts),
-            )
-
-        return max(shapefiles, key=priority)
+        return select_preferred_gis_shapefile(search_roots)
 
     def execute_download_only(
         self,

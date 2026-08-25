@@ -19,6 +19,8 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG
+
 from .config import DataSource, ETLConfig
 from .logging import ETLLogger
 
@@ -198,22 +200,7 @@ class DownloadManager:
         Returns:
             DownloadResult with download status and metadata
         """
-        url = source.get_url(self.config.data_year)
-
-        # Check for 404 and fallback if needed
-        try:
-            # Only check if it looks like a year-based URL (contains year digits)
-            if str(self.config.data_year) in url:
-                head_resp = self.session.head(url, timeout=10)
-                if head_resp.status_code == 404:
-                    fallback_year = self.config.data_year - 1
-                    fallback_url = source.get_url(fallback_year)
-                    self.logger.warning(
-                        f"URL {url} returned 404. Falling back to previous year: {fallback_url}"
-                    )
-                    url = fallback_url
-        except Exception as e:
-            self.logger.debug(f"Pre-download check failed for {url}: {e}")
+        url = self._resolve_download_url(source)
 
         dest_path = dest_path or (self.download_dir / source.filename)
 
@@ -268,6 +255,34 @@ class DownloadManager:
             duration=time.time() - start_time,
             attempts=attempts,
         )
+
+    def _resolve_download_url(self, source: DataSource) -> str:
+        """Choose the first available URL using the catalog's fallback policy."""
+        candidate_urls = DEFAULT_HCAD_SOURCE_CATALOG.candidate_urls(source, self.config.data_year)
+        url = candidate_urls[0]
+
+        for index, candidate_url in enumerate(candidate_urls):
+            try:
+                head_response = self.session.head(candidate_url, timeout=10)
+            # This is only an optimization for selecting the current versus
+            # prior-year archive.  If the probe itself is unavailable for any
+            # reason, preserve the existing behavior and let the real download
+            # request decide whether the current URL works.
+            except Exception as exc:
+                self.logger.debug("Pre-download check failed for %s: %s", candidate_url, exc)
+                return candidate_url
+
+            if head_response.status_code != 404:
+                return candidate_url
+            if index + 1 < len(candidate_urls):
+                self.logger.warning(
+                    "URL %s returned 404. Falling back to %s",
+                    candidate_url,
+                    candidate_urls[index + 1],
+                )
+            url = candidate_url
+
+        return url
 
     def _download_with_progress(
         self,

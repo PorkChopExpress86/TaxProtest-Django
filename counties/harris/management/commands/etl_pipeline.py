@@ -13,7 +13,13 @@ import json
 
 from django.core.management.base import BaseCommand, CommandError
 
-from counties.harris.etl_pipeline import DownloadManager, ETLConfig, ETLOrchestrator, ExtractManager
+from counties.harris.etl_pipeline import (
+    DownloadManager,
+    ETLConfig,
+    ETLOrchestrator,
+    ExtractManager,
+    HarrisImportPlan,
+)
 
 
 class Command(BaseCommand):
@@ -271,11 +277,13 @@ class Command(BaseCommand):
             scope = "property-only"
         elif options.get("gis_only"):
             scope = "gis-only"
+        plan = HarrisImportPlan.from_legacy_scope(scope)
 
         self.stdout.write(
             self.style.WARNING(
                 f"Starting ETL pipeline (year={config.data_year}, "
-                f'dry_run={config.dry_run}, scope={scope}, strict={options.get("strict", True)})...'
+                f"dry_run={config.dry_run}, plan={plan.legacy_scope}, "
+                f'strict={options.get("strict", True)})...'
             )
         )
 
@@ -285,7 +293,7 @@ class Command(BaseCommand):
             skip_download=options.get("skip_download", False),
             skip_extract=options.get("skip_extract", False),
             skip_load=options.get("skip_load", False),
-            scope=scope,
+            plan=plan,
             strict=options.get("strict", True),
             validate_contract=not config.dry_run,
         )

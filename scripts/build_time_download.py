@@ -31,6 +31,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
+from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG, DataSource
 from taxprotest.runtime_paths import resolve_runtime_paths
 
 RUNTIME_PATHS = resolve_runtime_paths(BASE_DIR)
@@ -41,35 +42,17 @@ DOWNLOAD_TIMEOUT = 600
 
 
 def candidate_years() -> list[int]:
-    year = datetime.now().year
-    return [year, year - 1]
+    return DEFAULT_HCAD_SOURCE_CATALOG.candidate_years(datetime.now().year)
 
 
-def build_candidate_urls(filename: str, gis_url: str | None = None) -> list[str]:
-    if gis_url:
-        return [gis_url]
-    return [f"https://download.hcad.org/data/CAMA/{year}/{filename}" for year in candidate_years()]
+def build_candidate_urls(source: DataSource) -> list[str]:
+    return DEFAULT_HCAD_SOURCE_CATALOG.candidate_urls(source, datetime.now().year)
 
 
-# Required archives — build fails if any of these are missing.
-# Optional archives — skipped silently on 404.
-ARCHIVES = [
-    {"filename": "Real_acct_owner.zip", "required": True},
-    {"filename": "Real_acct_ownership_history.zip", "required": False},
-    {"filename": "Real_building_land.zip", "required": True},
-    # Jurisdiction/exemption rows and per-unit tax rates -- the inputs the
-    # protest report's Tax Impact section needs (import_hcad_jur_exempt).
-    {"filename": "Real_jur_exempt.zip", "required": False},
-    {"filename": "Code_description_real.zip", "required": False},
-    {"filename": "PP_files.zip", "required": False},
-    {"filename": "Code_description_pp.zip", "required": False},
-    {"filename": "Hearing_files.zip", "required": False},
-    {
-        "filename": "Parcels.zip",
-        "required": True,
-        "gis_url": "https://download.hcad.org/data/GIS/Parcels.zip",
-    },
-]
+# Required archives fail the image build; optional archives are skipped after
+# all catalog candidates return unavailable. The archive facts live in the
+# shared catalog so build-time and runtime imports agree.
+ARCHIVES = DEFAULT_HCAD_SOURCE_CATALOG.all_sources()
 
 
 def make_session() -> requests.Session:
@@ -91,11 +74,11 @@ def ensure_download_dir() -> None:
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 
-def download_with_fallback(session: requests.Session, archive: dict) -> str | None:
+def download_with_fallback(session: requests.Session, archive: DataSource) -> str | None:
     """Try each candidate URL in turn; return local path on success, None if optional and skipped."""
-    filename = archive["filename"]
+    filename = archive.filename
     local_path = os.path.join(DOWNLOAD_DIR, filename)
-    candidate_urls = build_candidate_urls(filename, archive.get("gis_url"))
+    candidate_urls = build_candidate_urls(archive)
 
     for url in candidate_urls:
         print(f"  Trying {url} ...", flush=True)
@@ -132,7 +115,7 @@ def download_with_fallback(session: requests.Session, archive: dict) -> str | No
             if os.path.exists(local_path):
                 os.remove(local_path)
 
-    if archive.get("required", True):
+    if archive.required:
         print(f"ERROR: Required archive {filename} could not be downloaded.", flush=True)
         sys.exit(1)
 

@@ -13,7 +13,8 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.db.models import Exists, OuterRef
 
-from counties.harris.etl import link_orphaned_records, refresh_property_readiness
+from counties.harris.etl_pipeline.readiness import refresh_property_readiness
+from counties.harris.etl_pipeline.reconciliation import link_orphaned_records
 from counties.harris.models import BuildingDetail, ExtraFeature, PropertyRecord
 from counties.harris.residential import is_residential_state_class, normalize_state_class
 

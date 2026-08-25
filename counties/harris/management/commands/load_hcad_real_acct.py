@@ -3,7 +3,9 @@ from pathlib import Path
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
-from counties.harris.etl import bulk_load_properties
+from counties.harris.etl_pipeline import ETLConfig
+from counties.harris.etl_pipeline.readiness import refresh_property_readiness
+from counties.harris.etl_pipeline.translated_loader import load_property_file
 
 
 class Command(BaseCommand):
@@ -55,11 +57,15 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING("Appending to existing data (no truncate)."))
 
         self.stdout.write(self.style.WARNING(f"Loading properties from: {filepath}"))
-        count = bulk_load_properties(
-            str(filepath),
-            chunk_size=options["chunk"],
+        result = load_property_file(
+            ETLConfig.from_env(),
+            filepath,
+            batch_size=options["chunk"],
             limit=options.get("limit"),
             truncate=truncate,
-            refresh_readiness=not options.get("no_refresh_readiness", False),
         )
-        self.stdout.write(self.style.SUCCESS(f"Inserted {count} PropertyRecord rows."))
+        if not options.get("no_refresh_readiness", False):
+            refresh_property_readiness()
+        self.stdout.write(
+            self.style.SUCCESS(f"Inserted {result.records_loaded} PropertyRecord rows.")
+        )

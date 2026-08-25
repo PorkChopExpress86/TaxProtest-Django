@@ -118,9 +118,9 @@ class ModelLoader:
             values = {key[0] for key in candidate_keys}
             return {
                 (value,)
-                for value in model_class.objects.filter(**{f"{key_fields[0]}__in": values}).values_list(
-                    key_fields[0], flat=True
-                )
+                for value in model_class.objects.filter(
+                    **{f"{key_fields[0]}__in": values}
+                ).values_list(key_fields[0], flat=True)
             }
 
         account_numbers = {key[0] for key in candidate_keys}
@@ -196,7 +196,7 @@ class ModelLoader:
             # The enclosing transaction rolls every flushed batch back, so do
             # not report attempted rows as persisted after a failed import.
             result.records_loaded = 0
-            self.logger.exception("Error loading %s rows: %s", model_name, exc)
+            self.logger.exception(f"Error loading {model_name} rows: {exc}")
 
         result.duration = (datetime.now() - started_at).total_seconds()
         return result

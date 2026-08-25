@@ -1,62 +1,30 @@
-"""
-Management command to download and load GIS parcel data from HCAD.
-"""
+"""Load GIS parcel coordinates through the authoritative Harris pipeline."""
 
-import os
-import zipfile
+from dataclasses import replace
 from pathlib import Path
 
-import requests
-from django.conf import settings
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 
-from counties.harris.etl import load_gis_parcels
+from counties.harris.etl_pipeline import DownloadManager, ETLConfig, ExtractManager
+from counties.harris.etl_pipeline.gis_loader import load_gis_parcels, select_preferred_gis_shapefile
+from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG, HcadSourceId
 
 
 def find_preferred_shapefile(extract_dir: str) -> str | None:
-    """Return the best shapefile candidate from an extracted HCAD GIS archive.
-
-    Recent HCAD parcel archives may contain both a top-level `Parcels.shp` and a
-    nested `ParcelsCity.shp`. The nested `ParcelsCity.shp` is the primary parcel
-    layer with usable parcel identifiers, so prefer it when present.
-    """
-    shapefiles: list[str] = []
-
-    for root, dirs, files in os.walk(extract_dir):
-        for file in files:
-            if file.endswith(".shp"):
-                shapefiles.append(os.path.join(root, file))
-        for d in dirs:
-            if d.endswith(".gdb"):
-                shapefiles.append(os.path.join(root, d))
-
-    if not shapefiles:
-        return None
-
-    def priority(path: str) -> tuple[int, int, int]:
-        normalized = path.replace("\\", "/").lower()
-        name = os.path.basename(normalized)
-        return (
-            (
-                3
-                if name == "parcelscity.shp"
-                else 2 if "parcelscity" in name else 1 if name.endswith(".gdb") else 0
-            ),
-            1 if "/gis/pdata/" in normalized else 0,
-            len(normalized),
-        )
-
-    return max(shapefiles, key=priority)
+    """Compatibility adapter for the shared GIS-layer selection rule."""
+    selected = select_preferred_gis_shapefile([Path(extract_dir)])
+    return str(selected) if selected is not None else None
 
 
 class Command(BaseCommand):
     help = "Download and load GIS parcel data from HCAD"
 
     def add_arguments(self, parser):
+        default_source = DEFAULT_HCAD_SOURCE_CATALOG.source_for_id(HcadSourceId.GIS_PARCELS)
         parser.add_argument(
             "--url",
             type=str,
-            default="https://download.hcad.org/data/GIS/Parcels.zip",
+            default=default_source.url_template,
             help="URL to download GIS Parcels.zip from",
         )
         parser.add_argument(
@@ -71,58 +39,38 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        url = options["url"]
-        skip_download = options["skip_download"]
+        config = ETLConfig.from_env()
+        source = DEFAULT_HCAD_SOURCE_CATALOG.source_for_id(HcadSourceId.GIS_PARCELS)
+        if options["url"] != source.url_template:
+            source = replace(source, url_template=options["url"])
 
-        # Setup download directory
-        download_dir = Path(settings.HCAD_DOWNLOAD_DIR)
-        extract_root = Path(settings.HCAD_EXTRACT_DIR)
-        download_dir.mkdir(parents=True, exist_ok=True)
-        extract_root.mkdir(parents=True, exist_ok=True)
+        download_manager = DownloadManager(config)
+        extract_manager = ExtractManager(config)
+        if not options["skip_download"]:
+            self.stdout.write(
+                self.style.SUCCESS(f"Downloading GIS data from {source.url_template}...")
+            )
+            download_result = download_manager.download_file(source)
+            if not download_result.success or download_result.local_path is None:
+                raise CommandError(f"GIS download failed: {download_result.error}")
 
-        zip_filename = "Parcels.zip"
-        zip_path = download_dir / zip_filename
-        extract_dir = extract_root / "Parcels"
+            self.stdout.write(self.style.SUCCESS(f"Extracting {source.filename}..."))
+            extract_result = extract_manager.extract_archive(source, download_result.local_path)
+            if not extract_result.success:
+                raise CommandError(f"GIS extraction failed: {extract_result.error}")
+            self.stdout.write(self.style.SUCCESS(f"Extracted to {extract_result.extract_dir}"))
+        else:
+            self.stdout.write("Skipping download and extraction, using existing files...")
 
-        if not skip_download:
-            self.stdout.write(self.style.SUCCESS(f"Downloading GIS data from {url}..."))
+        extract_dir = extract_manager.get_extract_path(source)
+        legacy_extract_dir = config.download_dir / source.filename.rsplit(".", 1)[0]
+        shapefile = select_preferred_gis_shapefile([extract_dir, legacy_extract_dir])
 
-            # Download the zip file with progress
-            response = requests.get(url, stream=True, timeout=300)
-            response.raise_for_status()
-            total_length = int(response.headers.get("content-length") or 0)
-            downloaded = 0
-
-            with zip_path.open("wb") as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    if total_length > 0:
-                        percent = int(100 * downloaded / total_length)
-                        if downloaded % (5 * 1024 * 1024) < 8192:  # Every 5MB
-                            self.stdout.write(
-                                f"  ... {percent}% ({downloaded//(1024*1024)} MB)", ending="\r"
-                            )
-                            self.stdout.flush()
-
-            self.stdout.write(f"\nDownloaded {downloaded//(1024*1024)} MB to {zip_filename}")
-
-            # Extract the zip file
-            self.stdout.write(self.style.SUCCESS(f"Extracting {zip_filename}..."))
-            extract_dir.mkdir(parents=True, exist_ok=True)
-
-            with zipfile.ZipFile(zip_path, "r") as zip_ref:
-                zip_ref.extractall(extract_dir)
-
-            self.stdout.write(self.style.SUCCESS(f"Extracted to {extract_dir}"))
-
-        # Find shapefile in extracted directory
-        shapefile_path = find_preferred_shapefile(str(extract_dir))
-
-        if not shapefile_path:
+        if shapefile is None:
             self.stdout.write(self.style.ERROR(f"No shapefile (.shp) found in {extract_dir}"))
             return
 
+        shapefile_path = str(shapefile)
         self.stdout.write(self.style.SUCCESS(f"Found shapefile: {shapefile_path}"))
         self.stdout.write(self.style.SUCCESS("Loading GIS data into database..."))
 
