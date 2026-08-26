@@ -1,0 +1,301 @@
+"""Contract tests for the deep Harris import boundary."""
+
+from __future__ import annotations
+
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
+
+from django.db import DatabaseError
+from django.test import TestCase, override_settings
+
+from counties.harris.etl_pipeline import (
+    ExtractedSourceRetention,
+    HarrisAcquisitionMode,
+    HarrisApply,
+    HarrisExtractionMode,
+    HarrisFailurePolicy,
+    HarrisImportPhase,
+    HarrisImportRequest,
+    HarrisImportStatus,
+    HarrisPreview,
+    InvalidHarrisImportRequest,
+    run_harris_import,
+)
+from counties.harris.etl_pipeline.import_plan import HarrisImportPlan
+from counties.harris.models import PropertyRecord
+
+
+def _runtime_settings(root: str) -> dict[str, str]:
+    base = Path(root)
+    return {
+        "BASE_DIR": root,
+        "HCAD_DOWNLOAD_DIR": str(base / "downloads"),
+        "HCAD_EXTRACT_DIR": str(base / "extracted"),
+        "HCAD_LOG_DIR": str(base / "logs"),
+    }
+
+
+def _property_plan() -> HarrisImportPlan:
+    return HarrisImportPlan.from_legacy_scope("property-only")
+
+
+def _write_property_source(
+    root: str,
+    account: str = "P100",
+    state_class: str = "A1",
+) -> Path:
+    source_dir = Path(root) / "extracted" / "Real_acct_owner"
+    source_dir.mkdir(parents=True, exist_ok=True)
+    source = source_dir / "real_acct.txt"
+    source.write_text(
+        "acct\tsite_addr_1\tsite_addr_3\tstate_class\ttot_appr_val\n"
+        f"{account}\t100 MAIN ST\t77001\t{state_class}\t250000\n",
+        encoding="latin-1",
+    )
+    return source
+
+
+class HarrisImportRequestTests(TestCase):
+    def test_rejects_an_impossible_year_before_execution(self):
+        with self.assertRaises(InvalidHarrisImportRequest):
+            HarrisImportRequest(plan=_property_plan(), data_year=1999)
+
+        with self.assertRaises(InvalidHarrisImportRequest):
+            HarrisImportRequest(plan=_property_plan(), data_year="2025")
+
+    def test_preview_type_cannot_express_post_write_options(self):
+        request = HarrisImportRequest(plan=_property_plan(), load=HarrisPreview())
+
+        self.assertFalse(hasattr(request.load, "refresh_readiness"))
+        self.assertFalse(hasattr(request.load, "validate_completeness"))
+
+
+class HarrisImportBoundaryTests(TestCase):
+    def test_preview_translates_without_writing_or_cleaning(self):
+        with tempfile.TemporaryDirectory() as root, override_settings(**_runtime_settings(root)):
+            source = _write_property_source(root)
+            request = HarrisImportRequest(
+                plan=_property_plan(),
+                acquisition=HarrisAcquisitionMode.REUSE_DOWNLOADED,
+                extraction=HarrisExtractionMode.REUSE_EXTRACTED,
+                load=HarrisPreview(),
+            )
+
+            result = run_harris_import(request)
+
+            self.assertIs(result.status, HarrisImportStatus.COMPLETED)
+            self.assertFalse(result.wrote_data)
+            self.assertEqual(result.stages[HarrisImportPhase.LOAD].metrics["records_loaded"], 1)
+            self.assertFalse(PropertyRecord.objects.filter(account_number="P100").exists())
+            self.assertTrue(source.exists())
+
+    def test_gis_preview_translates_without_calling_the_persistence_adapter(self):
+        with (
+            tempfile.TemporaryDirectory() as root,
+            override_settings(**_runtime_settings(root)),
+            patch(
+                "counties.harris.etl_pipeline.gis_loader.translate_gis_parcels",
+                return_value={"P100": (29.7, -95.3, "parcel-1")},
+            ) as translate,
+            patch("counties.harris.etl_pipeline.gis_loader.load_gis_parcels") as load,
+        ):
+            source_dir = Path(root) / "extracted" / "Parcels"
+            source_dir.mkdir(parents=True)
+            shapefile = source_dir / "Parcels.shp"
+            shapefile.write_text("stub", encoding="utf-8")
+
+            result = run_harris_import(
+                HarrisImportRequest(
+                    plan=HarrisImportPlan.from_legacy_scope("gis-only"),
+                    acquisition=HarrisAcquisitionMode.REUSE_DOWNLOADED,
+                    extraction=HarrisExtractionMode.REUSE_EXTRACTED,
+                    load=HarrisPreview(),
+                )
+            )
+
+            self.assertIs(result.status, HarrisImportStatus.COMPLETED)
+            self.assertFalse(result.wrote_data)
+            translate.assert_called_once_with(str(shapefile))
+            load.assert_not_called()
+
+    def test_apply_writes_then_refreshes_once(self):
+        with (
+            tempfile.TemporaryDirectory() as root,
+            override_settings(**_runtime_settings(root)),
+            patch("counties.harris.etl_pipeline.readiness.refresh_property_readiness") as refresh,
+        ):
+            source = _write_property_source(root, account="P200")
+            request = HarrisImportRequest(
+                plan=_property_plan(),
+                acquisition=HarrisAcquisitionMode.REUSE_DOWNLOADED,
+                extraction=HarrisExtractionMode.REUSE_EXTRACTED,
+                load=HarrisApply(
+                    validate_completeness=False,
+                    extracted_source_retention=ExtractedSourceRetention.RETAIN,
+                ),
+            )
+
+            result = run_harris_import(request)
+
+            self.assertIs(result.status, HarrisImportStatus.COMPLETED)
+            self.assertTrue(result.wrote_data)
+            self.assertTrue(PropertyRecord.objects.filter(account_number="P200").exists())
+            refresh.assert_called_once_with()
+            self.assertTrue(source.exists())
+
+    def test_strict_missing_required_extract_returns_failed_result(self):
+        with tempfile.TemporaryDirectory() as root, override_settings(**_runtime_settings(root)):
+            result = run_harris_import(
+                HarrisImportRequest(
+                    plan=_property_plan(),
+                    acquisition=HarrisAcquisitionMode.REUSE_DOWNLOADED,
+                    extraction=HarrisExtractionMode.REUSE_EXTRACTED,
+                    load=HarrisPreview(),
+                    failure_policy=HarrisFailurePolicy.STRICT,
+                )
+            )
+
+            self.assertIs(result.status, HarrisImportStatus.FAILED)
+            self.assertTrue(result.errors)
+
+    def test_expected_persistence_failure_is_returned_but_programming_error_raises(self):
+        with tempfile.TemporaryDirectory() as root, override_settings(**_runtime_settings(root)):
+            _write_property_source(root, account="P250")
+            request = HarrisImportRequest(
+                plan=_property_plan(),
+                acquisition=HarrisAcquisitionMode.REUSE_DOWNLOADED,
+                extraction=HarrisExtractionMode.REUSE_EXTRACTED,
+                load=HarrisApply(
+                    refresh_readiness=False,
+                    validate_completeness=False,
+                    extracted_source_retention=ExtractedSourceRetention.RETAIN,
+                ),
+            )
+
+            with patch(
+                "counties.harris.etl_pipeline.persistence.HarrisPersistence.persist",
+                side_effect=DatabaseError("database unavailable"),
+            ):
+                result = run_harris_import(request)
+
+            self.assertIs(result.status, HarrisImportStatus.FAILED)
+            self.assertFalse(result.wrote_data)
+            self.assertIn("database unavailable", result.errors[0])
+
+            with (
+                patch(
+                    "counties.harris.etl_pipeline.persistence.HarrisPersistence.persist",
+                    side_effect=TypeError("programming defect"),
+                ),
+                self.assertRaisesRegex(TypeError, "programming defect"),
+            ):
+                run_harris_import(request)
+
+    def test_empty_property_replace_returns_failed_without_erasing_existing_rows(self):
+        PropertyRecord.objects.create(
+            account_number="KEEP_EMPTY",
+            address="1 KEEP ST",
+            city="Houston",
+            zipcode="77001",
+            state_class="A1",
+            is_residential=True,
+        )
+        with tempfile.TemporaryDirectory() as root, override_settings(**_runtime_settings(root)):
+            _write_property_source(root, account="SKIPPED", state_class="F1")
+
+            result = run_harris_import(
+                HarrisImportRequest(
+                    plan=_property_plan(),
+                    acquisition=HarrisAcquisitionMode.REUSE_DOWNLOADED,
+                    extraction=HarrisExtractionMode.REUSE_EXTRACTED,
+                    load=HarrisApply(
+                        refresh_readiness=False,
+                        validate_completeness=False,
+                        extracted_source_retention=ExtractedSourceRetention.RETAIN,
+                    ),
+                )
+            )
+
+        self.assertIs(result.status, HarrisImportStatus.FAILED)
+        self.assertIn("no loadable rows", result.errors[0])
+        self.assertTrue(PropertyRecord.objects.filter(account_number="KEEP_EMPTY").exists())
+
+    def test_best_effort_failure_is_partial_when_useful_work_completed(self):
+        with tempfile.TemporaryDirectory() as root, override_settings(**_runtime_settings(root)):
+            _write_property_source(root, account="P300")
+            result = run_harris_import(
+                HarrisImportRequest(
+                    plan=HarrisImportPlan.from_legacy_scope("property-and-building"),
+                    acquisition=HarrisAcquisitionMode.REUSE_DOWNLOADED,
+                    extraction=HarrisExtractionMode.REUSE_EXTRACTED,
+                    load=HarrisApply(
+                        refresh_readiness=False,
+                        validate_completeness=False,
+                        extracted_source_retention=ExtractedSourceRetention.RETAIN,
+                    ),
+                    failure_policy=HarrisFailurePolicy.BEST_EFFORT,
+                )
+            )
+
+            self.assertIs(result.status, HarrisImportStatus.PARTIAL)
+            self.assertTrue(result.wrote_data)
+            self.assertTrue(PropertyRecord.objects.filter(account_number="P300").exists())
+
+    def test_cleanup_failure_after_commit_is_a_completed_warning(self):
+        with (
+            tempfile.TemporaryDirectory() as root,
+            override_settings(**_runtime_settings(root)),
+            patch(
+                "counties.harris.etl_pipeline.orchestrator.ExtractManager.cleanup",
+                side_effect=PermissionError("locked"),
+            ),
+        ):
+            _write_property_source(root, account="P400")
+            result = run_harris_import(
+                HarrisImportRequest(
+                    plan=_property_plan(),
+                    acquisition=HarrisAcquisitionMode.REUSE_DOWNLOADED,
+                    extraction=HarrisExtractionMode.REUSE_EXTRACTED,
+                    load=HarrisApply(
+                        refresh_readiness=False,
+                        validate_completeness=False,
+                    ),
+                )
+            )
+
+            self.assertIs(result.status, HarrisImportStatus.COMPLETED)
+            self.assertTrue(result.wrote_data)
+            self.assertIn("cleanup failed", result.warnings[0])
+
+    def test_reporter_failure_is_observational(self):
+        class BrokenReporter:
+            def report(self, event):
+                raise RuntimeError("observer offline")
+
+        with tempfile.TemporaryDirectory() as root, override_settings(**_runtime_settings(root)):
+            _write_property_source(root, account="P500")
+            result = run_harris_import(
+                HarrisImportRequest(
+                    plan=_property_plan(),
+                    acquisition=HarrisAcquisitionMode.REUSE_DOWNLOADED,
+                    extraction=HarrisExtractionMode.REUSE_EXTRACTED,
+                    load=HarrisPreview(),
+                ),
+                reporter=BrokenReporter(),
+            )
+
+            self.assertIs(result.status, HarrisImportStatus.COMPLETED)
+            self.assertIn("reporter failed", result.warnings[0])
+            self.assertEqual(
+                set(result.to_dict()),
+                {
+                    "status",
+                    "started_at",
+                    "completed_at",
+                    "duration_seconds",
+                    "stages",
+                    "errors",
+                    "warnings",
+                },
+            )

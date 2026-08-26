@@ -11,6 +11,13 @@ from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import TestCase
 
+from counties.harris.etl_pipeline import (
+    ExtractedSourceRetention,
+    HarrisAcquisitionMode,
+    HarrisApply,
+    HarrisExtractionMode,
+    HarrisFailurePolicy,
+)
 from counties.harris.etl_pipeline.config import ETLConfig
 from counties.harris.etl_pipeline.fast_loader import (
     copy_load_building_details,
@@ -334,7 +341,7 @@ class ImportAllDataCommandTests(TestCase):
         refresh_property_readiness()
         return prop
 
-    @patch("counties.harris.management.commands.import_all_data.ETLOrchestrator.execute")
+    @patch("counties.harris.management.commands.import_all_data.run_harris_import")
     def test_import_all_data_fails_when_authoritative_pipeline_fails(self, mocked_execute) -> None:
         mocked_execute.return_value = SimpleNamespace(
             success=False,
@@ -347,7 +354,7 @@ class ImportAllDataCommandTests(TestCase):
         with self.assertRaises(CommandError):
             call_command("import_all_data", skip_download=True, skip_property=True)
 
-    @patch("counties.harris.management.commands.import_all_data.ETLOrchestrator.execute")
+    @patch("counties.harris.management.commands.import_all_data.run_harris_import")
     def test_import_all_data_delegates_to_modern_pipeline_with_strict_mode(
         self, mocked_execute
     ) -> None:
@@ -362,23 +369,24 @@ class ImportAllDataCommandTests(TestCase):
         call_command("import_all_data", skip_download=True, skip_property=True)
 
         mocked_execute.assert_called_once()
-        _, kwargs = mocked_execute.call_args
+        request = mocked_execute.call_args.args[0]
         self.assertEqual(
-            kwargs["plan"],
+            request.plan,
             HarrisImportPlan.from_stage_flags(
                 include_property=False,
                 include_building=True,
                 include_gis=True,
             ),
         )
-        self.assertTrue(kwargs["strict"])
-        self.assertTrue(kwargs["validate_contract"])
-        self.assertTrue(kwargs["skip_download"])
+        self.assertIs(request.failure_policy, HarrisFailurePolicy.STRICT)
+        self.assertIsInstance(request.load, HarrisApply)
+        self.assertTrue(request.load.validate_completeness)
+        self.assertIs(request.acquisition, HarrisAcquisitionMode.REUSE_DOWNLOADED)
         # Extract is decoupled from download: skipping the download of
         # already-present archives must still extract them at runtime.
-        self.assertFalse(kwargs["skip_extract"])
+        self.assertIs(request.extraction, HarrisExtractionMode.EXTRACT)
 
-    @patch("counties.harris.management.commands.import_all_data.ETLOrchestrator.execute")
+    @patch("counties.harris.management.commands.import_all_data.run_harris_import")
     def test_import_all_data_skip_extract_is_independent_of_skip_download(
         self, mocked_execute
     ) -> None:
@@ -398,11 +406,11 @@ class ImportAllDataCommandTests(TestCase):
         )
 
         mocked_execute.assert_called_once()
-        _, kwargs = mocked_execute.call_args
-        self.assertTrue(kwargs["skip_download"])
-        self.assertTrue(kwargs["skip_extract"])
+        request = mocked_execute.call_args.args[0]
+        self.assertIs(request.acquisition, HarrisAcquisitionMode.REUSE_DOWNLOADED)
+        self.assertIs(request.extraction, HarrisExtractionMode.REUSE_EXTRACTED)
 
-    @patch("counties.harris.management.commands.import_all_data.ETLOrchestrator.execute")
+    @patch("counties.harris.management.commands.import_all_data.run_harris_import")
     def test_import_all_data_keeps_building_stage_when_gis_is_skipped(self, mocked_execute) -> None:
         mocked_execute.return_value = SimpleNamespace(
             success=True,
@@ -415,9 +423,9 @@ class ImportAllDataCommandTests(TestCase):
         call_command("import_all_data", skip_download=True, skip_gis=True)
 
         mocked_execute.assert_called_once()
-        _, kwargs = mocked_execute.call_args
+        request = mocked_execute.call_args.args[0]
         self.assertEqual(
-            kwargs["plan"],
+            request.plan,
             HarrisImportPlan.from_stage_flags(
                 include_property=True,
                 include_building=True,
@@ -425,7 +433,7 @@ class ImportAllDataCommandTests(TestCase):
             ),
         )
 
-    @patch("counties.harris.management.commands.import_all_data.ETLOrchestrator.execute")
+    @patch("counties.harris.management.commands.import_all_data.run_harris_import")
     def test_import_all_data_can_skip_contract_validation_for_startup_refresh(
         self, mocked_execute
     ) -> None:
@@ -445,8 +453,13 @@ class ImportAllDataCommandTests(TestCase):
         )
 
         mocked_execute.assert_called_once()
-        _, kwargs = mocked_execute.call_args
-        self.assertFalse(kwargs["validate_contract"])
+        request = mocked_execute.call_args.args[0]
+        self.assertIsInstance(request.load, HarrisApply)
+        self.assertFalse(request.load.validate_completeness)
+        self.assertIs(
+            request.load.extracted_source_retention,
+            ExtractedSourceRetention.REMOVE_AFTER_SUCCESS,
+        )
 
 
 class ETLLoaderOptimizationTests(TestCase):

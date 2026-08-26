@@ -10,15 +10,16 @@ Modules:
     extract: Archive extraction with streaming support
     transform: Data parsing, validation, and normalization
     model_loader: Django model loading for PropertyRecord, BuildingDetail, ExtraFeature
-    orchestrator: Pipeline coordination and error handling
+    orchestrator: Deep, stateless Harris import boundary
     logging: Structured logging infrastructure
 
 Usage:
-    from counties.harris.etl_pipeline import ETLOrchestrator, ETLConfig
+    from counties.harris.etl_pipeline import HarrisImportPlan, HarrisImportRequest
+    from counties.harris.etl_pipeline import run_harris_import
 
-    config = ETLConfig.from_env()
-    orchestrator = ETLOrchestrator(config)
-    orchestrator.execute()
+    result = run_harris_import(
+        HarrisImportRequest(plan=HarrisImportPlan.from_legacy_scope("full"))
+    )
 """
 
 from .config import DataSource, ETLConfig
@@ -27,7 +28,24 @@ from .extract import ExtractManager
 from .import_plan import HarrisImportPlan
 from .logging import ETLLogger
 from .model_loader import ModelLoader
-from .orchestrator import ETLOrchestrator
+from .orchestrator import (
+    ExtractedSourceRetention,
+    HarrisAcquisitionMode,
+    HarrisApply,
+    HarrisExtractionMode,
+    HarrisFailurePolicy,
+    HarrisImportEvent,
+    HarrisImportPhase,
+    HarrisImportReporter,
+    HarrisImportRequest,
+    HarrisImportResult,
+    HarrisImportStageResult,
+    HarrisImportStatus,
+    HarrisLoadIntent,
+    HarrisPreview,
+    InvalidHarrisImportRequest,
+    run_harris_import,
+)
 from .transform import DataTransformer
 
 __all__ = [
@@ -37,9 +55,24 @@ __all__ = [
     "ExtractManager",
     "DataTransformer",
     "ModelLoader",
-    "ETLOrchestrator",
     "ETLLogger",
     "HarrisImportPlan",
+    "ExtractedSourceRetention",
+    "HarrisAcquisitionMode",
+    "HarrisApply",
+    "HarrisExtractionMode",
+    "HarrisFailurePolicy",
+    "HarrisImportEvent",
+    "HarrisImportPhase",
+    "HarrisImportReporter",
+    "HarrisImportRequest",
+    "HarrisImportResult",
+    "HarrisImportStageResult",
+    "HarrisImportStatus",
+    "HarrisLoadIntent",
+    "HarrisPreview",
+    "InvalidHarrisImportRequest",
+    "run_harris_import",
 ]
 
 __version__ = "1.0.0"

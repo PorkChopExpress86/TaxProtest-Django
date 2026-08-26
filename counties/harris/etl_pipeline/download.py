@@ -71,11 +71,14 @@ class DownloadManager:
         self,
         config: ETLConfig,
         logger: ETLLogger | None = None,
+        *,
+        data_year: int | None = None,
     ):
         self.config = config
         self.download_config = config.download
         self.download_dir = config.download_dir
         self.logger = logger or ETLLogger(name="download_manager")
+        self.data_year = data_year
 
         # Create session with retry logic
         self.session = self._create_session()
@@ -242,9 +245,9 @@ class DownloadManager:
                 last_error = str(e)
                 self.logger.error(f"Checksum verification failed for {source.name}")
                 break  # Don't retry checksum failures
-            except Exception as e:
+            except OSError as e:
                 last_error = str(e)
-                self.logger.exception(f"Unexpected error downloading {source.name}")
+                self.logger.error(f"Filesystem error downloading {source.name}: {e}")
                 break
 
         # All retries exhausted
@@ -258,7 +261,7 @@ class DownloadManager:
 
     def _resolve_download_url(self, source: DataSource) -> str:
         """Choose the first available URL using the catalog's fallback policy."""
-        candidate_urls = DEFAULT_HCAD_SOURCE_CATALOG.candidate_urls(source, self.config.data_year)
+        candidate_urls = DEFAULT_HCAD_SOURCE_CATALOG.candidate_urls(source, self.data_year)
         url = candidate_urls[0]
 
         for index, candidate_url in enumerate(candidate_urls):
@@ -268,17 +271,16 @@ class DownloadManager:
             # prior-year archive.  If the probe itself is unavailable for any
             # reason, preserve the existing behavior and let the real download
             # request decide whether the current URL works.
-            except Exception as exc:
-                self.logger.debug("Pre-download check failed for %s: %s", candidate_url, exc)
+            except requests.RequestException as exc:
+                self.logger.debug(f"Pre-download check failed for {candidate_url}: {exc}")
                 return candidate_url
 
             if head_response.status_code != 404:
                 return candidate_url
             if index + 1 < len(candidate_urls):
                 self.logger.warning(
-                    "URL %s returned 404. Falling back to %s",
-                    candidate_url,
-                    candidate_urls[index + 1],
+                    f"URL {candidate_url} returned 404. "
+                    f"Falling back to {candidate_urls[index + 1]}"
                 )
             url = candidate_url
 
@@ -398,17 +400,8 @@ class DownloadManager:
                     if progress_callback:
                         progress_callback(source.name, idx, len(sources))
 
-                    try:
-                        result = future.result()
-                        results.append(result)
-                    except Exception as e:
-                        results.append(
-                            DownloadResult(
-                                source=source,
-                                success=False,
-                                error=str(e),
-                            )
-                        )
+                    result = future.result()
+                    results.append(result)
 
         # Log summary
         success_count = sum(1 for r in results if r.success)
@@ -432,10 +425,11 @@ class DownloadManager:
         Returns:
             List of DownloadResult for each source
         """
-        if include_optional:
-            sources = self.config.get_all_sources()
-        else:
-            sources = self.config.get_required_sources()
+        sources = (
+            DEFAULT_HCAD_SOURCE_CATALOG.ordered_sources()
+            if include_optional
+            else DEFAULT_HCAD_SOURCE_CATALOG.required_sources()
+        )
 
         return self.download_batch(sources)
 
@@ -459,7 +453,7 @@ class DownloadManager:
             sources: Specific sources to clean (default: all)
             keep_archives: Whether to keep ZIP/archive files
         """
-        sources = sources or self.config.get_all_sources()
+        sources = sources or DEFAULT_HCAD_SOURCE_CATALOG.ordered_sources()
 
         for source in sources:
             local_path = self.get_local_path(source)

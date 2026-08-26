@@ -82,7 +82,6 @@ class Command(BaseCommand):
         skip_extract: bool,
     ) -> None:
         config = ETLConfig.from_env()
-        config.data_year = year
         config.download_dir = download_root / str(year)
         config.extract_dir = extract_root / str(year)
         config.log_dir = Path(settings.HCAD_LOG_DIR) / "assessment_history" / str(year)
@@ -90,9 +89,9 @@ class Command(BaseCommand):
         config.extract_dir.mkdir(parents=True, exist_ok=True)
         config.log_dir.mkdir(parents=True, exist_ok=True)
 
-        download_manager = DownloadManager(config)
+        download_manager = DownloadManager(config, data_year=year)
         extract_manager = ExtractManager(config)
-        sources = self._history_sources(config)
+        sources = self._history_sources()
 
         if not skip_download:
             results = download_manager.download_batch(sources, max_parallel=1)
@@ -116,10 +115,19 @@ class Command(BaseCommand):
                 raise CommandError(f"Failed to extract Real Account Owner for {year}")
 
     @staticmethod
-    def _history_sources(config: ETLConfig) -> list[DataSource]:
+    def _history_sources() -> list[DataSource]:
+        from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG
+
         sources: list[DataSource] = []
         for name in ("Real Account Owner", "Hearing Files"):
-            source = config.get_source_by_name(name)
+            source = next(
+                (
+                    candidate
+                    for candidate in DEFAULT_HCAD_SOURCE_CATALOG.all_sources()
+                    if candidate.name == name
+                ),
+                None,
+            )
             if source is None:
                 raise CommandError(f"Missing ETL source definition: {name}")
             sources.append(source)

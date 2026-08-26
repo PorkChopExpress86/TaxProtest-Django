@@ -1,31 +1,20 @@
 """
 ETL Pipeline Configuration Module
 
-Provides configuration management for data sources, settings, and pipeline behavior.
-Supports environment variables, settings files, and programmatic configuration.
+Provides paths and operational tuning for Harris ETL components. Import intent,
+source selection, failure policy, and cleanup policy live outside this module.
 """
 
 import os
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from django.conf import settings
 
-from counties.harris.source_catalog import (
-    DEFAULT_HCAD_SOURCE_CATALOG,
-    DataSource,
-    DataSourceType,
-    FileFormat,
-)
+from counties.harris.source_catalog import DataSource, DataSourceType, FileFormat
 
 __all__ = ["DataSource", "DataSourceType", "ETLConfig", "FileFormat"]
-
-# Compatibility exports for existing callers. The catalog is the source of
-# truth, while ETLConfig gets caller-owned copies from it below.
-DEFAULT_PROPERTY_SOURCES = DEFAULT_HCAD_SOURCE_CATALOG.property_sources()
-DEFAULT_GIS_SOURCES = DEFAULT_HCAD_SOURCE_CATALOG.gis_sources()
 
 
 @dataclass
@@ -105,11 +94,7 @@ class LoggingConfig:
 
 @dataclass
 class ETLConfig:
-    """Main configuration class for the ETL pipeline.
-
-    Aggregates all configuration sections and provides factory methods
-    for creating configuration from various sources.
-    """
+    """Infrastructure configuration shared by Harris ETL components."""
 
     # Paths
     base_dir: Path = field(default_factory=lambda: Path(settings.BASE_DIR))
@@ -117,31 +102,12 @@ class ETLConfig:
     extract_dir: Path = field(default_factory=lambda: Path(settings.HCAD_EXTRACT_DIR))
     log_dir: Path = field(default_factory=lambda: Path(settings.HCAD_LOG_DIR))
 
-    # Data year
-    data_year: int = field(default_factory=lambda: datetime.now().year)
-
-    # Data sources
-    property_sources: list[DataSource] = field(
-        default_factory=DEFAULT_HCAD_SOURCE_CATALOG.property_sources
-    )
-    gis_sources: list[DataSource] = field(default_factory=DEFAULT_HCAD_SOURCE_CATALOG.gis_sources)
-
     # Component configs
     download: DownloadConfig = field(default_factory=DownloadConfig)
     extract: ExtractConfig = field(default_factory=ExtractConfig)
     transform: TransformConfig = field(default_factory=TransformConfig)
     load: LoadConfig = field(default_factory=LoadConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
-
-    # Pipeline behavior
-    dry_run: bool = False
-    skip_download: bool = False
-    skip_extract: bool = False
-    skip_transform: bool = False
-    skip_load: bool = False
-    cleanup_extracted: bool = True
-    continue_on_error: bool = True
-    send_notifications: bool = False
 
     def __post_init__(self):
         """Ensure directories exist and validate configuration."""
@@ -160,10 +126,6 @@ class ETLConfig:
         config = cls()
 
         # Override from environment
-        data_year = os.getenv("ETL_DATA_YEAR")
-        if data_year:
-            config.data_year = int(data_year)
-
         download_dir = os.getenv("ETL_DOWNLOAD_DIR")
         if download_dir:
             config.download_dir = Path(download_dir)
@@ -171,9 +133,6 @@ class ETLConfig:
         extract_dir = os.getenv("ETL_EXTRACT_DIR")
         if extract_dir:
             config.extract_dir = Path(extract_dir)
-
-        if os.getenv("ETL_DRY_RUN", "").lower() in ("true", "1", "yes"):
-            config.dry_run = True
 
         if os.getenv("ETL_FORCE_DOWNLOAD", "").lower() in ("true", "1", "yes"):
             config.download.skip_if_unchanged = False
@@ -198,18 +157,6 @@ class ETLConfig:
         config = cls()
 
         # Simple top-level fields
-        for key in [
-            "data_year",
-            "dry_run",
-            "skip_download",
-            "skip_extract",
-            "skip_transform",
-            "skip_load",
-            "continue_on_error",
-        ]:
-            if key in data:
-                setattr(config, key, data[key])
-
         # Path fields
         for key in ["download_dir", "extract_dir", "log_dir"]:
             if key in data:
@@ -228,34 +175,10 @@ class ETLConfig:
 
         return config
 
-    def get_all_sources(self) -> list[DataSource]:
-        """Get all data sources sorted by priority."""
-        all_sources = self.property_sources + self.gis_sources
-        return sorted(all_sources, key=lambda s: s.priority)
-
-    def get_required_sources(self) -> list[DataSource]:
-        """Get only required data sources."""
-        return [s for s in self.get_all_sources() if s.required]
-
-    def get_source_by_name(self, name: str) -> DataSource | None:
-        """Find a data source by name."""
-        for source in self.get_all_sources():
-            if source.name.lower() == name.lower():
-                return source
-        return None
-
     def to_dict(self) -> dict[str, Any]:
         """Convert configuration to a dictionary for serialization."""
         return {
-            "data_year": self.data_year,
             "download_dir": str(self.download_dir),
             "extract_dir": str(self.extract_dir),
             "log_dir": str(self.log_dir),
-            "dry_run": self.dry_run,
-            "skip_download": self.skip_download,
-            "skip_extract": self.skip_extract,
-            "skip_transform": self.skip_transform,
-            "skip_load": self.skip_load,
-            "continue_on_error": self.continue_on_error,
-            "sources": [s.name for s in self.get_all_sources()],
         }

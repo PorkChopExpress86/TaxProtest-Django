@@ -8,22 +8,17 @@ They use mocking for network operations but test real file operations.
 import os
 import shutil
 import tempfile
-import unittest
 import zipfile
-from datetime import datetime
 from pathlib import Path
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import Mock, patch
 
-from django.core.management.base import CommandError as DjangoCommandError
-from django.db import connection
 from django.test import TestCase
 
-from counties.harris.etl_pipeline import ETLConfig, ETLOrchestrator
+from counties.harris.etl_pipeline import ETLConfig
 from counties.harris.etl_pipeline.config import DataSource, DataSourceType
 from counties.harris.etl_pipeline.download import DownloadManager
 from counties.harris.etl_pipeline.extract import ExtractManager
 from counties.harris.etl_pipeline.model_loader import ModelLoader
-from counties.harris.etl_pipeline.orchestrator import PipelineStatus
 from counties.harris.etl_pipeline.row_reader import (
     iter_building_rows,
     iter_extra_feature_rows,
@@ -65,9 +60,8 @@ class TestETLConfigIntegration(TestCase):
         ):
             config = ETLConfig.from_env()
 
-            assert config.data_year == 2024
-            assert config.dry_run is True
             assert config.load.batch_size == 1000
+            assert not hasattr(config, "data_year")
 
 
 class TestDownloadManagerIntegration(TestCase):
@@ -320,239 +314,6 @@ class TestModelLoaderExtraFeatures(TestCase):
         assert feature.feature_description == ""
         assert feature.quality_code == ""
         assert feature.condition_code == ""
-
-
-class TestETLOrchestratorIntegration(TestCase):
-    """Integration tests for ETL orchestrator."""
-
-    def setUp(self):
-        self.tmpdir = tempfile.mkdtemp()
-        self.config = ETLConfig(
-            download_dir=Path(self.tmpdir) / "downloads",
-            extract_dir=Path(self.tmpdir) / "extracted",
-            log_dir=Path(self.tmpdir) / "logs",
-            dry_run=True,  # Don't actually modify database
-        )
-
-    def tearDown(self):
-        shutil.rmtree(self.tmpdir, ignore_errors=True)
-
-    def test_orchestrator_initialization(self):
-        """Test orchestrator initializes all managers."""
-        orchestrator = ETLOrchestrator(self.config)
-
-        assert orchestrator.download_manager is not None
-        assert orchestrator.extract_manager is not None
-        assert orchestrator.transformer is not None
-        assert orchestrator.model_loader is not None
-
-    @patch("counties.harris.etl_pipeline.download.DownloadManager.download_batch")
-    @patch("counties.harris.etl_pipeline.extract.ExtractManager.extract_batch")
-    def test_pipeline_execution_skip_stages(self, mock_extract, mock_download):
-        """Test pipeline execution with skipped stages."""
-        mock_download.return_value = []
-        mock_extract.return_value = []
-
-        orchestrator = ETLOrchestrator(self.config)
-
-        result = orchestrator.execute(
-            skip_download=True,
-            skip_extract=True,
-            skip_load=True,
-        )
-
-        # Download and extract should not be called
-        mock_download.assert_not_called()
-        mock_extract.assert_not_called()
-
-    def test_get_status(self):
-        """Test getting pipeline status."""
-        orchestrator = ETLOrchestrator(self.config)
-
-        status = orchestrator.get_status()
-
-        assert "current_stage" in status
-        assert "config" in status
-        assert status["config"]["data_year"] == self.config.data_year
-
-    def test_cleanup(self):
-        """Test cleanup removes temporary files."""
-        # Create some test files
-        (self.config.extract_dir / "test_folder").mkdir()
-        (self.config.extract_dir / "test_folder" / "file.txt").write_text("test")
-
-        orchestrator = ETLOrchestrator(self.config)
-        orchestrator.cleanup(remove_downloads=False, remove_extracts=True)
-
-        # Extract dir should be cleaned
-        assert not any(self.config.extract_dir.iterdir())
-
-    @patch("counties.harris.etl_pipeline.gis_loader.load_gis_parcels")
-    def test_process_gis_source_prefers_parcelscity_from_legacy_extract(self, mock_load_gis):
-        """GIS stage should prefer ParcelsCity shapefile when available."""
-        mock_load_gis.return_value = 123
-
-        # Modern extracted path contains a fallback Parcels.shp
-        modern_extract = self.config.extract_dir / "Parcels"
-        modern_extract.mkdir(parents=True, exist_ok=True)
-        (modern_extract / "Parcels.shp").write_text("stub")
-
-        # Legacy-style extract path contains preferred ParcelsCity.shp
-        preferred_dir = (
-            self.config.download_dir / "Parcels" / "Parcels" / "Gis" / "pdata" / "ParcelsCity"
-        )
-        preferred_dir.mkdir(parents=True, exist_ok=True)
-        preferred_shp = preferred_dir / "ParcelsCity.shp"
-        preferred_shp.write_text("stub")
-
-        source = DataSource(
-            name="GIS Parcels",
-            url_template="https://example.com/GIS/Parcels.zip",
-            filename="Parcels.zip",
-            source_type=DataSourceType.GIS_DATA,
-        )
-
-        orchestrator = ETLOrchestrator(self.config)
-        result = orchestrator._process_gis_source(source)
-
-        mock_load_gis.assert_called_once_with(str(preferred_shp), refresh_readiness=False)
-        assert result["loaded"] == 123
-        assert result["failed"] == 0
-
-    def test_transform_load_prefers_extra_feature_detail_files_and_appends(self):
-        """When detail feature files exist, skip fallback extra_features.txt."""
-        source = DataSource(
-            name="Real Building Land",
-            url_template="https://example.com/Real_building_land.zip",
-            filename="Real_building_land.zip",
-            source_type=DataSourceType.PROPERTY_DATA,
-        )
-
-        extract_path = self.config.extract_dir / "Real_building_land"
-        extract_path.mkdir(parents=True, exist_ok=True)
-        (extract_path / "building_res.txt").write_text("acct\tbld_num\n")
-        (extract_path / "fixtures.txt").write_text("acct\tbld_num\ttype\tunits\n")
-        (extract_path / "extra_features.txt").write_text("acct\tbld_num\n")
-        (extract_path / "extra_features_detail1.txt").write_text("acct\tbld_num\n")
-        (extract_path / "extra_features_detail2.txt").write_text("acct\tbld_num\n")
-
-        orchestrator = ETLOrchestrator(self.config)
-
-        with patch.object(orchestrator, "_preload_fixtures") as mocked_preload:
-            with patch.object(
-                orchestrator, "_process_data_file", return_value={"loaded": 1, "failed": 0}
-            ) as mocked_process:
-                result = orchestrator._execute_transform_load([source])
-
-        mocked_preload.assert_called_once_with([source])
-        called_files = [call.args[0].stem for call in mocked_process.call_args_list]
-        assert called_files == [
-            "building_res",
-            "extra_features_detail1",
-            "extra_features_detail2",
-        ]
-
-        truncate_flags = [call.kwargs.get("truncate") for call in mocked_process.call_args_list]
-        assert truncate_flags == [True, True, False]
-        assert result.success is True
-        assert result.metrics["records_loaded"] == 3
-        assert result.metrics["records_failed"] == 0
-        assert result.metrics["records_invalid"] == 0
-        assert result.metrics["records_skipped"] == 0
-
-    def test_missing_required_extract_path_fails_strict_run(self):
-        orchestrator = ETLOrchestrator(self.config)
-        result = orchestrator.execute(
-            scope="full",
-            skip_download=True,
-            skip_extract=True,
-            skip_load=False,
-            strict=True,
-            validate_contract=False,
-        )
-        assert result.status == PipelineStatus.FAILED
-
-    @patch("counties.harris.etl_pipeline.orchestrator.call_command")
-    @patch.object(ETLOrchestrator, "_execute_transform_load")
-    def test_validation_failure_propagates_when_strict(
-        self, mocked_transform_load, mocked_call_command
-    ):
-        self.config.dry_run = False
-        mocked_transform_load.return_value = MagicMock(
-            success=True,
-            completed_at=datetime.now(),
-            duration=0.1,
-            error=None,
-            metrics={"records_loaded": 0, "records_failed": 0},
-            stage="load",
-        )
-        mocked_call_command.side_effect = DjangoCommandError("validation failed")
-
-        orchestrator = ETLOrchestrator(self.config)
-        result = orchestrator.execute(
-            scope="full",
-            skip_download=True,
-            skip_extract=True,
-            skip_load=False,
-            strict=True,
-            validate_contract=True,
-        )
-        assert result.status == PipelineStatus.FAILED
-
-    def test_skip_load_transform_counts_do_not_materialize_list(self):
-        source = DataSource(
-            name="Real Account Owner",
-            url_template="https://example.com/Real_acct_owner.zip",
-            filename="Real_acct_owner.zip",
-            source_type=DataSourceType.PROPERTY_DATA,
-        )
-        extract_path = self.config.extract_dir / "Real_acct_owner"
-        extract_path.mkdir(parents=True, exist_ok=True)
-        source_file = extract_path / "real_acct.txt"
-        source_file.write_text("acct\tstate_class\nA\tA1\n", encoding="latin-1")
-
-        orchestrator = ETLOrchestrator(self.config)
-        result = orchestrator._process_data_file(source_file, skip_load=True, truncate=True)
-
-        assert result == {"loaded": 1, "invalid": 0, "skipped": 0, "failed": 0}
-
-    @unittest.skipUnless(
-        connection.vendor == "postgresql",
-        "full Harris import smoke requires the PostgreSQL COPY adapter",
-    )
-    def test_shared_reader_smoke_loads_all_core_harris_files(self):
-        extract_path = self.config.extract_dir / "shared_reader_smoke"
-        extract_path.mkdir(parents=True, exist_ok=True)
-        property_file = extract_path / "real_acct.txt"
-        property_file.write_text(
-            "acct\tsite_addr_1\tsite_addr_3\tstate_class\ttot_appr_val\n"
-            "P1\t100 MAIN ST\t77001\tA1\t250000\n",
-            encoding="latin-1",
-        )
-        building_file = extract_path / "building_res.txt"
-        building_file.write_text(
-            "acct\tbld_num\timprv_type\tfull_bath\thalf_bath\nP1\t1\tA1\t1.5\t1\n",
-            encoding="latin-1",
-        )
-        feature_file = extract_path / "extra_features_detail1.txt"
-        feature_file.write_text(
-            "acct\tbld_num\tcd\tdscr\tarea\tunits\nP1\t0\tRRP5\tGunite Pool\t231\t1\n",
-            encoding="latin-1",
-        )
-
-        orchestrator = ETLOrchestrator(self.config)
-        property_result = orchestrator._process_data_file(property_file, truncate=True)
-        building_result = orchestrator._process_data_file(building_file, truncate=True)
-        feature_result = orchestrator._process_data_file(feature_file, truncate=True)
-
-        assert property_result == {"loaded": 1, "invalid": 0, "skipped": 0, "failed": 0}
-        assert building_result == {"loaded": 1, "invalid": 0, "skipped": 0, "failed": 0}
-        assert feature_result == {"loaded": 1, "invalid": 0, "skipped": 0, "failed": 0}
-        assert ExtraFeature.objects.get(account_number="P1").area == 231
-
-    def test_resolve_schema_name_maps_extra_feature_detail_files(self):
-        assert ETLOrchestrator._resolve_schema_name("extra_features_detail1") == "extra_features"
-        assert ETLOrchestrator._resolve_schema_name("extra_features_detail2") == "extra_features"
 
 
 class TestEndToEndPipeline(TestCase):

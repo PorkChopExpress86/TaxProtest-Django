@@ -3,7 +3,7 @@
 Moved here from ``counties/harris/etl.py`` so the ETL pipeline no longer
 reaches across a package boundary for a function that is logically a
 post-load pipeline step. The orchestrator calls this once after a
-successful load (see ``ETLOrchestrator._refresh_readiness_once``).
+successful load (see the private execution behind ``run_harris_import``).
 """
 
 from __future__ import annotations

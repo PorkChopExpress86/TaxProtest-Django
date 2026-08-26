@@ -8,8 +8,12 @@ from itertools import islice
 from pathlib import Path
 
 from .config import ETLConfig
-from .fast_loader import copy_load_property_rows, postgres_backend
-from .model_loader import ModelLoader
+from .persistence import (
+    PersistenceDataset,
+    PersistenceRequest,
+    PersistenceWriteMode,
+    persistence_for_connection,
+)
 from .row_reader import RowResult, iter_property_rows
 
 
@@ -38,22 +42,24 @@ def load_property_file(
     batch_size: int,
     limit: int | None = None,
 ) -> TranslatedLoadResult:
-    """Translate and persist a ``real_acct.txt`` file through the modern path."""
-    rows = _limited_rows(iter_property_rows(filepath), limit)
-    if postgres_backend():
-        result = copy_load_property_rows(rows, truncate=truncate)
-        return TranslatedLoadResult(
-            records_loaded=result["loaded"],
-            records_invalid=0,
-            records_skipped=result["skipped"],
-        )
+    """Translate and persist a ``real_acct.txt`` file through the modern path.
 
-    loader = ModelLoader(config, batch_size=batch_size)
-    result = loader.load_property_records(rows, truncate=truncate)
-    if result.error:
-        raise RuntimeError(result.error)
+    ``config`` remains in this focused loader's public signature for command
+    compatibility. Connection-specific persistence selection now belongs to
+    :func:`persistence_for_connection`.
+    """
+    rows = _limited_rows(iter_property_rows(filepath), limit)
+    result = persistence_for_connection(orm_batch_size=batch_size).persist(
+        PersistenceRequest(
+            dataset=PersistenceDataset.PROPERTY,
+            rows=rows,
+            write_mode=(
+                PersistenceWriteMode.REPLACE if truncate else PersistenceWriteMode.ADD_MISSING
+            ),
+        )
+    )
     return TranslatedLoadResult(
-        records_loaded=result.records_loaded,
-        records_invalid=result.records_invalid,
-        records_skipped=result.records_skipped,
+        records_loaded=result.loaded,
+        records_invalid=result.invalid,
+        records_skipped=result.skipped,
     )

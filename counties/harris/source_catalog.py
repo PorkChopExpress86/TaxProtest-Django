@@ -109,6 +109,14 @@ class HcadSourceCatalog:
         """Return caller-owned copies in deterministic catalog order."""
         return [source.clone() for source in self.sources]
 
+    def ordered_sources(self) -> list[DataSource]:
+        """Return caller-owned copies in operational priority order."""
+        return sorted(self.all_sources(), key=lambda source: source.priority)
+
+    def required_sources(self) -> list[DataSource]:
+        """Return required sources in operational priority order."""
+        return [source for source in self.ordered_sources() if source.required]
+
     def property_sources(self) -> list[DataSource]:
         return [
             source.clone()
@@ -311,8 +319,8 @@ DEFAULT_HCAD_SOURCE_CATALOG = HcadSourceCatalog(
     )
 )
 
-# Compatibility exports for callers that previously imported these lists from
-# ``etl_pipeline.config``. ETLConfig itself receives fresh copies per instance.
+# Compatibility exports for callers that need the legacy grouped views. Import
+# execution selects fresh source copies directly through the catalog.
 DEFAULT_PROPERTY_SOURCES = DEFAULT_HCAD_SOURCE_CATALOG.property_sources()
 DEFAULT_GIS_SOURCES = DEFAULT_HCAD_SOURCE_CATALOG.gis_sources()
 

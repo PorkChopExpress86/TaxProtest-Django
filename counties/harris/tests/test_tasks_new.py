@@ -8,9 +8,17 @@ from unittest.mock import Mock, patch
 import requests
 from django.test import TestCase, override_settings
 
+from counties.harris.etl_pipeline import (
+    HarrisAcquisitionMode,
+    HarrisExtractionMode,
+    HarrisFailurePolicy,
+    HarrisImportStatus,
+    HarrisPreview,
+)
 from counties.harris.etl_pipeline.import_plan import HarrisImportPlan
 from counties.harris.models import DownloadRecord
 from counties.harris.tasks_new import (
+    _run_authoritative_pipeline,
     download_and_extract_hcad,
     download_and_import_building_data,
     download_and_import_gis_data,
@@ -122,6 +130,35 @@ class DownloadAndExtractHCADTests(TestCase):
 
 
 class AuthoritativeTaskDelegationTests(TestCase):
+    @patch("counties.harris.etl_pipeline.run_harris_import")
+    def test_celery_adapter_maps_legacy_flags_to_one_request(self, mocked_import):
+        result = Mock(
+            success=True,
+            status=HarrisImportStatus.COMPLETED,
+            errors=(),
+        )
+        result.to_dict.return_value = {"status": "completed"}
+        mocked_import.return_value = result
+
+        payload = _run_authoritative_pipeline(
+            task_instance=None,
+            skip_download=True,
+            skip_extract=True,
+            skip_load=True,
+            data_year=2025,
+            scope="building-only",
+            strict=False,
+        )
+
+        request = mocked_import.call_args.args[0]
+        self.assertEqual(payload, {"status": "completed"})
+        self.assertEqual(request.plan, HarrisImportPlan.from_legacy_scope("building-only"))
+        self.assertEqual(request.data_year, 2025)
+        self.assertIs(request.acquisition, HarrisAcquisitionMode.REUSE_DOWNLOADED)
+        self.assertIs(request.extraction, HarrisExtractionMode.REUSE_EXTRACTED)
+        self.assertIsInstance(request.load, HarrisPreview)
+        self.assertIs(request.failure_policy, HarrisFailurePolicy.BEST_EFFORT)
+
     @patch("counties.harris.tasks_new._run_authoritative_pipeline")
     def test_legacy_building_task_delegates_to_building_plan(self, mocked_run):
         mocked_run.return_value = {"status": "completed"}

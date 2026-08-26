@@ -210,42 +210,56 @@ def _run_authoritative_pipeline(
     validate_contract: bool | None = None,
 ) -> dict[str, Any]:
     """Execute the authoritative modern ETL pipeline and propagate failures."""
-    from .etl_pipeline import ETLConfig, ETLOrchestrator
-    from .etl_pipeline.orchestrator import PipelineStage
-
-    config = ETLConfig.from_env()
-    if data_year:
-        config.data_year = data_year
-    if skip_load:
-        config.dry_run = True
+    from .etl_pipeline import (
+        ExtractedSourceRetention,
+        HarrisAcquisitionMode,
+        HarrisApply,
+        HarrisExtractionMode,
+        HarrisFailurePolicy,
+        HarrisImportRequest,
+        HarrisPreview,
+        run_harris_import,
+    )
 
     if validate_contract is None:
-        validate_contract = not config.dry_run
-
-    orchestrator = ETLOrchestrator(config)
+        validate_contract = not skip_load
 
     if task_instance is not None:
         task_instance.update_state(state="INITIALIZING", meta={"step": "Initializing pipeline"})
 
-        def update_stage_state(stage_result):
-            task_instance.update_state(
-                state=stage_result.stage.value.upper(),
-                meta={"step": f"{stage_result.stage.value} stage"},
-            )
+        class CeleryHarrisImportReporter:
+            def report(self, event):
+                task_instance.update_state(
+                    state=event.phase.value.upper(),
+                    meta={"step": event.message},
+                )
 
-        for stage in PipelineStage:
-            orchestrator.register_stage_callback(stage, update_stage_state)
+        reporter = CeleryHarrisImportReporter()
+    else:
+        reporter = None
 
     resolved_plan = plan or HarrisImportPlan.from_legacy_scope(scope or "full")
-    result = orchestrator.execute(
-        skip_download=skip_download,
-        skip_extract=skip_extract,
-        skip_load=skip_load,
+    request = HarrisImportRequest(
         plan=resolved_plan,
-        strict=strict,
-        validate_contract=validate_contract,
-        refresh_readiness=refresh_readiness,
+        data_year=data_year,
+        acquisition=(
+            HarrisAcquisitionMode.REUSE_DOWNLOADED if skip_download else HarrisAcquisitionMode.FETCH
+        ),
+        extraction=(
+            HarrisExtractionMode.REUSE_EXTRACTED if skip_extract else HarrisExtractionMode.EXTRACT
+        ),
+        load=(
+            HarrisPreview()
+            if skip_load
+            else HarrisApply(
+                refresh_readiness=refresh_readiness,
+                validate_completeness=validate_contract,
+                extracted_source_retention=ExtractedSourceRetention.REMOVE_AFTER_SUCCESS,
+            )
+        ),
+        failure_policy=(HarrisFailurePolicy.STRICT if strict else HarrisFailurePolicy.BEST_EFFORT),
     )
+    result = run_harris_import(request, reporter=reporter)
 
     result_dict = result.to_dict()
     if strict and not result.success:
@@ -328,15 +342,13 @@ def download_hcad_data(self, include_optional=False, data_year=None):
     self.update_state(state="DOWNLOADING", meta={"step": "Downloading HCAD files"})
 
     config = ETLConfig.from_env()
-    if data_year:
-        config.data_year = data_year
+    manager = DownloadManager(config, data_year=data_year)
 
-    manager = DownloadManager(config)
-
-    if include_optional:
-        sources = config.get_all_sources()
-    else:
-        sources = config.get_required_sources()
+    sources = (
+        DEFAULT_HCAD_SOURCE_CATALOG.ordered_sources()
+        if include_optional
+        else DEFAULT_HCAD_SOURCE_CATALOG.required_sources()
+    )
 
     results = manager.download_batch(sources)
 
@@ -381,7 +393,11 @@ def extract_hcad_data(self):
     extract_manager = ExtractManager(config)
 
     # Only extract downloaded sources
-    sources = [s for s in config.get_all_sources() if download_manager.is_downloaded(s)]
+    sources = [
+        source
+        for source in DEFAULT_HCAD_SOURCE_CATALOG.ordered_sources()
+        if download_manager.is_downloaded(source)
+    ]
 
     results = extract_manager.extract_batch(sources)
 

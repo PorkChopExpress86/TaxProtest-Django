@@ -2,11 +2,18 @@
 
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from django.core.management import call_command
 from django.test import SimpleTestCase
 
+from counties.harris.etl_pipeline import (
+    HarrisAcquisitionMode,
+    HarrisExtractionMode,
+    HarrisFailurePolicy,
+    HarrisPreview,
+)
 from counties.harris.etl_pipeline.import_plan import HarrisImportPlan
 from counties.harris.etl_pipeline.translated_loader import TranslatedLoadResult
 
@@ -52,6 +59,39 @@ class ImportBuildingDataCommandTests(SimpleTestCase):
             refresh_readiness=True,
             validate_contract=True,
         )
+
+
+class ETLPipelineCommandTests(SimpleTestCase):
+    @patch("counties.harris.management.commands.etl_pipeline.run_harris_import")
+    def test_run_translates_legacy_flags_at_the_cli_boundary(self, mocked_import):
+        mocked_import.return_value = SimpleNamespace(
+            success=True,
+            status=SimpleNamespace(value="completed"),
+            duration=0.1,
+            stages={},
+            errors=(),
+        )
+
+        call_command(
+            "etl_pipeline",
+            "run",
+            "--skip-download",
+            "--skip-extract",
+            "--dry-run",
+            "--allow-partial",
+            "--scope",
+            "gis-only",
+            "--year",
+            "2025",
+        )
+
+        request = mocked_import.call_args.args[0]
+        self.assertEqual(request.plan, HarrisImportPlan.from_legacy_scope("gis-only"))
+        self.assertEqual(request.data_year, 2025)
+        self.assertIs(request.acquisition, HarrisAcquisitionMode.REUSE_DOWNLOADED)
+        self.assertIs(request.extraction, HarrisExtractionMode.REUSE_EXTRACTED)
+        self.assertIsInstance(request.load, HarrisPreview)
+        self.assertIs(request.failure_policy, HarrisFailurePolicy.BEST_EFFORT)
 
 
 class LoadHcadRealAcctCommandTests(SimpleTestCase):

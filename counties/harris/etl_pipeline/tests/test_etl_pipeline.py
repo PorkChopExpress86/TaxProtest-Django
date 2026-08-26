@@ -6,7 +6,6 @@ import os
 import tempfile
 import unittest
 import zipfile
-from datetime import datetime
 from email.utils import formatdate
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -26,6 +25,7 @@ from counties.harris.etl_pipeline.transform import (
     FieldSchema,
     TableSchema,
 )
+from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG
 
 
 class TestETLConfig:
@@ -35,10 +35,10 @@ class TestETLConfig:
         """Test creating config with defaults."""
         config = ETLConfig()
 
-        assert config.data_year == datetime.now().year
-        assert config.dry_run is False
-        assert len(config.property_sources) > 0
-        assert len(config.gis_sources) > 0
+        assert config.download_dir.exists()
+        assert config.extract_dir.exists()
+        assert not hasattr(config, "dry_run")
+        assert not hasattr(config, "property_sources")
 
     def test_data_source_url_generation(self):
         """Test URL generation with year placeholder."""
@@ -64,33 +64,33 @@ class TestETLConfig:
 
         config = ETLConfig.from_dict(data)
 
-        assert config.data_year == 2024
-        assert config.dry_run is True
         assert config.load.batch_size == 1000
+        assert not hasattr(config, "data_year")
 
-    def test_get_all_sources_sorted_by_priority(self):
-        """Test that sources are sorted by priority."""
-        config = ETLConfig()
-        sources = config.get_all_sources()
+    def test_catalog_returns_caller_owned_sources(self):
+        """The catalog, rather than ETLConfig, owns source definitions."""
+        sources = DEFAULT_HCAD_SOURCE_CATALOG.all_sources()
+        original_name = sources[0].name
+        sources[0].name = "changed by caller"
 
-        priorities = [s.priority for s in sources]
-        assert priorities == sorted(priorities)
+        assert DEFAULT_HCAD_SOURCE_CATALOG.all_sources()[0].name == original_name
 
-    def test_get_required_sources(self):
-        """Test filtering for required sources only."""
-        config = ETLConfig()
-        required = config.get_required_sources()
+    def test_catalog_identifies_required_sources(self):
+        """Required-source selection comes from the catalog."""
+        required = DEFAULT_HCAD_SOURCE_CATALOG.required_sources()
 
         assert all(s.required for s in required)
+        assert [source.priority for source in required] == sorted(
+            source.priority for source in required
+        )
 
     def test_config_to_dict(self):
         """Test serialization to dictionary."""
         config = ETLConfig()
         data = config.to_dict()
 
-        assert "data_year" in data
         assert "download_dir" in data
-        assert "sources" in data
+        assert "sources" not in data
 
 
 class TestETLMetrics:

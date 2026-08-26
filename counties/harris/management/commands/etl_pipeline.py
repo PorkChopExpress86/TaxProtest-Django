@@ -10,16 +10,25 @@ Usage:
 """
 
 import json
+import os
+from datetime import datetime
 
 from django.core.management.base import BaseCommand, CommandError
 
 from counties.harris.etl_pipeline import (
     DownloadManager,
     ETLConfig,
-    ETLOrchestrator,
     ExtractManager,
+    HarrisAcquisitionMode,
+    HarrisApply,
+    HarrisExtractionMode,
+    HarrisFailurePolicy,
     HarrisImportPlan,
+    HarrisImportRequest,
+    HarrisPreview,
+    run_harris_import,
 )
+from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG
 
 
 class Command(BaseCommand):
@@ -153,12 +162,6 @@ class Command(BaseCommand):
         # Build configuration
         config = ETLConfig.from_env()
 
-        if options.get("year"):
-            config.data_year = options["year"]
-
-        if options.get("dry_run"):
-            config.dry_run = True
-
         # Route to appropriate handler
         if command == "download":
             self.handle_download(config, options)
@@ -177,20 +180,21 @@ class Command(BaseCommand):
 
     def handle_download(self, config: ETLConfig, options: dict):
         """Handle download command."""
-        self.stdout.write(self.style.WARNING(f"Starting download (year={config.data_year})..."))
+        data_year = self._data_year(options)
+        self.stdout.write(self.style.WARNING(f"Starting download (year={data_year})..."))
 
-        manager = DownloadManager(config)
+        manager = DownloadManager(config, data_year=data_year)
 
         # Determine which sources to download
         if options.get("source"):
-            source = config.get_source_by_name(options["source"])
+            source = self._source_by_name(options["source"])
             if not source:
                 raise CommandError(f"Unknown source: {options['source']}")
             sources = [source]
         elif options.get("all"):
-            sources = config.get_all_sources()
+            sources = DEFAULT_HCAD_SOURCE_CATALOG.ordered_sources()
         else:
-            sources = config.get_required_sources()
+            sources = DEFAULT_HCAD_SOURCE_CATALOG.required_sources()
 
         self.stdout.write(f"Downloading {len(sources)} source(s)...")
 
@@ -230,15 +234,15 @@ class Command(BaseCommand):
 
         # Determine which sources to extract
         if options.get("source"):
-            source = config.get_source_by_name(options["source"])
+            source = self._source_by_name(options["source"])
             if not source:
                 raise CommandError(f"Unknown source: {options['source']}")
             sources = [source]
         else:
-            sources = config.get_all_sources()
+            sources = DEFAULT_HCAD_SOURCE_CATALOG.ordered_sources()
 
         # Filter to downloaded sources only
-        download_manager = DownloadManager(config)
+        download_manager = DownloadManager(config, data_year=self._data_year(options))
         sources = [s for s in sources if download_manager.is_downloaded(s)]
 
         if not sources:
@@ -279,24 +283,37 @@ class Command(BaseCommand):
             scope = "gis-only"
         plan = HarrisImportPlan.from_legacy_scope(scope)
 
+        data_year = self._data_year(options)
+        preview = bool(options.get("skip_load") or options.get("dry_run"))
         self.stdout.write(
             self.style.WARNING(
-                f"Starting ETL pipeline (year={config.data_year}, "
-                f"dry_run={config.dry_run}, plan={plan.legacy_scope}, "
+                f"Starting ETL pipeline (year={data_year}, "
+                f"dry_run={preview}, plan={plan.legacy_scope}, "
                 f'strict={options.get("strict", True)})...'
             )
         )
 
-        orchestrator = ETLOrchestrator(config)
-
-        result = orchestrator.execute(
-            skip_download=options.get("skip_download", False),
-            skip_extract=options.get("skip_extract", False),
-            skip_load=options.get("skip_load", False),
+        request = HarrisImportRequest(
             plan=plan,
-            strict=options.get("strict", True),
-            validate_contract=not config.dry_run,
+            data_year=data_year,
+            acquisition=(
+                HarrisAcquisitionMode.REUSE_DOWNLOADED
+                if options.get("skip_download")
+                else HarrisAcquisitionMode.FETCH
+            ),
+            extraction=(
+                HarrisExtractionMode.REUSE_EXTRACTED
+                if options.get("skip_extract")
+                else HarrisExtractionMode.EXTRACT
+            ),
+            load=HarrisPreview() if preview else HarrisApply(),
+            failure_policy=(
+                HarrisFailurePolicy.STRICT
+                if options.get("strict", True)
+                else HarrisFailurePolicy.BEST_EFFORT
+            ),
         )
+        result = run_harris_import(request)
 
         # Report results
         self.stdout.write("")
@@ -330,19 +347,20 @@ class Command(BaseCommand):
 
     def handle_status(self, config: ETLConfig, options: dict):
         """Handle status command."""
-        download_manager = DownloadManager(config)
+        data_year = self._data_year(options)
+        download_manager = DownloadManager(config, data_year=data_year)
         extract_manager = ExtractManager(config)
 
         status = {
             "config": {
-                "data_year": config.data_year,
+                "data_year": data_year,
                 "download_dir": str(config.download_dir),
                 "extract_dir": str(config.extract_dir),
             },
             "sources": [],
         }
 
-        for source in config.get_all_sources():
+        for source in DEFAULT_HCAD_SOURCE_CATALOG.ordered_sources():
             source_status = {
                 "name": source.name,
                 "required": source.required,
@@ -355,7 +373,7 @@ class Command(BaseCommand):
             self.stdout.write(json.dumps(status, indent=2))
         else:
             self.stdout.write(self.style.WARNING("ETL Pipeline Status"))
-            self.stdout.write(f"  Data Year: {config.data_year}")
+            self.stdout.write(f"  Data Year: {data_year}")
             self.stdout.write(f"  Download Dir: {config.download_dir}")
             self.stdout.write(f"  Extract Dir: {config.extract_dir}")
             self.stdout.write("")
@@ -373,11 +391,11 @@ class Command(BaseCommand):
         """Handle cleanup command."""
         self.stdout.write(self.style.WARNING("Cleaning up..."))
 
-        orchestrator = ETLOrchestrator(config)
-        orchestrator.cleanup(
-            remove_downloads=options.get("downloads", False),
-            remove_extracts=options.get("extracts", True),
-        )
+        sources = DEFAULT_HCAD_SOURCE_CATALOG.ordered_sources()
+        if options.get("downloads", False):
+            DownloadManager(config, data_year=self._data_year(options)).cleanup(sources=sources)
+        if options.get("extracts", True):
+            ExtractManager(config).cleanup(sources=sources)
 
         self.stdout.write(self.style.SUCCESS("Cleanup complete!"))
 
@@ -386,10 +404,28 @@ class Command(BaseCommand):
         self.stdout.write(self.style.WARNING("Available Data Sources:"))
         self.stdout.write("")
 
-        for source in config.get_all_sources():
+        data_year = self._data_year(options)
+        for source in DEFAULT_HCAD_SOURCE_CATALOG.ordered_sources():
             required = self.style.SUCCESS("[required]") if source.required else "[optional]"
             self.stdout.write(f"  {source.name} {required}")
             self.stdout.write(f"    Type: {source.source_type.value}")
-            self.stdout.write(f"    URL: {source.get_url(config.data_year)}")
+            self.stdout.write(f"    URL: {source.get_url(data_year)}")
             self.stdout.write(f"    Filename: {source.filename}")
             self.stdout.write("")
+
+    @staticmethod
+    def _data_year(options: dict) -> int:
+        configured = os.getenv("ETL_DATA_YEAR")
+        return int(options.get("year") or configured or datetime.now().year)
+
+    @staticmethod
+    def _source_by_name(name: str):
+        normalized = name.lower()
+        return next(
+            (
+                source
+                for source in DEFAULT_HCAD_SOURCE_CATALOG.ordered_sources()
+                if source.name.lower() == normalized
+            ),
+            None,
+        )

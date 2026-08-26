@@ -8,7 +8,16 @@ from __future__ import annotations
 
 from django.core.management.base import BaseCommand, CommandError
 
-from counties.harris.etl_pipeline import ETLConfig, ETLOrchestrator, HarrisImportPlan
+from counties.harris.etl_pipeline import (
+    ExtractedSourceRetention,
+    HarrisAcquisitionMode,
+    HarrisApply,
+    HarrisExtractionMode,
+    HarrisFailurePolicy,
+    HarrisImportPlan,
+    HarrisImportRequest,
+    run_harris_import,
+)
 
 
 class Command(BaseCommand):
@@ -67,22 +76,33 @@ class Command(BaseCommand):
             include_building=include_building,
             include_gis=include_gis,
         )
-        config = ETLConfig.from_env()
-
         self.stdout.write(self.style.SUCCESS("=" * 70))
         self.stdout.write(self.style.SUCCESS("COMPLETE DATA IMPORT (MODERN ETL)"))
         self.stdout.write(self.style.SUCCESS("=" * 70))
 
-        orchestrator = ETLOrchestrator(config)
-        result = orchestrator.execute(
+        request = HarrisImportRequest(
             plan=plan,
-            strict=True,
-            validate_contract=not options["skip_contract_validation"],
-            skip_download=options["skip_download"],
-            skip_extract=options["skip_extract"],
-            skip_load=False,
-            cleanup_extracted=not options["keep_extracted"],
+            acquisition=(
+                HarrisAcquisitionMode.REUSE_DOWNLOADED
+                if options["skip_download"]
+                else HarrisAcquisitionMode.FETCH
+            ),
+            extraction=(
+                HarrisExtractionMode.REUSE_EXTRACTED
+                if options["skip_extract"]
+                else HarrisExtractionMode.EXTRACT
+            ),
+            load=HarrisApply(
+                validate_completeness=not options["skip_contract_validation"],
+                extracted_source_retention=(
+                    ExtractedSourceRetention.RETAIN
+                    if options["keep_extracted"]
+                    else ExtractedSourceRetention.REMOVE_AFTER_SUCCESS
+                ),
+            ),
+            failure_policy=HarrisFailurePolicy.STRICT,
         )
+        result = run_harris_import(request)
 
         self.stdout.write("")
         self.stdout.write(self.style.WARNING("Pipeline Results:"))

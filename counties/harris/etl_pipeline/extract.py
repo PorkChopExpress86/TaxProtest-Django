@@ -96,7 +96,7 @@ class ExtractManager:
         except zipfile.BadZipFile as e:
             self.logger.error(f"Invalid ZIP file: {e}")
             return False
-        except Exception as e:
+        except OSError as e:
             self.logger.error(f"Error validating ZIP: {e}")
             return False
 
@@ -110,7 +110,7 @@ class ExtractManager:
         except tarfile.TarError as e:
             self.logger.error(f"Invalid TAR file: {e}")
             return False
-        except Exception as e:
+        except OSError as e:
             self.logger.error(f"Error validating TAR: {e}")
             return False
 
@@ -319,7 +319,7 @@ class ExtractManager:
                 bytes_extracted=bytes_extracted,
             )
 
-        except Exception as e:
+        except (OSError, ValueError, zipfile.BadZipFile, tarfile.TarError) as e:
             self.logger.exception(f"Error extracting {source.name}")
             # Cleanup on error
             if dest_dir.exists():

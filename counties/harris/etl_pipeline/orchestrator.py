@@ -1,57 +1,53 @@
-"""
-ETL Pipeline Orchestrator
+"""Deep Harris import boundary and its private per-call implementation."""
 
-Coordinates all ETL stages with strict validation, robust error handling,
-and metrics collection.
-"""
+from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+import os
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
+from enum import Enum, StrEnum
 from pathlib import Path
-from typing import Any
+from types import MappingProxyType
+from typing import Any, Protocol
 
 from django.core.management import call_command
 from django.core.management.base import CommandError as DjangoCommandError
+from django.db import DatabaseError
 
 from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG, HcadSourceId
 
 from .config import DataSource, DataSourceType, ETLConfig
-from .download import DownloadManager, DownloadResult
-from .extract import ExtractManager, ExtractResult
+from .download import DownloadManager
+from .extract import ExtractManager
 from .import_plan import HarrisImportPlan
 from .logging import ETLLogger
 from .model_loader import ModelLoader
+from .persistence import UnsafeReplacementError
 from .row_reader import RowResult, iter_building_rows, iter_extra_feature_rows, iter_property_rows
-from .transform import DataTransformer
 
 
-class PipelineStage(Enum):
-    """ETL pipeline stages."""
+class HarrisImportPhase(Enum):
+    """Stable serialized phases in a Harris import result."""
 
     DOWNLOAD = "download"
     EXTRACT = "extract"
-    TRANSFORM = "transform"
     LOAD = "load"
-    CLEANUP = "cleanup"
 
 
-class PipelineStatus(Enum):
-    """Overall pipeline status."""
+class HarrisImportStatus(Enum):
+    """Overall Harris import status."""
 
-    NOT_STARTED = "not_started"
-    RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
     PARTIAL = "partial"
 
 
-@dataclass
-class StageResult:
-    """Result for a single pipeline stage."""
+@dataclass(frozen=True)
+class HarrisImportStageResult:
+    """Result for one completed Harris import phase."""
 
-    stage: PipelineStage
+    stage: HarrisImportPhase
     success: bool
     started_at: datetime = field(default_factory=datetime.now)
     completed_at: datetime | None = None
@@ -66,15 +62,40 @@ class StageResult:
 
 
 @dataclass
-class PipelineResult:
-    """Overall pipeline execution result."""
+class _StageResult:
+    """Mutable phase builder that never crosses the import boundary."""
 
-    status: PipelineStatus
+    stage: HarrisImportPhase
+    success: bool
+    started_at: datetime = field(default_factory=datetime.now)
+    completed_at: datetime | None = None
+    error: str | None = None
+    metrics: Mapping[str, Any] = field(default_factory=dict)
+
+    def freeze(self) -> HarrisImportStageResult:
+        return HarrisImportStageResult(
+            stage=self.stage,
+            success=self.success,
+            started_at=self.started_at,
+            completed_at=self.completed_at,
+            error=self.error,
+            metrics=MappingProxyType(
+                {key: value for key, value in self.metrics.items() if not key.startswith("_")}
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class HarrisImportResult:
+    """Immutable result returned by the Harris import boundary."""
+
+    status: HarrisImportStatus
     started_at: datetime
     completed_at: datetime | None = None
-    stages: dict[PipelineStage, StageResult] = field(default_factory=dict)
-    errors: list[str] = field(default_factory=list)
-    warnings: list[str] = field(default_factory=list)
+    stages: Mapping[HarrisImportPhase, HarrisImportStageResult] = field(default_factory=dict)
+    errors: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
+    wrote_data: bool = False
 
     @property
     def duration(self) -> float:
@@ -84,7 +105,7 @@ class PipelineResult:
 
     @property
     def success(self) -> bool:
-        return self.status == PipelineStatus.COMPLETED
+        return self.status == HarrisImportStatus.COMPLETED
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""
@@ -98,17 +119,118 @@ class PipelineResult:
                     "success": result.success,
                     "duration": round(result.duration, 2),
                     "error": result.error,
-                    "metrics": result.metrics,
+                    "metrics": {
+                        key: value
+                        for key, value in result.metrics.items()
+                        if not key.startswith("_")
+                    },
                 }
                 for stage, result in self.stages.items()
             },
-            "errors": self.errors,
-            "warnings": self.warnings,
+            "errors": list(self.errors),
+            "warnings": list(self.warnings),
         }
 
 
-class ETLOrchestrator:
-    """Coordinates all ETL stages with error handling and metrics.
+class HarrisAcquisitionMode(StrEnum):
+    FETCH = "fetch"
+    REUSE_DOWNLOADED = "reuse_downloaded"
+
+
+class HarrisExtractionMode(StrEnum):
+    EXTRACT = "extract"
+    REUSE_EXTRACTED = "reuse_extracted"
+
+
+class HarrisFailurePolicy(StrEnum):
+    STRICT = "strict"
+    BEST_EFFORT = "best_effort"
+
+
+class ExtractedSourceRetention(StrEnum):
+    REMOVE_AFTER_SUCCESS = "remove_after_success"
+    RETAIN = "retain"
+
+
+@dataclass(frozen=True, slots=True)
+class HarrisPreview:
+    """Translate selected sources without changing persisted Harris data."""
+
+
+@dataclass(frozen=True, slots=True)
+class HarrisApply:
+    """Apply translated rows and own all post-write obligations."""
+
+    refresh_readiness: bool = True
+    validate_completeness: bool = True
+    extracted_source_retention: ExtractedSourceRetention = (
+        ExtractedSourceRetention.REMOVE_AFTER_SUCCESS
+    )
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.refresh_readiness, bool):
+            raise InvalidHarrisImportRequest("refresh_readiness must be a boolean")
+        if not isinstance(self.validate_completeness, bool):
+            raise InvalidHarrisImportRequest("validate_completeness must be a boolean")
+        if not isinstance(self.extracted_source_retention, ExtractedSourceRetention):
+            raise InvalidHarrisImportRequest(
+                "extracted_source_retention must be an ExtractedSourceRetention"
+            )
+
+
+HarrisLoadIntent = HarrisPreview | HarrisApply
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class HarrisImportRequest:
+    """One complete, validated request to import catalog-selected HCAD data."""
+
+    plan: HarrisImportPlan
+    data_year: int | None = None
+    acquisition: HarrisAcquisitionMode = HarrisAcquisitionMode.FETCH
+    extraction: HarrisExtractionMode = HarrisExtractionMode.EXTRACT
+    load: HarrisLoadIntent = field(default_factory=HarrisApply)
+    failure_policy: HarrisFailurePolicy = HarrisFailurePolicy.STRICT
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.plan, HarrisImportPlan):
+            raise InvalidHarrisImportRequest("plan must be a HarrisImportPlan")
+        if self.data_year is not None and (
+            not isinstance(self.data_year, int) or isinstance(self.data_year, bool)
+        ):
+            raise InvalidHarrisImportRequest("Harris import data year must be an integer")
+        if self.data_year is not None and self.data_year < 2000:
+            raise InvalidHarrisImportRequest("Harris import data year must be 2000 or later")
+        if not isinstance(self.acquisition, HarrisAcquisitionMode):
+            raise InvalidHarrisImportRequest("acquisition must be a HarrisAcquisitionMode")
+        if not isinstance(self.extraction, HarrisExtractionMode):
+            raise InvalidHarrisImportRequest("extraction must be a HarrisExtractionMode")
+        if not isinstance(self.load, (HarrisPreview, HarrisApply)):
+            raise InvalidHarrisImportRequest("load must be HarrisPreview or HarrisApply")
+        if not isinstance(self.failure_policy, HarrisFailurePolicy):
+            raise InvalidHarrisImportRequest("failure_policy must be a HarrisFailurePolicy")
+
+
+class InvalidHarrisImportRequest(ValueError):
+    """Raised before side effects when an import request is invalid."""
+
+
+@dataclass(frozen=True, slots=True)
+class HarrisImportEvent:
+    """An observational progress event emitted by a Harris import."""
+
+    phase: HarrisImportPhase
+    message: str
+
+
+class HarrisImportReporter(Protocol):
+    """Observe import progress without controlling execution."""
+
+    def report(self, event: HarrisImportEvent) -> None: ...
+
+
+class _HarrisImportExecution:
+    """Private state for one call to :func:`run_harris_import`.
 
     Features:
     - Stage-by-stage execution
@@ -116,15 +238,22 @@ class ETLOrchestrator:
     - Error handling and recovery
     - Comprehensive logging
     - Metrics collection
-    - Notification system
-    - Support for skip/resume
+    A new instance is created for every request, so no execution state or
+    progress hooks survive into a later import.
     """
 
     def __init__(
         self,
+        request: HarrisImportRequest,
+        sources: list[DataSource],
+        data_year: int,
         config: ETLConfig | None = None,
         logger: ETLLogger | None = None,
+        reporter: HarrisImportReporter | None = None,
     ):
+        self.request = request
+        self.sources = sources
+        self.data_year = data_year
         self.config = config or ETLConfig.from_env()
         self.logger = logger or ETLLogger(
             name="etl_orchestrator",
@@ -133,192 +262,135 @@ class ETLOrchestrator:
         )
 
         # Initialize managers
-        self.download_manager = DownloadManager(self.config, self.logger)
+        self.download_manager = DownloadManager(
+            self.config,
+            self.logger,
+            data_year=data_year,
+        )
         self.extract_manager = ExtractManager(self.config, self.logger)
-        # Kept for direct callers of the generic transformer. The core Harris
-        # import path below uses row_reader for all three property-data files.
-        self.transformer = DataTransformer(self.config, self.logger)
         self.model_loader = ModelLoader(self.config, self.logger)
 
-        # Pipeline state
-        self.current_stage: PipelineStage | None = None
-        self.result: PipelineResult | None = None
+        self.reporter = reporter
+        self.stages: dict[HarrisImportPhase, HarrisImportStageResult] = {}
+        self.errors: list[str] = []
+        self.warnings: list[str] = []
 
-        # Callbacks
-        self._stage_callbacks: dict[PipelineStage, list[Callable]] = {
-            stage: [] for stage in PipelineStage
-        }
-        self._completion_callbacks: list[Callable[[PipelineResult], None]] = []
+    def run(self) -> HarrisImportResult:
+        """Execute the request while keeping ordering and policy inside this module."""
+        started_at = datetime.now()
+        plan = self.request.plan
+        sources = self.sources
 
-    def register_stage_callback(
-        self,
-        stage: PipelineStage,
-        callback: Callable[[StageResult], None],
-    ) -> None:
-        """Register a callback for a specific stage completion."""
-        self._stage_callbacks[stage].append(callback)
-
-    def register_completion_callback(
-        self,
-        callback: Callable[[PipelineResult], None],
-    ) -> None:
-        """Register a callback for pipeline completion."""
-        self._completion_callbacks.append(callback)
-
-    def _run_stage_callbacks(self, stage: PipelineStage, result: StageResult) -> None:
-        """Run callbacks for a stage."""
-        for callback in self._stage_callbacks[stage]:
-            try:
-                callback(result)
-            except Exception as e:
-                self.logger.warning(f"Stage callback error: {e}")
-
-    def _run_completion_callbacks(self, result: PipelineResult) -> None:
-        """Run callbacks for pipeline completion."""
-        for callback in self._completion_callbacks:
-            try:
-                callback(result)
-            except Exception as e:
-                self.logger.warning(f"Completion callback error: {e}")
-
-    def execute(
-        self,
-        sources: list[DataSource] | None = None,
-        plan: HarrisImportPlan | None = None,
-        skip_download: bool | None = None,
-        skip_extract: bool | None = None,
-        skip_transform: bool | None = None,
-        skip_load: bool | None = None,
-        cleanup_extracted: bool | None = None,
-        scope: str | None = None,
-        strict: bool = True,
-        validate_contract: bool = True,
-        refresh_readiness: bool = True,
-    ) -> PipelineResult:
-        """Execute the full ETL pipeline.
-
-        Args:
-            sources: Specific sources to process (default: all required)
-            plan: Harris import intent that owns source selection and validation skips
-            skip_download: Skip download stage
-            skip_extract: Skip extract stage
-            skip_transform: Skip transform stage
-            skip_load: Skip load stage
-            cleanup_extracted: Delete uncompressed extracted files after successful load
-            scope: Deprecated compatibility spelling for a Harris import plan
-            strict: Fail run on required gaps/errors
-            validate_contract: Run post-load validate_data checks
-            refresh_readiness: Recompute readiness after a successful data write
-
-        Returns:
-            PipelineResult with execution status and metrics
-        """
-        plan = self._resolve_import_plan(plan=plan, scope=scope)
-
-        # Apply overrides
-        skip_download = skip_download if skip_download is not None else self.config.skip_download
-        skip_extract = skip_extract if skip_extract is not None else self.config.skip_extract
-        skip_transform = (
-            skip_transform if skip_transform is not None else self.config.skip_transform
-        )
-        skip_load = skip_load if skip_load is not None else self.config.skip_load
-        skip_load = bool(skip_load or self.config.dry_run)
-        cleanup_extracted = (
-            cleanup_extracted if cleanup_extracted is not None else self.config.cleanup_extracted
-        )
-
-        # Initialize result
-        self.result = PipelineResult(
-            status=PipelineStatus.RUNNING,
-            started_at=datetime.now(),
-        )
-
-        sources = plan.select_sources(sources or self.config.get_required_sources())
-        if not sources:
-            raise ValueError(f"No ETL sources match Harris import plan {plan.legacy_scope}")
+        preview = isinstance(self.request.load, HarrisPreview)
+        strict = self.request.failure_policy is HarrisFailurePolicy.STRICT
 
         self.logger.info(
             f"Starting ETL pipeline for {len(sources)} sources "
-            f"(year={self.config.data_year}, plan={plan.legacy_scope}, "
-            f"strict={strict}, dry_run={self.config.dry_run})"
+            f"(year={self.data_year}, plan={plan.legacy_scope}, "
+            f"strict={strict}, preview={preview})"
         )
 
-        try:
-            # Download stage
-            if not skip_download:
-                stage_result = self._execute_download(sources)
-                self.result.stages[PipelineStage.DOWNLOAD] = stage_result
+        if self.request.acquisition is HarrisAcquisitionMode.FETCH:
+            if not self._record_stage(self._execute_download(sources), strict=strict):
+                return self._finish(started_at, HarrisImportStatus.FAILED, wrote_data=False)
 
-                if not stage_result.success and strict:
-                    raise RuntimeError("Download stage failed")
+        if self.request.extraction is HarrisExtractionMode.EXTRACT:
+            if not self._record_stage(self._execute_extract(sources), strict=strict):
+                return self._finish(started_at, HarrisImportStatus.FAILED, wrote_data=False)
 
-            # Extract stage
-            if not skip_extract:
-                stage_result = self._execute_extract(sources)
-                self.result.stages[PipelineStage.EXTRACT] = stage_result
+        load_result = self._execute_transform_load(
+            sources,
+            skip_load=preview,
+            strict=strict,
+        )
+        wrote_data = bool(load_result.metrics.get("_wrote_data", False))
+        useful_work = bool(load_result.metrics.get("_sources_succeeded", 0))
+        if not self._record_stage(load_result, strict=strict):
+            return self._finish(started_at, HarrisImportStatus.FAILED, wrote_data=wrote_data)
 
-                if not stage_result.success and strict:
-                    raise RuntimeError("Extract stage failed")
+        if wrote_data:
+            apply = self.request.load
+            assert isinstance(apply, HarrisApply)
+            if apply.refresh_readiness:
+                try:
+                    self._refresh_readiness_once()
+                except DatabaseError as exc:
+                    if not self._record_expected_failure(
+                        f"Readiness refresh failed: {exc}", strict=strict
+                    ):
+                        return self._finish(started_at, HarrisImportStatus.FAILED, wrote_data=True)
 
-            # Transform and Load stages (combined for efficiency)
-            if not skip_transform or not skip_load:
-                stage_result = self._execute_transform_load(
-                    sources,
-                    skip_transform=skip_transform,
-                    skip_load=skip_load,
-                )
-                self.result.stages[PipelineStage.LOAD] = stage_result
+            if apply.validate_completeness:
+                if not self._validate_completeness_contract(plan=plan, strict=strict):
+                    return self._finish(started_at, HarrisImportStatus.FAILED, wrote_data=True)
 
-                if not stage_result.success and strict:
-                    raise RuntimeError("Transform/Load stage failed")
+        all_success = all(result.success for result in self.stages.values()) and not self.errors
+        if all_success:
+            status = HarrisImportStatus.COMPLETED
+        elif useful_work:
+            status = HarrisImportStatus.PARTIAL
+        else:
+            status = HarrisImportStatus.FAILED
 
-            wrote_data = (
-                PipelineStage.LOAD in self.result.stages
-                and not skip_load
-                and not self.config.dry_run
-            )
-            if wrote_data and refresh_readiness:
-                self._refresh_readiness_once()
-
-            if validate_contract and wrote_data:
-                self._validate_completeness_contract(plan=plan, strict=strict)
-
-            all_success = all(r.success for r in self.result.stages.values())
-            self.result.status = PipelineStatus.COMPLETED if all_success else PipelineStatus.PARTIAL
-
-            # Clean up uncompressed extracted files after successful load to save disk space
-            if all_success and cleanup_extracted and wrote_data:
-                self.logger.info("Cleaning up uncompressed extracted files after successful load")
+        if (
+            status is HarrisImportStatus.COMPLETED
+            and wrote_data
+            and isinstance(self.request.load, HarrisApply)
+            and self.request.load.extracted_source_retention
+            is ExtractedSourceRetention.REMOVE_AFTER_SUCCESS
+        ):
+            self.logger.info("Cleaning up selected extracted files after completed import")
+            try:
                 self.extract_manager.cleanup(sources=sources)
-        except Exception as e:
-            self.result.status = PipelineStatus.FAILED
-            self.result.errors.append(str(e))
-            self.logger.exception("Pipeline execution failed")
+            except OSError as exc:
+                self.warnings.append(
+                    f"Import committed, but extracted-source cleanup failed: {exc}"
+                )
 
-        finally:
-            self.result.completed_at = datetime.now()
-            self._run_completion_callbacks(self.result)
+        return self._finish(started_at, status, wrote_data=wrote_data)
 
-            self.logger.info(
-                f"Pipeline {self.result.status.value}: " f"{self.result.duration:.1f}s total"
-            )
+    def _record_stage(self, result: _StageResult, *, strict: bool) -> bool:
+        frozen = result.freeze()
+        self.stages[result.stage] = frozen
+        self._report(result.stage, f"{result.stage.value} stage")
+        if result.success:
+            return True
+        message = result.error or f"{result.stage.value} stage failed"
+        self.errors.append(message)
+        return not strict
 
-        return self.result
+    def _record_expected_failure(self, message: str, *, strict: bool) -> bool:
+        self.errors.append(message)
+        return not strict
 
-    @staticmethod
-    def _resolve_import_plan(
+    def _report(self, phase: HarrisImportPhase, message: str) -> None:
+        if self.reporter is None:
+            return
+        try:
+            self.reporter.report(HarrisImportEvent(phase=phase, message=message))
+        except Exception as exc:
+            warning = f"Import progress reporter failed: {exc}"
+            self.warnings.append(warning)
+            self.logger.warning(warning)
+
+    def _finish(
+        self,
+        started_at: datetime,
+        status: HarrisImportStatus,
         *,
-        plan: HarrisImportPlan | None,
-        scope: str | None,
-    ) -> HarrisImportPlan:
-        """Resolve the modern import-plan interface and legacy scope adapter."""
-        if plan is None:
-            return HarrisImportPlan.from_legacy_scope(scope or "full")
-        if scope is not None and plan != HarrisImportPlan.from_legacy_scope(scope):
-            raise ValueError(
-                "Pass either a Harris import plan or a matching legacy scope, not both"
-            )
-        return plan
+        wrote_data: bool,
+    ) -> HarrisImportResult:
+        result = HarrisImportResult(
+            status=status,
+            started_at=started_at,
+            completed_at=datetime.now(),
+            stages=MappingProxyType(dict(self.stages)),
+            errors=tuple(self.errors),
+            warnings=tuple(self.warnings),
+            wrote_data=wrote_data,
+        )
+        self.logger.info(f"Pipeline {result.status.value}: {result.duration:.1f}s total")
+        return result
 
     def _refresh_readiness_once(self) -> None:
         """Refresh property readiness exactly once per successful load run."""
@@ -327,7 +399,7 @@ class ETLOrchestrator:
         self.logger.info("Refreshing property readiness once after load stage")
         refresh_property_readiness()
 
-    def _validate_completeness_contract(self, plan: HarrisImportPlan, strict: bool) -> None:
+    def _validate_completeness_contract(self, plan: HarrisImportPlan, strict: bool) -> bool:
         """Run validate_data with scope-aware skip flags."""
 
         try:
@@ -338,14 +410,15 @@ class ETLOrchestrator:
         except DjangoCommandError as exc:
             msg = f"Completeness validation failed: {exc}"
             if strict:
-                raise RuntimeError(msg) from exc
-            self.result.warnings.append(msg)
+                self.errors.append(msg)
+                return False
+            self.errors.append(msg)
             self.logger.warning(msg)
+        return True
 
-    def _execute_download(self, sources: list[DataSource]) -> StageResult:
+    def _execute_download(self, sources: list[DataSource]) -> _StageResult:
         """Execute download stage."""
-        stage_result = StageResult(stage=PipelineStage.DOWNLOAD, success=True)
-        self.current_stage = PipelineStage.DOWNLOAD
+        stage_result = _StageResult(stage=HarrisImportPhase.DOWNLOAD, success=True)
 
         self.logger.info(f"Download stage: {len(sources)} sources")
 
@@ -376,13 +449,11 @@ class ETLOrchestrator:
                 stage_result.success = len(required_failed) == 0
 
         stage_result.completed_at = datetime.now()
-        self._run_stage_callbacks(PipelineStage.DOWNLOAD, stage_result)
         return stage_result
 
-    def _execute_extract(self, sources: list[DataSource]) -> StageResult:
+    def _execute_extract(self, sources: list[DataSource]) -> _StageResult:
         """Execute extract stage."""
-        stage_result = StageResult(stage=PipelineStage.EXTRACT, success=True)
-        self.current_stage = PipelineStage.EXTRACT
+        stage_result = _StageResult(stage=HarrisImportPhase.EXTRACT, success=True)
 
         self.logger.info(f"Extract stage: {len(sources)} archives")
 
@@ -412,7 +483,6 @@ class ETLOrchestrator:
                 stage_result.success = len(required_failed) == 0
 
         stage_result.completed_at = datetime.now()
-        self._run_stage_callbacks(PipelineStage.EXTRACT, stage_result)
         return stage_result
 
     def _preload_fixtures(self, sources: list[DataSource]) -> None:
@@ -445,7 +515,7 @@ class ETLOrchestrator:
                             f"{stats['with_bathrooms']:,} with bathrooms"
                         )
                         return
-                    except Exception as e:
+                    except (OSError, UnicodeError, ValueError, KeyError) as e:
                         self.logger.error(f"Error loading fixtures: {e}")
                         # Continue without fixtures - fields will be NULL
                         return
@@ -458,16 +528,15 @@ class ETLOrchestrator:
     def _execute_transform_load(
         self,
         sources: list[DataSource],
-        skip_transform: bool = False,
         skip_load: bool = False,
-    ) -> StageResult:
+        strict: bool = True,
+    ) -> _StageResult:
         """Execute transform and load stages.
 
         These are combined for memory efficiency - records are streamed
         from transform directly to load without buffering.
         """
-        stage_result = StageResult(stage=PipelineStage.LOAD, success=True)
-        self.current_stage = PipelineStage.LOAD
+        stage_result = _StageResult(stage=HarrisImportPhase.LOAD, success=True)
 
         self.logger.info("Transform/Load stage")
 
@@ -478,6 +547,7 @@ class ETLOrchestrator:
             total_failed = 0
             gis_loaded = 0
             source_errors: list[str] = []
+            sources_succeeded = 0
 
             # STEP 1: Pre-load fixtures for bedroom/bathroom data
             # This must happen before processing building_res.txt
@@ -485,15 +555,20 @@ class ETLOrchestrator:
 
             # Process each source type
             for source in sources:
+                source_did_work = False
                 if source.source_type == DataSourceType.GIS_DATA:
                     # GIS data requires special handling
-                    gis_result = self._process_gis_source(source)
+                    gis_result = self._process_gis_source(source, preview=skip_load)
                     gis_loaded += gis_result.get("loaded", 0)
                     total_invalid += gis_result.get("invalid", 0)
                     total_skipped += gis_result.get("skipped", 0)
                     total_failed += gis_result.get("failed", 0)
                     if gis_result.get("source_error"):
                         source_errors.append(str(gis_result["source_error"]))
+                        if strict:
+                            break
+                    else:
+                        sources_succeeded += 1
                     continue
 
                 # Find extracted files for this source
@@ -503,8 +578,10 @@ class ETLOrchestrator:
                     if source.required:
                         source_errors.append(msg)
                         self.logger.error(msg)
+                        if strict:
+                            break
                     else:
-                        self.result.warnings.append(msg)
+                        self.warnings.append(msg)
                         self.logger.warning(msg)
                     continue
 
@@ -523,8 +600,10 @@ class ETLOrchestrator:
                     if source.required:
                         source_errors.append(msg)
                         self.logger.error(msg)
+                        if strict:
+                            break
                     else:
-                        self.result.warnings.append(msg)
+                        self.warnings.append(msg)
                         self.logger.warning(msg)
                     continue
 
@@ -543,12 +622,32 @@ class ETLOrchestrator:
                     if schema_name is None:
                         continue
                     truncate = not schema_loaded.get(schema_name, False)
-                    result = self._process_data_file(file_path, skip_load, truncate=truncate)
+                    try:
+                        result = self._process_data_file(
+                            file_path,
+                            skip_load,
+                            truncate=truncate,
+                        )
+                    except (DatabaseError, OSError, UnsafeReplacementError, ValueError) as exc:
+                        message = f"Failed processing {file_path.name}: {exc}"
+                        source_errors.append(message)
+                        total_failed += 1
+                        self.logger.error(message)
+                        if strict:
+                            break
+                        continue
                     schema_loaded[schema_name] = True
+                    source_did_work = True
                     total_loaded += result.get("loaded", 0)
                     total_invalid += result.get("invalid", 0)
                     total_skipped += result.get("skipped", 0)
                     total_failed += result.get("failed", 0)
+
+                if source_did_work:
+                    sources_succeeded += 1
+
+                if strict and source_errors:
+                    break
 
             metrics.records_processed = total_loaded + total_invalid + total_skipped + total_failed
             metrics.records_success = total_loaded
@@ -561,6 +660,8 @@ class ETLOrchestrator:
                 "records_skipped": total_skipped,
                 "records_failed": total_failed,
                 "gis_coordinates_updated": gis_loaded,
+                "_sources_succeeded": sources_succeeded,
+                "_wrote_data": not skip_load and sources_succeeded > 0,
             }
 
             if source_errors:
@@ -571,7 +672,6 @@ class ETLOrchestrator:
                 stage_result.error = f"{total_failed} source processing failure(s)"
 
         stage_result.completed_at = datetime.now()
-        self._run_stage_callbacks(PipelineStage.LOAD, stage_result)
         return stage_result
 
     def _iter_translated_rows(
@@ -632,24 +732,41 @@ class ETLOrchestrator:
             return counts
 
         rows = self._iter_translated_rows(schema_name, file_path)
+        if schema_name == "real_acct":
+            from .persistence import (
+                PersistenceDataset,
+                PersistenceRequest,
+                PersistenceWriteMode,
+                persistence_for_connection,
+            )
+
+            persisted = persistence_for_connection().persist(
+                PersistenceRequest(
+                    dataset=PersistenceDataset.PROPERTY,
+                    rows=rows,
+                    write_mode=(
+                        PersistenceWriteMode.REPLACE
+                        if truncate
+                        else PersistenceWriteMode.ADD_MISSING
+                    ),
+                )
+            )
+            # PropertyRecord ids changed; rebuild the account caches that the
+            # building/extra-feature translators depend on.
+            self.model_loader.reset_cache()
+            return {
+                "loaded": persisted.loaded,
+                "invalid": persisted.invalid,
+                "skipped": persisted.skipped,
+                "failed": 0,
+            }
+
         from .fast_loader import (
             copy_load_building_rows,
-            copy_load_property_rows,
             postgres_backend,
         )
 
-        if postgres_backend() and schema_name in ("real_acct", "building_res"):
-            if schema_name == "real_acct":
-                fast = copy_load_property_rows(rows, truncate=truncate)
-                # PropertyRecord ids changed; rebuild the account caches that the
-                # building/extra-feature loaders depend on.
-                self.model_loader.reset_cache()
-                return {
-                    "loaded": fast["loaded"],
-                    "invalid": 0,
-                    "skipped": fast["skipped"],
-                    "failed": 0,
-                }
+        if postgres_backend() and schema_name == "building_res":
             fast = copy_load_building_rows(rows, truncate=truncate)
             return {
                 "loaded": fast["loaded"],
@@ -658,9 +775,7 @@ class ETLOrchestrator:
                 "failed": 0,
             }
 
-        if schema_name == "real_acct":
-            result = self.model_loader.load_property_records(rows, truncate=truncate)
-        elif schema_name == "building_res":
+        if schema_name == "building_res":
             result = self.model_loader.load_building_details(rows, truncate=truncate)
         elif schema_name == "extra_features":
             result = self.model_loader.load_extra_features(rows, truncate=truncate)
@@ -691,7 +806,12 @@ class ETLOrchestrator:
             return "extra_features"
         return None
 
-    def _process_gis_source(self, source: DataSource) -> dict[str, Any]:
+    def _process_gis_source(
+        self,
+        source: DataSource,
+        *,
+        preview: bool = False,
+    ) -> dict[str, Any]:
         """Process GIS data source.
 
         Finds shapefiles in the extracted GIS data and loads coordinates
@@ -731,7 +851,17 @@ class ETLOrchestrator:
         self.logger.info(f"Loading GIS data from: {shapefile_path}")
 
         try:
-            from .gis_loader import load_gis_parcels
+            from .gis_loader import load_gis_parcels, translate_gis_parcels
+
+            if preview:
+                translated = translate_gis_parcels(str(shapefile_path))
+                self.logger.info(f"Preview translated {len(translated)} GIS parcel coordinates")
+                return {
+                    "loaded": len(translated),
+                    "invalid": 0,
+                    "skipped": 0,
+                    "failed": 0,
+                }
 
             count = load_gis_parcels(str(shapefile_path), refresh_readiness=False)
             self.logger.info(f"Updated {count} properties with GIS coordinates")
@@ -740,7 +870,7 @@ class ETLOrchestrator:
         except ImportError as e:
             self.logger.error(f"GIS processing requires geopandas: {e}")
             return {"loaded": 0, "invalid": 0, "skipped": 0, "failed": 1, "source_error": str(e)}
-        except Exception as e:
+        except (DatabaseError, OSError, ValueError) as e:
             self.logger.exception(f"Error processing GIS data: {e}")
             return {"loaded": 0, "invalid": 0, "skipped": 0, "failed": 1, "source_error": str(e)}
 
@@ -759,50 +889,55 @@ class ETLOrchestrator:
 
         return select_preferred_gis_shapefile(search_roots)
 
-    def execute_download_only(
-        self,
-        sources: list[DataSource] | None = None,
-        include_optional: bool = False,
-    ) -> list[DownloadResult]:
-        """Execute only the download stage."""
-        if sources is None:
-            if include_optional:
-                sources = self.config.get_all_sources()
-            else:
-                sources = self.config.get_required_sources()
 
-        return self.download_manager.download_batch(sources)
+def run_harris_import(
+    request: HarrisImportRequest,
+    *,
+    reporter: HarrisImportReporter | None = None,
+) -> HarrisImportResult:
+    """Run one Harris import through the catalog-owned, stateless boundary."""
+    if not isinstance(request, HarrisImportRequest):
+        raise InvalidHarrisImportRequest("request must be a HarrisImportRequest")
+    data_year = _resolve_data_year(request)
+    sources = request.plan.select_sources(DEFAULT_HCAD_SOURCE_CATALOG.required_sources())
+    if not sources:
+        raise InvalidHarrisImportRequest(
+            f"No HCAD catalog sources match Harris import plan {request.plan.legacy_scope}"
+        )
+    return _HarrisImportExecution(
+        request,
+        sources,
+        data_year,
+        reporter=reporter,
+    ).run()
 
-    def execute_extract_only(
-        self,
-        sources: list[DataSource] | None = None,
-    ) -> list[ExtractResult]:
-        """Execute only the extract stage."""
-        sources = sources or self.config.get_all_sources()
-        return self.extract_manager.extract_batch(sources)
 
-    def cleanup(
-        self,
-        remove_downloads: bool = False,
-        remove_extracts: bool = True,
-    ) -> None:
-        """Clean up temporary files."""
-        self.logger.info("Running cleanup")
+def _resolve_data_year(request: HarrisImportRequest) -> int:
+    raw_year: int | str = request.data_year or os.getenv("ETL_DATA_YEAR") or datetime.now().year
+    try:
+        data_year = int(raw_year)
+    except (TypeError, ValueError) as exc:
+        raise InvalidHarrisImportRequest(f"Invalid Harris import data year: {raw_year}") from exc
+    if data_year < 2000:
+        raise InvalidHarrisImportRequest("Harris import data year must be 2000 or later")
+    return data_year
 
-        if remove_downloads:
-            self.download_manager.cleanup()
 
-        if remove_extracts:
-            self.extract_manager.cleanup()
-
-    def get_status(self) -> dict[str, Any]:
-        """Get current pipeline status."""
-        return {
-            "current_stage": self.current_stage.value if self.current_stage else None,
-            "result": self.result.to_dict() if self.result else None,
-            "config": {
-                "data_year": self.config.data_year,
-                "dry_run": self.config.dry_run,
-                "continue_on_error": self.config.continue_on_error,
-            },
-        }
+__all__ = [
+    "ExtractedSourceRetention",
+    "HarrisAcquisitionMode",
+    "HarrisApply",
+    "HarrisExtractionMode",
+    "HarrisFailurePolicy",
+    "HarrisImportEvent",
+    "HarrisImportPhase",
+    "HarrisImportReporter",
+    "HarrisImportRequest",
+    "HarrisImportResult",
+    "HarrisImportStageResult",
+    "HarrisImportStatus",
+    "HarrisLoadIntent",
+    "HarrisPreview",
+    "InvalidHarrisImportRequest",
+    "run_harris_import",
+]
