@@ -22,6 +22,7 @@ class RefreshOptions:
     """The narrow operator interface for a complete annual refresh."""
 
     tax_year: int | None = None
+    source_year: int | None = None
     force: bool = False
     skip_download: bool = False
     skip_extract: bool = False

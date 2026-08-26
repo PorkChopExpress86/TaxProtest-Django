@@ -101,6 +101,11 @@ class PropertyAccount(models.Model):
     # docs/research/brazos-building-characteristics.md).
     latitude = models.DecimalField(max_digits=10, decimal_places=7, null=True, blank=True)
     longitude = models.DecimalField(max_digits=10, decimal_places=7, null=True, blank=True)
+    # A coordinate-only fallback may use an earlier certified GIS release for
+    # a later CAD year. Keep that provenance separate from source_file, which
+    # identifies the certified CAD file that created this account row.
+    coordinate_source = models.CharField(max_length=64, blank=True, db_default="")
+    coordinate_source_year = models.PositiveIntegerField(null=True, blank=True)
     living_area = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     year_built = models.IntegerField(null=True, blank=True)
     class_code = models.CharField(max_length=16, blank=True)

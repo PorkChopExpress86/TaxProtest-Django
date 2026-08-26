@@ -43,3 +43,8 @@ The complete current-year Brazos property snapshot: a year-matched certified
 CAD rebuild followed by GIS enrichment, available only after both persistence
 stages commit.
 _Avoid_: CAD load, GIS load, partial refresh
+
+**Coordinate enrichment**:
+A non-annual update that adds only parcel coordinates to an existing CAD year
+from an earlier BCAD certified GIS release, retaining the actual source year.
+_Avoid_: GIS refresh, annual refresh, current-year snapshot

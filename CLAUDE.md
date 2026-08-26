@@ -124,6 +124,7 @@ tables and migration history under Harris's pinned app label — see the Shared 
 - `parsers/pacs.py` — fixed-width offsets for BCAD's certified PACS export
 - `portal.py` — `download_archive()` / `extract_zip()`, shared by the CAD/GIS refresh stages and `import_brazos_assessment_history`; each source stage owns its portal-scraping logic (which URL, which links are real archives), since that varies genuinely per portal
 - `cad_refresh.py` / `gis_refresh.py` — county-owned source stages: acquisition, source-year validation, persistence, and cleanup; the corresponding management commands are CLI adapters only
+- `coordinate_enrichment.py` — measured, coordinate-only fallback for a later CAD year when BCAD has not yet published year-matched certified GIS; retains the actual GIS source year and never substitutes for the annual refresh
 - `similarity.py` — Brazos scoring against `PropertyAccount`
 - `adapter.py` — `BRAZOS_PROFILE` + `BrazosAdapter`
 
@@ -148,6 +149,7 @@ Brazos (`counties/brazos/management/commands/`):
 | `refresh_brazos_annual` | **Production refresh:** atomically publishes a year-matched certified CAD rebuild followed by GIS enrichment |
 | `load_brazos_cad` | Targeted certified CAD source recovery; run GIS enrichment again after use |
 | `load_brazos_gis` | Targeted GIS source recovery for an already-loaded Brazos year |
+| `enrich_brazos_coordinates` | Analyze, then explicitly apply, an earlier BCAD GIS release's coordinates to a later CAD year; requires an operator match-rate threshold and is not an annual refresh |
 | `import_brazos_tax_rates` | Per-entity adopted tax rates |
 | `import_brazos_assessment_history` | **Multi-year assessed/appraised/market value history** (`--start-year`, `--end-year`); downloads each year's own certified archive from BCAD's decade-deep portal — no diffing, each year already carries its own values |
 | `validate_brazos_against_source` | Cross-check ingested rows against the source files |

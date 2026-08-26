@@ -129,8 +129,16 @@ def _clean_int(value: Any) -> int | None:
         return None
 
 
+def normalize_prop_id(value: object) -> str | None:
+    """Return BCAD's canonical 12-digit property identifier, if usable."""
+    normalized = _clean_int(value)
+    if normalized is None:
+        return None
+    return str(normalized).zfill(12)
+
+
 @dataclass(frozen=True)
-class _GisStagePayload:
+class GisSourcePayload:
     shapefile_path: Path | None
     extract_dir: Path
 
@@ -237,7 +245,9 @@ class GisRefreshStage:
             raw_prop_id = getattr(row, "PROP_ID", None)
             if raw_prop_id is None or _is_nan(raw_prop_id):
                 continue
-            prop_id = str(int(raw_prop_id)).zfill(12)
+            prop_id = normalize_prop_id(raw_prop_id)
+            if prop_id is None:
+                continue
 
             situs_address = _join_address(
                 getattr(row, "situs_num", None),
@@ -372,7 +382,7 @@ class GisRefreshStage:
 
         if options.skip_download:
             source_year = self._selected_offline_source_year(
-                options.tax_year, download_dir, extract_root
+                options.source_year or options.tax_year, download_dir, extract_root
             )
             if source_year is None:
                 raise CommandError(
@@ -384,6 +394,11 @@ class GisRefreshStage:
             url = ""
         else:
             url, source_year = self._scrape_archive(GIS_PORTAL_URL)
+            if options.source_year is not None and source_year != options.source_year:
+                raise CommandError(
+                    f"BCAD GIS portal selected source year {source_year}, not requested "
+                    f"source year {options.source_year}."
+                )
 
         archive = download_dir / f"bcad_gis_{source_year}.zip"
         extract_dir = extract_root / str(source_year)
@@ -428,14 +443,14 @@ class GisRefreshStage:
             name=self.name,
             source_year=source_year,
             target_year=target_year,
-            payload=_GisStagePayload(shapefile_path=shapefile_path, extract_dir=extract_dir),
+            payload=GisSourcePayload(shapefile_path=shapefile_path, extract_dir=extract_dir),
             cleanup_paths=(extract_dir,),
         )
 
     def persist(self, preparation: StagePreparation) -> StageResult:
         """Enrich the target year's CAD rows inside the caller's transaction."""
         payload = preparation.payload
-        if not isinstance(payload, _GisStagePayload):
+        if not isinstance(payload, GisSourcePayload):
             raise TypeError("GIS stage received a preparation from another adapter")
         if payload.shapefile_path is None:
             raise CommandError("No GIS shapefile was prepared for persistence.")
@@ -457,7 +472,7 @@ class GisRefreshStage:
     def cleanup(self, preparation: StagePreparation) -> None:
         """Remove GIS extraction output after a completed refresh."""
         payload = preparation.payload
-        if not isinstance(payload, _GisStagePayload):
+        if not isinstance(payload, GisSourcePayload):
             raise TypeError("GIS stage received a preparation from another adapter")
         if payload.extract_dir.exists():
             shutil.rmtree(payload.extract_dir, ignore_errors=True)

@@ -24,6 +24,7 @@ from unittest.mock import MagicMock, patch
 from django.core.management import CommandError, call_command
 from django.test import TestCase
 
+from counties.brazos.annual_refresh import RefreshOptions
 from counties.brazos.gis_refresh import GisRefreshStage
 from counties.brazos.models import PropertyAccount
 
@@ -296,8 +297,18 @@ class CentroidCrsTests(TestCase):
 
 class LoadBrazosGisCommandTests(TestCase):
     def test_skip_download_without_an_existing_archive_raises(self):
-        with self.assertRaises(CommandError):
-            call_command("load_brazos_gis", "--skip-download", "--skip-extract", "--year", "2099")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with (
+                self.settings(
+                    BCAD_DOWNLOAD_DIR=str(root / "downloads"),
+                    BCAD_EXTRACT_DIR=str(root / "extracted"),
+                ),
+                self.assertRaises(CommandError),
+            ):
+                call_command(
+                    "load_brazos_gis", "--skip-download", "--skip-extract", "--year", "2099"
+                )
 
 
 class OfflineRerunTests(TestCase):
@@ -378,6 +389,22 @@ class OfflineRerunTests(TestCase):
             call_command("load_brazos_gis", "--skip-download", "--skip-extract", "--year", "2024")
 
         self.assertIn("gis/2024", str(ctx.exception))
+
+    def test_explicit_source_year_can_differ_from_the_target_year_offline(self):
+        self._stage_extracted_shapefile(2025)
+
+        with self._settings():
+            preparation = GisRefreshStage().prepare(
+                RefreshOptions(
+                    tax_year=2026,
+                    source_year=2025,
+                    skip_download=True,
+                    skip_extract=True,
+                )
+            )
+
+        self.assertEqual(preparation.source_year, 2025)
+        self.assertEqual(preparation.target_year, 2026)
 
     def test_extracted_parcels_are_enough_without_the_downloaded_zip(self):
         """Keeping the 100MB archive around is not a precondition for a reload."""
