@@ -564,8 +564,8 @@ class ETLLoaderOptimizationTests(TestCase):
         )
 
         self.assertEqual(result.records_loaded, 1)
-        self.assertEqual(result.records_invalid, 2)
-        self.assertEqual(result.records_skipped, 1)
+        self.assertEqual(result.records_invalid, 3)
+        self.assertEqual(result.records_skipped, 0)
         feature = ExtraFeature.objects.get(account_number="ACC2")
         self.assertEqual(feature.property_id, prop.id)
         self.assertEqual(feature.feature_description, "Pool")

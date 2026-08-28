@@ -585,9 +585,8 @@ class _HarrisImportExecution:
                         self.logger.warning(msg)
                     continue
 
-                # Process each data file in deterministic order.
-                # Track per-schema truncate behavior so multi-file schemas like
-                # extra_features_detail*.txt append after first load.
+                # Process each data file in deterministic order. Extra Feature
+                # files are collected below and persisted as one logical dataset.
                 schema_loaded: dict[str, bool] = {}
                 data_files = sorted(extract_path.rglob("*.txt"))
 
@@ -617,9 +616,13 @@ class _HarrisImportExecution:
                             path for path in data_files if path.stem.lower() != "extra_features"
                         ]
 
+                extra_feature_files: list[Path] = []
                 for file_path in data_files:
                     schema_name = self._resolve_schema_name(file_path.stem)
                     if schema_name is None:
+                        continue
+                    if schema_name == "extra_features":
+                        extra_feature_files.append(file_path)
                         continue
                     truncate = not schema_loaded.get(schema_name, False)
                     try:
@@ -642,6 +645,29 @@ class _HarrisImportExecution:
                     total_invalid += result.get("invalid", 0)
                     total_skipped += result.get("skipped", 0)
                     total_failed += result.get("failed", 0)
+
+                if strict and source_errors:
+                    break
+
+                if extra_feature_files:
+                    try:
+                        result = self._process_extra_feature_files(
+                            extra_feature_files,
+                            skip_load=skip_load,
+                        )
+                    except (DatabaseError, OSError, UnsafeReplacementError, ValueError) as exc:
+                        message = f"Failed processing Extra Feature dataset: {exc}"
+                        source_errors.append(message)
+                        total_failed += 1
+                        self.logger.error(message)
+                        if strict:
+                            break
+                    else:
+                        source_did_work = True
+                        total_loaded += result.get("loaded", 0)
+                        total_invalid += result.get("invalid", 0)
+                        total_skipped += result.get("skipped", 0)
+                        total_failed += result.get("failed", 0)
 
                 if source_did_work:
                     sources_succeeded += 1
@@ -766,16 +792,51 @@ class _HarrisImportExecution:
                 "failed": 0,
             }
 
-        if schema_name == "extra_features":
-            result = self.model_loader.load_extra_features(rows, truncate=truncate)
-        else:
-            return {"loaded": 0, "invalid": 0, "skipped": 0, "failed": 0}
+        return {"loaded": 0, "invalid": 0, "skipped": 0, "failed": 0}
 
+    def _process_extra_feature_files(
+        self,
+        file_paths: list[Path],
+        *,
+        skip_load: bool,
+    ) -> dict[str, int]:
+        """Persist every selected Extra Feature source as one logical dataset."""
+
+        def translated_rows() -> Iterator[RowResult]:
+            for file_path in file_paths:
+                yield from self._iter_translated_rows("extra_features", file_path)
+
+        rows = translated_rows()
+        if skip_load:
+            counts = {"loaded": 0, "invalid": 0, "skipped": 0, "failed": 0}
+            for row in rows:
+                if row.skip:
+                    counts["skipped"] += 1
+                elif row.invalid:
+                    counts["invalid"] += 1
+                else:
+                    counts["loaded"] += 1
+            return counts
+
+        from .persistence import (
+            PersistenceDataset,
+            PersistenceRequest,
+            PersistenceWriteMode,
+            persistence_for_connection,
+        )
+
+        persisted = persistence_for_connection().persist(
+            PersistenceRequest(
+                dataset=PersistenceDataset.EXTRA_FEATURE,
+                rows=rows,
+                write_mode=PersistenceWriteMode.REPLACE,
+            )
+        )
         return {
-            "loaded": result.records_loaded,
-            "invalid": result.records_invalid,
-            "skipped": result.records_skipped,
-            "failed": 1 if result.error else 0,
+            "loaded": persisted.loaded,
+            "invalid": persisted.invalid,
+            "skipped": persisted.skipped,
+            "failed": 0,
         }
 
     @staticmethod

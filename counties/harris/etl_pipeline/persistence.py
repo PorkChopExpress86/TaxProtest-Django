@@ -21,7 +21,13 @@ from django.db import DEFAULT_DB_ALIAS, connection, transaction
 from django.db.models import Model
 from django.utils import timezone
 
-from .row_reader import BUILDING_FIELD_ORDER, PROPERTY_FIELD_ORDER, RowResult, RowValue
+from .row_reader import (
+    BUILDING_FIELD_ORDER,
+    EXTRA_FEATURE_FIELD_ORDER,
+    PROPERTY_FIELD_ORDER,
+    RowResult,
+    RowValue,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +141,12 @@ _DATASET_CONTRACTS: dict[PersistenceDataset, _DatasetContract] = {
         metadata_fields=("import_date", "import_batch_id", "created_at", "updated_at"),
         staging_table="harris_building_persistence_stage",
     ),
+    PersistenceDataset.EXTRA_FEATURE: _DatasetContract(
+        field_order=EXTRA_FEATURE_FIELD_ORDER,
+        identity_fields=("account_number", "feature_code", "feature_number"),
+        metadata_fields=("import_date", "import_batch_id", "created_at", "updated_at"),
+        staging_table="harris_extra_feature_persistence_stage",
+    ),
 }
 
 
@@ -204,6 +216,15 @@ class HarrisPersistenceAdapter(Protocol):
         """Write the rows and return the number inserted."""
 
     def persist_building(
+        self,
+        rows: _ValidatedRows,
+        *,
+        write_mode: PersistenceWriteMode,
+        metadata: _PersistenceMetadata,
+    ) -> int:
+        """Write the rows and return the number inserted."""
+
+    def persist_extra_feature(
         self,
         rows: _ValidatedRows,
         *,
@@ -358,6 +379,27 @@ class OrmPersistenceAdapter:
             ),
         )
 
+    def persist_extra_feature(
+        self,
+        rows: _ValidatedRows,
+        *,
+        write_mode: PersistenceWriteMode,
+        metadata: _PersistenceMetadata,
+    ) -> int:
+        from ..models import ExtraFeature
+
+        return self._persist_rows(
+            rows,
+            write_mode=write_mode,
+            metadata=metadata,
+            model_class=ExtraFeature,
+            build_model=lambda record: ExtraFeature(
+                **record,
+                import_date=metadata.timestamp,
+                import_batch_id=metadata.batch_id,
+            ),
+        )
+
 
 class CopyPersistenceAdapter:
     """PostgreSQL COPY persistence adapter for translated Harris rows."""
@@ -456,6 +498,22 @@ class CopyPersistenceAdapter:
             model_class=BuildingDetail,
         )
 
+    def persist_extra_feature(
+        self,
+        rows: _ValidatedRows,
+        *,
+        write_mode: PersistenceWriteMode,
+        metadata: _PersistenceMetadata,
+    ) -> int:
+        from ..models import ExtraFeature
+
+        return self._persist_rows(
+            rows,
+            write_mode=write_mode,
+            metadata=metadata,
+            model_class=ExtraFeature,
+        )
+
 
 class HarrisPersistence:
     """Persist translated Harris rows through one small, testable interface."""
@@ -474,8 +532,14 @@ class HarrisPersistence:
                     write_mode=request.write_mode,
                     metadata=metadata,
                 )
-            else:
+            elif request.dataset is PersistenceDataset.BUILDING:
                 loaded = self._adapter.persist_building(
+                    rows,
+                    write_mode=request.write_mode,
+                    metadata=metadata,
+                )
+            else:
+                loaded = self._adapter.persist_extra_feature(
                     rows,
                     write_mode=request.write_mode,
                     metadata=metadata,

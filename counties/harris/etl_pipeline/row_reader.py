@@ -457,7 +457,7 @@ def iter_extra_feature_rows(
         for row in reader:
             acct = coerce_str(get(row, "account_number"), 20)
             if not acct:
-                yield RowResult(values=(), field_names=field_names, skip=True)
+                yield RowResult(values=(), field_names=field_names, invalid=True)
                 continue
 
             property_id = account_map.get(acct)
@@ -465,11 +465,17 @@ def iter_extra_feature_rows(
                 yield RowResult(values=(), field_names=field_names, invalid=True)
                 continue
 
+            feature_number = coerce_int(get(row, "feature_number"))
+            feature_code = coerce_str(get(row, "feature_code"), 10)
+            if feature_number is None or not feature_code:
+                yield RowResult(values=(), field_names=field_names, invalid=True)
+                continue
+
             values = (
                 property_id,
                 acct,
-                coerce_int(get(row, "feature_number")),
-                coerce_str(get(row, "feature_code"), 10),
+                feature_number,
+                feature_code,
                 coerce_str(get(row, "feature_description"), 255),
                 coerce_decimal(get(row, "quantity")),
                 coerce_decimal(get(row, "area")),

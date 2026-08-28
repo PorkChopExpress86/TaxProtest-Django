@@ -23,7 +23,7 @@ from counties.harris.etl_pipeline import (
     run_harris_import,
 )
 from counties.harris.etl_pipeline.import_plan import HarrisImportPlan
-from counties.harris.models import BuildingDetail, PropertyRecord
+from counties.harris.models import BuildingDetail, ExtraFeature, PropertyRecord
 
 
 def _runtime_settings(root: str) -> dict[str, str]:
@@ -69,10 +69,22 @@ def _write_building_sources(root: str, account: str) -> Path:
         encoding="utf-8",
     )
     (source_dir / "extra_features.txt").write_text(
-        "acct\tbld_num\tcd\n",
+        "acct\tbld_num\tcd\n" f"{account}\t1\tGAR\n",
         encoding="latin-1",
     )
     return building_source
+
+
+def _write_extra_feature_detail_sources(root: str, account: str) -> None:
+    source_dir = Path(root) / "extracted" / "Real_building_land"
+    for filename, feature_code, description in (
+        ("extra_features_detail_a.txt", "POOL", "Pool"),
+        ("extra_features_detail_b.txt", "GAR", "Garage"),
+    ):
+        (source_dir / filename).write_text(
+            "acct\tbld_num\tcd\tdscr\n" f"{account}\t1\t{feature_code}\t{description}\n",
+            encoding="latin-1",
+        )
 
 
 class HarrisImportRequestTests(TestCase):
@@ -184,8 +196,33 @@ class HarrisImportBoundaryTests(TestCase):
         property_record = PropertyRecord.objects.get(account_number="P225")
         building = BuildingDetail.objects.get(account_number="P225", building_number=1)
         self.assertIs(result.status, HarrisImportStatus.COMPLETED)
-        self.assertEqual(result.stages[HarrisImportPhase.LOAD].metrics["records_loaded"], 2)
+        self.assertEqual(result.stages[HarrisImportPhase.LOAD].metrics["records_loaded"], 3)
         self.assertEqual(building.property_id, property_record.id)
+
+    def test_extra_feature_detail_files_persist_as_one_logical_dataset(self):
+        with tempfile.TemporaryDirectory() as root, override_settings(**_runtime_settings(root)):
+            _write_property_source(root, account="P230")
+            _write_building_sources(root, account="P230")
+            _write_extra_feature_detail_sources(root, account="P230")
+
+            result = run_harris_import(
+                HarrisImportRequest(
+                    plan=HarrisImportPlan.from_legacy_scope("property-and-building"),
+                    acquisition=HarrisAcquisitionMode.REUSE_DOWNLOADED,
+                    extraction=HarrisExtractionMode.REUSE_EXTRACTED,
+                    load=HarrisApply(
+                        refresh_readiness=False,
+                        validate_completeness=False,
+                        extracted_source_retention=ExtractedSourceRetention.RETAIN,
+                    ),
+                )
+            )
+
+        features = ExtraFeature.objects.filter(account_number="P230").order_by("feature_code")
+        self.assertIs(result.status, HarrisImportStatus.COMPLETED)
+        self.assertEqual(result.stages[HarrisImportPhase.LOAD].metrics["records_loaded"], 4)
+        self.assertEqual(list(features.values_list("feature_code", flat=True)), ["GAR", "POOL"])
+        self.assertEqual(len(set(features.values_list("import_batch_id", flat=True))), 1)
 
     def test_strict_missing_required_extract_returns_failed_result(self):
         with tempfile.TemporaryDirectory() as root, override_settings(**_runtime_settings(root)):
