@@ -439,11 +439,20 @@ class CopyPersistenceAdapter:
         else:
             metadata_values = (timestamp, metadata.batch_id, timestamp, timestamp)
 
+        validation_error: PersistenceError | None = None
+
         def copy_lines() -> Iterator[str]:
-            for row in rows:
-                yield "\t".join(
-                    self._copy_value(value) for value in (*row.values, *metadata_values)
-                ) + "\n"
+            nonlocal validation_error
+            try:
+                for row in rows:
+                    yield "\t".join(
+                        self._copy_value(value) for value in (*row.values, *metadata_values)
+                    ) + "\n"
+            except PersistenceError as exc:
+                # psycopg wraps source-generator exceptions as a database error.
+                # Retain the shared, deterministic persistence error below.
+                validation_error = exc
+                raise
 
         with transaction.atomic(), connection.cursor() as cursor:
             if write_mode is PersistenceWriteMode.REPLACE:
@@ -452,10 +461,15 @@ class CopyPersistenceAdapter:
                 f"CREATE TEMPORARY TABLE {staging_table} ON COMMIT DROP AS "
                 f"SELECT {quoted_columns} FROM {table} WHERE FALSE"
             )
-            cursor.copy_expert(
-                f"COPY {staging_table} ({quoted_columns}) FROM STDIN WITH (FORMAT text)",
-                _GeneratorIO(copy_lines()),
-            )
+            try:
+                cursor.copy_expert(
+                    f"COPY {staging_table} ({quoted_columns}) FROM STDIN WITH (FORMAT text)",
+                    _GeneratorIO(copy_lines()),
+                )
+            except Exception as exc:
+                if validation_error is not None:
+                    raise validation_error from exc
+                raise
             rows.require_safe_replacement(write_mode)
             cursor.execute(
                 f"INSERT INTO {table} ({quoted_columns}) "

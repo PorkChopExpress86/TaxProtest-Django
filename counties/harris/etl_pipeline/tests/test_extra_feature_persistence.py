@@ -217,6 +217,27 @@ class ExtraFeaturePersistenceContractTests(TestCase):
             {result.batch_id},
         )
 
+    @skipUnless(connection.vendor == "postgresql", "COPY requires PostgreSQL")
+    def test_copy_chained_physical_streams_are_one_logical_replacement(self) -> None:
+        result = self._persist(
+            CopyPersistenceAdapter(),
+            chain(
+                iter([self._feature_row(feature_number=1, feature_code="POOL")]),
+                iter([self._feature_row(feature_number=2, feature_code="GAR")]),
+            ),
+            write_mode=PersistenceWriteMode.REPLACE,
+        )
+
+        self.assertEqual((result.loaded, result.invalid, result.skipped), (2, 0, 0))
+        self.assertEqual(
+            set(ExtraFeature.objects.values_list("feature_code", flat=True)),
+            {"POOL", "GAR"},
+        )
+        self.assertEqual(
+            set(ExtraFeature.objects.values_list("import_batch_id", flat=True)),
+            {result.batch_id},
+        )
+
     def test_unsafe_replace_schema_mismatch_and_incomplete_identity_are_rejected(self) -> None:
         ExtraFeature.objects.create(
             property=self.property_record,
@@ -249,6 +270,29 @@ class ExtraFeaturePersistenceContractTests(TestCase):
         with self.assertRaises(IncompletePersistenceIdentity):
             self._persist(
                 OrmPersistenceAdapter(),
+                iter([self._feature_row(feature_number=None)]),
+                write_mode=PersistenceWriteMode.ADD_MISSING,
+            )
+
+    @skipUnless(connection.vendor == "postgresql", "COPY requires PostgreSQL")
+    def test_copy_rejects_unsafe_replacement_and_incomplete_identity(self) -> None:
+        skipped = RowResult(values=(), field_names=EXTRA_FEATURE_FIELD_ORDER, skip=True)
+        invalid = RowResult(values=(), field_names=EXTRA_FEATURE_FIELD_ORDER, invalid=True)
+
+        with self.assertRaises(UnsafeReplacementError) as raised:
+            self._persist(
+                CopyPersistenceAdapter(),
+                iter([skipped, invalid]),
+                write_mode=PersistenceWriteMode.REPLACE,
+            )
+
+        self.assertEqual(raised.exception.dataset, PersistenceDataset.EXTRA_FEATURE)
+        self.assertEqual((raised.exception.invalid, raised.exception.skipped), (1, 1))
+        self.assertFalse(ExtraFeature.objects.exists())
+
+        with self.assertRaises(IncompletePersistenceIdentity):
+            self._persist(
+                CopyPersistenceAdapter(),
                 iter([self._feature_row(feature_number=None)]),
                 write_mode=PersistenceWriteMode.ADD_MISSING,
             )
