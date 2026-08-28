@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import io
 import logging
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -18,9 +18,10 @@ from typing import Protocol
 from uuid import uuid4
 
 from django.db import DEFAULT_DB_ALIAS, connection, transaction
+from django.db.models import Model
 from django.utils import timezone
 
-from .row_reader import PROPERTY_FIELD_ORDER, RowResult, RowValue
+from .row_reader import BUILDING_FIELD_ORDER, PROPERTY_FIELD_ORDER, RowResult, RowValue
 
 logger = logging.getLogger(__name__)
 
@@ -111,10 +112,43 @@ class _PersistenceMetadata:
     batch_id: str
 
 
-class _PropertyRows:
-    """One-pass Property rows with shared contract validation and accounting."""
+@dataclass(frozen=True)
+class _DatasetContract:
+    """The persistence-owned database contract for one translated dataset."""
 
-    def __init__(self, rows: Iterable[RowResult]) -> None:
+    field_order: tuple[str, ...]
+    identity_fields: tuple[str, ...]
+    metadata_fields: tuple[str, ...]
+    staging_table: str
+
+
+_DATASET_CONTRACTS: dict[PersistenceDataset, _DatasetContract] = {
+    PersistenceDataset.PROPERTY: _DatasetContract(
+        field_order=PROPERTY_FIELD_ORDER,
+        identity_fields=("account_number",),
+        metadata_fields=("created_at", "updated_at"),
+        staging_table="harris_property_persistence_stage",
+    ),
+    PersistenceDataset.BUILDING: _DatasetContract(
+        field_order=BUILDING_FIELD_ORDER,
+        identity_fields=("account_number", "building_number"),
+        metadata_fields=("import_date", "import_batch_id", "created_at", "updated_at"),
+        staging_table="harris_building_persistence_stage",
+    ),
+}
+
+
+class _ValidatedRows:
+    """One-pass translated rows with shared contract validation and accounting."""
+
+    def __init__(self, dataset: PersistenceDataset, rows: Iterable[RowResult]) -> None:
+        try:
+            self.contract = _DATASET_CONTRACTS[dataset]
+        except KeyError as exc:
+            raise InvalidPersistenceRequest(
+                f"{dataset.value} persistence is not available in this implementation slice"
+            ) from exc
+        self.dataset = dataset
         self._rows = iter(rows)
         self.invalid = 0
         self.skipped = 0
@@ -132,14 +166,18 @@ class _PropertyRows:
             if row.invalid:
                 self.invalid += 1
                 continue
-            if row.field_names != PROPERTY_FIELD_ORDER:
+            if row.field_names != self.contract.field_order:
                 raise TranslatedRowSchemaMismatch(
-                    "Property persistence requires the canonical Property field order"
+                    f"{self.dataset.value} persistence requires its canonical field order"
                 )
-            account_number = row.as_dict()["account_number"]
-            if not isinstance(account_number, str) or not account_number.strip():
+            record = row.as_dict()
+            if any(
+                value is None or (isinstance(value, str) and not value.strip())
+                for value in (record[field] for field in self.contract.identity_fields)
+            ):
                 raise IncompletePersistenceIdentity(
-                    "Property persistence requires a non-empty account_number"
+                    f"{self.dataset.value} persistence requires a complete identity "
+                    f"({', '.join(self.contract.identity_fields)})"
                 )
             self.candidates += 1
             yield row
@@ -147,18 +185,27 @@ class _PropertyRows:
     def require_safe_replacement(self, mode: PersistenceWriteMode) -> None:
         if mode is PersistenceWriteMode.REPLACE and self.candidates == 0:
             raise UnsafeReplacementError(
-                dataset=PersistenceDataset.PROPERTY,
+                dataset=self.dataset,
                 invalid=self.invalid,
                 skipped=self.skipped,
             )
 
 
-class PropertyPersistenceAdapter(Protocol):
-    """The internal adapter seam for writing validated Property rows."""
+class HarrisPersistenceAdapter(Protocol):
+    """The internal adapter seam for writing validated translated rows."""
 
     def persist_property(
         self,
-        rows: _PropertyRows,
+        rows: _ValidatedRows,
+        *,
+        write_mode: PersistenceWriteMode,
+        metadata: _PersistenceMetadata,
+    ) -> int:
+        """Write the rows and return the number inserted."""
+
+    def persist_building(
+        self,
+        rows: _ValidatedRows,
         *,
         write_mode: PersistenceWriteMode,
         metadata: _PersistenceMetadata,
@@ -167,7 +214,7 @@ class PropertyPersistenceAdapter(Protocol):
 
 
 class OrmPersistenceAdapter:
-    """Django ORM persistence adapter for translated Property rows."""
+    """Django ORM persistence adapter for translated Harris rows."""
 
     def __init__(
         self,
@@ -180,15 +227,15 @@ class OrmPersistenceAdapter:
         self._batch_size = batch_size
         self._database_alias = database_alias
 
-    def persist_property(
+    def _persist_rows(
         self,
-        rows: _PropertyRows,
+        rows: _ValidatedRows,
         *,
         write_mode: PersistenceWriteMode,
         metadata: _PersistenceMetadata,
+        model_class: type[Model],
+        build_model: Callable[[dict[str, RowValue]], Model],
     ) -> int:
-        from ..models import PropertyRecord
-
         loaded = 0
         pending: list[RowResult] = []
 
@@ -198,50 +245,47 @@ class OrmPersistenceAdapter:
                 return
 
             unique_pending: list[RowResult] = []
-            batch_account_numbers: set[str] = set()
+            batch_keys: set[tuple[RowValue, ...]] = set()
             for row in pending:
-                account_number = row.as_dict()["account_number"]
-                assert isinstance(account_number, str)
-                if account_number in batch_account_numbers:
+                record = row.as_dict()
+                key = tuple(record[field] for field in rows.contract.identity_fields)
+                if key in batch_keys:
                     rows.skipped += 1
                     continue
-                batch_account_numbers.add(account_number)
+                batch_keys.add(key)
                 unique_pending.append(row)
 
-            existing = set(
-                PropertyRecord.objects.using(self._database_alias)
-                .filter(account_number__in=batch_account_numbers)
-                .values_list("account_number", flat=True)
+            existing = self._existing_keys(
+                model_class,
+                rows.contract.identity_fields,
+                batch_keys,
             )
-            models = []
-            inserted_account_numbers: list[str] = []
+            models: list[Model] = []
             for row in unique_pending:
                 record = row.as_dict()
-                account_number = record["account_number"]
-                assert isinstance(account_number, str)
-                if account_number in existing:
+                key = tuple(record[field] for field in rows.contract.identity_fields)
+                if key in existing:
                     rows.skipped += 1
                     continue
-                models.append(PropertyRecord(**record))
-                inserted_account_numbers.append(account_number)
+                models.append(build_model(record))
 
             if models:
-                PropertyRecord.objects.using(self._database_alias).bulk_create(
+                model_class.objects.using(self._database_alias).bulk_create(
                     models,
                     batch_size=self._batch_size,
                 )
-                PropertyRecord.objects.using(self._database_alias).filter(
-                    account_number__in=inserted_account_numbers
-                ).update(
-                    created_at=metadata.timestamp,
-                    updated_at=metadata.timestamp,
-                )
+                inserted_primary_keys = [model.pk for model in models if model.pk is not None]
+                if len(inserted_primary_keys) != len(models):
+                    raise RuntimeError("ORM persistence did not return inserted primary keys")
+                model_class.objects.using(self._database_alias).filter(
+                    pk__in=inserted_primary_keys
+                ).update(created_at=metadata.timestamp, updated_at=metadata.timestamp)
                 loaded += len(models)
             pending.clear()
 
         with transaction.atomic(using=self._database_alias):
             if write_mode is PersistenceWriteMode.REPLACE:
-                PropertyRecord.objects.using(self._database_alias).all().delete()
+                model_class.objects.using(self._database_alias).all().delete()
 
             for row in rows:
                 pending.append(row)
@@ -252,9 +296,71 @@ class OrmPersistenceAdapter:
 
         return loaded
 
+    def _existing_keys(
+        self,
+        model_class: type[Model],
+        key_fields: tuple[str, ...],
+        candidate_keys: set[tuple[RowValue, ...]],
+    ) -> set[tuple[RowValue, ...]]:
+        if not candidate_keys:
+            return set()
+        if len(key_fields) == 1:
+            values = {key[0] for key in candidate_keys}
+            return {
+                (value,)
+                for value in model_class.objects.using(self._database_alias)
+                .filter(**{f"{key_fields[0]}__in": values})
+                .values_list(key_fields[0], flat=True)
+            }
+
+        account_numbers = {key[0] for key in candidate_keys}
+        return set(
+            model_class.objects.using(self._database_alias)
+            .filter(account_number__in=account_numbers)
+            .values_list(*key_fields)
+        )
+
+    def persist_property(
+        self,
+        rows: _ValidatedRows,
+        *,
+        write_mode: PersistenceWriteMode,
+        metadata: _PersistenceMetadata,
+    ) -> int:
+        from ..models import PropertyRecord
+
+        return self._persist_rows(
+            rows,
+            write_mode=write_mode,
+            metadata=metadata,
+            model_class=PropertyRecord,
+            build_model=lambda record: PropertyRecord(**record),
+        )
+
+    def persist_building(
+        self,
+        rows: _ValidatedRows,
+        *,
+        write_mode: PersistenceWriteMode,
+        metadata: _PersistenceMetadata,
+    ) -> int:
+        from ..models import BuildingDetail
+
+        return self._persist_rows(
+            rows,
+            write_mode=write_mode,
+            metadata=metadata,
+            model_class=BuildingDetail,
+            build_model=lambda record: BuildingDetail(
+                **record,
+                import_date=metadata.timestamp,
+                import_batch_id=metadata.batch_id,
+            ),
+        )
+
 
 class CopyPersistenceAdapter:
-    """PostgreSQL COPY persistence adapter for translated Property rows."""
+    """PostgreSQL COPY persistence adapter for translated Harris rows."""
 
     _COPY_NULL = r"\N"
 
@@ -272,25 +378,29 @@ class CopyPersistenceAdapter:
             .replace("\r", "\\r")
         )
 
-    def persist_property(
+    def _persist_rows(
         self,
-        rows: _PropertyRows,
+        rows: _ValidatedRows,
         *,
         write_mode: PersistenceWriteMode,
         metadata: _PersistenceMetadata,
+        model_class: type[Model],
     ) -> int:
-        from ..models import PropertyRecord
-
-        columns = (*PROPERTY_FIELD_ORDER, "created_at", "updated_at")
+        columns = (*rows.contract.field_order, *rows.contract.metadata_fields)
         quoted_columns = ", ".join(connection.ops.quote_name(column) for column in columns)
-        table = connection.ops.quote_name(PropertyRecord._meta.db_table)
-        staging_table = connection.ops.quote_name("harris_property_persistence_stage")
+        table = connection.ops.quote_name(model_class._meta.db_table)
+        staging_table = connection.ops.quote_name(rows.contract.staging_table)
         timestamp = metadata.timestamp.isoformat()
+        metadata_values: tuple[str, ...]
+        if rows.dataset is PersistenceDataset.PROPERTY:
+            metadata_values = (timestamp, timestamp)
+        else:
+            metadata_values = (timestamp, metadata.batch_id, timestamp, timestamp)
 
         def copy_lines() -> Iterator[str]:
             for row in rows:
                 yield "\t".join(
-                    self._copy_value(value) for value in (*row.values, timestamp, timestamp)
+                    self._copy_value(value) for value in (*row.values, *metadata_values)
                 ) + "\n"
 
         with transaction.atomic(), connection.cursor() as cursor:
@@ -314,44 +424,84 @@ class CopyPersistenceAdapter:
         rows.skipped += rows.candidates - loaded
         return loaded
 
+    def persist_property(
+        self,
+        rows: _ValidatedRows,
+        *,
+        write_mode: PersistenceWriteMode,
+        metadata: _PersistenceMetadata,
+    ) -> int:
+        from ..models import PropertyRecord
+
+        return self._persist_rows(
+            rows,
+            write_mode=write_mode,
+            metadata=metadata,
+            model_class=PropertyRecord,
+        )
+
+    def persist_building(
+        self,
+        rows: _ValidatedRows,
+        *,
+        write_mode: PersistenceWriteMode,
+        metadata: _PersistenceMetadata,
+    ) -> int:
+        from ..models import BuildingDetail
+
+        return self._persist_rows(
+            rows,
+            write_mode=write_mode,
+            metadata=metadata,
+            model_class=BuildingDetail,
+        )
+
 
 class HarrisPersistence:
     """Persist translated Harris rows through one small, testable interface."""
 
-    def __init__(self, adapter: PropertyPersistenceAdapter) -> None:
+    def __init__(self, adapter: HarrisPersistenceAdapter) -> None:
         self._adapter = adapter
 
     def persist(self, request: PersistenceRequest) -> PersistenceResult:
         """Persist one logical dataset, propagating operational database failures."""
-        if request.dataset is not PersistenceDataset.PROPERTY:
-            raise InvalidPersistenceRequest(
-                f"{request.dataset.value} persistence is not available in this implementation slice"
-            )
-
-        rows = _PropertyRows(request.rows)
+        rows = _ValidatedRows(request.dataset, request.rows)
         metadata = _PersistenceMetadata(timestamp=timezone.now(), batch_id=uuid4().hex)
         try:
-            loaded = self._adapter.persist_property(
-                rows,
-                write_mode=request.write_mode,
-                metadata=metadata,
-            )
+            if request.dataset is PersistenceDataset.PROPERTY:
+                loaded = self._adapter.persist_property(
+                    rows,
+                    write_mode=request.write_mode,
+                    metadata=metadata,
+                )
+            else:
+                loaded = self._adapter.persist_building(
+                    rows,
+                    write_mode=request.write_mode,
+                    metadata=metadata,
+                )
         except PersistenceError as exc:
             logger.warning(
-                "Harris Property persistence rejected for write mode %s: %s",
+                "Harris %s persistence rejected for write mode %s: %s",
+                request.dataset.value,
                 request.write_mode.value,
                 exc,
             )
             raise
         except Exception:
             logger.exception(
-                "Harris Property persistence failed for write mode %s", request.write_mode.value
+                "Harris %s persistence failed for write mode %s",
+                request.dataset.value,
+                request.write_mode.value,
             )
             raise
 
         invalidated = (
             frozenset({PersistenceDataset.BUILDING, PersistenceDataset.EXTRA_FEATURE})
-            if request.write_mode is PersistenceWriteMode.REPLACE
+            if (
+                request.dataset is PersistenceDataset.PROPERTY
+                and request.write_mode is PersistenceWriteMode.REPLACE
+            )
             else frozenset()
         )
         result = PersistenceResult(
@@ -364,7 +514,8 @@ class HarrisPersistence:
             invalidated_datasets=invalidated,
         )
         logger.info(
-            "Persisted Harris Property rows: loaded=%s invalid=%s skipped=%s mode=%s batch=%s",
+            "Persisted Harris %s rows: loaded=%s invalid=%s skipped=%s mode=%s batch=%s",
+            request.dataset.value,
             result.loaded,
             result.invalid,
             result.skipped,
@@ -376,7 +527,7 @@ class HarrisPersistence:
 
 def persistence_for_connection(*, orm_batch_size: int = 5_000) -> HarrisPersistence:
     """Return the production persistence module for the active database backend."""
-    adapter: PropertyPersistenceAdapter
+    adapter: HarrisPersistenceAdapter
     if connection.vendor == "postgresql":
         adapter = CopyPersistenceAdapter()
     else:

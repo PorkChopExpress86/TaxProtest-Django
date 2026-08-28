@@ -732,7 +732,7 @@ class _HarrisImportExecution:
             return counts
 
         rows = self._iter_translated_rows(schema_name, file_path)
-        if schema_name == "real_acct":
+        if schema_name in {"real_acct", "building_res"}:
             from .persistence import (
                 PersistenceDataset,
                 PersistenceRequest,
@@ -742,7 +742,11 @@ class _HarrisImportExecution:
 
             persisted = persistence_for_connection().persist(
                 PersistenceRequest(
-                    dataset=PersistenceDataset.PROPERTY,
+                    dataset=(
+                        PersistenceDataset.PROPERTY
+                        if schema_name == "real_acct"
+                        else PersistenceDataset.BUILDING
+                    ),
                     rows=rows,
                     write_mode=(
                         PersistenceWriteMode.REPLACE
@@ -751,9 +755,10 @@ class _HarrisImportExecution:
                     ),
                 )
             )
-            # PropertyRecord ids changed; rebuild the account caches that the
-            # building/extra-feature translators depend on.
-            self.model_loader.reset_cache()
+            if schema_name == "real_acct":
+                # PropertyRecord ids changed; rebuild the account caches that the
+                # building/extra-feature translators depend on.
+                self.model_loader.reset_cache()
             return {
                 "loaded": persisted.loaded,
                 "invalid": persisted.invalid,
@@ -761,23 +766,7 @@ class _HarrisImportExecution:
                 "failed": 0,
             }
 
-        from .fast_loader import (
-            copy_load_building_rows,
-            postgres_backend,
-        )
-
-        if postgres_backend() and schema_name == "building_res":
-            fast = copy_load_building_rows(rows, truncate=truncate)
-            return {
-                "loaded": fast["loaded"],
-                "invalid": fast["invalid"],
-                "skipped": fast["skipped"],
-                "failed": 0,
-            }
-
-        if schema_name == "building_res":
-            result = self.model_loader.load_building_details(rows, truncate=truncate)
-        elif schema_name == "extra_features":
+        if schema_name == "extra_features":
             result = self.model_loader.load_extra_features(rows, truncate=truncate)
         else:
             return {"loaded": 0, "invalid": 0, "skipped": 0, "failed": 0}

@@ -23,7 +23,7 @@ from counties.harris.etl_pipeline import (
     run_harris_import,
 )
 from counties.harris.etl_pipeline.import_plan import HarrisImportPlan
-from counties.harris.models import PropertyRecord
+from counties.harris.models import BuildingDetail, PropertyRecord
 
 
 def _runtime_settings(root: str) -> dict[str, str]:
@@ -54,6 +54,25 @@ def _write_property_source(
         encoding="latin-1",
     )
     return source
+
+
+def _write_building_sources(root: str, account: str) -> Path:
+    source_dir = Path(root) / "extracted" / "Real_building_land"
+    source_dir.mkdir(parents=True, exist_ok=True)
+    building_source = source_dir / "building_res.txt"
+    building_source.write_text(
+        "acct\tbld_num\timprv_type\theat_ar\n" f"{account}\t1\tA1\t1800\n",
+        encoding="latin-1",
+    )
+    (source_dir / "fixtures.txt").write_text(
+        "acct\tbld_num\ttype\tunits\n",
+        encoding="utf-8",
+    )
+    (source_dir / "extra_features.txt").write_text(
+        "acct\tbld_num\tcd\n",
+        encoding="latin-1",
+    )
+    return building_source
 
 
 class HarrisImportRequestTests(TestCase):
@@ -143,6 +162,30 @@ class HarrisImportBoundaryTests(TestCase):
             self.assertTrue(PropertyRecord.objects.filter(account_number="P200").exists())
             refresh.assert_called_once_with()
             self.assertTrue(source.exists())
+
+    def test_property_and_building_apply_uses_the_rebuilt_property_account_map(self):
+        with tempfile.TemporaryDirectory() as root, override_settings(**_runtime_settings(root)):
+            _write_property_source(root, account="P225")
+            _write_building_sources(root, account="P225")
+
+            result = run_harris_import(
+                HarrisImportRequest(
+                    plan=HarrisImportPlan.from_legacy_scope("property-and-building"),
+                    acquisition=HarrisAcquisitionMode.REUSE_DOWNLOADED,
+                    extraction=HarrisExtractionMode.REUSE_EXTRACTED,
+                    load=HarrisApply(
+                        refresh_readiness=False,
+                        validate_completeness=False,
+                        extracted_source_retention=ExtractedSourceRetention.RETAIN,
+                    ),
+                )
+            )
+
+        property_record = PropertyRecord.objects.get(account_number="P225")
+        building = BuildingDetail.objects.get(account_number="P225", building_number=1)
+        self.assertIs(result.status, HarrisImportStatus.COMPLETED)
+        self.assertEqual(result.stages[HarrisImportPhase.LOAD].metrics["records_loaded"], 2)
+        self.assertEqual(building.property_id, property_record.id)
 
     def test_strict_missing_required_extract_returns_failed_result(self):
         with tempfile.TemporaryDirectory() as root, override_settings(**_runtime_settings(root)):
