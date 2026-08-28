@@ -26,7 +26,7 @@ from django.test import TestCase
 
 from counties.brazos.annual_refresh import RefreshOptions
 from counties.brazos.gis_refresh import GisRefreshStage
-from counties.brazos.models import PropertyAccount
+from counties.brazos.models import BrazosPropertySnapshot, PropertyAccount, SnapshotOutcome
 
 # Real page structure (see docs/research/brazos-gis-parcel-shapefile.md):
 # certified-year links, a non-year-labeled monthly variant, and unrelated
@@ -336,6 +336,14 @@ class OfflineRerunTests(TestCase):
             BCAD_EXTRACT_DIR=str(self.extract_root),
         )
 
+    @staticmethod
+    def _activate_partial_snapshot(year: int) -> None:
+        BrazosPropertySnapshot.objects.create(
+            tax_year=year,
+            outcome=SnapshotOutcome.PARTIAL,
+            cad_source_year=year,
+        )
+
     def _stage_archive(self, year: int) -> None:
         (self.download_dir / f"bcad_gis_{year}.zip").write_bytes(b"not-really-a-zip")
 
@@ -345,6 +353,7 @@ class OfflineRerunTests(TestCase):
         write_fixture_shapefile(target / "parcels.shp")
 
     def test_resolves_year_from_the_extracted_directory(self):
+        self._activate_partial_snapshot(2025)
         PropertyAccount.objects.create(prop_id="000000010013", tax_year=2025)
         self._stage_archive(2025)
         self._stage_extracted_shapefile(2025)
@@ -357,6 +366,7 @@ class OfflineRerunTests(TestCase):
         self.assertIsNotNone(row.latitude)
 
     def test_resolves_year_from_the_downloaded_archive_name(self):
+        self._activate_partial_snapshot(2025)
         self._stage_archive(2025)
 
         with self._settings(), self.assertRaises(CommandError) as ctx:
@@ -368,6 +378,7 @@ class OfflineRerunTests(TestCase):
         self.assertIn("gis/2025", str(ctx.exception))
 
     def test_picks_the_newest_year_present_on_disk(self):
+        self._activate_partial_snapshot(2026)
         PropertyAccount.objects.create(prop_id="000000010013", tax_year=2026)
         for year in (2024, 2025, 2026):
             self._stage_archive(year)
@@ -382,6 +393,7 @@ class OfflineRerunTests(TestCase):
         )
 
     def test_explicit_year_still_wins_over_what_is_on_disk(self):
+        self._activate_partial_snapshot(2024)
         self._stage_archive(2024)
         self._stage_archive(2025)
 
@@ -408,6 +420,7 @@ class OfflineRerunTests(TestCase):
 
     def test_extracted_parcels_are_enough_without_the_downloaded_zip(self):
         """Keeping the 100MB archive around is not a precondition for a reload."""
+        self._activate_partial_snapshot(2025)
         PropertyAccount.objects.create(prop_id="000000010013", tax_year=2025)
         self._stage_extracted_shapefile(2025)  # no _stage_archive
 
@@ -417,6 +430,7 @@ class OfflineRerunTests(TestCase):
         self.assertIsNotNone(PropertyAccount.objects.get(prop_id="000000010013").latitude)
 
     def test_error_names_the_real_path_when_nothing_is_on_disk(self):
+        self._activate_partial_snapshot(2025)
         with self._settings(), self.assertRaises(CommandError) as ctx:
             call_command("load_brazos_gis", "--skip-download")
 

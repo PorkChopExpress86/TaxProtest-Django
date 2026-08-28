@@ -89,6 +89,8 @@ PROPERTY_FIELDS_UPDATED = (
     "living_area",
     "year_built",
     "class_code",
+    "coordinate_source",
+    "coordinate_source_year",
 )
 
 
@@ -209,7 +211,14 @@ class GisRefreshStage:
 
     # ------------------------------------------------------------------ load
 
-    def _load(self, shapefile_path: Path, tax_year: int, *, dry_run: bool) -> dict[str, int]:
+    def _load(
+        self,
+        shapefile_path: Path,
+        tax_year: int,
+        *,
+        dry_run: bool,
+        source_year: int | None = None,
+    ) -> dict[str, int]:
         import geopandas as gpd
 
         if dry_run:
@@ -270,7 +279,7 @@ class GisRefreshStage:
                 getattr(row, "yr_blt", None)
             )
 
-            updates[prop_id] = {
+            fields = {
                 "situs_address": situs_address,
                 # No situs_city/situs_zip: the shapefile has no genuine situs
                 # city/zip field, only situs_num/stre/st_1/st_2/unit (street
@@ -289,6 +298,10 @@ class GisRefreshStage:
                 "year_built": yr_built,
                 "class_code": _clean_str(getattr(row, "class_cd", None)),
             }
+            if source_year is not None:
+                fields["coordinate_source"] = "bcad-certified-gis"
+                fields["coordinate_source_year"] = source_year
+            updates[prop_id] = fields
 
         if not updates:
             logger.warning("No usable PROP_ID rows found in %s", shapefile_path)
@@ -459,6 +472,7 @@ class GisRefreshStage:
             payload.shapefile_path,
             preparation.target_year,
             dry_run=False,
+            source_year=preparation.source_year,
         )
         self.stdout.write(
             self.style.SUCCESS(

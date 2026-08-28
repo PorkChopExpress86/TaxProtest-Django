@@ -3,7 +3,11 @@
 from django.core.management.base import BaseCommand
 
 from counties.brazos.annual_refresh import RefreshOptions
-from counties.brazos.gis_refresh import GisRefreshStage
+from counties.brazos.property_import import (
+    PropertyImportMode,
+    PropertyImportRequest,
+    build_default_property_import,
+)
 
 
 class Command(BaseCommand):
@@ -43,13 +47,29 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        GisRefreshStage(self).run(
-            RefreshOptions(
-                tax_year=options.get("year"),
-                force=options["force"],
-                skip_download=options["skip_download"],
-                skip_extract=options["skip_extract"],
-                dry_run=options["dry_run"],
-                keep_extracted=options["keep_extracted"],
+        result = build_default_property_import(self).run(
+            PropertyImportRequest(
+                mode=PropertyImportMode.GIS_RECOVERY,
+                options=RefreshOptions(
+                    tax_year=options.get("year"),
+                    force=options["force"],
+                    skip_download=options["skip_download"],
+                    skip_extract=options["skip_extract"],
+                    dry_run=options["dry_run"],
+                    keep_extracted=options["keep_extracted"],
+                ),
+            )
+        )
+        if result.dry_run:
+            self.stdout.write(
+                self.style.SUCCESS(
+                    f"[dry-run] Brazos GIS recovery validated for tax_year={result.tax_year}."
+                )
+            )
+            return
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"Brazos GIS recovery completed the property snapshot for "
+                f"tax_year={result.tax_year}."
             )
         )

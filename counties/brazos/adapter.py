@@ -13,7 +13,7 @@ from collections.abc import Mapping, Sequence
 from decimal import Decimal
 from typing import Any
 
-from django.db.models import Max, Sum
+from django.db.models import Sum
 from django.urls import reverse
 
 from counties.brazos.models import (
@@ -21,9 +21,9 @@ from counties.brazos.models import (
     PropertyExtraFeature,
     PropertyLand,
 )
+from counties.brazos.readiness import BrazosActiveSnapshotReadiness
 from counties.brazos.similarity import (
     _primary_improvement,
-    find_similar_properties,
     get_similarity_label,
 )
 from counties.common.contracts import (
@@ -36,8 +36,7 @@ from counties.common.contracts import (
     SearchField,
     Subject,
 )
-from counties.common.history import assessment_history_rows
-from counties.common.tax_impact import calculate_tax_impact
+from counties.common.tax_impact import TaxImpactResult, calculate_tax_impact
 
 COUNTY_SLUG = "brazos"
 
@@ -114,18 +113,17 @@ def _format_feature_list(features: Sequence[PropertyExtraFeature], max_features:
 class BrazosAdapter(CountyAdapter):
     profile = BRAZOS_PROFILE
 
+    def __init__(self):
+        self._readiness = BrazosActiveSnapshotReadiness()
+
     # -- search ------------------------------------------------------------
 
     def active_year(self) -> int | None:
-        """Only one tax year is loaded at a time — load_brazos_cad replaces the prior year."""
-        return PropertyAccount.objects.aggregate(Max("tax_year"))["tax_year__max"]
+        snapshot = self._readiness.active_snapshot()
+        return snapshot.tax_year if snapshot else None
 
     def search_queryset(self, params: Mapping[str, str]):
-        year = self.active_year()
-        if not year:
-            return PropertyAccount.objects.none()
-
-        qs = PropertyAccount.objects.filter(tax_year=year)
+        qs = self._readiness.search_queryset()
         if params.get("owner_name"):
             qs = qs.filter(owner_name__icontains=params["owner_name"])
         if params.get("address"):
@@ -159,7 +157,8 @@ class BrazosAdapter(CountyAdapter):
         rows = []
         for account in records:
             land = land_by_prop.get(account.prop_id, {})
-            has_location = bool(account.latitude and account.longitude)
+            readiness = self._readiness.project_static(account.prop_id)
+            has_location = bool(readiness and readiness.comparable_ready)
             rows.append(
                 {
                     "prop_id": account.prop_id,
@@ -186,9 +185,11 @@ class BrazosAdapter(CountyAdapter):
     # -- subject and comparables -------------------------------------------
 
     def get_subject(self, key: str) -> Subject | None:
-        account = PropertyAccount.objects.filter(prop_id=key).order_by("-tax_year").first()
+        account = self._readiness.account(key)
         if account is None:
             return None
+
+        readiness = self._readiness.project_static(key)
 
         year = account.tax_year
         improvement, building = _primary_improvement(key, year)
@@ -217,7 +218,7 @@ class BrazosAdapter(CountyAdapter):
             bathrooms=building.bathrooms if building else None,
             year_built=year_built,
             features=_format_feature_list(features),
-            has_location=bool(account.latitude and account.longitude),
+            has_location=bool(readiness and readiness.comparable_ready),
             tax_year=year,
             detail_rows=detail_rows,
         )
@@ -225,7 +226,7 @@ class BrazosAdapter(CountyAdapter):
     def find_comps(
         self, key: str, *, max_distance_miles: float, max_results: int, min_score: float
     ) -> list[Comp]:
-        results = find_similar_properties(
+        results = self._readiness.comparable_results(
             key,
             max_distance_miles=max_distance_miles,
             max_results=max_results,
@@ -263,18 +264,45 @@ class BrazosAdapter(CountyAdapter):
     # -- enrichment ---------------------------------------------------------
 
     def assessment_history(self, key: str, limit: int = 5) -> list[dict[str, Any]]:
-        # No Brazos rows exist in the shared AssessmentHistory table yet; this
-        # returns [] today and picks up real data automatically once an ingest
-        # populates it, with no code change here.
-        return assessment_history_rows(key, county=COUNTY_SLUG, limit=limit)
+        return self._readiness.history_view(key)[:limit]
 
     def tax_impact(self, key: str, tax_year: int | None, median_assessed_value: Decimal | None):
+        readiness = self._readiness.project(key)
+        if readiness is None or not readiness.tax_impact_ready:
+            reason = (
+                readiness.reason_for("tax")
+                if readiness is not None
+                else "No active Brazos property snapshot is available."
+            )
+            return TaxImpactResult(
+                tax_year=readiness.tax_year if readiness else None,
+                current_tax_owed=Decimal("0"),
+                median_tax_owed=Decimal("0"),
+                estimated_savings=Decimal("0"),
+                effective_rate=Decimal("0"),
+                current_assessed_value=None,
+                taxable_value_used=None,
+                completeness="missing",
+                warnings=[reason or "Tax impact is unavailable."],
+                exemptions_summary=[],
+                per_unit_breakdown=[],
+            )
         return calculate_tax_impact(
             account_number=key,
-            tax_year=tax_year,
+            tax_year=readiness.tax_year,
             median_assessed_value=median_assessed_value,
             county=COUNTY_SLUG,
         )
+
+    def unavailable_reason(self, key: str, capability: str) -> str | None:
+        readiness = self._readiness.project(key)
+        if readiness is None:
+            return "No active detailed Brazos property record is available for this property."
+        if capability == "comparable" and not readiness.comparable_ready:
+            return readiness.reason_for("comparable")
+        if capability == "report" and not readiness.report_ready:
+            return readiness.reason_for("report")
+        return None
 
 
 adapter = BrazosAdapter()

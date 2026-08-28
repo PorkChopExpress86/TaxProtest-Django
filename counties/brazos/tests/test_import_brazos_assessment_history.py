@@ -21,7 +21,11 @@ from counties.brazos.management.commands.import_brazos_assessment_history import
     Command,
     YearRollup,
 )
-from counties.brazos.models import PropertyAccount
+from counties.brazos.models import (
+    BrazosHistoricalCoverage,
+    HistoricalCoverageStatus,
+    PropertyAccount,
+)
 from counties.common.tax_models import AssessmentHistory
 
 
@@ -509,19 +513,88 @@ class ImportCommandTests(TestCase):
 
         self.assertFalse(AssessmentHistory.objects.filter(county="brazos").exists())
 
-    def test_missing_staged_archive_raises_a_clear_error(self):
+    def test_missing_staged_archive_is_recorded_as_unavailable_coverage(self):
         with self._settings():
-            with self.assertRaises(CommandError) as ctx:
-                call_command(
-                    "import_brazos_assessment_history",
-                    "--start-year",
-                    "2025",
-                    "--end-year",
-                    "2025",
-                    "--skip-download",
-                    "--skip-extract",
+            call_command(
+                "import_brazos_assessment_history",
+                "--start-year",
+                "2025",
+                "--end-year",
+                "2025",
+                "--skip-download",
+                "--skip-extract",
+            )
+        coverage = BrazosHistoricalCoverage.objects.get(tax_year=2025)
+        self.assertEqual(coverage.status, HistoricalCoverageStatus.UNAVAILABLE)
+        self.assertEqual(coverage.failure_category, "source_unavailable")
+
+    def test_extract_failure_is_recorded_without_blocking_a_qualified_year(self):
+        self._stage_year(
+            2024,
+            [
+                _entity_info_line(
+                    "000000010013",
+                    "02024",
+                    "G1",
+                    assessed_raw="000000000220000",
+                    market_raw="000000000650000",
+                    appraised_raw="000000000220000",
                 )
-        self.assertIn("archive not found", str(ctx.exception))
+            ],
+        )
+        self._stage_year(2025, [REAL_2025_ROW])
+
+        def fail_only_2024(command, archive, extract_dir, *, dry_run):
+            if "2024" in str(archive):
+                raise CommandError("broken archive")
+            return None
+
+        with (
+            self._settings(),
+            patch.object(Command, "_extract", new=fail_only_2024),
+        ):
+            call_command(
+                "import_brazos_assessment_history",
+                "--start-year",
+                "2024",
+                "--end-year",
+                "2025",
+                "--skip-download",
+            )
+
+        unavailable = BrazosHistoricalCoverage.objects.get(tax_year=2024)
+        self.assertEqual(unavailable.status, HistoricalCoverageStatus.UNAVAILABLE)
+        self.assertEqual(unavailable.failure_category, "source_extract_failed")
+        self.assertTrue(AssessmentHistory.objects.filter(tax_year=2025, county="brazos").exists())
+
+    def test_unreadable_entity_file_is_recorded_without_blocking_a_qualified_year(self):
+        self._stage_year(2024, [REAL_2025_ROW.replace("02025", "02024", 1)])
+        self._stage_year(2025, [REAL_2025_ROW])
+
+        original_roll_up_year = Command._roll_up_year
+
+        def fail_only_2024(command, entity_info_path, tax_year, accounts):
+            if tax_year == 2024:
+                raise OSError("permission denied")
+            return original_roll_up_year(command, entity_info_path, tax_year, accounts)
+
+        with (
+            self._settings(),
+            patch.object(Command, "_roll_up_year", new=fail_only_2024),
+        ):
+            call_command(
+                "import_brazos_assessment_history",
+                "--start-year",
+                "2024",
+                "--end-year",
+                "2025",
+                "--skip-download",
+                "--skip-extract",
+            )
+
+        unavailable = BrazosHistoricalCoverage.objects.get(tax_year=2024)
+        self.assertEqual(unavailable.failure_category, "entity_info_read_failed")
+        self.assertTrue(AssessmentHistory.objects.filter(tax_year=2025, county="brazos").exists())
 
     def test_skip_download_without_end_year_raises(self):
         with self._settings():
@@ -546,7 +619,7 @@ class ImportCommandTests(TestCase):
                     "--skip-extract",
                 )
 
-    def test_bad_layout_year_aborts_without_writing(self):
+    def test_bad_layout_year_is_recorded_without_blocking_other_history_years(self):
         """A year whose market/appraised/assessed values violate the expected
         order must not be silently written -- it's the signal that the
         field layout drifted for that year (see ENTITY_INFO_LAYOUT's
@@ -567,20 +640,21 @@ class ImportCommandTests(TestCase):
         )
 
         with self._settings():
-            with self.assertRaises(CommandError) as ctx:
-                call_command(
-                    "import_brazos_assessment_history",
-                    "--start-year",
-                    "2025",
-                    "--end-year",
-                    "2025",
-                    "--skip-download",
-                    "--skip-extract",
-                    "--all-accounts",
-                )
+            call_command(
+                "import_brazos_assessment_history",
+                "--start-year",
+                "2025",
+                "--end-year",
+                "2025",
+                "--skip-download",
+                "--skip-extract",
+                "--all-accounts",
+            )
 
-        self.assertIn("market >= appraised >= assessed", str(ctx.exception))
         self.assertFalse(AssessmentHistory.objects.filter(county="brazos").exists())
+        coverage = BrazosHistoricalCoverage.objects.get(tax_year=2025)
+        self.assertEqual(coverage.status, HistoricalCoverageStatus.UNAVAILABLE)
+        self.assertEqual(coverage.failure_category, "entity_info_preflight_failed")
 
 
 class EvaluateCapStatusIntegrationTests(TestCase):

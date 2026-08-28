@@ -50,6 +50,115 @@ from django.db import models
 from django.db.models.functions import Now
 
 
+class SnapshotOutcome(models.TextChoices):
+    """A successfully published detailed Brazos snapshot's source coverage."""
+
+    COMPLETED = "completed", "Completed"
+    PARTIAL = "partial", "Partial"
+
+
+class BrazosPropertySnapshot(models.Model):
+    """One immutable publication of detailed Brazos property data.
+
+    A snapshot records the verified source years that produced it.  Only one
+    row is active at a time; publication switches that row in the same
+    transaction as its property-stage writes.
+    """
+
+    tax_year = models.PositiveIntegerField(db_index=True)
+    outcome = models.CharField(max_length=16, choices=SnapshotOutcome.choices)
+    cad_source_year = models.PositiveIntegerField()
+    gis_source_year = models.PositiveIntegerField(null=True, blank=True)
+    is_active = models.BooleanField(default=True, db_index=True)
+    published_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["is_active"],
+                condition=models.Q(is_active=True),
+                name="brazoscad_one_active_snapshot",
+            ),
+        ]
+        indexes = [models.Index(fields=["tax_year", "is_active"])]
+        verbose_name = "BCAD Property Snapshot"
+        verbose_name_plural = "BCAD Property Snapshots"
+
+    def __str__(self) -> str:
+        return f"Brazos snapshot {self.tax_year} ({self.outcome})"
+
+
+class CoordinateEnrichmentOutcome(models.TextChoices):
+    """The durable result of one guarded coordinate-enrichment analysis."""
+
+    ANALYZED = "analyzed", "Analyzed"
+    APPLIED = "applied", "Applied"
+    NOOP = "noop", "No-op"
+    REJECTED = "rejected", "Rejected"
+
+
+class CoordinateCleanupState(models.TextChoices):
+    """Whether post-success coordinate source cleanup completed."""
+
+    RETAINED = "retained", "Retained"
+    CLEANED = "cleaned", "Cleaned"
+    FAILED = "cleanup_failed", "Cleanup failed"
+
+
+class CoordinateEnrichmentAudit(models.Model):
+    """Safe, append-only evidence for one coordinate-enrichment analysis."""
+
+    snapshot = models.ForeignKey(
+        BrazosPropertySnapshot,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="coordinate_enrichment_audits",
+    )
+    source_year = models.PositiveIntegerField()
+    target_year = models.PositiveIntegerField(db_index=True)
+    outcome = models.CharField(max_length=16, choices=CoordinateEnrichmentOutcome.choices)
+    minimum_match_rate = models.DecimalField(max_digits=6, decimal_places=5, null=True, blank=True)
+    evidence = models.JSONField(default=dict)
+    updated_count = models.PositiveIntegerField(default=0)
+    reason = models.CharField(max_length=255, blank=True)
+    cleanup_state = models.CharField(
+        max_length=16,
+        choices=CoordinateCleanupState.choices,
+        default=CoordinateCleanupState.RETAINED,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["target_year", "created_at"])]
+        verbose_name = "BCAD Coordinate Enrichment Audit"
+        verbose_name_plural = "BCAD Coordinate Enrichment Audits"
+
+    def __str__(self) -> str:
+        return f"Brazos coordinate enrichment {self.target_year} ({self.outcome})"
+
+
+class HistoricalCoverageStatus(models.TextChoices):
+    AVAILABLE = "available", "Available"
+    UNAVAILABLE = "unavailable", "Unavailable"
+
+
+class BrazosHistoricalCoverage(models.Model):
+    """County-owned availability record for one certified history source year."""
+
+    tax_year = models.PositiveIntegerField(unique=True)
+    status = models.CharField(max_length=16, choices=HistoricalCoverageStatus.choices)
+    failure_category = models.CharField(max_length=64, blank=True)
+    recorded_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "BCAD Historical Coverage"
+        verbose_name_plural = "BCAD Historical Coverage"
+
+    def __str__(self) -> str:
+        return f"Brazos history {self.tax_year} ({self.status})"
+
+
 class PropertyAccount(models.Model):
     """Maps to BCAD APPRAISAL_INFO.TXT — one row per (account, tax_year)."""
 

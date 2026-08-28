@@ -20,7 +20,7 @@ from counties.brazos.annual_refresh import (
 )
 from counties.brazos.cad_refresh import CadRefreshStage
 from counties.brazos.gis_refresh import GisRefreshStage
-from counties.brazos.models import PropertyAccount
+from counties.brazos.models import BrazosPropertySnapshot, PropertyAccount, SnapshotOutcome
 from counties.brazos.stage_reporting import SilentStageReporter
 
 
@@ -208,6 +208,41 @@ class AnnualRefreshCommandTests(TestCase):
             + "\n",
             encoding="utf-8",
         )
+        files = {
+            "APPRAISAL_LAND_DETAIL.TXT": self._line(
+                184,
+                {
+                    (0, 12): "000000010013",
+                    (12, 16): "2025",
+                },
+            ),
+            "APPRAISAL_IMPROVEMENT_INFO.TXT": self._line(
+                49,
+                {
+                    (0, 12): "000000010013",
+                    (12, 16): "2025",
+                    (16, 28): "000000000001",
+                },
+            ),
+            "APPRAISAL_IMPROVEMENT_DETAIL.TXT": self._line(
+                622,
+                {
+                    (0, 12): "000000010013",
+                    (12, 16): "2025",
+                    (16, 28): "000000000001",
+                },
+            ),
+            "APPRAISAL_IMPROVEMENT_DETAIL_ATTR.TXT": self._line(
+                87,
+                {
+                    (0, 12): "000000010013",
+                    (12, 16): "2025",
+                    (16, 28): "000000000001",
+                },
+            ),
+        }
+        for filename, contents in files.items():
+            (extract_dir / filename).write_text(contents + "\n", encoding="utf-8")
 
     @staticmethod
     def _write_gis_source(shapefile_path: Path) -> None:
@@ -269,6 +304,12 @@ class AnnualRefreshCommandTests(TestCase):
             self.assertEqual(account.state_class, "E1")
             self.assertIsNotNone(account.latitude)
             self.assertIsNotNone(account.longitude)
+            self.assertEqual(account.coordinate_source_year, 2025)
+            snapshot = BrazosPropertySnapshot.objects.get(is_active=True)
+            self.assertEqual(snapshot.outcome, SnapshotOutcome.COMPLETED)
+            self.assertEqual(snapshot.tax_year, 2025)
+            self.assertEqual(snapshot.cad_source_year, 2025)
+            self.assertEqual(snapshot.gis_source_year, 2025)
             self.assertFalse(cad_extract.exists())
             self.assertFalse(gis_extract.exists())
 

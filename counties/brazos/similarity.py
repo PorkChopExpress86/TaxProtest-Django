@@ -491,6 +491,8 @@ def calculate_similarity_details(
 
 def find_similar_properties(
     prop_id: str,
+    *,
+    tax_year: int,
     max_distance_miles: float = 10.0,
     max_results: int = 50,
     min_score: float = 30.0,
@@ -501,11 +503,9 @@ def find_similar_properties(
     model coupling at all -- it's a pure lat/long query pattern, safe to
     replicate structurally against PropertyAccount instead of
     PropertyRecord)."""
-    target = PropertyAccount.objects.order_by("-tax_year").filter(prop_id=prop_id).first()
+    target = PropertyAccount.objects.filter(prop_id=prop_id, tax_year=tax_year).first()
     if not target or not target.latitude or not target.longitude:
         return []
-
-    tax_year = target.tax_year
     target_lat = float(target.latitude)
     target_lon = float(target.longitude)
 

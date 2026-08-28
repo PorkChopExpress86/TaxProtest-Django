@@ -38,6 +38,11 @@ YoY-change and homestead-cap columns the protest report needs.
         <td class="px-4 py-3 text-gray-900">{{ row.tax_year }}</td>
         <td class="px-4 py-3 text-gray-900">
           {% if row.assessed_value %}${{ row.assessed_value|floatformat:0|intcomma }}{% else %}&ndash;{% endif %}
+          {% if row.coverage_status == "unavailable" %}
+          <div class="text-[11px] text-amber-700 mt-0.5">Unavailable{% if row.coverage_reason %}: {{ row.coverage_reason }}{% endif %}</div>
+          {% elif row.coverage_status == "not_yet_assessed" %}
+          <div class="text-[11px] text-gray-500 mt-0.5">Not yet assessed</div>
+          {% endif %}
         </td>
         {% if show_cap_status %}
         <td class="px-4 py-3 text-gray-900">

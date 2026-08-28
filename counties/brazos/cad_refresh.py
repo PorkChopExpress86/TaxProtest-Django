@@ -41,7 +41,7 @@ from __future__ import annotations
 import logging
 import re
 import shutil
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -181,6 +181,44 @@ ALL_FILENAMES: tuple[str, ...] = tuple(spec.filename for spec in INGEST_SPECS) +
     IMPROVEMENT_DETAIL_FILENAME,
     ENTITY_INFO_FILENAME,
     IMPROVEMENT_DETAIL_ATTR_FILENAME,
+)
+
+
+@dataclass(frozen=True)
+class _PacsPreflightSpec:
+    """The minimum verified shape required for each certified PACS file."""
+
+    filename: str
+    parse_fn: Callable[[str], Mapping[str, object]]
+    minimum_length: int
+    required_keys: tuple[str, ...]
+
+
+# The export can contain a different total record width between years, so the
+# preflight checks the final column each loader actually reads rather than
+# enforcing a frozen whole-line width. Every file still needs one complete,
+# year-matched, keyed record before an import may replace active data.
+PACS_PREFLIGHT_SPECS: tuple[_PacsPreflightSpec, ...] = (
+    _PacsPreflightSpec("APPRAISAL_INFO.TXT", parse_info_line, 987, ("prop_id",)),
+    _PacsPreflightSpec("APPRAISAL_LAND_DETAIL.TXT", parse_land_detail_line, 184, ("prop_id",)),
+    _PacsPreflightSpec(
+        "APPRAISAL_IMPROVEMENT_INFO.TXT", parse_improvement_info_line, 49, ("prop_id", "imp_id")
+    ),
+    _PacsPreflightSpec(
+        IMPROVEMENT_DETAIL_FILENAME, parse_improvement_detail_line, 622, ("prop_id", "imp_id")
+    ),
+    _PacsPreflightSpec(
+        IMPROVEMENT_DETAIL_ATTR_FILENAME,
+        parse_improvement_detail_attr_line,
+        87,
+        ("prop_id", "imp_id"),
+    ),
+    _PacsPreflightSpec(
+        ENTITY_INFO_FILENAME,
+        parse_entity_info_line,
+        418,
+        ("prop_id", "tax_unit_code"),
+    ),
 )
 
 
@@ -775,6 +813,45 @@ class CadRefreshStage:
             cleanup_paths=(extract_dir,),
         )
 
+    def validate_preflight(self, preparation: StagePreparation) -> None:
+        """Reject incomplete or untrusted PACS input before any model write.
+
+        The property-import module calls this after source-year validation and
+        before its transaction. A direct stage run keeps the same guard so a
+        recovery adapter cannot quietly accept an incomplete certified export.
+        """
+        payload = preparation.payload
+        if not isinstance(payload, _CadStagePayload):
+            raise TypeError("CAD stage received a preparation from another adapter")
+
+        missing = sorted(set(ALL_FILENAMES) - set(payload.text_files))
+        if missing:
+            raise CommandError("CAD preflight missing required PACS files: " + ", ".join(missing))
+
+        for spec in PACS_PREFLIGHT_SPECS:
+            valid_records = 0
+            invalid_records = 0
+            for line in self._iter_lines(payload.text_files[spec.filename]):
+                if len(line) < spec.minimum_length:
+                    invalid_records += 1
+                    continue
+                try:
+                    fields = spec.parse_fn(line)
+                except (TypeError, ValueError):
+                    invalid_records += 1
+                    continue
+                if fields.get("tax_year") != preparation.target_year or any(
+                    not fields.get(key) for key in spec.required_keys
+                ):
+                    invalid_records += 1
+                    continue
+                valid_records += 1
+
+            if invalid_records or not valid_records:
+                raise CommandError(
+                    f"CAD preflight failed PACS key/year integrity for {spec.filename}."
+                )
+
     def persist(self, preparation: StagePreparation) -> StageResult:
         """Replace the target year's certified rows inside the caller's transaction."""
         payload = preparation.payload
@@ -807,6 +884,7 @@ class CadRefreshStage:
             self.stdout.write("[dry-run] CAD source staged; no database rows were changed.")
             return StageResult(name=self.name, metrics={})
 
+        self.validate_preflight(preparation)
         result = self.persist(preparation)
         if not options.keep_extracted and not options.skip_extract:
             self.cleanup(preparation)

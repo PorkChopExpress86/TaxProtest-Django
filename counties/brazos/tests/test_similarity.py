@@ -313,7 +313,7 @@ class FindSimilarPropertiesTests(TestCase):
             class_code="RV3",
         )
 
-        results = find_similar_properties("000000010001")
+        results = find_similar_properties("000000010001", tax_year=TAX_YEAR)
 
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["property"].prop_id, "000000010002")
@@ -321,7 +321,7 @@ class FindSimilarPropertiesTests(TestCase):
 
     def test_target_without_coordinates_returns_empty(self):
         PropertyAccount.objects.create(prop_id="000000010001", tax_year=TAX_YEAR)
-        self.assertEqual(find_similar_properties("000000010001"), [])
+        self.assertEqual(find_similar_properties("000000010001", tax_year=TAX_YEAR), [])
 
     def test_unknown_prop_id_returns_empty(self):
-        self.assertEqual(find_similar_properties("NOPE"), [])
+        self.assertEqual(find_similar_properties("NOPE", tax_year=TAX_YEAR), [])

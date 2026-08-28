@@ -1,11 +1,13 @@
 """CLI adapter for deliberately stale, coordinate-only BCAD enrichment."""
 
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 
 from counties.brazos.annual_refresh import RefreshOptions
 from counties.brazos.coordinate_enrichment import (
     BrazosCoordinateEnrichment,
+    CoordinateEnrichmentOutcome,
     CoordinateEnrichmentReport,
+    CoordinateEnrichmentRequest,
 )
 
 
@@ -47,36 +49,39 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         enrichment = BrazosCoordinateEnrichment(reporter=self)
-        preparation, report, candidates = enrichment.analyze(
-            RefreshOptions(
-                tax_year=options["year"],
-                source_year=options.get("source_year"),
-                force=options["force"],
-                skip_download=options["skip_download"],
-                skip_extract=options["skip_extract"],
-                keep_extracted=options["keep_extracted"],
+        result = enrichment.run(
+            CoordinateEnrichmentRequest(
+                options=RefreshOptions(
+                    tax_year=options["year"],
+                    source_year=options.get("source_year"),
+                    force=options["force"],
+                    skip_download=options["skip_download"],
+                    skip_extract=options["skip_extract"],
+                    keep_extracted=options["keep_extracted"],
+                ),
+                apply=options["apply"],
+                minimum_match_rate=options.get("minimum_match_rate"),
             )
         )
-        self._write_report(report)
-        if not options["apply"]:
+        self._write_report(result.report)
+        self.stdout.write(
+            f"Coordinate enrichment audit={result.audit_id}; outcome={result.outcome}; "
+            f"updated={result.updated_count}; cleanup={result.cleanup_state}."
+        )
+        if result.outcome is CoordinateEnrichmentOutcome.REJECTED:
+            raise CommandError(f"Coordinate enrichment rejected: {result.reason}")
+        if result.outcome is CoordinateEnrichmentOutcome.ANALYZED:
             self.stdout.write(
                 self.style.WARNING("Analysis complete; no database rows were changed.")
             )
             return
-
-        updated = enrichment.apply(
-            report,
-            candidates,
-            minimum_match_rate=options.get("minimum_match_rate"),
-        )
         self.stdout.write(
             self.style.SUCCESS(
-                f"Coordinate enrichment complete: {updated} PropertyAccount rows updated "
-                f"from BCAD GIS source year {report.source_year}."
+                f"Coordinate enrichment {result.outcome}: {result.updated_count} "
+                f"PropertyAccount rows updated from BCAD GIS source year "
+                f"{result.report.source_year}."
             )
         )
-        if not options["keep_extracted"] and not options["skip_extract"]:
-            enrichment.cleanup(preparation)
 
     def _write_report(self, report: CoordinateEnrichmentReport) -> None:
         self.stdout.write(

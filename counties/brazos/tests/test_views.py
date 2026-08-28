@@ -7,11 +7,21 @@ from decimal import Decimal
 from django.test import TestCase
 from django.urls import reverse
 
-from counties.brazos.models import PropertyAccount, PropertyLand
+from counties.brazos.models import (
+    BrazosPropertySnapshot,
+    PropertyAccount,
+    PropertyLand,
+    SnapshotOutcome,
+)
 
 
 class BrazosIndexViewTests(TestCase):
     def setUp(self):
+        BrazosPropertySnapshot.objects.create(
+            tax_year=2025,
+            outcome=SnapshotOutcome.PARTIAL,
+            cad_source_year=2025,
+        )
         PropertyAccount.objects.create(
             prop_id="000000010002",
             tax_year=2025,
@@ -101,6 +111,12 @@ class BrazosIndexNoDataLoadedTests(TestCase):
 
 class ProtestAnalysisViewTests(TestCase):
     def setUp(self):
+        BrazosPropertySnapshot.objects.create(
+            tax_year=2025,
+            outcome=SnapshotOutcome.COMPLETED,
+            cad_source_year=2025,
+            gis_source_year=2025,
+        )
         self.target = PropertyAccount.objects.create(
             prop_id="000000010013",
             tax_year=2025,
@@ -108,6 +124,8 @@ class ProtestAnalysisViewTests(TestCase):
             situs_address="100 MAIN ST",
             latitude=Decimal("30.6700000"),
             longitude=Decimal("-96.3700000"),
+            coordinate_source="bcad-certified-gis",
+            coordinate_source_year=2025,
             living_area=Decimal("2000"),
             assessed_value=Decimal("300000"),
             class_code="RV3",
@@ -118,20 +136,19 @@ class ProtestAnalysisViewTests(TestCase):
         response = self.client.get(reverse("brazos_protest_analysis", args=["NOPE"]))
         self.assertEqual(response.status_code, 404)
 
-    def test_renders_with_no_comps(self):
+    def test_renders_an_explicit_evidence_unavailable_state_with_no_comps(self):
         response = self.client.get(reverse("brazos_protest_analysis", args=["000000010013"]))
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.context["comps"], [])
-        self.assertContains(response, "100 MAIN ST")
+        self.assertIn("three", response.context["error"])
 
     def test_missing_coordinates_renders_error_state(self):
         PropertyAccount.objects.create(prop_id="000000099999", tax_year=2025)
         response = self.client.get(reverse("brazos_protest_analysis", args=["000000099999"]))
         self.assertEqual(response.status_code, 200)
-        self.assertIn("location data", response.context["error"])
+        self.assertIn("Coordinates", response.context["error"])
 
-    def test_min_score_clamped_to_valid_range(self):
+    def test_report_does_not_offer_a_score_threshold_without_report_ready_evidence(self):
         response = self.client.get(
             reverse("brazos_protest_analysis", args=["000000010013"]), {"min_score": "10"}
         )
-        self.assertEqual(response.context["min_score"], 52.0)
+        self.assertIn("three", response.context["error"])

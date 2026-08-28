@@ -170,7 +170,10 @@ def _no_location_context(adapter: CountyAdapter, subject: Subject) -> dict[str, 
     return {
         "county": adapter.profile,
         "subject": subject,
-        "error": ("This property does not have location data required for similarity search."),
+        "error": (
+            adapter.unavailable_reason(subject.key, "comparable")
+            or "This property does not have location data required for similarity search."
+        ),
     }
 
 
@@ -185,7 +188,7 @@ def similar_properties(request, key, *, adapter: CountyAdapter):
             {"county": profile, "error": "Property not found", "subject_key": key},
         )
 
-    if not subject.has_location:
+    if adapter.unavailable_reason(key, "comparable") or not subject.has_location:
         return render(
             request, "counties/similar_properties.html", _no_location_context(adapter, subject)
         )
@@ -289,6 +292,13 @@ def protest_analysis(request, key, *, adapter: CountyAdapter):
     """ARB evidence report: equity comparison, tax impact, comparable table."""
     profile = adapter.profile
     subject = _subject_or_404(adapter, key)
+    report_reason = adapter.unavailable_reason(key, "report")
+    if report_reason:
+        return render(
+            request,
+            "counties/protest_analysis.html",
+            {"county": profile, "subject": subject, "error": report_reason},
+        )
     inputs = _protest_inputs(request, subject, adapter)
     if inputs is None:
         return render(
@@ -333,6 +343,9 @@ def protest_analysis(request, key, *, adapter: CountyAdapter):
 def protest_analysis_export(request, key, *, adapter: CountyAdapter):
     """CSV of the report's comparable table plus its tax-impact totals."""
     subject = _subject_or_404(adapter, key)
+    report_reason = adapter.unavailable_reason(key, "report")
+    if report_reason:
+        return HttpResponseBadRequest(report_reason)
     inputs = _protest_inputs(request, subject, adapter)
     if inputs is None:
         return HttpResponseBadRequest(
@@ -345,6 +358,9 @@ def protest_analysis_export(request, key, *, adapter: CountyAdapter):
 def protest_analysis_pdf(request, key, *, adapter: CountyAdapter):
     """Printable evidence report."""
     subject = _subject_or_404(adapter, key)
+    report_reason = adapter.unavailable_reason(key, "report")
+    if report_reason:
+        return HttpResponseBadRequest(report_reason)
     inputs = _protest_inputs(request, subject, adapter)
     if inputs is None:
         return HttpResponseBadRequest(

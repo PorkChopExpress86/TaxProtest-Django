@@ -13,7 +13,12 @@ from django.test import SimpleTestCase, TestCase
 from django.urls import NoReverseMatch, resolve, reverse
 
 from counties.brazos.adapter import adapter as brazos_adapter
-from counties.brazos.models import PropertyAccount
+from counties.brazos.models import (
+    BrazosPropertySnapshot,
+    PropertyAccount,
+    PropertyLand,
+    SnapshotOutcome,
+)
 from counties.common.analysis import recommend_protest, summarize_equity
 from counties.common.contracts import Comp, Subject
 from counties.common.urls import _ROUTES
@@ -122,6 +127,12 @@ class BrazosGainsTheSharedPagesTests(TestCase):
     """Brazos previously had only search + report; the shared layer adds the rest."""
 
     def setUp(self):
+        BrazosPropertySnapshot.objects.create(
+            tax_year=2025,
+            outcome=SnapshotOutcome.COMPLETED,
+            cad_source_year=2025,
+            gis_source_year=2025,
+        )
         PropertyAccount.objects.create(
             prop_id="000000010013",
             tax_year=2025,
@@ -130,10 +141,34 @@ class BrazosGainsTheSharedPagesTests(TestCase):
             situs_zip="77801",
             latitude=Decimal("30.6700000"),
             longitude=Decimal("-96.3700000"),
+            coordinate_source="bcad-certified-gis",
+            coordinate_source_year=2025,
             living_area=Decimal("2000"),
             assessed_value=Decimal("300000"),
             class_code="RV3",
         )
+        PropertyLand.objects.create(
+            prop_id="000000010013", tax_year=2025, land_seq=1, acreage=Decimal("0.2500")
+        )
+        for index in range(1, 4):
+            prop_id = f"0000000200{index:02d}"
+            PropertyAccount.objects.create(
+                prop_id=prop_id,
+                tax_year=2025,
+                owner_name=f"COMP {index}",
+                situs_address=f"{100 + index} MAIN ST",
+                situs_zip="77801",
+                latitude=Decimal("30.6701000") + Decimal(index) / Decimal("100000"),
+                longitude=Decimal("-96.3701000"),
+                coordinate_source="bcad-certified-gis",
+                coordinate_source_year=2025,
+                living_area=Decimal("2000"),
+                assessed_value=Decimal("250000"),
+                class_code="RV3",
+            )
+            PropertyLand.objects.create(
+                prop_id=prop_id, tax_year=2025, land_seq=1, acreage=Decimal("0.2500")
+            )
 
     def test_comparables_page_renders(self):
         response = self.client.get(reverse("brazos_similar_properties", args=["000000010013"]))
@@ -142,8 +177,7 @@ class BrazosGainsTheSharedPagesTests(TestCase):
         # Brazos-specific vocabulary on a shared template.
         self.assertContains(response, "Property ID")
         self.assertContains(response, "Class Code")
-        # No comparables in this fixture, so the empty state shows instead of a table.
-        self.assertContains(response, "No Similar Properties Found")
+        self.assertContains(response, "Similar Properties Found")
 
     def test_search_export_returns_csv(self):
         response = self.client.get(reverse("brazos_export_csv"), {"owner_name": "TARGET"})

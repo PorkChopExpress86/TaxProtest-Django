@@ -293,3 +293,7 @@ class CountyAdapter(ABC):
     def tax_impact(self, key: str, tax_year: int | None, median_assessed_value: Decimal | None):
         """Estimated tax impact, or ``None`` when the county cannot compute one."""
         return None
+
+    def unavailable_reason(self, key: str, capability: str) -> str | None:
+        """Reason a shared capability is unavailable for one county record."""
+        return None

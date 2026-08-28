@@ -73,7 +73,11 @@ from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
-from counties.brazos.models import PropertyAccount
+from counties.brazos.models import (
+    BrazosHistoricalCoverage,
+    HistoricalCoverageStatus,
+    PropertyAccount,
+)
 from counties.brazos.parsers.pacs import parse_entity_info_line
 from counties.brazos.portal import (
     USER_AGENT,
@@ -356,6 +360,16 @@ class Command(BaseCommand):
                 "against this year's real export before retrying."
             )
 
+    @staticmethod
+    def _record_unavailable_coverage(tax_year: int, failure_category: str) -> None:
+        BrazosHistoricalCoverage.objects.update_or_create(
+            tax_year=tax_year,
+            defaults={
+                "status": HistoricalCoverageStatus.UNAVAILABLE,
+                "failure_category": failure_category,
+            },
+        )
+
     # ------------------------------------------------------------------ main
 
     def handle(self, *args, **options):
@@ -370,7 +384,32 @@ class Command(BaseCommand):
 
         archives: dict[int, str] = {}
         if not skip_download:
-            archives = self._list_archives(PORTAL_URL)
+            try:
+                archives = self._list_archives(PORTAL_URL)
+            except (CommandError, OSError, requests.RequestException) as exc:
+                requested_end_year = options.get("end_year")
+                if requested_end_year is None:
+                    raise CommandError(
+                        "Could not list BCAD history sources to determine the latest year. "
+                        "Retry later or pass --end-year to record the affected years."
+                    ) from exc
+                requested_start_year = options.get("start_year")
+                if requested_start_year is None:
+                    requested_start_year = requested_end_year - options["years"] + 1
+                if requested_start_year > requested_end_year:
+                    raise CommandError(
+                        "--start-year must be less than or equal to --end-year"
+                    ) from exc
+                if not dry_run:
+                    for year in range(requested_start_year, requested_end_year + 1):
+                        self._record_unavailable_coverage(year, "source_listing_failed")
+                self.stdout.write(
+                    self.style.WARNING(
+                        "BCAD source listing failed; recorded unavailable coverage for "
+                        f"{requested_start_year}-{requested_end_year}: {exc}"
+                    )
+                )
+                return
 
         end_year = options.get("end_year")
         if end_year is None:
@@ -409,34 +448,75 @@ class Command(BaseCommand):
             if not skip_download:
                 url = archives.get(year)
                 if url is None:
-                    raise CommandError(
-                        f"No certified archive for {year} found on BCAD's portal. "
-                        f"Available years: {sorted(archives)}"
+                    if not dry_run:
+                        self._record_unavailable_coverage(year, "source_unavailable")
+                    self.stdout.write(
+                        self.style.WARNING(f"  source unavailable for {year}; continuing")
                     )
-                self._download(url, archive, force=force, dry_run=dry_run)
+                    continue
+                try:
+                    self._download(url, archive, force=force, dry_run=dry_run)
+                except (CommandError, OSError, requests.RequestException) as exc:
+                    if not dry_run:
+                        self._record_unavailable_coverage(year, "source_download_failed")
+                    self.stdout.write(
+                        self.style.WARNING(
+                            f"  source download failed for {year}: {exc}; continuing"
+                        )
+                    )
+                    continue
             elif not archive.exists():
-                raise CommandError(
-                    f"--skip-download set but archive not found: {archive}. Drop "
-                    "--skip-download, or pass --year-scoped archives already on disk."
+                if not dry_run:
+                    self._record_unavailable_coverage(year, "source_unavailable")
+                self.stdout.write(
+                    self.style.WARNING(f"  source unavailable for {year}; continuing")
                 )
+                continue
 
             if not skip_extract:
-                self._extract(archive, extract_dir, dry_run=dry_run)
+                try:
+                    self._extract(archive, extract_dir, dry_run=dry_run)
+                except (CommandError, OSError) as exc:
+                    if not dry_run:
+                        self._record_unavailable_coverage(year, "source_extract_failed")
+                    self.stdout.write(
+                        self.style.WARNING(
+                            f"  source extraction failed for {year}: {exc}; continuing"
+                        )
+                    )
+                    continue
 
             if dry_run:
                 self.stdout.write(f"  [dry-run] would parse and load {year}")
                 continue
 
-            entity_info_path = self._resolve_entity_info_file(extract_dir)
-            if entity_info_path is None:
-                raise CommandError(
-                    f"No {ENTITY_INFO_FILENAME} found under {extract_dir} for {year}. "
-                    "Did extraction succeed?"
+            try:
+                entity_info_path = self._resolve_entity_info_file(extract_dir)
+                if entity_info_path is None:
+                    self._record_unavailable_coverage(year, "entity_info_missing")
+                    self.stdout.write(
+                        self.style.WARNING(
+                            f"  entity information unavailable for {year}; continuing"
+                        )
+                    )
+                    continue
+                rollups = self._roll_up_year(entity_info_path, year, accounts)
+                self._verify_sane_order(year, rollups)
+            except (OSError, UnicodeError) as exc:
+                self._record_unavailable_coverage(year, "entity_info_read_failed")
+                self.stdout.write(
+                    self.style.WARNING(
+                        f"  entity information could not be read for {year}: {exc}; continuing"
+                    )
                 )
-
-            rollups = self._roll_up_year(entity_info_path, year, accounts)
+                continue
+            except CommandError:
+                self._record_unavailable_coverage(year, "entity_info_preflight_failed")
+                self.stdout.write(
+                    self.style.WARNING(f"  entity preflight failed for {year}; continuing")
+                )
+                continue
             self.stdout.write(f"  rolled up {len(rollups):,} properties for {year}")
-            self._verify_sane_order(year, rollups)
             per_year_rollups[year] = rollups
 
         if dry_run:
@@ -444,15 +524,11 @@ class Command(BaseCommand):
             return
 
         total_written = 0
-        with transaction.atomic():
-            # county="brazos": AssessmentHistory is shared with Harris (wayfinder
-            # ticket #9) -- an unscoped delete would also wipe Harris's rows for
-            # the same tax-year range.
-            AssessmentHistory.objects.filter(
-                tax_year__gte=start_year, tax_year__lte=end_year, county=COUNTY
-            ).delete()
-
-            for year, rollups in per_year_rollups.items():
+        for year, rollups in per_year_rollups.items():
+            with transaction.atomic():
+                # The shared table remains county scoped; each qualified year
+                # commits independently so an old layout cannot block newer data.
+                AssessmentHistory.objects.filter(tax_year=year, county=COUNTY).delete()
                 instances = [
                     AssessmentHistory(
                         account_number=r.account_number,
@@ -466,6 +542,13 @@ class Command(BaseCommand):
                     for r in rollups
                 ]
                 AssessmentHistory.objects.bulk_create(instances, batch_size=5000)
+                BrazosHistoricalCoverage.objects.update_or_create(
+                    tax_year=year,
+                    defaults={
+                        "status": HistoricalCoverageStatus.AVAILABLE,
+                        "failure_category": "",
+                    },
+                )
                 total_written += len(instances)
 
         self.stdout.write(

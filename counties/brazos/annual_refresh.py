@@ -9,12 +9,11 @@ post-commit cleanup policy.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
 from django.core.management.base import CommandError
-from django.db import transaction
 
 
 @dataclass(frozen=True)
@@ -72,40 +71,28 @@ class AnnualRefreshStage(Protocol):
 
 
 class BrazosAnnualRefresh:
-    """Publish a year-matched CAD and GIS snapshot as one transaction."""
+    """Strict command adapter for a completed property-import publication."""
 
     def __init__(self, cad: AnnualRefreshStage, gis: AnnualRefreshStage):
         self._cad = cad
         self._gis = gis
 
     def run(self, options: RefreshOptions) -> AnnualRefreshResult:
-        """Prepare both sources, validate their year, then publish atomically."""
-        cad_preparation = self._cad.prepare(options)
-        target_year = options.tax_year or cad_preparation.source_year
-        gis_preparation = self._gis.prepare(replace(options, tax_year=target_year))
-        self._validate_years(target_year, cad_preparation, gis_preparation)
+        """Require a complete year-matched result from the property import."""
+        from counties.brazos.property_import import (
+            BrazosPropertyImport,
+            PropertyImportMode,
+            PropertyImportRequest,
+        )
 
-        if options.dry_run:
-            return AnnualRefreshResult(
-                tax_year=target_year,
-                cad=StageResult(name=self._cad.name, metrics={}),
-                gis=StageResult(name=self._gis.name, metrics={}),
-                dry_run=True,
-            )
-
-        with transaction.atomic():
-            cad_result = self._cad.persist(cad_preparation)
-            gis_result = self._gis.persist(gis_preparation)
-
-        if not options.keep_extracted:
-            self._cad.cleanup(cad_preparation)
-            self._gis.cleanup(gis_preparation)
-
+        result = BrazosPropertyImport(self._cad, self._gis).run(
+            PropertyImportRequest(mode=PropertyImportMode.ANNUAL, options=options)
+        )
         return AnnualRefreshResult(
-            tax_year=target_year,
-            cad=cad_result,
-            gis=gis_result,
-            dry_run=False,
+            tax_year=result.tax_year,
+            cad=result.cad or StageResult(name=self._cad.name, metrics={}),
+            gis=result.gis or StageResult(name=self._gis.name, metrics={}),
+            dry_run=result.dry_run,
         )
 
     @staticmethod

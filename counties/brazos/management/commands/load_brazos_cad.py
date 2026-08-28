@@ -4,6 +4,11 @@ from django.core.management.base import BaseCommand
 
 from counties.brazos.annual_refresh import RefreshOptions
 from counties.brazos.cad_refresh import CadRefreshStage
+from counties.brazos.property_import import (
+    PropertyImportMode,
+    PropertyImportRequest,
+    build_default_property_import,
+)
 
 
 class Command(BaseCommand):
@@ -61,4 +66,19 @@ class Command(BaseCommand):
             self.stdout.write("Skipped ingest (--skip-ingest).")
             return
 
-        stage.run(refresh_options)
+        result = build_default_property_import(self).run(
+            PropertyImportRequest(mode=PropertyImportMode.CAD_RECOVERY, options=refresh_options)
+        )
+        if result.dry_run:
+            self.stdout.write(
+                self.style.SUCCESS(
+                    f"[dry-run] Brazos CAD recovery validated for tax_year={result.tax_year}."
+                )
+            )
+            return
+        self.stdout.write(
+            self.style.WARNING(
+                f"Brazos CAD recovery published a Partial property snapshot for "
+                f"tax_year={result.tax_year}; year-matched GIS is still unavailable."
+            )
+        )
