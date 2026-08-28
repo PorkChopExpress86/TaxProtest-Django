@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest import skipUnless
 
 from django.db import connection
-from django.test import TestCase
+from django.test import TestCase, TransactionTestCase
 
 from counties.harris.etl_pipeline.persistence import (
     CopyPersistenceAdapter,
@@ -325,3 +325,42 @@ class ExtraFeaturePersistenceContractTests(TestCase):
 
         self.assertEqual(result.loaded, 1)
         self.assertTrue(ExtraFeature.objects.filter(feature_code="POOL").exists())
+
+
+@skipUnless(connection.vendor == "postgresql", "COPY requires PostgreSQL")
+class CopyExtraFeatureReplacementSafetyTests(TransactionTestCase):
+    def test_unsafe_replace_rolls_back_the_truncate(self) -> None:
+        property_record = PropertyRecord.objects.create(
+            account_number="PROP001",
+            address="1 TEST ST",
+            city="Houston",
+            zipcode="77001",
+            state_class="A1",
+            is_residential=True,
+        )
+        ExtraFeature.objects.create(
+            property=property_record,
+            account_number="PROP001",
+            feature_number=1,
+            feature_code="POOL",
+        )
+        skipped = RowResult(values=(), field_names=EXTRA_FEATURE_FIELD_ORDER, skip=True)
+        invalid = RowResult(values=(), field_names=EXTRA_FEATURE_FIELD_ORDER, invalid=True)
+
+        with self.assertRaises(UnsafeReplacementError) as raised:
+            HarrisPersistence(CopyPersistenceAdapter()).persist(
+                PersistenceRequest(
+                    dataset=PersistenceDataset.EXTRA_FEATURE,
+                    rows=iter([skipped, invalid]),
+                    write_mode=PersistenceWriteMode.REPLACE,
+                )
+            )
+
+        self.assertEqual((raised.exception.invalid, raised.exception.skipped), (1, 1))
+        self.assertTrue(
+            ExtraFeature.objects.filter(
+                account_number="PROP001",
+                feature_number=1,
+                feature_code="POOL",
+            ).exists()
+        )
