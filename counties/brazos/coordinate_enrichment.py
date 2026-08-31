@@ -118,6 +118,19 @@ class CoordinateEnrichmentResult:
     reason: str = ""
 
 
+class CoordinateEnrichmentCleanupError(CoordinateEnrichmentError):
+    """Cleanup failed after the coordinate application committed."""
+
+    def __init__(
+        self,
+        outcome: CoordinateEnrichmentResult,
+        retained_paths: tuple[Path, ...],
+    ):
+        self.outcome = outcome
+        self.retained_paths = retained_paths
+        super().__init__("Committed coordinate application; extracted source cleanup failed.")
+
+
 @dataclass(frozen=True)
 class _PreparedCoordinateSource:
     """Staged coordinate evidence that never crosses the external seam."""
@@ -178,7 +191,14 @@ class BrazosCoordinateEnrichment:
             source=source,
             minimum_match_rate=minimum_match_rate,
         )
-        self._finalize_cleanup(audit, source.preparation, request)
+        try:
+            self._finalize_cleanup(audit, source.preparation, request)
+        except Exception as exc:
+            audit.refresh_from_db()
+            raise CoordinateEnrichmentCleanupError(
+                self._result(audit, report),
+                source.preparation.cleanup_paths,
+            ) from exc
         audit.refresh_from_db()
         return self._result(audit, report)
 
@@ -384,9 +404,11 @@ class BrazosCoordinateEnrichment:
             self._source_stage.cleanup(preparation)
         except Exception:
             audit.cleanup_state = CoordinateCleanupState.FAILED
+            audit.save(update_fields=["cleanup_state"])
+            raise
         else:
             audit.cleanup_state = CoordinateCleanupState.CLEANED
-        audit.save(update_fields=["cleanup_state"])
+            audit.save(update_fields=["cleanup_state"])
 
     @staticmethod
     def _result(

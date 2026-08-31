@@ -4,10 +4,12 @@ from django.core.management.base import BaseCommand, CommandError
 
 from counties.brazos.coordinate_enrichment import (
     BrazosCoordinateEnrichment,
+    CoordinateEnrichmentCleanupError,
     CoordinateEnrichmentError,
     CoordinateEnrichmentRejected,
     CoordinateEnrichmentReport,
     CoordinateEnrichmentRequest,
+    CoordinateEnrichmentResult,
     InvalidCoordinateEnrichmentRequest,
 )
 
@@ -76,12 +78,25 @@ class Command(BaseCommand):
                 request,
                 minimum_match_rate=minimum_match_rate,
             )
+        except CoordinateEnrichmentCleanupError as exc:
+            self._write_applied_result(exc.outcome)
+            retained = ", ".join(str(path) for path in exc.retained_paths)
+            self.stdout.write(
+                self.style.WARNING(
+                    "WARNING: Coordinate application committed, but extracted source "
+                    f"cleanup failed. Retained paths: {retained}"
+                )
+            )
+            return
         except CoordinateEnrichmentRejected as exc:
             self._write_report(exc.report)
             raise CommandError(f"Coordinate enrichment rejected: {exc}") from exc
         except CoordinateEnrichmentError as exc:
             raise CommandError(str(exc)) from exc
 
+        self._write_applied_result(result)
+
+    def _write_applied_result(self, result: CoordinateEnrichmentResult) -> None:
         self._write_report(result.report)
         self.stdout.write(
             f"Coordinate enrichment audit={result.audit_id}; outcome={result.outcome}; "
