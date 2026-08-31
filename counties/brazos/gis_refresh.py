@@ -65,6 +65,7 @@ from django.conf import settings
 from django.core.management.base import CommandError
 
 from counties.brazos.annual_refresh import RefreshOptions, StagePreparation, StageResult
+from counties.brazos.gis_coordinates import interpret_gis_coordinates, normalize_prop_id
 from counties.brazos.models import PropertyAccount
 from counties.brazos.portal import USER_AGENT, download_archive, extract_zip
 from counties.brazos.stage_reporting import SilentStageReporter, StageReporter
@@ -129,14 +130,6 @@ def _clean_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
-
-
-def normalize_prop_id(value: object) -> str | None:
-    """Return BCAD's canonical 12-digit property identifier, if usable."""
-    normalized = _clean_int(value)
-    if normalized is None:
-        return None
-    return str(normalized).zfill(12)
 
 
 @dataclass(frozen=True)
@@ -231,23 +224,7 @@ class GisRefreshStage:
         self.stdout.write(f"Reading {shapefile_path} ...")
         gdf = gpd.read_file(shapefile_path)
         self.stdout.write(f"Loaded {len(gdf)} parcel features (CRS={gdf.crs})")
-
-        # Centroid first, reprojection second. A centroid is a planar
-        # calculation, so it belongs in the source projected CRS (EPSG:2277,
-        # US survey feet) -- running it on EPSG:4326 degrees is what makes
-        # geopandas warn "Geometry is in a geographic CRS". The positional
-        # difference is sub-metre on parcel-sized polygons, but this order is
-        # the correct one and it reprojects N points instead of N polygons.
-        centroids = gdf.geometry.centroid
-        if gdf.crs and gdf.crs.to_epsg() != 4326:
-            centroids = centroids.to_crs(epsg=4326)
-
-        # NOT "_lat"/"_lon": itertuples() builds a namedtuple, and namedtuple
-        # fields can't start with an underscore -- pandas silently renames
-        # such columns to positional names ("_0", "_1", ...), which would
-        # make getattr(row, "_lat", ...) below always return the default.
-        gdf["gis_lat"] = centroids.y
-        gdf["gis_lon"] = centroids.x
+        coordinate_evidence = interpret_gis_coordinates(gdf)
 
         updates: dict[str, dict] = {}
         for row in gdf.itertuples(index=False):
@@ -257,6 +234,8 @@ class GisRefreshStage:
             prop_id = normalize_prop_id(raw_prop_id)
             if prop_id is None:
                 continue
+            coordinates = coordinate_evidence.coordinates.get(prop_id)
+            latitude, longitude = coordinates if coordinates is not None else (None, None)
 
             situs_address = _join_address(
                 getattr(row, "situs_num", None),
@@ -292,8 +271,8 @@ class GisRefreshStage:
                 # total_value/land_value/improvement_value/assessed_value:
                 # deliberately NOT sourced here -- see module docstring.
                 "state_class": _clean_str(getattr(row, "state_cd", None)),
-                "latitude": _clean_decimal(getattr(row, "gis_lat", None)),
-                "longitude": _clean_decimal(getattr(row, "gis_lon", None)),
+                "latitude": latitude,
+                "longitude": longitude,
                 "living_area": _clean_decimal(getattr(row, "living_are", None)),
                 "year_built": yr_built,
                 "class_code": _clean_str(getattr(row, "class_cd", None)),

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections import Counter
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -11,7 +10,8 @@ from django.core.management.base import CommandError
 from django.db import transaction
 
 from counties.brazos.annual_refresh import RefreshOptions, StagePreparation
-from counties.brazos.gis_refresh import GisRefreshStage, GisSourcePayload, normalize_prop_id
+from counties.brazos.gis_coordinates import interpret_gis_coordinates
+from counties.brazos.gis_refresh import GisRefreshStage, GisSourcePayload
 from counties.brazos.models import (
     BrazosPropertySnapshot,
     CoordinateCleanupState,
@@ -112,45 +112,13 @@ class BrazosCoordinateEnrichment:
         import geopandas as gpd
 
         gdf = gpd.read_file(shapefile_path)
-        if "PROP_ID" not in gdf:
-            raise CommandError(f"BCAD GIS source {shapefile_path} has no PROP_ID column.")
-        if gdf.crs is None:
-            raise CommandError(
-                f"BCAD GIS source {shapefile_path} has no coordinate reference system."
-            )
-        centroids = gdf.geometry.centroid
-        if gdf.crs.to_epsg() != 4326:
-            centroids = centroids.to_crs(epsg=4326)
-
-        ids: list[str] = []
-        candidates: dict[str, tuple[Decimal, Decimal]] = {}
-        invalid_coordinate_records = 0
-        for raw_prop_id, point in zip(gdf.get("PROP_ID", []), centroids, strict=True):
-            prop_id = normalize_prop_id(raw_prop_id)
-            if prop_id is None:
-                continue
-            ids.append(prop_id)
-            if point is None or point.is_empty:
-                invalid_coordinate_records += 1
-                continue
-            try:
-                latitude = Decimal(str(point.y))
-                longitude = Decimal(str(point.x))
-            except (ArithmeticError, ValueError):
-                invalid_coordinate_records += 1
-                continue
-            if not latitude.is_finite() or not longitude.is_finite():
-                invalid_coordinate_records += 1
-                continue
-            candidates[prop_id] = (latitude, longitude)
-
-        counts = Counter(ids)
-        return candidates, {
-            "source_records": len(gdf),
-            "usable_coordinate_records": len(candidates),
-            "distinct_source_ids": len(counts),
-            "duplicate_source_ids": sum(1 for count in counts.values() if count > 1),
-            "invalid_coordinate_records": invalid_coordinate_records,
+        evidence = interpret_gis_coordinates(gdf)
+        return dict(evidence.coordinates), {
+            "source_records": evidence.source_records,
+            "usable_coordinate_records": evidence.usable_coordinate_records,
+            "distinct_source_ids": evidence.distinct_source_ids,
+            "duplicate_source_ids": evidence.duplicate_source_ids,
+            "invalid_coordinate_records": evidence.invalid_coordinate_records,
         }
 
     def run(self, request: CoordinateEnrichmentRequest) -> CoordinateEnrichmentResult:
