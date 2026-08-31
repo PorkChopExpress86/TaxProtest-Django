@@ -18,22 +18,36 @@ from counties.harris.etl_pipeline import (
     HarrisExtractionMode,
     HarrisFailurePolicy,
 )
-from counties.harris.etl_pipeline.config import ETLConfig
-from counties.harris.etl_pipeline.fast_loader import (
-    copy_load_building_details,
-    copy_load_property_records,
-)
 from counties.harris.etl_pipeline.fixtures_aggregator import (
     FixturesAggregator,
     update_building_room_counts,
 )
 from counties.harris.etl_pipeline.gis_loader import load_gis_parcels
 from counties.harris.etl_pipeline.import_plan import HarrisImportPlan
-from counties.harris.etl_pipeline.model_loader import ModelLoader
+from counties.harris.etl_pipeline.persistence import (
+    PersistenceDataset,
+    PersistenceRequest,
+    PersistenceWriteMode,
+    persistence_for_connection,
+)
 from counties.harris.etl_pipeline.readiness import refresh_property_readiness
-from counties.harris.etl_pipeline.row_reader import iter_extra_feature_rows, iter_property_rows
+from counties.harris.etl_pipeline.row_reader import (
+    iter_building_rows,
+    iter_extra_feature_rows,
+    iter_property_rows,
+)
 from counties.harris.models import BuildingDetail, ExtraFeature, PropertyRecord
 from counties.harris.residential import is_residential_state_class
+
+
+def _persist_replacement(dataset: PersistenceDataset, rows):
+    return persistence_for_connection().persist(
+        PersistenceRequest(
+            dataset=dataset,
+            rows=rows,
+            write_mode=PersistenceWriteMode.REPLACE,
+        )
+    )
 
 
 class ResidentialPropertyImportTests(TestCase):
@@ -83,9 +97,12 @@ class ResidentialPropertyImportTests(TestCase):
             ]
         )
 
-        result = copy_load_property_records(Path(filepath), truncate=True)
+        result = _persist_replacement(
+            PersistenceDataset.PROPERTY,
+            iter_property_rows(Path(filepath)),
+        )
 
-        self.assertEqual(result["loaded"], 1)
+        self.assertEqual(result.loaded, 1)
         self.assertEqual(PropertyRecord.objects.count(), 1)
 
         prop = PropertyRecord.objects.get(account_number="111")
@@ -103,9 +120,12 @@ class ResidentialPropertyImportTests(TestCase):
             ]
         )
 
-        result = copy_load_property_records(Path(filepath), truncate=True)
+        result = _persist_replacement(
+            PersistenceDataset.PROPERTY,
+            iter_property_rows(Path(filepath)),
+        )
 
-        self.assertEqual(result["loaded"], 1)
+        self.assertEqual(result.loaded, 1)
         self.assertEqual(
             list(PropertyRecord.objects.values_list("account_number", flat=True)),
             ["111"],
@@ -478,18 +498,6 @@ class ETLLoaderOptimizationTests(TestCase):
             PropertyRecord.objects.filter(is_residential=True).values_list("account_number", "id")
         )
 
-    @staticmethod
-    def _model_loader(source_path: str) -> ModelLoader:
-        source_dir = Path(source_path).parent
-        return ModelLoader(
-            ETLConfig(
-                download_dir=source_dir / "downloads",
-                extract_dir=source_dir / "extracted",
-                log_dir=source_dir / "logs",
-            ),
-            batch_size=50,
-        )
-
     def test_load_building_details_uses_cached_property_map(self) -> None:
         prop = PropertyRecord.objects.create(
             address="1 MAIN ST",
@@ -517,16 +525,18 @@ class ETLLoaderOptimizationTests(TestCase):
             ],
         )
 
-        result = copy_load_building_details(
-            Path(path),
-            account_map=self._residential_account_map(),
-            fixtures_aggregator=FixturesAggregator(),
-            truncate=True,
+        result = _persist_replacement(
+            PersistenceDataset.BUILDING,
+            iter_building_rows(
+                Path(path),
+                self._residential_account_map(),
+                FixturesAggregator(),
+            ),
         )
 
-        self.assertEqual(result["loaded"], 1)
-        self.assertEqual(result["invalid"], 2)
-        self.assertEqual(result["skipped"], 1)
+        self.assertEqual(result.loaded, 1)
+        self.assertEqual(result.invalid, 2)
+        self.assertEqual(result.skipped, 1)
         building = BuildingDetail.objects.get(account_number="ACC1")
         self.assertEqual(building.property_id, prop.id)
 
@@ -557,15 +567,14 @@ class ETLLoaderOptimizationTests(TestCase):
             ],
         )
 
-        result = self._model_loader(path).load_extra_features(
+        result = _persist_replacement(
+            PersistenceDataset.EXTRA_FEATURE,
             iter_extra_feature_rows(Path(path), self._residential_account_map()),
-            batch_id="b2",
-            truncate=True,
         )
 
-        self.assertEqual(result.records_loaded, 1)
-        self.assertEqual(result.records_invalid, 3)
-        self.assertEqual(result.records_skipped, 0)
+        self.assertEqual(result.loaded, 1)
+        self.assertEqual(result.invalid, 3)
+        self.assertEqual(result.skipped, 0)
         feature = ExtraFeature.objects.get(account_number="ACC2")
         self.assertEqual(feature.property_id, prop.id)
         self.assertEqual(feature.feature_description, "Pool")
@@ -592,13 +601,12 @@ class ETLLoaderOptimizationTests(TestCase):
             ],
         )
 
-        result = self._model_loader(path).load_extra_features(
+        result = _persist_replacement(
+            PersistenceDataset.EXTRA_FEATURE,
             iter_extra_feature_rows(Path(path), self._residential_account_map()),
-            batch_id="b3",
-            truncate=True,
         )
 
-        self.assertEqual(result.records_loaded, 1)
+        self.assertEqual(result.loaded, 1)
         feature = ExtraFeature.objects.get(account_number="ACC4")
         self.assertEqual(feature.feature_description, "Paving - Asphalt")
         self.assertEqual(feature.quantity, Decimal("1"))

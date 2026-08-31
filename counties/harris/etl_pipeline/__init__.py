@@ -9,7 +9,7 @@ Modules:
     download: Download manager with retry logic and validation
     extract: Archive extraction with streaming support
     transform: Data parsing, validation, and normalization
-    model_loader: Django model loading for PropertyRecord, BuildingDetail, ExtraFeature
+    persistence: Authoritative translated-row persistence and database adapters
     orchestrator: Deep, stateless Harris import boundary
     logging: Structured logging infrastructure
 
@@ -27,7 +27,6 @@ from .download import DownloadManager
 from .extract import ExtractManager
 from .import_plan import HarrisImportPlan
 from .logging import ETLLogger
-from .model_loader import ModelLoader
 from .orchestrator import (
     ExtractedSourceRetention,
     HarrisAcquisitionMode,
@@ -54,7 +53,6 @@ __all__ = [
     "DownloadManager",
     "ExtractManager",
     "DataTransformer",
-    "ModelLoader",
     "ETLLogger",
     "HarrisImportPlan",
     "ExtractedSourceRetention",

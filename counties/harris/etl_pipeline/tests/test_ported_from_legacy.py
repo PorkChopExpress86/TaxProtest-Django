@@ -175,7 +175,7 @@ class FixturesAggregatorTests(TestCase):
 
         # Account in the fixtures file but not in the DB is still cached by
         # FixturesAggregator (it doesn't check against PropertyRecord — that
-        # filtering happens later in the model_loader when applying fixtures
+        # filtering happens later while translated rows are persisted
         # to BuildingDetail rows). An account not in the cache returns zeros:
         self.assertEqual(agg.get_bedroom_count("MISSING", 1), 0)
         self.assertEqual(agg.get_bathroom_count("MISSING", 1), 0.0)

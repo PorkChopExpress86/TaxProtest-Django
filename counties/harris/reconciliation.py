@@ -1,7 +1,7 @@
 """Legacy orphan-cleanup and account-mapping helpers.
 
-The modern ETL pipeline uses ``TRUNCATE ... RESTART IDENTITY CASCADE``
-(see ``etl_pipeline/model_loader.py``), so loading never produces
+The modern ETL pipeline replaces aggregate roots through the authoritative
+translated-row persistence module (see ``etl_pipeline/persistence.py``), so loading never produces
 orphaned BuildingDetail/ExtraFeature rows. These helpers survive only
 for ``reconcile_property_data`` -- a one-shot cleanup tool for
 databases that ran the legacy soft-delete import path and may still

@@ -203,8 +203,8 @@ Source Files (.txt / .shp)
           │ (RowResult stream)
           ▼
 ┌──────────────────┐
-│  fast_loader.py  │  PostgreSQL staging table + COPY format CSV +
-└─────────┬────────┘  INSERT ON CONFLICT DO NOTHING (batch size: 5,000-10,000)
+│ persistence.py   │  One Property / Building / Extra Feature contract;
+└─────────┬────────┘  PostgreSQL COPY or portable ORM selected internally.
           │
           ▼
 ┌──────────────────┐
@@ -212,11 +212,11 @@ Source Files (.txt / .shp)
 └──────────────────┘
 ```
 
-### PostgreSQL COPY Fast Loader
-- Creates a temporary staging table (`CREATE TEMP TABLE ... AS SELECT ... LIMIT 0`).
-- Streams CSV formatted rows using `cursor.copy_expert("COPY staging_table FROM STDIN WITH (FORMAT CSV)")`.
-- Performs a set-based `INSERT INTO target_table SELECT * FROM staging_table ON CONFLICT (key) DO NOTHING`.
-- Eliminates duplicate key aborts and loads 4M+ records in under 12 minutes.
+### Translated-row persistence
+- Callers submit one immutable request naming the Property, Building, or Extra Feature dataset and either Replace or Add Missing intent.
+- PostgreSQL uses a streaming temporary-table COPY adapter; other supported databases use bounded ORM batches.
+- Both adapters enforce the same row schema, complete identity, duplicate accounting, replacement safety, transaction, and result contracts.
+- Property replacement invalidates its Building and Extra Feature dependents. The Harris import rebuilds its account map before translating those datasets.
 
 ### Extra Feature Detail Ingestion
 Detail files (`extra_features_detail1.txt`, `extra_features_detail2.txt`) take priority to capture human-readable descriptions (`Gunite Pool`, `Frame Detached Garage`, etc.), physical dimensions (`length`, `width`), and appraised feature values.

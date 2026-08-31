@@ -20,9 +20,9 @@ from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG, HcadSour
 from .config import DataSource, DataSourceType, ETLConfig
 from .download import DownloadManager
 from .extract import ExtractManager
+from .fixtures_aggregator import FixturesAggregator
 from .import_plan import HarrisImportPlan
 from .logging import ETLLogger
-from .model_loader import ModelLoader
 from .persistence import UnsafeReplacementError
 from .row_reader import RowResult, iter_building_rows, iter_extra_feature_rows, iter_property_rows
 
@@ -268,7 +268,8 @@ class _HarrisImportExecution:
             data_year=data_year,
         )
         self.extract_manager = ExtractManager(self.config, self.logger)
-        self.model_loader = ModelLoader(self.config, self.logger)
+        self.fixtures_aggregator = FixturesAggregator()
+        self._account_to_property: dict[str, int] | None = None
 
         self.reporter = reporter
         self.stages: dict[HarrisImportPhase, HarrisImportStageResult] = {}
@@ -505,10 +506,10 @@ class _HarrisImportExecution:
 
                 if fixtures_path.exists():
                     try:
-                        self.model_loader.fixtures_aggregator.load_fixtures_file(fixtures_path)
+                        self.fixtures_aggregator.load_fixtures_file(fixtures_path)
 
                         # Log statistics
-                        stats = self.model_loader.fixtures_aggregator.get_stats()
+                        stats = self.fixtures_aggregator.get_stats()
                         self.logger.info(
                             f"Fixtures loaded: {stats['total_buildings']:,} buildings, "
                             f"{stats['with_bedrooms']:,} with bedrooms, "
@@ -709,12 +710,12 @@ class _HarrisImportExecution:
         if schema_name == "real_acct":
             return iter_property_rows(file_path)
 
-        account_map = self.model_loader._get_account_to_property_map()
+        account_map = self._get_account_to_property_map()
         if schema_name == "building_res":
             return iter_building_rows(
                 file_path,
                 account_map,
-                self.model_loader.fixtures_aggregator,
+                self.fixtures_aggregator,
             )
         if schema_name == "extra_features":
             return iter_extra_feature_rows(file_path, account_map)
@@ -784,7 +785,7 @@ class _HarrisImportExecution:
             if schema_name == "real_acct":
                 # PropertyRecord ids changed; rebuild the account caches that the
                 # building/extra-feature translators depend on.
-                self.model_loader.reset_cache()
+                self._account_to_property = None
             return {
                 "loaded": persisted.loaded,
                 "invalid": persisted.invalid,
@@ -793,6 +794,19 @@ class _HarrisImportExecution:
             }
 
         return {"loaded": 0, "invalid": 0, "skipped": 0, "failed": 0}
+
+    def _get_account_to_property_map(self) -> dict[str, int]:
+        """Return the per-import residential account map used by translation."""
+        if self._account_to_property is None:
+            from counties.harris.models import PropertyRecord
+
+            self._account_to_property = dict(
+                PropertyRecord.objects.filter(is_residential=True).values_list(
+                    "account_number", "id"
+                )
+            )
+            self.logger.info(f"Loaded {len(self._account_to_property)} account->property mappings")
+        return self._account_to_property
 
     def _process_extra_feature_files(
         self,

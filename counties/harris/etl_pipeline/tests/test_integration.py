@@ -18,7 +18,13 @@ from counties.harris.etl_pipeline import ETLConfig
 from counties.harris.etl_pipeline.config import DataSource, DataSourceType
 from counties.harris.etl_pipeline.download import DownloadManager
 from counties.harris.etl_pipeline.extract import ExtractManager
-from counties.harris.etl_pipeline.model_loader import ModelLoader
+from counties.harris.etl_pipeline.fixtures_aggregator import FixturesAggregator
+from counties.harris.etl_pipeline.persistence import (
+    PersistenceDataset,
+    PersistenceRequest,
+    PersistenceWriteMode,
+    persistence_for_connection,
+)
 from counties.harris.etl_pipeline.row_reader import (
     iter_building_rows,
     iter_extra_feature_rows,
@@ -30,6 +36,16 @@ from counties.harris.etl_pipeline.transform import (
     DataTransformer,
 )
 from counties.harris.models import BuildingDetail, ExtraFeature, PropertyRecord
+
+
+def _persist_replacement(dataset: PersistenceDataset, rows):
+    return persistence_for_connection().persist(
+        PersistenceRequest(
+            dataset=dataset,
+            rows=rows,
+            write_mode=PersistenceWriteMode.REPLACE,
+        )
+    )
 
 
 class TestETLConfigIntegration(TestCase):
@@ -279,7 +295,7 @@ class TestDataTransformerIntegration(TestCase):
         assert records[0]["value"] == 5000.0
 
 
-class TestModelLoaderExtraFeatures(TestCase):
+class TestPersistenceExtraFeatures(TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
         self.config = ETLConfig(
@@ -300,16 +316,14 @@ class TestModelLoaderExtraFeatures(TestCase):
             state_class="A1",
             is_residential=True,
         )
-        loader = ModelLoader(self.config, batch_size=10)
-
         path = Path(self.tmpdir) / "extra_features.txt"
         path.write_text("acct\tbld_num\tcd\nACC2\t1\tRRP5\n", encoding="latin-1")
-        result = loader.load_extra_features(
+        result = _persist_replacement(
+            PersistenceDataset.EXTRA_FEATURE,
             iter_extra_feature_rows(path, {"ACC2": prop.id}),
-            truncate=True,
         )
 
-        assert result.records_loaded == 1
+        assert result.loaded == 1
         feature = ExtraFeature.objects.get(property=prop)
         assert feature.feature_description == ""
         assert feature.quality_code == ""
@@ -404,22 +418,16 @@ class TestEndToEndPipeline(TestCase):
         assert records[0]["account_number"] == "1234567890123"
 
 
-class TestModelLoaderIntegration(TestCase):
+class TestPersistenceIntegration(TestCase):
     """Integration tests for model loading behavior."""
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
-        self.config = ETLConfig(
-            download_dir=Path(self.tmpdir) / "downloads",
-            extract_dir=Path(self.tmpdir) / "extracted",
-            log_dir=Path(self.tmpdir) / "logs",
-        )
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_load_property_records_skips_non_residential_rows(self):
-        loader = ModelLoader(self.config, batch_size=10)
         path = Path(self.tmpdir) / "real_acct.txt"
         path.write_text(
             "acct\tstate_class\tstr_num\tstr\tstr_sfx\tsite_addr_1\tsite_addr_2\t"
@@ -431,14 +439,13 @@ class TestModelLoaderIntegration(TestCase):
             encoding="latin-1",
         )
 
-        result = loader.load_property_records(
+        result = _persist_replacement(
+            PersistenceDataset.PROPERTY,
             iter_property_rows(path),
-            truncate=True,
-            batch_id="test_batch",
         )
 
-        assert result.records_loaded == 1
-        assert result.records_skipped == 1
+        assert result.loaded == 1
+        assert result.skipped == 1
         assert PropertyRecord.objects.count() == 1
 
         prop = PropertyRecord.objects.get(account_number="RES001")
@@ -446,8 +453,6 @@ class TestModelLoaderIntegration(TestCase):
         assert prop.state_class == "A1"
 
     def test_load_building_details_uses_residential_account_map(self):
-        loader = ModelLoader(self.config, batch_size=10)
-
         residential = PropertyRecord.objects.create(
             account_number="RESB001",
             address="100 MAIN ST",
@@ -473,14 +478,17 @@ class TestModelLoaderIntegration(TestCase):
             encoding="latin-1",
         )
 
-        result = loader.load_building_details(
-            iter_building_rows(path, {"RESB001": residential.id}, loader.fixtures_aggregator),
-            truncate=True,
-            batch_id="building_test",
+        result = _persist_replacement(
+            PersistenceDataset.BUILDING,
+            iter_building_rows(
+                path,
+                {"RESB001": residential.id},
+                FixturesAggregator(),
+            ),
         )
 
-        assert result.records_loaded == 1
-        assert result.records_invalid == 1
+        assert result.loaded == 1
+        assert result.invalid == 1
         assert BuildingDetail.objects.count() == 1
 
         building = BuildingDetail.objects.get(account_number="RESB001")
