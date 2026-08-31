@@ -249,3 +249,195 @@ class NonTypedCountyFlagTests(TestCase):
         status = self._pair("Y")
         self.assertIsNone(status["allowed_value"])
         self.assertIsNone(status["overage"])
+
+
+class CircuitBreakerTaxYearTests(TestCase):
+    """Tax Code 23.231 has a life, not just a rule.
+
+    Added by Acts 2023, 88th Leg., 2nd C.S., Ch. 1 (S.B. 2) effective
+    January 1, 2024 and expiring December 31, 2026, so the 20% limit is in
+    force only for tax years 2024 through 2026. Harris history covers
+    2022-2026, so the pre-2024 rows are exactly the ones a year-blind
+    selection judges against a rule that postdates them.
+    """
+
+    def _pair(self, tax_year: int, *, flag: str = "N"):
+        account = f"CBYEAR{tax_year}{flag}"
+        prior = AssessmentHistory.objects.create(
+            account_number=account,
+            tax_year=tax_year - 1,
+            assessed_value=Decimal("400000"),
+            appraised_value=Decimal("400000"),
+            market_value=Decimal("430000"),
+        )
+        current = AssessmentHistory.objects.create(
+            account_number=account,
+            tax_year=tax_year,
+            assessed_value=Decimal("470000"),
+            appraised_value=Decimal("470000"),
+            market_value=Decimal("600000"),
+            prior_appraised_value=Decimal("400000"),
+            new_construction_value=Decimal("0"),
+            cap_account=flag,
+        )
+        return evaluate_cap_status(current, prior)
+
+    def test_2022_non_homestead_row_has_no_cap_in_force(self):
+        # The bug this issue reports: a 2022 row shown as "Over cap,
+        # Limit: 20%" under a section that did not exist that year.
+        status = self._pair(2022)
+        self.assertEqual(status["cap_type"], "none")
+        self.assertIsNone(status["limit_percent"])
+        self.assertEqual(status["status"], "not_applicable")
+        self.assertEqual(status["label"], "No cap in force")
+        self.assertIsNone(status["allowed_value"])
+        self.assertIsNone(status["overage"])
+
+    def test_2023_is_still_before_the_first_applicable_tax_year(self):
+        # S.B. 2 passed in 2023, but 23.231 took effect January 1, 2024:
+        # enactment year and first applicable tax year are not the same.
+        status = self._pair(2023)
+        self.assertEqual(status["cap_type"], "none")
+        self.assertIsNone(status["limit_percent"])
+
+    def test_2024_is_the_first_applicable_tax_year(self):
+        status = self._pair(2024)
+        self.assertEqual(status["cap_type"], "circuit_breaker")
+        self.assertEqual(status["limit_percent"], Decimal("20"))
+        # 400k +20% = 480k, so 470k is within the cap.
+        self.assertEqual(status["status"], "within_limit")
+
+    def test_2026_is_the_final_applicable_tax_year(self):
+        status = self._pair(2026)
+        self.assertEqual(status["cap_type"], "circuit_breaker")
+        self.assertEqual(status["limit_percent"], Decimal("20"))
+
+    def test_2027_is_after_the_section_expires(self):
+        # 23.231(k): "This section expires December 31, 2026."
+        status = self._pair(2027)
+        self.assertEqual(status["cap_type"], "none")
+        self.assertIsNone(status["limit_percent"])
+
+    def test_year_over_year_increase_percent_survives_the_year_gate(self):
+        # No cap in force is not the same as no data: the value trend is
+        # the whole point of the history table.
+        self.assertEqual(self._pair(2022)["increase_percent"], Decimal("17.50"))
+
+    def test_homestead_cap_is_not_year_gated(self):
+        # The 23.23 10% homestead cap long predates S.B. 2, so a 2022
+        # homestead row is still correctly judged at 10%.
+        status = self._pair(2022, flag="Y")
+        self.assertEqual(status["cap_type"], "homestead")
+        self.assertEqual(status["limit_percent"], Decimal("10"))
+        self.assertEqual(status["status"], "over_limit")
+
+
+class CircuitBreakerValueCeilingTests(TestCase):
+    """23.231(b) only qualifies property at or below the 23.231(j) ceiling.
+
+    $5,000,000 for 2024, then adjusted by the comptroller for inflation and
+    rounded to the nearest $10,000: $5,160,000 for 2025 and $5,320,000 for
+    2026. Above it, this row cannot establish that the property ever
+    qualified, so no limit is asserted.
+    """
+
+    def _pair(self, tax_year: int, prior_value: str, current_value: str):
+        account = f"CBCEIL{tax_year}{prior_value}"
+        prior = AssessmentHistory.objects.create(
+            account_number=account,
+            tax_year=tax_year - 1,
+            assessed_value=Decimal(prior_value),
+            appraised_value=Decimal(prior_value),
+            market_value=Decimal(prior_value),
+        )
+        current = AssessmentHistory.objects.create(
+            account_number=account,
+            tax_year=tax_year,
+            assessed_value=Decimal(current_value),
+            appraised_value=Decimal(current_value),
+            market_value=Decimal("99000000"),
+            prior_appraised_value=Decimal(prior_value),
+            new_construction_value=Decimal("0"),
+            cap_account="N",
+        )
+        return evaluate_cap_status(current, prior)
+
+    def test_value_at_the_ceiling_still_qualifies(self):
+        status = self._pair(2024, "4000000", "5000000")
+        self.assertEqual(status["cap_type"], "circuit_breaker")
+        self.assertEqual(status["limit_percent"], Decimal("20"))
+        self.assertEqual(status["allowed_value"], Decimal("4800000.00"))
+
+    def test_value_above_the_ceiling_asserts_no_limit(self):
+        status = self._pair(2024, "4000000", "5000001")
+        self.assertEqual(status["cap_type"], "unknown")
+        self.assertIsNone(status["limit_percent"])
+        self.assertEqual(status["status"], "unknown")
+        self.assertEqual(status["label"], "Needs review")
+        self.assertIsNone(status["allowed_value"])
+        self.assertIsNone(status["overage"])
+
+    def test_ceiling_is_inflation_adjusted_per_year(self):
+        # $5,160,000 is over the 2024 ceiling but exactly at the 2025 one.
+        self.assertEqual(self._pair(2024, "4000000", "5160000")["cap_type"], "unknown")
+        self.assertEqual(self._pair(2025, "4000000", "5160000")["cap_type"], "circuit_breaker")
+
+    def test_2026_ceiling_is_higher_again(self):
+        self.assertEqual(self._pair(2025, "4000000", "5320000")["cap_type"], "unknown")
+        self.assertEqual(self._pair(2026, "4000000", "5320000")["cap_type"], "circuit_breaker")
+
+    def test_ceiling_is_measured_on_the_tax_year_value(self):
+        # The preceding-year base is below the ceiling, but Section 23.231(b)
+        # applies the ceiling to the appraised value in the qualifying tax
+        # year. Lacking ownership history, we must not assert that this row
+        # previously qualified and attach a potentially inapplicable limit.
+        status = self._pair(2025, "4900000", "8000000")
+        self.assertEqual(status["cap_type"], "unknown")
+        self.assertIsNone(status["allowed_value"])
+        self.assertEqual(status["status"], "unknown")
+
+    def test_ceiling_uses_the_current_value_when_there_is_no_base_value(self):
+        # No prior figure anywhere: the current year's appraised value is
+        # the only evidence available, and a value far above the ceiling is
+        # not something to attach a 20% limit to.
+        current = AssessmentHistory.objects.create(
+            account_number="CBCEILNOPRIOR",
+            tax_year=2025,
+            assessed_value=Decimal("9000000"),
+            appraised_value=Decimal("9000000"),
+            market_value=Decimal("9500000"),
+            cap_account="N",
+        )
+
+        status = evaluate_cap_status(current, None)
+
+        self.assertEqual(status["cap_type"], "unknown")
+        self.assertIsNone(status["limit_percent"])
+
+    def test_homestead_cap_has_no_value_ceiling(self):
+        # 23.23 caps a residence homestead regardless of value; the
+        # ceiling belongs to 23.231 alone.
+        prior = AssessmentHistory.objects.create(
+            account_number="HSNOCEIL",
+            tax_year=2024,
+            assessed_value=Decimal("8000000"),
+            appraised_value=Decimal("8000000"),
+            market_value=Decimal("8000000"),
+        )
+        current = AssessmentHistory.objects.create(
+            account_number="HSNOCEIL",
+            tax_year=2025,
+            assessed_value=Decimal("9000000"),
+            appraised_value=Decimal("9000000"),
+            market_value=Decimal("9900000"),
+            prior_appraised_value=Decimal("8000000"),
+            new_construction_value=Decimal("0"),
+            cap_account="Y",
+        )
+
+        status = evaluate_cap_status(current, prior)
+
+        self.assertEqual(status["cap_type"], "homestead")
+        self.assertEqual(status["limit_percent"], Decimal("10"))
+        self.assertEqual(status["allowed_value"], Decimal("8800000.00"))
+        self.assertEqual(status["status"], "over_limit")

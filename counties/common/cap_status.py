@@ -1,10 +1,20 @@
 """Cap-status evaluation for the shared assessment-history report.
 
 Evaluates a year's assessed/appraised value increase against the Texas
-homestead cap (10%) or circuit-breaker cap (20%). Genuinely county-neutral in
-its math, but the *inputs* it reads are not: ``AssessmentHistory.cap_account``
-carries a different vocabulary per county (see ``COUNTIES_WITH_TYPED_CAP_FLAG``
-below), and this module is the one place that decodes it.
+homestead cap (Tax Code 23.23, 10%) or circuit-breaker cap (Tax Code 23.231,
+20%). Genuinely county-neutral in its math, but the *inputs* it reads are not:
+``AssessmentHistory.cap_account`` carries a different vocabulary per county
+(see ``COUNTIES_WITH_TYPED_CAP_FLAG`` below), and this module is the one place
+that decodes it.
+
+A cap is a rule with a life, not a constant. 23.23 has capped residence
+homesteads since long before the 2022 start of our history, but 23.231 was
+added by Acts 2023, 88th Leg., 2nd C.S., Ch. 1 (S.B. 2) effective January 1,
+2024 and expires December 31, 2026 -- so tax years 2022 and 2023 had no
+non-homestead cap at all, and 2027 onward will have none again unless the
+legislature revives it. Selecting a limit from the cap flag alone measures a
+2022 row against a rule that postdates it. Every statutory year and value
+boundary lives in ``circuit_breaker_ceiling`` below.
 """
 
 from __future__ import annotations
@@ -36,6 +46,31 @@ HOMESTEAD_CAP_FLAG = "Y"
 #: export never actually reported -- see evaluate_cap_status below.
 COUNTIES_WITH_TYPED_CAP_FLAG = {"harris"}
 
+#: Tax Code 23.231(j)'s qualifying appraised-value ceiling, by tax year: the
+#: statute fixes $5,000,000 for 2024 and directs the comptroller to adjust it
+#: each following year by the CPI change, rounded to the nearest $10,000.
+#: These are the comptroller's published figures.
+#:
+#: Membership in this mapping is also the section's *life*: 23.231 did not
+#: exist before tax year 2024 and 23.231(k) expires it December 31, 2026, so a
+#: year with no published ceiling is a year with no circuit breaker. Extending
+#: the section would mean adding its new year's ceiling here anyway, which
+#: keeps the two facts from drifting apart.
+CIRCUIT_BREAKER_VALUE_CEILING: dict[int, Decimal] = {
+    2024: Decimal("5000000"),
+    2025: Decimal("5160000"),
+    2026: Decimal("5320000"),
+}
+
+
+def circuit_breaker_ceiling(tax_year: int) -> Decimal | None:
+    """The 23.231 qualifying value ceiling for ``tax_year``, or None.
+
+    None means the circuit breaker was not in force that year at any value --
+    before 2024 the section did not exist, and after 2026 it has expired.
+    """
+    return CIRCUIT_BREAKER_VALUE_CEILING.get(tax_year)
+
 
 def _percent_change(current: Decimal | None, prior: Decimal | None) -> Decimal | None:
     if current is None or prior is None or prior <= 0:
@@ -61,6 +96,67 @@ def _has_cap_account(entry: AssessmentHistory) -> bool:
     return str(entry.cap_account or "").strip().upper() == HOMESTEAD_CAP_FLAG
 
 
+def _applicable_cap(
+    entry: AssessmentHistory, tax_year_value: Decimal | None
+) -> tuple[str, Decimal | None]:
+    """Which Texas cap governed this row's tax year, and at what percent.
+
+    Returns ``("homestead", 10)`` or ``("circuit_breaker", 20)`` when a cap was
+    in force and this row can establish the property is subject to it,
+    ``("none", None)`` when no cap existed for that tax year, and
+    ``("unknown", None)`` when a cap may be in force but this row cannot
+    establish that the property qualifies.
+
+    ``tax_year_value`` is tested against the 23.231(b) ceiling. The statute
+    measures the ceiling against the appraised value "for the tax year in which
+    the property first qualifies", and qualification then continues while the
+    same owner holds the property. Assessment history does not include the
+    ownership date needed to recover that first year. Testing the current row's
+    appraised value is therefore conservative: it can leave a long-qualified
+    property above the ceiling at "needs review", but it will not manufacture a
+    20% limit from a preceding-year value below the ceiling.
+
+    Two further 23.231 exclusions stay unmodelled because no field here
+    reports them: the limitation only takes effect the tax year *after* the
+    first year the owner owns the property on January 1 (23.231(f)), and it
+    never applies to property under a special appraisal such as agricultural
+    or timberland.
+    """
+    if _has_cap_account(entry):
+        # 23.23's homestead cap predates our earliest history year and has no
+        # value ceiling, so neither gate below applies to it.
+        return "homestead", TEN_PERCENT_CAP
+
+    ceiling = circuit_breaker_ceiling(entry.tax_year)
+    if ceiling is None:
+        return "none", None
+    if tax_year_value is None or tax_year_value > ceiling:
+        return "unknown", None
+    return "circuit_breaker", TWENTY_PERCENT_CAP
+
+
+def _no_limit_result(cap_type: str, increase_percent: Decimal | None) -> dict[str, Any]:
+    """A row no limit is attached to, distinguishing the two reasons why.
+
+    ``"none"`` is a finding: no Texas cap governed that tax year, so there is
+    nothing for the value to be over. ``"unknown"`` is an absence of evidence:
+    a cap may well apply, but this row cannot establish it. Both keep the
+    county-neutral ``increase_percent``, which is real data either way.
+    """
+    status, label = (
+        ("not_applicable", "No cap in force") if cap_type == "none" else ("unknown", "Needs review")
+    )
+    return {
+        "status": status,
+        "label": label,
+        "cap_type": cap_type,
+        "limit_percent": None,
+        "increase_percent": increase_percent,
+        "allowed_value": None,
+        "overage": None,
+    }
+
+
 def evaluate_cap_status(
     current: AssessmentHistory,
     prior: AssessmentHistory | None = None,
@@ -74,6 +170,10 @@ def evaluate_cap_status(
     applied -- so this returns an honest "unknown" cap type with no asserted
     limit_percent/allowed_value/overage, rather than guessing. The
     year-over-year increase_percent is still real data and always returned.
+
+    Selection is then gated on the row's tax year and value by
+    ``_applicable_cap``, because the circuit breaker is a 2024-2026 provision
+    with a qualifying value ceiling rather than a standing rule.
     """
     # Three-tier fallback for last year's value, each tier covering a real gap
     # in the source data rather than a hypothetical one:
@@ -101,18 +201,11 @@ def evaluate_cap_status(
     increase_percent = _percent_change(current_value, prior_value)
 
     if current.county not in COUNTIES_WITH_TYPED_CAP_FLAG:
-        return {
-            "status": "unknown",
-            "label": "Needs review",
-            "cap_type": "unknown",
-            "limit_percent": None,
-            "increase_percent": increase_percent,
-            "allowed_value": None,
-            "overage": None,
-        }
+        return _no_limit_result("unknown", increase_percent)
 
-    cap_type = "homestead" if _has_cap_account(current) else "circuit_breaker"
-    limit_percent = TEN_PERCENT_CAP if cap_type == "homestead" else TWENTY_PERCENT_CAP
+    cap_type, limit_percent = _applicable_cap(current, current_value)
+    if limit_percent is None:
+        return _no_limit_result(cap_type, increase_percent)
 
     if current_value is None or prior_value is None:
         return {
