@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 
-from django.core.management.base import CommandError
 from django.db import transaction
 
 from counties.brazos.annual_refresh import RefreshOptions, StagePreparation
@@ -73,9 +73,24 @@ class CoordinateEnrichmentReport:
 class CoordinateEnrichmentRequest:
     """Immutable request crossing the coordinate-enrichment seam."""
 
-    options: RefreshOptions
-    apply: bool = False
-    minimum_match_rate: float | None = None
+    target_year: int
+    expected_source_year: int | None = None
+    force: bool = False
+    skip_download: bool = False
+    skip_extract: bool = False
+    keep_extracted: bool = False
+
+
+class CoordinateEnrichmentError(Exception):
+    """Base failure translated by the management-command adapter."""
+
+
+class InvalidCoordinateEnrichmentRequest(CoordinateEnrichmentError, ValueError):
+    """The request is invalid before source acquisition starts."""
+
+
+class CoordinateEnrichmentSourceError(CoordinateEnrichmentError):
+    """The selected GIS source could not be prepared or interpreted."""
 
 
 @dataclass(frozen=True)
@@ -90,16 +105,24 @@ class CoordinateEnrichmentResult:
     reason: str = ""
 
 
+@dataclass(frozen=True)
+class _CoordinateAnalysis:
+    """Prepared source details that never cross the external seam."""
+
+    preparation: StagePreparation
+    report: CoordinateEnrichmentReport
+    candidates: dict[str, tuple[Decimal, Decimal]]
+
+
 class BrazosCoordinateEnrichment:
     """Analyze and optionally apply a threshold-gated coordinate update."""
 
     def __init__(
         self,
-        source_stage: GisRefreshStage | None = None,
         reporter: StageReporter | None = None,
     ):
         self._reporter = reporter or SilentStageReporter()
-        self._source_stage = source_stage or GisRefreshStage(self._reporter)
+        self._source_stage = GisRefreshStage(self._reporter)
 
     @property
     def stdout(self):
@@ -121,30 +144,33 @@ class BrazosCoordinateEnrichment:
             "invalid_coordinate_records": evidence.invalid_coordinate_records,
         }
 
-    def run(self, request: CoordinateEnrichmentRequest) -> CoordinateEnrichmentResult:
-        """Analyze, audit, and optionally apply one guarded update internally."""
+    def analyze(self, request: CoordinateEnrichmentRequest) -> CoordinateEnrichmentReport:
+        """Measure one source-to-target join without writing or cleaning anything."""
         self._validate_request(request)
-        preparation, report, candidates = self._analyze(request.options)
+        return self._analyze(request).report
+
+    def apply(
+        self,
+        request: CoordinateEnrichmentRequest,
+        *,
+        minimum_match_rate: float,
+    ) -> CoordinateEnrichmentResult:
+        """Apply one independently staged and measured coordinate update."""
+        self._validate_request(request)
+        self._validate_minimum_match_rate(minimum_match_rate)
+        analysis = self._analyze(request)
+        preparation = analysis.preparation
+        report = analysis.report
+        candidates = analysis.candidates
         snapshot = self._active_partial_snapshot(report.target_year)
 
-        if not request.apply:
-            audit = self._record_audit(
-                snapshot=snapshot,
-                report=report,
-                outcome=CoordinateEnrichmentOutcome.ANALYZED,
-                minimum_match_rate=None,
-                updated_count=0,
-                reason="",
-            )
-            return self._result(audit, report)
-
-        rejection = self._rejection_reason(snapshot, report, request.minimum_match_rate)
+        rejection = self._rejection_reason(snapshot, report, minimum_match_rate)
         if rejection:
             audit = self._record_audit(
                 snapshot=snapshot,
                 report=report,
                 outcome=CoordinateEnrichmentOutcome.REJECTED,
-                minimum_match_rate=request.minimum_match_rate,
+                minimum_match_rate=minimum_match_rate,
                 updated_count=0,
                 reason=rejection,
             )
@@ -154,34 +180,43 @@ class BrazosCoordinateEnrichment:
             snapshot=snapshot,
             report=report,
             candidates=candidates,
-            minimum_match_rate=request.minimum_match_rate,
+            minimum_match_rate=minimum_match_rate,
         )
         if outcome in {CoordinateEnrichmentOutcome.APPLIED, CoordinateEnrichmentOutcome.NOOP}:
-            self._finalize_cleanup(audit, preparation, request.options)
+            self._finalize_cleanup(audit, preparation, request)
         audit.refresh_from_db()
         return self._result(audit, report)
 
-    def _analyze(self, options: RefreshOptions) -> tuple[
-        StagePreparation,
-        CoordinateEnrichmentReport,
-        dict[str, tuple[Decimal, Decimal]],
-    ]:
-        if options.tax_year is None:
-            raise CommandError("--year is required for coordinate-only enrichment.")
-
-        preparation = self._source_stage.prepare(options)
+    def _analyze(self, request: CoordinateEnrichmentRequest) -> _CoordinateAnalysis:
+        options = RefreshOptions(
+            tax_year=request.target_year,
+            source_year=request.expected_source_year,
+            force=request.force,
+            skip_download=request.skip_download,
+            skip_extract=request.skip_extract,
+            keep_extracted=request.keep_extracted,
+        )
+        try:
+            preparation = self._source_stage.prepare(options)
+        except Exception as exc:
+            raise CoordinateEnrichmentSourceError(str(exc)) from exc
         if preparation.source_year >= preparation.target_year:
-            raise CommandError(
+            raise CoordinateEnrichmentSourceError(
                 "Coordinate-only enrichment requires an earlier GIS source year than "
                 f"the target CAD year; received GIS {preparation.source_year} and CAD "
                 f"{preparation.target_year}. Use refresh_brazos_annual for a year-matched snapshot."
             )
         payload = preparation.payload
         if not isinstance(payload, GisSourcePayload) or payload.shapefile_path is None:
-            raise CommandError("No BCAD GIS shapefile was prepared for coordinate analysis.")
+            raise CoordinateEnrichmentSourceError(
+                "No BCAD GIS shapefile was prepared for coordinate analysis."
+            )
 
         self.stdout.write(f"Reading {payload.shapefile_path} for coordinate coverage ...")
-        candidates, source_metrics = self._coordinate_candidates(payload.shapefile_path)
+        try:
+            candidates, source_metrics = self._coordinate_candidates(payload.shapefile_path)
+        except Exception as exc:
+            raise CoordinateEnrichmentSourceError(str(exc)) from exc
         accounts_by_prop_id = {
             account.prop_id: account
             for account in PropertyAccount.objects.filter(tax_year=preparation.target_year)
@@ -196,16 +231,49 @@ class BrazosCoordinateEnrichment:
             unmatched_source_ids=len(candidates) - len(matched_ids),
             **source_metrics,
         )
-        return preparation, report, candidates
+        return _CoordinateAnalysis(
+            preparation=preparation,
+            report=report,
+            candidates=candidates,
+        )
 
     @staticmethod
     def _validate_request(request: CoordinateEnrichmentRequest) -> None:
-        if not request.apply:
-            return
-        if request.minimum_match_rate is None:
-            raise CommandError("--apply requires an explicit --minimum-match-rate.")
-        if not 0 <= request.minimum_match_rate <= 1:
-            raise CommandError("--minimum-match-rate must be between 0 and 1.")
+        if not isinstance(request, CoordinateEnrichmentRequest):
+            raise InvalidCoordinateEnrichmentRequest(
+                "request must be a CoordinateEnrichmentRequest"
+            )
+        if not isinstance(request.target_year, int) or isinstance(request.target_year, bool):
+            raise InvalidCoordinateEnrichmentRequest("target_year must be an integer")
+        if request.expected_source_year is not None and (
+            not isinstance(request.expected_source_year, int)
+            or isinstance(request.expected_source_year, bool)
+        ):
+            raise InvalidCoordinateEnrichmentRequest(
+                "expected_source_year must be an integer when supplied"
+            )
+        if (
+            request.expected_source_year is not None
+            and request.expected_source_year >= request.target_year
+        ):
+            raise InvalidCoordinateEnrichmentRequest(
+                "Coordinate enrichment requires an earlier GIS source year. "
+                "Use refresh_brazos_annual for a year-matched snapshot."
+            )
+        if request.force and request.skip_download:
+            raise InvalidCoordinateEnrichmentRequest("force cannot be combined with skip_download")
+
+    @staticmethod
+    def _validate_minimum_match_rate(minimum_match_rate: float) -> None:
+        if (
+            not isinstance(minimum_match_rate, (int, float))
+            or isinstance(minimum_match_rate, bool)
+            or not math.isfinite(minimum_match_rate)
+            or not 0 <= minimum_match_rate <= 1
+        ):
+            raise InvalidCoordinateEnrichmentRequest(
+                "minimum_match_rate must be a finite number between 0 and 1"
+            )
 
     @staticmethod
     def _active_partial_snapshot(target_year: int) -> BrazosPropertySnapshot | None:
@@ -328,9 +396,9 @@ class BrazosCoordinateEnrichment:
         self,
         audit: CoordinateEnrichmentAudit,
         preparation: StagePreparation,
-        options: RefreshOptions,
+        request: CoordinateEnrichmentRequest,
     ) -> None:
-        if options.keep_extracted or options.skip_extract:
+        if request.keep_extracted or request.skip_extract:
             return
         try:
             self._source_stage.cleanup(preparation)

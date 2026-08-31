@@ -2,12 +2,13 @@
 
 from django.core.management.base import BaseCommand, CommandError
 
-from counties.brazos.annual_refresh import RefreshOptions
 from counties.brazos.coordinate_enrichment import (
     BrazosCoordinateEnrichment,
+    CoordinateEnrichmentError,
     CoordinateEnrichmentOutcome,
     CoordinateEnrichmentReport,
     CoordinateEnrichmentRequest,
+    InvalidCoordinateEnrichmentRequest,
 )
 
 
@@ -49,20 +50,35 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         enrichment = BrazosCoordinateEnrichment(reporter=self)
-        result = enrichment.run(
-            CoordinateEnrichmentRequest(
-                options=RefreshOptions(
-                    tax_year=options["year"],
-                    source_year=options.get("source_year"),
-                    force=options["force"],
-                    skip_download=options["skip_download"],
-                    skip_extract=options["skip_extract"],
-                    keep_extracted=options["keep_extracted"],
-                ),
-                apply=options["apply"],
-                minimum_match_rate=options.get("minimum_match_rate"),
-            )
+        request = CoordinateEnrichmentRequest(
+            target_year=options["year"],
+            expected_source_year=options.get("source_year"),
+            force=options["force"],
+            skip_download=options["skip_download"],
+            skip_extract=options["skip_extract"],
+            keep_extracted=options["keep_extracted"],
         )
+        try:
+            if not options["apply"]:
+                report = enrichment.analyze(request)
+                self._write_report(report)
+                self.stdout.write(
+                    self.style.WARNING("Analysis complete; no database rows were changed.")
+                )
+                return
+
+            minimum_match_rate = options.get("minimum_match_rate")
+            if minimum_match_rate is None:
+                raise InvalidCoordinateEnrichmentRequest(
+                    "--apply requires an explicit --minimum-match-rate."
+                )
+            result = enrichment.apply(
+                request,
+                minimum_match_rate=minimum_match_rate,
+            )
+        except CoordinateEnrichmentError as exc:
+            raise CommandError(str(exc)) from exc
+
         self._write_report(result.report)
         self.stdout.write(
             f"Coordinate enrichment audit={result.audit_id}; outcome={result.outcome}; "
@@ -70,11 +86,6 @@ class Command(BaseCommand):
         )
         if result.outcome is CoordinateEnrichmentOutcome.REJECTED:
             raise CommandError(f"Coordinate enrichment rejected: {result.reason}")
-        if result.outcome is CoordinateEnrichmentOutcome.ANALYZED:
-            self.stdout.write(
-                self.style.WARNING("Analysis complete; no database rows were changed.")
-            )
-            return
         self.stdout.write(
             self.style.SUCCESS(
                 f"Coordinate enrichment {result.outcome}: {result.updated_count} "
