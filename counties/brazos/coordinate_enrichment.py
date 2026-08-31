@@ -197,7 +197,7 @@ class BrazosCoordinateEnrichment:
             audit.refresh_from_db()
             raise CoordinateEnrichmentCleanupError(
                 self._result(audit, report),
-                source.preparation.cleanup_paths,
+                tuple(path for path in source.preparation.cleanup_paths if path.exists()),
             ) from exc
         audit.refresh_from_db()
         return self._result(audit, report)
@@ -402,6 +402,12 @@ class BrazosCoordinateEnrichment:
             return
         try:
             self._source_stage.cleanup(preparation)
+            retained_paths = tuple(path for path in preparation.cleanup_paths if path.exists())
+            if retained_paths:
+                raise OSError(
+                    "GIS cleanup returned without removing: "
+                    + ", ".join(str(path) for path in retained_paths)
+                )
         except Exception:
             audit.cleanup_state = CoordinateCleanupState.FAILED
             audit.save(update_fields=["cleanup_state"])

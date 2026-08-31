@@ -312,6 +312,20 @@ class CoordinateEnrichmentTests(TestCase):
         self.assertIn(shapefile_path.parent, ctx.exception.retained_paths)
         self.assertTrue(shapefile_path.exists())
 
+    def test_cleanup_that_suppresses_deletion_error_is_still_reported_as_failed(self):
+        self._active_partial_snapshot()
+        PropertyAccount.objects.create(prop_id="000000010013", tax_year=2026)
+        request, shapefile_path = self._request(skip_extract=False)
+
+        with (
+            patch.object(GisRefreshStage, "cleanup", return_value=None),
+            self.assertRaises(CoordinateEnrichmentCleanupError) as ctx,
+        ):
+            BrazosCoordinateEnrichment().apply(request, minimum_match_rate=0.5)
+
+        self.assertEqual(ctx.exception.outcome.cleanup_state, CoordinateCleanupState.FAILED)
+        self.assertEqual(ctx.exception.retained_paths, (shapefile_path.parent,))
+
     def test_command_reports_committed_success_before_cleanup_warning_and_exits_zero(self):
         self._active_partial_snapshot()
         PropertyAccount.objects.create(prop_id="000000010013", tax_year=2026)
