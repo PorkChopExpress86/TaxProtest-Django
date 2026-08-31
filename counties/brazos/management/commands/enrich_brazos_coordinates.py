@@ -5,7 +5,7 @@ from django.core.management.base import BaseCommand, CommandError
 from counties.brazos.coordinate_enrichment import (
     BrazosCoordinateEnrichment,
     CoordinateEnrichmentError,
-    CoordinateEnrichmentOutcome,
+    CoordinateEnrichmentRejected,
     CoordinateEnrichmentReport,
     CoordinateEnrichmentRequest,
     InvalidCoordinateEnrichmentRequest,
@@ -76,6 +76,9 @@ class Command(BaseCommand):
                 request,
                 minimum_match_rate=minimum_match_rate,
             )
+        except CoordinateEnrichmentRejected as exc:
+            self._write_report(exc.report)
+            raise CommandError(f"Coordinate enrichment rejected: {exc}") from exc
         except CoordinateEnrichmentError as exc:
             raise CommandError(str(exc)) from exc
 
@@ -84,8 +87,6 @@ class Command(BaseCommand):
             f"Coordinate enrichment audit={result.audit_id}; outcome={result.outcome}; "
             f"updated={result.updated_count}; cleanup={result.cleanup_state}."
         )
-        if result.outcome is CoordinateEnrichmentOutcome.REJECTED:
-            raise CommandError(f"Coordinate enrichment rejected: {result.reason}")
         self.stdout.write(
             self.style.SUCCESS(
                 f"Coordinate enrichment {result.outcome}: {result.updated_count} "

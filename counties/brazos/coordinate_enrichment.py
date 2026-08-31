@@ -93,6 +93,19 @@ class CoordinateEnrichmentSourceError(CoordinateEnrichmentError):
     """The selected GIS source could not be prepared or interpreted."""
 
 
+class CoordinateEnrichmentRejected(CoordinateEnrichmentError):
+    """A measured target population failed one or more publication guards."""
+
+    def __init__(
+        self,
+        report: CoordinateEnrichmentReport,
+        violations: tuple[str, ...],
+    ):
+        self.report = report
+        self.violations = violations
+        super().__init__("; ".join(violations))
+
+
 @dataclass(frozen=True)
 class CoordinateEnrichmentResult:
     """Immutable outcome, evidence, and audit identity for one invocation."""
@@ -106,12 +119,12 @@ class CoordinateEnrichmentResult:
 
 
 @dataclass(frozen=True)
-class _CoordinateAnalysis:
-    """Prepared source details that never cross the external seam."""
+class _PreparedCoordinateSource:
+    """Staged coordinate evidence that never crosses the external seam."""
 
     preparation: StagePreparation
-    report: CoordinateEnrichmentReport
     candidates: dict[str, tuple[Decimal, Decimal]]
+    source_metrics: dict[str, int]
 
 
 class BrazosCoordinateEnrichment:
@@ -147,7 +160,9 @@ class BrazosCoordinateEnrichment:
     def analyze(self, request: CoordinateEnrichmentRequest) -> CoordinateEnrichmentReport:
         """Measure one source-to-target join without writing or cleaning anything."""
         self._validate_request(request)
-        return self._analyze(request).report
+        source = self._prepare_source(request)
+        accounts = list(PropertyAccount.objects.filter(tax_year=request.target_year))
+        return self._report_for_accounts(source, accounts)
 
     def apply(
         self,
@@ -158,36 +173,16 @@ class BrazosCoordinateEnrichment:
         """Apply one independently staged and measured coordinate update."""
         self._validate_request(request)
         self._validate_minimum_match_rate(minimum_match_rate)
-        analysis = self._analyze(request)
-        preparation = analysis.preparation
-        report = analysis.report
-        candidates = analysis.candidates
-        snapshot = self._active_partial_snapshot(report.target_year)
-
-        rejection = self._rejection_reason(snapshot, report, minimum_match_rate)
-        if rejection:
-            audit = self._record_audit(
-                snapshot=snapshot,
-                report=report,
-                outcome=CoordinateEnrichmentOutcome.REJECTED,
-                minimum_match_rate=minimum_match_rate,
-                updated_count=0,
-                reason=rejection,
-            )
-            return self._result(audit, report)
-
-        audit, outcome = self._apply_with_audit(
-            snapshot=snapshot,
-            report=report,
-            candidates=candidates,
+        source = self._prepare_source(request)
+        audit, report = self._apply_measured_population(
+            source=source,
             minimum_match_rate=minimum_match_rate,
         )
-        if outcome in {CoordinateEnrichmentOutcome.APPLIED, CoordinateEnrichmentOutcome.NOOP}:
-            self._finalize_cleanup(audit, preparation, request)
+        self._finalize_cleanup(audit, source.preparation, request)
         audit.refresh_from_db()
         return self._result(audit, report)
 
-    def _analyze(self, request: CoordinateEnrichmentRequest) -> _CoordinateAnalysis:
+    def _prepare_source(self, request: CoordinateEnrichmentRequest) -> _PreparedCoordinateSource:
         options = RefreshOptions(
             tax_year=request.target_year,
             source_year=request.expected_source_year,
@@ -217,24 +212,27 @@ class BrazosCoordinateEnrichment:
             candidates, source_metrics = self._coordinate_candidates(payload.shapefile_path)
         except Exception as exc:
             raise CoordinateEnrichmentSourceError(str(exc)) from exc
-        accounts_by_prop_id = {
-            account.prop_id: account
-            for account in PropertyAccount.objects.filter(tax_year=preparation.target_year)
-        }
-        matched_ids = candidates.keys() & accounts_by_prop_id.keys()
-        report = CoordinateEnrichmentReport(
-            source_year=preparation.source_year,
-            target_year=preparation.target_year,
+        return _PreparedCoordinateSource(
+            preparation=preparation,
+            candidates=candidates,
+            source_metrics=source_metrics,
+        )
+
+    @staticmethod
+    def _report_for_accounts(
+        source: _PreparedCoordinateSource,
+        accounts: list[PropertyAccount],
+    ) -> CoordinateEnrichmentReport:
+        accounts_by_prop_id = {account.prop_id: account for account in accounts}
+        matched_ids = source.candidates.keys() & accounts_by_prop_id.keys()
+        return CoordinateEnrichmentReport(
+            source_year=source.preparation.source_year,
+            target_year=source.preparation.target_year,
             target_accounts=len(accounts_by_prop_id),
             matched_accounts=len(matched_ids),
             unmatched_target_accounts=len(accounts_by_prop_id) - len(matched_ids),
-            unmatched_source_ids=len(candidates) - len(matched_ids),
-            **source_metrics,
-        )
-        return _CoordinateAnalysis(
-            preparation=preparation,
-            report=report,
-            candidates=candidates,
+            unmatched_source_ids=len(source.candidates) - len(matched_ids),
+            **source.source_metrics,
         )
 
     @staticmethod
@@ -276,98 +274,80 @@ class BrazosCoordinateEnrichment:
             )
 
     @staticmethod
-    def _active_partial_snapshot(target_year: int) -> BrazosPropertySnapshot | None:
-        return BrazosPropertySnapshot.objects.filter(
-            is_active=True,
-            tax_year=target_year,
-            outcome=SnapshotOutcome.PARTIAL,
-        ).first()
-
-    @staticmethod
-    def _rejection_reason(
+    def _rejection_violations(
         snapshot: BrazosPropertySnapshot | None,
         report: CoordinateEnrichmentReport,
-        minimum_match_rate: float | None,
-    ) -> str:
+        minimum_match_rate: float,
+    ) -> tuple[str, ...]:
+        violations: list[str] = []
         if snapshot is None:
-            return "Target year is not the active Partial Brazos property snapshot."
+            violations.append("Target year is not the active Partial Brazos property snapshot.")
         if not report.target_accounts:
-            return "The target CAD year has no PropertyAccount rows."
+            violations.append("The target CAD year has no PropertyAccount rows.")
         if not report.usable_coordinate_records:
-            return "The GIS source has no usable coordinates."
+            violations.append("The GIS source has no usable coordinates.")
         if report.duplicate_source_ids:
-            return "Normalized source PROP_IDs are duplicated."
-        if minimum_match_rate is not None and report.match_rate < minimum_match_rate:
-            return "Measured match rate is below the required threshold."
-        return ""
+            violations.append("Normalized source PROP_IDs are duplicated.")
+        if not report.matched_accounts:
+            violations.append("Measured join has zero matched accounts.")
+        if report.match_rate < minimum_match_rate:
+            violations.append("Measured match rate is below the required threshold.")
+        return tuple(violations)
 
-    def _apply_with_audit(
+    def _apply_measured_population(
         self,
         *,
-        snapshot: BrazosPropertySnapshot | None,
-        report: CoordinateEnrichmentReport,
-        candidates: dict[str, tuple[Decimal, Decimal]],
-        minimum_match_rate: float | None,
-    ) -> tuple[CoordinateEnrichmentAudit, CoordinateEnrichmentOutcome]:
+        source: _PreparedCoordinateSource,
+        minimum_match_rate: float,
+    ) -> tuple[CoordinateEnrichmentAudit, CoordinateEnrichmentReport]:
         with transaction.atomic():
             locked_snapshot = (
                 BrazosPropertySnapshot.objects.select_for_update()
                 .filter(
-                    pk=snapshot.pk if snapshot else None,
                     is_active=True,
-                    tax_year=report.target_year,
+                    tax_year=source.preparation.target_year,
                     outcome=SnapshotOutcome.PARTIAL,
                 )
                 .first()
             )
-            if locked_snapshot is None:
-                audit = self._record_audit(
-                    snapshot=None,
-                    report=report,
-                    outcome=CoordinateEnrichmentOutcome.REJECTED,
-                    minimum_match_rate=minimum_match_rate,
-                    updated_count=0,
-                    reason="Target snapshot changed before coordinate enrichment could apply.",
+            target_accounts = list(
+                PropertyAccount.objects.select_for_update().filter(
+                    tax_year=source.preparation.target_year
                 )
-                return audit, CoordinateEnrichmentOutcome.REJECTED
+            )
+            report = self._report_for_accounts(source, target_accounts)
+            violations = self._rejection_violations(
+                locked_snapshot,
+                report,
+                minimum_match_rate,
+            )
+            if violations:
+                raise CoordinateEnrichmentRejected(report, violations)
 
-            updates: list[PropertyAccount] = []
-            for account in PropertyAccount.objects.select_for_update().filter(
-                tax_year=report.target_year
-            ):
-                coordinates = candidates.get(account.prop_id)
-                if coordinates is None or not self._can_improve_source(account, report.source_year):
+            matched_accounts: list[PropertyAccount] = []
+            for account in target_accounts:
+                coordinates = source.candidates.get(account.prop_id)
+                if coordinates is None:
                     continue
                 account.latitude, account.longitude = coordinates
                 account.coordinate_source = COORDINATE_SOURCE
                 account.coordinate_source_year = report.source_year
-                updates.append(account)
+                matched_accounts.append(account)
 
-            if updates:
-                PropertyAccount.objects.bulk_update(
-                    updates, COORDINATE_FIELDS_UPDATED, batch_size=200
-                )
-                outcome = CoordinateEnrichmentOutcome.APPLIED
-            else:
-                outcome = CoordinateEnrichmentOutcome.NOOP
+            PropertyAccount.objects.bulk_update(
+                matched_accounts,
+                COORDINATE_FIELDS_UPDATED,
+                batch_size=200,
+            )
             audit = self._record_audit(
                 snapshot=locked_snapshot,
                 report=report,
-                outcome=outcome,
+                outcome=CoordinateEnrichmentOutcome.APPLIED,
                 minimum_match_rate=minimum_match_rate,
-                updated_count=len(updates),
-                reason="" if updates else "Existing coordinate provenance is equal or better.",
+                updated_count=len(matched_accounts),
+                reason="",
             )
-            return audit, outcome
-
-    @staticmethod
-    def _can_improve_source(account: PropertyAccount, source_year: int) -> bool:
-        if account.latitude is None or account.longitude is None:
-            return True
-        return (
-            account.coordinate_source_year is not None
-            and account.coordinate_source_year < source_year
-        )
+            return audit, report
 
     @staticmethod
     def _record_audit(
