@@ -264,6 +264,7 @@ class CircuitBreakerTaxYearTests(TestCase):
     def _pair(self, tax_year: int, *, flag: str = "N"):
         account = f"CBYEAR{tax_year}{flag}"
         prior = AssessmentHistory.objects.create(
+            county="harris",
             account_number=account,
             tax_year=tax_year - 1,
             assessed_value=Decimal("400000"),
@@ -271,6 +272,7 @@ class CircuitBreakerTaxYearTests(TestCase):
             market_value=Decimal("430000"),
         )
         current = AssessmentHistory.objects.create(
+            county="harris",
             account_number=account,
             tax_year=tax_year,
             assessed_value=Decimal("470000"),
@@ -344,6 +346,7 @@ class CircuitBreakerValueCeilingTests(TestCase):
     def _pair(self, tax_year: int, prior_value: str, current_value: str):
         account = f"CBCEIL{tax_year}{prior_value}"
         prior = AssessmentHistory.objects.create(
+            county="harris",
             account_number=account,
             tax_year=tax_year - 1,
             assessed_value=Decimal(prior_value),
@@ -351,6 +354,7 @@ class CircuitBreakerValueCeilingTests(TestCase):
             market_value=Decimal(prior_value),
         )
         current = AssessmentHistory.objects.create(
+            county="harris",
             account_number=account,
             tax_year=tax_year,
             assessed_value=Decimal(current_value),
@@ -401,6 +405,7 @@ class CircuitBreakerValueCeilingTests(TestCase):
         # the only evidence available, and a value far above the ceiling is
         # not something to attach a 20% limit to.
         current = AssessmentHistory.objects.create(
+            county="harris",
             account_number="CBCEILNOPRIOR",
             tax_year=2025,
             assessed_value=Decimal("9000000"),
@@ -414,10 +419,37 @@ class CircuitBreakerValueCeilingTests(TestCase):
         self.assertEqual(status["cap_type"], "unknown")
         self.assertIsNone(status["limit_percent"])
 
+    def test_missing_appraised_value_does_not_use_assessed_value_for_eligibility(self):
+        prior = AssessmentHistory.objects.create(
+            county="harris",
+            account_number="CBCEILNOAPPRAISED",
+            tax_year=2024,
+            assessed_value=Decimal("4000000"),
+            appraised_value=Decimal("4000000"),
+            market_value=Decimal("4000000"),
+        )
+        current = AssessmentHistory.objects.create(
+            county="harris",
+            account_number="CBCEILNOAPPRAISED",
+            tax_year=2025,
+            assessed_value=Decimal("4800000"),
+            appraised_value=None,
+            market_value=Decimal("6000000"),
+            prior_appraised_value=Decimal("4000000"),
+            cap_account="N",
+        )
+
+        status = evaluate_cap_status(current, prior)
+
+        self.assertEqual(status["cap_type"], "unknown")
+        self.assertIsNone(status["limit_percent"])
+        self.assertEqual(status["increase_percent"], Decimal("20.00"))
+
     def test_homestead_cap_has_no_value_ceiling(self):
         # 23.23 caps a residence homestead regardless of value; the
         # ceiling belongs to 23.231 alone.
         prior = AssessmentHistory.objects.create(
+            county="harris",
             account_number="HSNOCEIL",
             tax_year=2024,
             assessed_value=Decimal("8000000"),
@@ -425,6 +457,7 @@ class CircuitBreakerValueCeilingTests(TestCase):
             market_value=Decimal("8000000"),
         )
         current = AssessmentHistory.objects.create(
+            county="harris",
             account_number="HSNOCEIL",
             tax_year=2025,
             assessed_value=Decimal("9000000"),

@@ -203,7 +203,11 @@ def evaluate_cap_status(
     if current.county not in COUNTIES_WITH_TYPED_CAP_FLAG:
         return _no_limit_result("unknown", increase_percent)
 
-    cap_type, limit_percent = _applicable_cap(current, current_value)
+    # The 23.231 ceiling is expressly an appraised-value test. Keep the
+    # assessed-value fallback for the year-over-year trend and homestead math,
+    # but never use it to manufacture circuit-breaker eligibility when the
+    # appraised value is absent.
+    cap_type, limit_percent = _applicable_cap(current, current.appraised_value)
     if limit_percent is None:
         return _no_limit_result(cap_type, increase_percent)
 

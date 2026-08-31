@@ -17,7 +17,7 @@ Comprehensive guide to database management, multi-county schemas, data imports, 
   - [Tax Impact & Assessment History Ingestion](#tax-impact--assessment-history-ingestion)
 - [5. ETL Pipeline Architecture](#5-etl-pipeline-architecture)
   - [Streaming Row Reader](#streaming-row-reader)
-  - [PostgreSQL COPY Fast Loader](#postgresql-copy-fast-loader)
+  - [Translated-row persistence](#translated-row-persistence)
   - [GIS Centroid Loader](#gis-centroid-loader)
   - [Extra Feature Detail Ingestion](#extra-feature-detail-ingestion)
 - [6. Scheduled Background Imports (Celery Beat)](#6-scheduled-background-imports-celery-beat)
@@ -33,7 +33,7 @@ TaxProtest-Django supports multiple Texas appraisal districts. Each county bring
 counties/
 ├── harris/               # App label: 'data' (table prefix: data_*)
 │   ├── models.py         # HCAD PropertyRecord, BuildingDetail, ExtraFeature, AssessmentHistory
-│   ├── etl_pipeline/     # RowReader, FastLoader (COPY), GISLoader, Readiness
+│   ├── etl_pipeline/     # RowReader, HarrisPersistence, GISLoader, Readiness
 │   ├── similarity.py     # Harris similarity scoring implementation
 │   └── adapter.py        # Neutral Subject/Comp adapter
 ├── brazos/               # App label: 'brazos_cad' (table prefix: brazos_cad_*)
@@ -135,7 +135,7 @@ Database tables use the `brazos_cad_` prefix (app label `brazos_cad`):
 The authoritative production ETL flow uses `import_all_data`, enforcing residential completeness before finishing:
 
 ```bash
-# 1. Authoritative full import (downloads, extracts, parses, loads COPY, links GIS)
+# 1. Authoritative full import (downloads, extracts, persists translated rows, links GIS)
 docker compose exec web python manage.py import_all_data
 
 # 2. Strict dataset validation check

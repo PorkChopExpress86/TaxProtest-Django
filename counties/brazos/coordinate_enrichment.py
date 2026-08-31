@@ -197,7 +197,7 @@ class BrazosCoordinateEnrichment:
             audit.refresh_from_db()
             raise CoordinateEnrichmentCleanupError(
                 self._result(audit, report),
-                tuple(path for path in source.preparation.cleanup_paths if path.exists()),
+                self._retained_cleanup_paths(source.preparation),
             ) from exc
         audit.refresh_from_db()
         return self._result(audit, report)
@@ -278,6 +278,9 @@ class BrazosCoordinateEnrichment:
                 "Coordinate enrichment requires an earlier GIS source year. "
                 "Use refresh_brazos_annual for a year-matched snapshot."
             )
+        for flag_name in ("force", "skip_download", "skip_extract", "keep_extracted"):
+            if not isinstance(getattr(request, flag_name), bool):
+                raise InvalidCoordinateEnrichmentRequest(f"{flag_name} must be a boolean")
         if request.force and request.skip_download:
             raise InvalidCoordinateEnrichmentRequest("force cannot be combined with skip_download")
 
@@ -402,7 +405,7 @@ class BrazosCoordinateEnrichment:
             return
         try:
             self._source_stage.cleanup(preparation)
-            retained_paths = tuple(path for path in preparation.cleanup_paths if path.exists())
+            retained_paths = self._retained_cleanup_paths(preparation)
             if retained_paths:
                 raise OSError(
                     "GIS cleanup returned without removing: "
@@ -415,6 +418,10 @@ class BrazosCoordinateEnrichment:
         else:
             audit.cleanup_state = CoordinateCleanupState.CLEANED
             audit.save(update_fields=["cleanup_state"])
+
+    @staticmethod
+    def _retained_cleanup_paths(preparation: StagePreparation) -> tuple[Path, ...]:
+        return tuple(path for path in preparation.cleanup_paths if path.exists())
 
     @staticmethod
     def _result(

@@ -118,6 +118,23 @@ class CoordinateEnrichmentTests(TestCase):
         ):
             BrazosCoordinateEnrichment().analyze(request)
 
+    def test_non_boolean_flags_are_rejected_before_source_access(self):
+        enrichment = BrazosCoordinateEnrichment()
+        with patch.object(enrichment._source_stage, "prepare") as prepare_source:
+            for flag_name in ("force", "skip_download", "skip_extract", "keep_extracted"):
+                with self.subTest(flag_name=flag_name):
+                    request = CoordinateEnrichmentRequest(
+                        target_year=2026,
+                        expected_source_year=2025,
+                        **{flag_name: "yes"},
+                    )
+                    with self.assertRaisesRegex(
+                        InvalidCoordinateEnrichmentRequest,
+                        f"{flag_name} must be a boolean",
+                    ):
+                        enrichment.analyze(request)
+            prepare_source.assert_not_called()
+
     def test_unavailable_source_has_a_distinct_failure(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
