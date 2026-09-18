@@ -1,0 +1,10 @@
+{% extends "admin/base_site.html" %}
+{% block content %}
+<p>Historical operation: {{ operation.id }} ({{ operation.get_county_display }})</p>
+{% if candidate %}
+<p>Historical candidate: {{ candidate.id }}. Intended target year: {{ target_year }}</p>
+<p>Recovery prepares a new candidate against the current published data. Exact retained inputs are revalidated. Coverage approval, when required, and explicit application remain separate steps.</p>
+{% for source in source_availability %}<p>{{ source.path }}: {{ source.availability }}. Source year: {{ source.source_year|default:"Not recorded" }}. SHA-256: {{ source.sha256 }}</p>{% endfor %}
+<form method="post">{% csrf_token %}{{ form.as_p }}<input type="submit" value="Prepare recovery import"></form>
+{% else %}<p>No published property candidate with exact source evidence is recorded for this operation.</p>{% endif %}
+{% endblock %}

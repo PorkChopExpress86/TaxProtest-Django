@@ -1,5 +1,6 @@
 {% extends "admin/change_form.html" %}
 {% block object-tools-items %}
+  {% if dataset_recovery_url %}<li><a href="{{ dataset_recovery_url }}">Recover published dataset</a></li>{% endif %}
   {% if cleanup_url %}<li><a href="{{ cleanup_url }}">Clean obsolete sources</a></li>{% endif %}
   {% if recovery_url %}<li><a href="{{ recovery_url }}">Recover county writer</a></li>{% endif %}
   {{ block.super }}

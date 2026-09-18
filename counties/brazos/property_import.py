@@ -21,6 +21,7 @@ from counties.brazos.annual_refresh import (
 )
 from counties.brazos.models import BrazosPropertySnapshot, SnapshotOutcome
 from counties.common.import_logging import import_warnings
+from counties.common.import_recovery import ReplayRequest, requested_replay, verify_replay
 from counties.common.import_writers import county_writer, fenced_write
 from counties.common.models import ImportOperation
 
@@ -47,8 +48,13 @@ class PropertyImportRequest:
     prepare_only: bool = False
     candidate_id: UUID | None = None
     application_reason: str = ""
+    replay: ReplayRequest | None = None
 
     def __post_init__(self):
+        if self.replay is not None and (
+            not self.prepare_only or self.candidate_id is not None or self.options.dry_run
+        ):
+            raise ValueError("Dataset recovery requires fresh candidate preparation")
         if self.candidate_id is not None and (self.options.dry_run or self.prepare_only):
             raise ValueError("Candidate application requires explicit publication intent")
 
@@ -86,12 +92,17 @@ class BrazosPropertyImport:
             requested_year=request.options.tax_year,
             actor=request.actor,
             origin=request.origin,
+            evidence=requested_replay(request.replay),
             publication_before=(
                 {"snapshot_id": active.pk, "tax_year": active.tax_year} if active else None
             ),
         )
         try:
             with import_warnings("brazos_cad") as warnings, county_writer(operation):
+                if request.replay is not None:
+                    from counties.brazos.property_candidate import published_identity
+
+                    verify_replay(request.replay, operation, published_identity())
                 if request.candidate_id is not None:
                     from counties.brazos.property_publication import publish_candidate
                     from counties.common.models import ImportCandidate

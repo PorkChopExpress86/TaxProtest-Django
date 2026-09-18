@@ -33,6 +33,7 @@ class ImportOperation(models.Model):
             ("recover_county_writer", "Can recover a county writer"),
             ("approve_import_coverage", "Can review import coverage exceptions"),
             ("cleanup_import_sources", "Can clean obsolete import sources"),
+            ("recover_import_dataset", "Can request retained-source dataset recovery"),
         )
 
     def __str__(self):

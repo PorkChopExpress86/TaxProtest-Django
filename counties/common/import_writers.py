@@ -39,12 +39,16 @@ def _source_digests(root: Path) -> dict[str, str]:
     return digests
 
 
-def working_source_root(root: Path) -> Path:
+def working_source_root(root: Path, *, reuse: bool = True) -> Path:
     """Isolate attempt-owned files, so a lost worker cannot overwrite another attempt."""
     operation = _CURRENT_WRITER.get()
     if operation is None:
         return root
     working = root / ".imports" / str(operation.pk)
+    if not working.exists() and not reuse:
+        working.mkdir(parents=True)
+        operation.evidence.setdefault("working_sources", []).append(str(working))
+        return working
     if not working.exists():
         base_digests = _source_digests(root)
         source_root = root

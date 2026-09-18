@@ -170,6 +170,7 @@ def prepare_candidate(cad, gis, request: PropertyImportRequest, operation: Impor
                 replace(
                     request,
                     prepare_only=False,
+                    replay=None,
                     options=replace(request.options, keep_extracted=True),
                 ),
                 operation,

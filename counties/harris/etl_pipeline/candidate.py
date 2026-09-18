@@ -70,7 +70,7 @@ def prepare_candidate(execution: "_HarrisImportExecution", operation: ImportOper
 
     from .config import DataSourceType
     from .coverage import outcome_populations
-    from .orchestrator import ExtractedSourceRetention, HarrisImportStatus
+    from .orchestrator import ExtractedSourceRetention, HarrisApply, HarrisImportStatus
 
     if connection.vendor != "postgresql":
         raise ValueError("Durable Harris candidate preparation requires PostgreSQL")
@@ -91,6 +91,8 @@ def prepare_candidate(execution: "_HarrisImportExecution", operation: ImportOper
         evidence={"publication": "Published data unchanged"},
     )
     operation.evidence["candidate_id"] = str(candidate.pk)
+    assert isinstance(execution.request.load, HarrisApply)
+    candidate.request["validate_completeness"] = execution.request.load.validate_completeness
     if execution.request.property_file is not None:
         source = execution.request.property_file
         candidate.request["property_file"] = {

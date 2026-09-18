@@ -6,6 +6,7 @@ from django.template.response import TemplateResponse
 from django.urls import path, reverse
 from django.utils.html import format_html_join
 
+from counties.common.import_recovery import ReplayRejected, replay_binding, start_recovery
 from counties.common.import_retention import cleanup_sources, source_availability
 from counties.common.import_review import (
     ImportReviewRejected,
@@ -56,6 +57,11 @@ class SourceCleanupForm(forms.Form):
     reason = forms.CharField(widget=forms.Textarea, label="Source cleanup reason", strip=True)
 
 
+class DatasetRecoveryForm(forms.Form):
+    reason = forms.CharField(widget=forms.Textarea, label="Dataset recovery reason", strip=True)
+    binding = forms.CharField(widget=forms.HiddenInput)
+
+
 class ImportAuditInline(admin.TabularInline):
     model = ImportAuditEntry
     readonly_fields = ("kind", "actor", "reason", "created_at", "evidence", "result")
@@ -99,6 +105,11 @@ class ImportOperationAdmin(admin.ModelAdmin):
     def get_urls(self):
         return [
             path(
+                "<uuid:operation_id>/recover-dataset/",
+                self.admin_site.admin_view(self.recover_dataset_view),
+                name="data_importoperation_recover_dataset",
+            ),
+            path(
                 "<uuid:operation_id>/cleanup-sources/",
                 self.admin_site.admin_view(self.cleanup_sources_view),
                 name="data_importoperation_cleanup_sources",
@@ -113,6 +124,10 @@ class ImportOperationAdmin(admin.ModelAdmin):
     def change_view(self, request, object_id, form_url="", extra_context=None):
         obj = self.get_object(request, object_id)
         context = dict(extra_context or {})
+        if obj and request.user.has_perm("data.recover_import_dataset"):
+            context["dataset_recovery_url"] = reverse(
+                "admin:data_importoperation_recover_dataset", args=[obj.pk]
+            )
         if obj and request.user.has_perm("data.cleanup_import_sources"):
             context["cleanup_url"] = reverse(
                 "admin:data_importoperation_cleanup_sources", args=[obj.pk]
@@ -185,6 +200,53 @@ class ImportOperationAdmin(admin.ModelAdmin):
                 "opts": self.model._meta,
                 "title": "Clean obsolete import sources",
                 "operation": operation,
+                "form": form,
+            },
+        )
+
+    def recover_dataset_view(self, request, operation_id):
+        if not self.has_view_permission(request) or not request.user.has_perm(
+            "data.recover_import_dataset"
+        ):
+            raise PermissionDenied
+        operation = get_object_or_404(ImportOperation, pk=operation_id)
+        candidate = ImportCandidate.objects.filter(
+            pk=operation.evidence.get("candidate_id"), county=operation.county
+        ).first()
+        form = DatasetRecoveryForm(
+            request.POST if request.method == "POST" else None,
+            initial={"binding": replay_binding(candidate)} if candidate else {},
+        )
+        if request.method == "POST" and form.is_valid() and candidate:
+            try:
+                result = start_recovery(
+                    candidate,
+                    user=request.user,
+                    reason=form.cleaned_data["reason"],
+                    binding=form.cleaned_data["binding"],
+                )
+            except ReplayRejected as exc:
+                form.add_error(None, str(exc))
+            else:
+                messages.success(
+                    request, "Recovery import prepared a new candidate; review and apply it"
+                )
+                return redirect("admin:data_importcandidate_change", result.candidate.pk)
+        return TemplateResponse(
+            request,
+            "admin/imports/dataset_recovery.html",
+            {
+                **self.admin_site.each_context(request),
+                "opts": self.model._meta,
+                "title": "Recover published county data",
+                "operation": operation,
+                "candidate": candidate,
+                "target_year": (
+                    (candidate.request.get("data_year") or candidate.request.get("tax_year"))
+                    if candidate
+                    else None
+                ),
+                "source_availability": source_availability(candidate.sources) if candidate else [],
                 "form": form,
             },
         )

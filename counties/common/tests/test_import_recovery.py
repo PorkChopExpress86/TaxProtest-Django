@@ -23,6 +23,7 @@ from counties.harris.etl_pipeline import (
     HarrisExtractionMode,
     HarrisImportPhase,
     HarrisImportRequest,
+    HarrisImportStatus,
     HarrisPreview,
     run_harris_import,
 )
@@ -253,7 +254,10 @@ class ImportRecoveryTests(TransactionTestCase):
                         ),
                     )
                 )
-                self.assertTrue(replacement.success)
+                # A source-only fixture cannot qualify for property publication.
+                self.assertEqual(replacement.status, HarrisImportStatus.BLOCKED)
+                self.assertFalse(replacement.wrote_data)
+                self.assertIsNotNone(replacement.candidate_id)
             finally:
                 release.set()
                 worker.join(20)

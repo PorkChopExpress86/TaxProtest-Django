@@ -20,6 +20,7 @@ from django.db import DatabaseError
 from django.utils import timezone
 
 from counties.common.import_logging import import_warnings
+from counties.common.import_recovery import ReplayRequest, requested_replay, verify_replay
 from counties.common.import_writers import county_writer, fenced_write, working_source_root
 from counties.common.models import ImportCandidate, ImportOperation
 from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG, HcadSourceId
@@ -223,10 +224,15 @@ class HarrisImportRequest:
     candidate_id: UUID | None = None
     property_file: HarrisPropertyFile | None = None
     application_reason: str = ""
+    replay: ReplayRequest | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.plan, HarrisImportPlan):
             raise InvalidHarrisImportRequest("plan must be a HarrisImportPlan")
+        if self.replay is not None and (
+            self.candidate_id is not None or not isinstance(self.load, HarrisPrepare)
+        ):
+            raise InvalidHarrisImportRequest("Dataset recovery requires fresh HarrisPrepare intent")
         if self.candidate_id is not None and (
             not isinstance(self.load, HarrisApply) or isinstance(self.load, HarrisPrepare)
         ):
@@ -295,8 +301,16 @@ class _HarrisImportExecution:
         self.sources = sources
         self.data_year = data_year
         self.config = config or ETLConfig.from_env()
-        self.config.download_dir = working_source_root(self.config.download_dir)
-        self.config.extract_dir = working_source_root(self.config.extract_dir)
+        self.config.download_dir = working_source_root(
+            self.config.download_dir, reuse=request.replay is None
+        )
+        self.config.extract_dir = working_source_root(
+            self.config.extract_dir, reuse=request.replay is None
+        )
+        if request.replay is not None:
+            from .recovery import seed_sources
+
+            seed_sources(self.config, sources, operation)
         if request.property_file is not None:
             directory = self.config.extract_dir / "Real_acct_owner"
             directory.mkdir(parents=True, exist_ok=True)
@@ -1081,12 +1095,17 @@ def run_harris_import(
         requested_year=data_year,
         actor=request.actor,
         origin=request.origin,
+        evidence=requested_replay(request.replay),
     )
     try:
         with (
             import_warnings("etl_orchestrator", operation_id=str(operation.pk)) as warnings,
             county_writer(operation),
         ):
+            if request.replay is not None:
+                from .candidate import published_identity
+
+                verify_replay(request.replay, operation, published_identity())
             if request.candidate_id is None:
                 execution = _HarrisImportExecution(
                     request, sources, data_year, reporter=reporter, operation=operation
