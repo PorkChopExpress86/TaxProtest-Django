@@ -4,8 +4,7 @@ from django.apps import AppConfig
 class CommonConfig(AppConfig):
     """Registers the shared county web layer so its template tags load.
 
-    Holds no models — it exists in ``INSTALLED_APPS`` only so Django discovers
-    ``counties/common/templatetags/``.
+    Shared durable models retain the ``data`` label and Harris migrations.
     """
 
     name = "counties.common"

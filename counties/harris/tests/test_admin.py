@@ -71,6 +71,7 @@ class AdminETLPipelineViewTests(TestCase):
             skip_extract=False,
             skip_load=False,
             data_year=2026,
+            actor="admin",
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.request["PATH_INFO"], self.changelist_url)

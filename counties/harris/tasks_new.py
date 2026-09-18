@@ -164,7 +164,7 @@ def download_and_extract_hcad(self):
 
 
 @shared_task(bind=True)
-def download_and_import_building_data(self):
+def download_and_import_building_data(self, actor=""):
     """Backward-compatible wrapper that now delegates to authoritative modern ETL."""
     return _run_authoritative_pipeline(
         task_instance=self,
@@ -174,11 +174,12 @@ def download_and_import_building_data(self):
         data_year=None,
         plan=HarrisImportPlan.from_legacy_scope("building-only"),
         strict=True,
+        actor=actor,
     )
 
 
 @shared_task(bind=True)
-def download_and_import_gis_data(self):
+def download_and_import_gis_data(self, actor=""):
     """Backward-compatible wrapper that now delegates to authoritative modern ETL."""
     return _run_authoritative_pipeline(
         task_instance=self,
@@ -188,6 +189,7 @@ def download_and_import_gis_data(self):
         data_year=None,
         plan=HarrisImportPlan.from_legacy_scope("gis-only"),
         strict=True,
+        actor=actor,
     )
 
 
@@ -208,6 +210,7 @@ def _run_authoritative_pipeline(
     plan: HarrisImportPlan | None = None,
     refresh_readiness: bool = True,
     validate_contract: bool | None = None,
+    actor: str = "",
 ) -> dict[str, Any]:
     """Execute the authoritative modern ETL pipeline and propagate failures."""
     from .etl_pipeline import (
@@ -240,6 +243,8 @@ def _run_authoritative_pipeline(
 
     resolved_plan = plan or HarrisImportPlan.from_legacy_scope(scope or "full")
     request = HarrisImportRequest(
+        actor=actor,
+        origin="celery" if task_instance is not None else "command",
         plan=resolved_plan,
         data_year=data_year,
         acquisition=(
@@ -296,6 +301,7 @@ def run_etl_pipeline(
     strict: bool = True,
     refresh_readiness: bool = True,
     validate_contract: bool | None = None,
+    actor: str = "",
 ):
     """
     Run the full ETL pipeline using the new modular system.
@@ -320,6 +326,7 @@ def run_etl_pipeline(
         strict=strict,
         refresh_readiness=refresh_readiness,
         validate_contract=validate_contract,
+        actor=actor,
     )
 
 

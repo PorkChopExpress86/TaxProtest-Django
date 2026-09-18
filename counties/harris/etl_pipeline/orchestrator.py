@@ -4,17 +4,20 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import Enum, StrEnum
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Protocol
+from uuid import UUID
 
 from django.core.management import call_command
 from django.core.management.base import CommandError as DjangoCommandError
 from django.db import DatabaseError
+from django.utils import timezone
 
+from counties.common.models import ImportOperation
 from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG, HcadSourceId
 
 from .config import DataSource, DataSourceType, ETLConfig
@@ -96,6 +99,7 @@ class HarrisImportResult:
     errors: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
     wrote_data: bool = False
+    operation_id: UUID | None = None
 
     @property
     def duration(self) -> float:
@@ -191,6 +195,8 @@ class HarrisImportRequest:
     extraction: HarrisExtractionMode = HarrisExtractionMode.EXTRACT
     load: HarrisLoadIntent = field(default_factory=HarrisApply)
     failure_policy: HarrisFailurePolicy = HarrisFailurePolicy.STRICT
+    actor: str = ""
+    origin: str = "operator"
 
     def __post_init__(self) -> None:
         if not isinstance(self.plan, HarrisImportPlan):
@@ -968,12 +974,33 @@ def run_harris_import(
         raise InvalidHarrisImportRequest(
             f"No HCAD catalog sources match Harris import plan {request.plan.legacy_scope}"
         )
-    return _HarrisImportExecution(
-        request,
-        sources,
-        data_year,
-        reporter=reporter,
-    ).run()
+    operation = ImportOperation.objects.create(
+        county="harris",
+        intent="preview" if isinstance(request.load, HarrisPreview) else request.plan.legacy_scope,
+        requested_year=data_year,
+        actor=request.actor,
+        origin=request.origin,
+    )
+    try:
+        result = _HarrisImportExecution(request, sources, data_year, reporter=reporter).run()
+    except Exception as exc:
+        operation.status = "failed"
+        operation.errors = [str(exc)]
+        operation.finished_at = timezone.now()
+        operation.save()
+        raise
+    result = replace(result, operation_id=operation.pk)
+    operation.status = result.status.value
+    operation.evidence = {
+        "result": result.to_dict(),
+        "wrote_data": result.wrote_data,
+        "qualified_publication": "Not yet verified",
+    }
+    operation.warnings = list(result.warnings)
+    operation.errors = list(result.errors)
+    operation.finished_at = timezone.now()
+    operation.save()
+    return result
 
 
 def _resolve_data_year(request: HarrisImportRequest) -> int:

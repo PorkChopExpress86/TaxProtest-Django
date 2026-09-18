@@ -8,9 +8,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from enum import StrEnum
+from uuid import UUID
 
 from django.core.management.base import CommandError
 from django.db import transaction
+from django.utils import timezone
 
 from counties.brazos.annual_refresh import (
     AnnualRefreshStage,
@@ -19,6 +21,7 @@ from counties.brazos.annual_refresh import (
     StageResult,
 )
 from counties.brazos.models import BrazosPropertySnapshot, SnapshotOutcome
+from counties.common.models import ImportOperation
 
 
 class PropertyImportMode(StrEnum):
@@ -38,6 +41,8 @@ class PropertyImportRequest:
 
     mode: PropertyImportMode
     options: RefreshOptions
+    actor: str = ""
+    origin: str = "operator"
 
 
 @dataclass(frozen=True)
@@ -51,6 +56,7 @@ class PropertyImportResult:
     snapshot_id: int | None
     dry_run: bool
     cleanup_warnings: tuple[str, ...] = ()
+    operation_id: UUID | None = None
 
 
 class BrazosPropertyImport:
@@ -61,6 +67,45 @@ class BrazosPropertyImport:
         self._gis = gis
 
     def run(self, request: PropertyImportRequest) -> PropertyImportResult:
+        active = BrazosPropertySnapshot.objects.filter(is_active=True).first()
+        operation = ImportOperation.objects.create(
+            county="brazos",
+            intent="preview" if request.options.dry_run else request.mode.value,
+            requested_year=request.options.tax_year,
+            actor=request.actor,
+            origin=request.origin,
+            publication_before=(
+                {"snapshot_id": active.pk, "tax_year": active.tax_year} if active else None
+            ),
+        )
+        try:
+            result = self._run(request)
+        except Exception as exc:
+            operation.status = "failed"
+            operation.errors = [str(exc)]
+            operation.finished_at = timezone.now()
+            operation.save()
+            raise
+        result = replace(result, operation_id=operation.pk)
+        operation.status = "completed"
+        operation.publication_after = (
+            {"snapshot_id": result.snapshot_id, "tax_year": result.tax_year}
+            if result.snapshot_id
+            else operation.publication_before
+        )
+        operation.evidence = {
+            "outcome": result.outcome.value,
+            "dry_run": result.dry_run,
+            "cad": dict(result.cad.metrics) if result.cad else None,
+            "gis": dict(result.gis.metrics) if result.gis else None,
+            "qualified_publication": "Not yet verified",
+        }
+        operation.warnings = list(result.cleanup_warnings)
+        operation.finished_at = timezone.now()
+        operation.save()
+        return result
+
+    def _run(self, request: PropertyImportRequest) -> PropertyImportResult:
         if request.mode is PropertyImportMode.ANNUAL:
             return self._run_annual(request.options)
         if request.mode is PropertyImportMode.CAD_RECOVERY:

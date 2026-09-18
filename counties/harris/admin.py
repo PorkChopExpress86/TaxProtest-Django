@@ -89,7 +89,7 @@ class DownloadRecordAdmin(admin.ModelAdmin):
         changelist_url = reverse("admin:data_downloadrecord_changelist")
         if request.method != "POST":
             return HttpResponseRedirect(changelist_url)
-        task = cast(Any, task_func).delay()
+        task = cast(Any, task_func).delay(actor=request.user.get_username())
         request.session["etl_last_task_id"] = task.id
         request.session["etl_last_task_type"] = task_type
         messages.success(
@@ -139,6 +139,7 @@ class DownloadRecordAdmin(admin.ModelAdmin):
                     skip_extract=skip_extract,
                     skip_load=skip_load,
                     data_year=data_year,
+                    actor=request.user.get_username(),
                 )
                 request.session["etl_last_task_id"] = task.id
                 request.session["etl_last_task_type"] = "Full ETL Pipeline"
