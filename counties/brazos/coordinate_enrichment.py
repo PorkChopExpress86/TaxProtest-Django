@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 
-from counties.brazos.annual_refresh import RefreshOptions, StagePreparation
+from counties.brazos.property_import import RefreshOptions, StagePreparation
 from counties.brazos.gis_coordinates import interpret_gis_coordinates
 from counties.brazos.gis_refresh import GisRefreshStage, GisSourcePayload
 from counties.brazos.models import (

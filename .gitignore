@@ -186,3 +186,6 @@ counties/*/var/reports/
 
 # Claude Code local settings and runtime files (no shared skills/commands here)
 .claude/
+
+# Local working drafts and validation artifacts
+/.scratch/

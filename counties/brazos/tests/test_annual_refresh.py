@@ -15,7 +15,7 @@ from django.core.management.base import CommandError
 from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
 
-from counties.brazos.annual_refresh import (
+from counties.brazos.property_import import (
     BrazosAnnualRefresh,
     RefreshOptions,
     StagePreparation,

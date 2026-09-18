@@ -8,7 +8,6 @@ from django.core.management.base import CommandError
 from django.test import TestCase
 from django.urls import reverse
 
-from counties.brazos.annual_refresh import RefreshOptions
 from counties.brazos.cad_refresh import CadRefreshStage
 from counties.brazos.gis_refresh import GisRefreshStage
 from counties.brazos.models import BrazosPropertySnapshot, PropertyAccount
@@ -16,6 +15,7 @@ from counties.brazos.property_import import (
     BrazosPropertyImport,
     PropertyImportMode,
     PropertyImportRequest,
+    RefreshOptions,
 )
 from counties.brazos.tests.test_property_coverage import write_pacs
 from counties.brazos.tests.test_property_import import _stage_complete_pacs_export

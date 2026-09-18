@@ -27,7 +27,7 @@ from django.core.management import CommandError, call_command
 from django.test import TestCase
 from django.urls import reverse
 
-from counties.brazos.annual_refresh import RefreshOptions
+from counties.brazos.property_import import RefreshOptions
 from counties.brazos.gis_refresh import GisRefreshStage
 from counties.brazos.models import BrazosPropertySnapshot, PropertyAccount, SnapshotOutcome
 from counties.common.models import ImportCandidate

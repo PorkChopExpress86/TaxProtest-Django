@@ -12,7 +12,6 @@ from django.db import close_old_connections, connection
 from django.test import Client, TransactionTestCase
 from django.urls import reverse
 
-from counties.brazos.annual_refresh import RefreshOptions
 from counties.brazos.cad_refresh import CadRefreshStage
 from counties.brazos.gis_refresh import GisRefreshStage
 from counties.brazos.models import BrazosPropertySnapshot, PropertyAccount
@@ -20,6 +19,7 @@ from counties.brazos.property_import import (
     BrazosPropertyImport,
     PropertyImportMode,
     PropertyImportRequest,
+    RefreshOptions,
 )
 from counties.brazos.tests.test_property_coverage import write_gis, write_pacs
 from counties.common.models import CountyWriter, ImportAuditEntry, ImportCandidate, ImportOperation

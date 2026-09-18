@@ -6,24 +6,81 @@ and cleanup.  CAD and GIS source stages remain their own adapters.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from enum import StrEnum
+from pathlib import Path
+from typing import Protocol
 from uuid import UUID
 
 from django.core.management.base import CommandError
 from django.utils import timezone
 
-from counties.brazos.annual_refresh import (
-    AnnualRefreshStage,
-    RefreshOptions,
-    StagePreparation,
-    StageResult,
-)
 from counties.brazos.models import BrazosPropertySnapshot, SnapshotOutcome
 from counties.common.import_logging import import_warnings
 from counties.common.import_recovery import ReplayRequest, requested_replay, verify_replay
 from counties.common.import_writers import county_writer, fenced_write
-from counties.common.models import ImportOperation
+from counties.common.models import ImportCandidate, ImportOperation
+
+
+@dataclass(frozen=True)
+class RefreshOptions:
+    """The narrow operator interface for a complete annual refresh or property import."""
+
+    tax_year: int | None = None
+    source_year: int | None = None
+    force: bool = False
+    skip_download: bool = False
+    skip_extract: bool = False
+    dry_run: bool = False
+    keep_extracted: bool = False
+
+
+@dataclass(frozen=True)
+class StagePreparation:
+    """A source stage prepared for persistence but not yet published."""
+
+    name: str
+    source_year: int
+    target_year: int
+    payload: object
+    cleanup_paths: tuple[Path, ...]
+
+
+@dataclass(frozen=True)
+class StageResult:
+    """The observable outcome of one persisted refresh stage."""
+
+    name: str
+    metrics: Mapping[str, int]
+
+
+@dataclass(frozen=True)
+class AnnualRefreshResult:
+    """The stage-aware outcome of a completed or dry-run annual refresh."""
+
+    tax_year: int
+    cad: StageResult
+    gis: StageResult
+    dry_run: bool
+    workflow_state: str = "published"
+    candidate_id: str | None = None
+    operation_id: str | None = None
+
+
+class PropertyImportStage(Protocol):
+    """A source-specific adapter used by the Brazos property import."""
+
+    name: str
+
+    def prepare(self, options: RefreshOptions) -> StagePreparation: ...
+
+    def persist(self, preparation: StagePreparation) -> StageResult: ...
+
+    def cleanup(self, preparation: StagePreparation) -> None: ...
+
+
+AnnualRefreshStage = PropertyImportStage
 
 
 class PropertyImportMode(StrEnum):
@@ -141,6 +198,32 @@ class BrazosPropertyImport:
                     )
                 else:
                     result = self._run(request, operation)
+                    if (
+                        not request.prepare_only
+                        and not request.options.dry_run
+                        and result.workflow_state == "prepared"
+                    ):
+                        from counties.brazos.property_publication import publish_candidate
+
+                        candidate = ImportCandidate.objects.get(
+                            pk=result.candidate_id, county="brazos"
+                        )
+                        operation.requested_year = candidate.request["tax_year"]
+                        operation.evidence["application_reason"] = request.application_reason
+                        publish_candidate(candidate.pk, operation, user=reviewer)
+                        active = BrazosPropertySnapshot.objects.get(is_active=True)
+                        result = PropertyImportResult(
+                            tax_year=active.tax_year,
+                            outcome=PropertyImportOutcome(active.outcome),
+                            cad=result.cad,
+                            gis=result.gis,
+                            snapshot_id=active.pk,
+                            dry_run=False,
+                            candidate_id=candidate.pk,
+                            workflow_state="published",
+                            already_applied=False,
+                            cleanup_warnings=result.cleanup_warnings,
+                        )
         except Exception as exc:
             operation.refresh_from_db(fields=["status", "publication_before", "publication_after"])
             if operation.status == "published":
@@ -189,20 +272,6 @@ class BrazosPropertyImport:
         )
         operation.finished_at = timezone.now()
         operation.save()
-        if (
-            not request.prepare_only
-            and not request.options.dry_run
-            and request.candidate_id is None
-            and result.workflow_state == "prepared"
-        ):
-            return self.run(
-                replace(
-                    request,
-                    candidate_id=result.candidate_id,
-                    options=replace(request.options, tax_year=result.tax_year),
-                ),
-                reviewer=reviewer,
-            )
         return result
 
     def _run(
@@ -465,3 +534,33 @@ def build_default_property_import(reporter: object) -> BrazosPropertyImport:
     from counties.brazos.gis_refresh import GisRefreshStage
 
     return BrazosPropertyImport(CadRefreshStage(reporter), GisRefreshStage(reporter))
+
+
+class BrazosAnnualRefresh:
+    """Strict command adapter for a completed property-import publication."""
+
+    def __init__(self, cad: PropertyImportStage, gis: PropertyImportStage):
+        self._cad = cad
+        self._gis = gis
+
+    def run(self, options: RefreshOptions) -> AnnualRefreshResult:
+        result = BrazosPropertyImport(self._cad, self._gis).run(
+            PropertyImportRequest(mode=PropertyImportMode.ANNUAL, options=options)
+        )
+        return AnnualRefreshResult(
+            tax_year=result.tax_year,
+            cad=result.cad or StageResult(name=self._cad.name, metrics={}),
+            gis=result.gis or StageResult(name=self._gis.name, metrics={}),
+            dry_run=result.dry_run,
+            workflow_state=result.workflow_state,
+            candidate_id=str(result.candidate_id) if result.candidate_id else None,
+            operation_id=str(result.operation_id) if result.operation_id else None,
+        )
+
+
+def build_default_refresh(reporter: object) -> BrazosAnnualRefresh:
+    from counties.brazos.cad_refresh import CadRefreshStage
+    from counties.brazos.gis_refresh import GisRefreshStage
+
+    return BrazosAnnualRefresh(CadRefreshStage(reporter), GisRefreshStage(reporter))
+

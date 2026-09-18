@@ -4,6 +4,7 @@ from django.db import connection
 
 from counties.brazos.models import BrazosPropertySnapshot, SnapshotOutcome
 from counties.brazos.property_candidate import MODELS, published_identity
+from counties.common.candidate_staging import cutover_staged_tables
 from counties.common.import_retention import record_publication
 from counties.common.import_review import ImportReviewRejected, authorize_publication
 from counties.common.import_writers import fenced_write
@@ -32,41 +33,12 @@ def publish_candidate(candidate_id, operation, *, user=None):
                 "GIS recovery no longer targets the recorded active Partial snapshot"
             )
         operation.publication_before = published_identity()
-        with connection.cursor() as cursor:
-            for model in reversed(MODELS):
-                scope = " WHERE county = 'brazos'" if model is PropertyJurisdictionExemption else ""
-                cursor.execute(
-                    f"DELETE FROM public.{connection.ops.quote_name(model._meta.db_table)}{scope}"
-                )
-            for model in MODELS:
-                table = connection.ops.quote_name(model._meta.db_table)
-                if model is PropertyJurisdictionExemption:
-                    # County-private candidate sequences must not collide with
-                    # another county's IDs in this shared table.
-                    columns = ", ".join(
-                        connection.ops.quote_name(field.column)
-                        for field in model._meta.fields
-                        if field.name != "id"
-                    )
-                    cursor.execute(
-                        f'INSERT INTO public.{table} ({columns}) SELECT {columns} FROM "{candidate.storage_schema}".{table} WHERE county = %s',
-                        ["brazos"],
-                    )
-                    continue
-                cursor.execute(
-                    f'INSERT INTO public.{table} OVERRIDING SYSTEM VALUE SELECT * FROM "{candidate.storage_schema}".{table}'
-                )
-                cursor.execute(
-                    "SELECT pg_get_serial_sequence(%s, 'id')", [f"public.{model._meta.db_table}"]
-                )
-                sequence = cursor.fetchone()[0]
-                cursor.execute(f"SELECT last_value FROM {sequence}")
-                last_value = cursor.fetchone()[0]
-                cursor.execute(f"SELECT COALESCE(MAX(id), 1) FROM public.{table}")
-                cursor.execute(
-                    "SELECT setval(%s::regclass, %s, true)",
-                    [sequence, max(last_value, cursor.fetchone()[0])],
-                )
+        cutover_staged_tables(
+            candidate,
+            MODELS,
+            shared_models_scope={PropertyJurisdictionExemption: " WHERE county = 'brazos'"},
+            shared_models_county={PropertyJurisdictionExemption: "brazos"},
+        )
         record_publication(candidate, operation)
         operation.publication_after = {**published_identity(), "candidate_id": str(candidate.pk)}
         operation.status = "published"

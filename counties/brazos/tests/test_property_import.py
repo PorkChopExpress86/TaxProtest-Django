@@ -10,7 +10,6 @@ from django.core.management.base import CommandError
 from django.test import TestCase
 from django.urls import reverse
 
-from counties.brazos.annual_refresh import RefreshOptions
 from counties.brazos.cad_refresh import (
     ENTITY_INFO_FILENAME,
     IMPROVEMENT_DETAIL_ATTR_FILENAME,
@@ -24,6 +23,7 @@ from counties.brazos.property_import import (
     PropertyImportMode,
     PropertyImportOutcome,
     PropertyImportRequest,
+    RefreshOptions,
 )
 from counties.common.models import ImportCandidate
 

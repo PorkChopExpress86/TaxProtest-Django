@@ -97,6 +97,12 @@ A county's equivalent safe delivery of a shared tax-protest outcome using only
 verified source semantics, with unsupported data reported explicitly.
 _Avoid_: schema parity, field parity, feature parity
 
+**Candidate staging**:
+The county-neutral database isolation mechanism that provisions a temporary
+PostgreSQL candidate schema, mirrors production table definitions and sequences,
+and facilitates atomic publication cutover.
+_Avoid_: ETL framework, cross-county staging, table swap script
+
 **Brazos property import**:
 The county-owned operation that prepares and classifies a requested Brazos
 property snapshot without changing the annual-refresh source contract. Its GIS

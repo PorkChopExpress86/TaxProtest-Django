@@ -2,7 +2,7 @@
 
 from django.core.management.base import BaseCommand
 
-from counties.brazos.annual_refresh import RefreshOptions, build_default_refresh
+from counties.brazos.property_import import RefreshOptions, build_default_refresh
 
 
 class Command(BaseCommand):

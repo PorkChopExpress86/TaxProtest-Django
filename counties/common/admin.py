@@ -393,10 +393,10 @@ class ImportCandidateAdmin(admin.ModelAdmin):
         if request.method == "POST" and form.is_valid():
             try:
                 if candidate.county == "brazos":
-                    from counties.brazos.annual_refresh import RefreshOptions
                     from counties.brazos.property_import import (
                         PropertyImportMode,
                         PropertyImportRequest,
+                        RefreshOptions,
                         build_default_property_import,
                     )
 

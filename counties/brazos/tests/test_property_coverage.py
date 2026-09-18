@@ -6,7 +6,6 @@ from pathlib import Path
 from django.db import connection
 from django.test import TransactionTestCase
 
-from counties.brazos.annual_refresh import RefreshOptions
 from counties.brazos.cad_refresh import CadRefreshStage
 from counties.brazos.gis_refresh import GisRefreshStage
 from counties.brazos.models import BrazosPropertySnapshot, PropertyAccount, SnapshotOutcome
@@ -14,6 +13,7 @@ from counties.brazos.property_import import (
     BrazosPropertyImport,
     PropertyImportMode,
     PropertyImportRequest,
+    RefreshOptions,
 )
 from counties.brazos.tests.test_property_import import _stage_complete_pacs_export
 from counties.common.models import ImportCandidate

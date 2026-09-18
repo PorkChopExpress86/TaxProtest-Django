@@ -8,7 +8,6 @@ from uuid import uuid4
 
 from django.db import connection
 
-from counties.brazos.annual_refresh import AnnualRefreshStage
 from counties.brazos.models import (
     BrazosPropertySnapshot,
     PropertyAccount,
@@ -18,8 +17,13 @@ from counties.brazos.models import (
     PropertyImprovementDetail,
     PropertyLand,
 )
-from counties.brazos.property_import import BrazosPropertyImport, PropertyImportRequest
+from counties.brazos.property_import import AnnualRefreshStage, BrazosPropertyImport, PropertyImportRequest
 from counties.brazos.source_validation import inspect_cad, inspect_gis
+from counties.common.candidate_staging import (
+    compute_dataset_hash,
+    staged_candidate_schema,
+    switch_search_path,
+)
 from counties.common.import_coverage import compare_coverage
 from counties.common.import_writers import fenced_write
 from counties.common.models import ImportCandidate, ImportOperation
@@ -37,29 +41,11 @@ MODELS = (*PROPERTY_MODELS, PropertyJurisdictionExemption, BrazosPropertySnapsho
 
 
 def dataset_identity(schema: str = "public") -> dict:
-    if schema != "public" and not re.fullmatch(r"brazos_candidate_[0-9a-f]{32}", schema):
-        raise ValueError("Invalid Brazos dataset storage identity")
-    quoted_schema = connection.ops.quote_name(schema)
-    digest = hashlib.sha256()
-    with connection.cursor() as cursor:
-        for model in MODELS:
-            table = connection.ops.quote_name(model._meta.db_table)
-            scope = "AND county = 'brazos'" if model is PropertyJurisdictionExemption else ""
-            digest.update(table.encode())
-            last_id = 0
-            while True:
-                cursor.execute(
-                    f"SELECT id, row_to_json(t)::text FROM {quoted_schema}.{table} t WHERE id > %s {scope} ORDER BY id LIMIT 1000",
-                    [last_id],
-                )
-                rows = cursor.fetchall()
-                if not rows:
-                    break
-                for row_id, record in rows:
-                    digest.update(record.encode())
-                    digest.update(b"\n")
-                    last_id = row_id
-    return {"sha256": digest.hexdigest()}
+    return compute_dataset_hash(
+        MODELS,
+        schema=schema,
+        scope_filters={PropertyJurisdictionExemption: "AND county = 'brazos'"},
+    )
 
 
 def published_identity() -> dict:
@@ -72,19 +58,8 @@ def published_identity() -> dict:
     }
 
 
-@contextmanager
 def candidate_tables(candidate):
-    if not re.fullmatch(r"brazos_candidate_[0-9a-f]{32}", candidate.storage_schema):
-        raise ValueError("Invalid Brazos candidate storage identity")
-    with connection.cursor() as cursor:
-        cursor.execute("SHOW search_path")
-        previous = cursor.fetchone()[0]
-        cursor.execute(f'SET search_path TO "{candidate.storage_schema}", public')
-    try:
-        yield
-    finally:
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT set_config('search_path', %s, false)", [previous])
+    return switch_search_path(candidate.storage_schema)
 
 
 class _CandidateSource:
@@ -134,38 +109,15 @@ def prepare_candidate(cad, gis, request: PropertyImportRequest, operation: Impor
         "database_publication": "Database publication untested",
     }
     try:
-        with fenced_write(), connection.cursor() as cursor:
-            schema = connection.ops.quote_name(candidate.storage_schema)
-            cursor.execute(f"CREATE SCHEMA {schema}")
-            for model in MODELS:
-                table = connection.ops.quote_name(model._meta.db_table)
-                cursor.execute(f"CREATE TABLE {schema}.{table} (LIKE public.{table} INCLUDING ALL)")
-                cursor.execute(
-                    "SELECT pg_get_serial_sequence(%s, 'id')",
-                    [f"{candidate.storage_schema}.{model._meta.db_table}"],
-                )
-                if cursor.fetchone()[0] is None:
-                    sequence = connection.ops.quote_name(model._meta.db_table + "_id_seq")
-                    cursor.execute(
-                        f"CREATE SEQUENCE {schema}.{sequence} OWNED BY {schema}.{table}.id"
-                    )
-                    cursor.execute(
-                        f"ALTER TABLE {schema}.{table} ALTER COLUMN id SET DEFAULT nextval(%s::regclass)",
-                        [f"{candidate.storage_schema}.{model._meta.db_table}_id_seq"],
-                    )
-                scope = " WHERE county = 'brazos'" if model is PropertyJurisdictionExemption else ""
-                cursor.execute(
-                    f"INSERT INTO {schema}.{table} OVERRIDING SYSTEM VALUE SELECT * FROM public.{table}{scope}"
-                )
-                cursor.execute(
-                    "SELECT setval(pg_get_serial_sequence(%s, 'id'), COALESCE((SELECT MAX(id) FROM "
-                    f"{schema}.{table}), 1), EXISTS(SELECT 1 FROM {schema}.{table}))",
-                    [f"{candidate.storage_schema}.{model._meta.db_table}"],
-                )
         importer = BrazosPropertyImport(
             _CandidateSource(cad, operation), _CandidateSource(gis, operation) if gis else None
         )
-        with candidate_tables(candidate):
+        with staged_candidate_schema(
+            "brazos",
+            candidate,
+            MODELS,
+            shared_models_scope={PropertyJurisdictionExemption: " WHERE county = 'brazos'"},
+        ):
             result = importer._run_unstaged(
                 replace(
                     request,

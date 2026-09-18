@@ -51,7 +51,7 @@ from bs4 import BeautifulSoup
 from django.conf import settings
 from django.core.management.base import CommandError
 
-from counties.brazos.annual_refresh import RefreshOptions, StagePreparation, StageResult
+from counties.brazos.property_import import RefreshOptions, StagePreparation, StageResult
 from counties.brazos.models import (
     PropertyAccount,
     PropertyBuildingCharacteristic,

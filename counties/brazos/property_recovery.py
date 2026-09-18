@@ -4,13 +4,14 @@ from pathlib import Path
 
 from django.conf import settings
 
-from counties.brazos.annual_refresh import RefreshOptions, StagePreparation
 from counties.brazos.cad_refresh import ALL_FILENAMES, CadRefreshStage, _CadStagePayload
 from counties.brazos.gis_refresh import GisRefreshStage, GisSourcePayload
 from counties.brazos.property_import import (
     BrazosPropertyImport,
     PropertyImportMode,
     PropertyImportRequest,
+    RefreshOptions,
+    StagePreparation,
 )
 from counties.common.import_recovery import ReplayRejected, copy_exact_source
 from counties.common.import_writers import working_source_root

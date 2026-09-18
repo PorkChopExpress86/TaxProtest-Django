@@ -2,10 +2,10 @@
 
 from django.core.management.base import BaseCommand
 
-from counties.brazos.annual_refresh import RefreshOptions
 from counties.brazos.property_import import (
     PropertyImportMode,
     PropertyImportRequest,
+    RefreshOptions,
     build_default_property_import,
 )
 
