@@ -6,7 +6,7 @@ from django.template.response import TemplateResponse
 from django.urls import path, reverse
 
 from counties.common.import_writers import RecoveryRejected, recover_writer, writer_status
-from counties.common.models import ImportAuditEntry, ImportOperation
+from counties.common.models import ImportAuditEntry, ImportCandidate, ImportOperation
 
 
 class WriterRecoveryForm(forms.Form):
@@ -106,6 +106,23 @@ class ImportOperationAdmin(admin.ModelAdmin):
     @admin.display(description="County writer")
     def county_writer(self, obj):
         return writer_status(obj.county)
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(ImportCandidate)
+class ImportCandidateAdmin(admin.ModelAdmin):
+    list_display = ("id", "county", "state", "created_at")
+    list_filter = ("county", "state")
+    readonly_fields = tuple(field.name for field in ImportCandidate._meta.fields)
+    actions = None
 
     def has_add_permission(self, request):
         return False

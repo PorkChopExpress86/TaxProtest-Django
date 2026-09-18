@@ -59,3 +59,28 @@ class ImportAuditEntry(models.Model):
     class Meta:
         app_label = "data"
         default_permissions = ("view",)
+
+
+class ImportCandidate(models.Model):
+    """Durable identity and evidence; candidate interpretation is county-owned."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    operation = models.OneToOneField(
+        ImportOperation, on_delete=models.PROTECT, related_name="candidate"
+    )
+    county = models.CharField(max_length=16, choices=COUNTY_CHOICES, db_index=True)
+    state = models.CharField(max_length=32, default="preparing", db_index=True)
+    storage_schema = models.CharField(max_length=63, unique=True)
+    baseline = models.JSONField(default=dict)
+    sources = models.JSONField(default=list)
+    request = models.JSONField(default=dict)
+    evidence = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        app_label = "data"
+        default_permissions = ("view",)
+        ordering = ("-created_at",)
+
+    def __str__(self):
+        return f"{self.get_county_display()} {self.state}: {self.id}"

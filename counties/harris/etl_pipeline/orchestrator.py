@@ -47,6 +47,7 @@ class HarrisImportStatus(Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     PARTIAL = "partial"
+    PREPARED = "prepared"
 
 
 @dataclass(frozen=True)
@@ -103,6 +104,7 @@ class HarrisImportResult:
     warnings: tuple[str, ...] = ()
     wrote_data: bool = False
     operation_id: UUID | None = None
+    candidate_id: UUID | None = None
 
     @property
     def duration(self) -> float:
@@ -185,7 +187,12 @@ class HarrisApply:
             )
 
 
-HarrisLoadIntent = HarrisPreview | HarrisApply
+@dataclass(frozen=True, slots=True)
+class HarrisPrepare(HarrisApply):
+    """Persist an isolated candidate for inspection without publication."""
+
+
+HarrisLoadIntent = HarrisPreview | HarrisApply | HarrisPrepare
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -317,7 +324,7 @@ class _HarrisImportExecution:
             if not self._record_stage(extract_result, strict=strict):
                 return self._finish(started_at, HarrisImportStatus.FAILED, wrote_data=False)
 
-        if preview:
+        if preview or isinstance(self.request.load, HarrisPrepare):
             from .source_validation import validate_harris_sources
 
             assert self.operation is not None
@@ -334,6 +341,8 @@ class _HarrisImportExecution:
             )
             if not self._record_stage(source_result, strict=True):
                 return self._finish(started_at, HarrisImportStatus.FAILED, wrote_data=False)
+            if not preview:
+                self._account_to_property = None
 
         if preview:
             load_result = _StageResult(
@@ -1042,9 +1051,15 @@ def run_harris_import(
             import_warnings("etl_orchestrator", operation_id=str(operation.pk)) as warnings,
             county_writer(operation),
         ):
-            result = _HarrisImportExecution(
+            execution = _HarrisImportExecution(
                 request, sources, data_year, reporter=reporter, operation=operation
-            ).run()
+            )
+            if isinstance(request.load, HarrisPrepare):
+                from .candidate import prepare_candidate
+
+                result = prepare_candidate(execution, operation)
+            else:
+                result = execution.run()
     except Exception as exc:
         operation.status = "failed"
         operation.errors = [str(exc)]
@@ -1082,6 +1097,7 @@ __all__ = [
     "ExtractedSourceRetention",
     "HarrisAcquisitionMode",
     "HarrisApply",
+    "HarrisPrepare",
     "HarrisExtractionMode",
     "HarrisFailurePolicy",
     "HarrisImportEvent",
