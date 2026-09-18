@@ -8,14 +8,17 @@ neutral records, and does all analysis and presentation here.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from functools import wraps
 from typing import Any
 
 from django.core.paginator import Paginator
+from django.db import connection, transaction
 from django.http import Http404, HttpResponseBadRequest
 from django.shortcuts import render
 from django.urls import reverse
 
 from counties.common.analysis import (
+    history_availability_notice,
     percentile_of,
     recommend_protest,
     sort_comps_for_display,
@@ -34,7 +37,25 @@ from counties.common.exports import (
     protest_report_pdf,
     search_results_csv,
 )
-from counties.common.history import history_availability_notice
+
+
+def consistent_published_read(view):
+    """Keep all county queries in a shared response on one database snapshot."""
+
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        outer = not connection.in_atomic_block
+        with transaction.atomic():
+            if outer and connection.vendor == "postgresql":
+                with connection.cursor() as cursor:
+                    cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            response = view(*args, **kwargs)
+            if hasattr(response, "render"):
+                response.render()
+            return response
+
+    return wrapped
+
 
 RESULTS_PER_PAGE = 200
 
@@ -168,11 +189,12 @@ def _subject_or_404(adapter: CountyAdapter, key: str) -> Subject:
 
 
 def _no_location_context(adapter: CountyAdapter, subject: Subject) -> dict[str, Any]:
+    caps = adapter.capabilities(subject.key)
     return {
         "county": adapter.profile,
         "subject": subject,
         "error": (
-            adapter.unavailable_reason(subject.key, "comparable")
+            caps.reason_for("comparable")
             or "This property does not have location data required for similarity search."
         ),
     }
@@ -189,7 +211,8 @@ def similar_properties(request, key, *, adapter: CountyAdapter):
             {"county": profile, "error": "Property not found", "subject_key": key},
         )
 
-    if adapter.unavailable_reason(key, "comparable") or not subject.has_location:
+    caps = adapter.capabilities(key)
+    if not caps.comparable_ready:
         return render(
             request, "counties/similar_properties.html", _no_location_context(adapter, subject)
         )
@@ -288,12 +311,17 @@ def protest_analysis(request, key, *, adapter: CountyAdapter):
     """ARB evidence report: equity comparison, tax impact, comparable table."""
     profile = adapter.profile
     subject = _subject_or_404(adapter, key)
-    report_reason = adapter.unavailable_reason(key, "report")
-    if report_reason:
+    caps = adapter.capabilities(key)
+    if not caps.report_ready:
         return render(
             request,
             "counties/protest_analysis.html",
-            {"county": profile, "subject": subject, "error": report_reason},
+            {
+                "county": profile,
+                "subject": subject,
+                "error": caps.reason_for("report")
+                or "This property does not have location data required for similarity search.",
+            },
         )
     inputs = _protest_inputs(request, subject, adapter)
     if inputs is None:
@@ -340,9 +368,12 @@ def protest_analysis(request, key, *, adapter: CountyAdapter):
 def protest_analysis_export(request, key, *, adapter: CountyAdapter):
     """CSV of the report's comparable table plus its tax-impact totals."""
     subject = _subject_or_404(adapter, key)
-    report_reason = adapter.unavailable_reason(key, "report")
-    if report_reason:
-        return HttpResponseBadRequest(report_reason)
+    caps = adapter.capabilities(key)
+    if not caps.report_ready:
+        return HttpResponseBadRequest(
+            caps.reason_for("report")
+            or "This property does not have location data required for similarity search."
+        )
     inputs = _protest_inputs(request, subject, adapter)
     if inputs is None:
         return HttpResponseBadRequest(
@@ -357,9 +388,12 @@ def protest_analysis_export(request, key, *, adapter: CountyAdapter):
 def protest_analysis_pdf(request, key, *, adapter: CountyAdapter):
     """Printable evidence report."""
     subject = _subject_or_404(adapter, key)
-    report_reason = adapter.unavailable_reason(key, "report")
-    if report_reason:
-        return HttpResponseBadRequest(report_reason)
+    caps = adapter.capabilities(key)
+    if not caps.report_ready:
+        return HttpResponseBadRequest(
+            caps.reason_for("report")
+            or "This property does not have location data required for similarity search."
+        )
     inputs = _protest_inputs(request, subject, adapter)
     if inputs is None:
         return HttpResponseBadRequest(
@@ -374,6 +408,7 @@ __all__ = [
     "Subject",
     "clamped_float",
     "clamped_int",
+    "consistent_published_read",
     "export_csv",
     "index",
     "protest_analysis",

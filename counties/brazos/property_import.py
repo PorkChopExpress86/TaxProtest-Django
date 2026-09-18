@@ -209,7 +209,6 @@ class BrazosPropertyImport:
                         )
                         operation.requested_year = candidate.request["tax_year"]
                         operation.evidence["application_reason"] = request.application_reason
-                        operation.save()
                         publish_candidate(candidate.pk, operation, user=reviewer)
                         active = BrazosPropertySnapshot.objects.get(is_active=True)
                         result = PropertyImportResult(
@@ -563,4 +562,3 @@ def build_default_refresh(reporter: object) -> BrazosAnnualRefresh:
     from counties.brazos.gis_refresh import GisRefreshStage
 
     return BrazosAnnualRefresh(CadRefreshStage(reporter), GisRefreshStage(reporter))
-

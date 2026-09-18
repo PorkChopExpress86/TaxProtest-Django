@@ -89,6 +89,7 @@ def staged_candidate_schema(
     models_list: Sequence[type[models.Model]],
     *,
     shared_models_scope: Mapping[type[models.Model], str] | None = None,
+    foreign_keys: Sequence[tuple[type[models.Model], str, type[models.Model], str]] | None = None,
 ) -> Iterator[None]:
     """Provision an isolated candidate schema, clone tables, and scope search_path."""
     if connection.vendor != "postgresql":
@@ -128,6 +129,17 @@ def staged_candidate_schema(
                 f"{quoted_schema}.{table}), 1), EXISTS(SELECT 1 FROM {quoted_schema}.{table}))",
                 [f"{schema_name}.{model._meta.db_table}"],
             )
+
+        if foreign_keys:
+            for source_model, source_col, target_model, target_col in foreign_keys:
+                source_table = connection.ops.quote_name(source_model._meta.db_table)
+                target_table = connection.ops.quote_name(target_model._meta.db_table)
+                quoted_source_col = connection.ops.quote_name(source_col)
+                quoted_target_col = connection.ops.quote_name(target_col)
+                cursor.execute(
+                    f"ALTER TABLE {quoted_schema}.{source_table} ADD FOREIGN KEY ({quoted_source_col}) "
+                    f"REFERENCES {quoted_schema}.{target_table}({quoted_target_col}) DEFERRABLE INITIALLY DEFERRED"
+                )
 
     with switch_search_path(schema_name):
         yield

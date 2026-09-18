@@ -15,6 +15,9 @@ from django.core.management.base import CommandError
 from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
 
+from counties.brazos.cad_refresh import CadRefreshStage
+from counties.brazos.gis_refresh import GisRefreshStage
+from counties.brazos.models import BrazosPropertySnapshot, PropertyAccount, SnapshotOutcome
 from counties.brazos.property_import import (
     BrazosAnnualRefresh,
     RefreshOptions,
@@ -22,9 +25,6 @@ from counties.brazos.property_import import (
     StageResult,
     build_default_refresh,
 )
-from counties.brazos.cad_refresh import CadRefreshStage
-from counties.brazos.gis_refresh import GisRefreshStage
-from counties.brazos.models import BrazosPropertySnapshot, PropertyAccount, SnapshotOutcome
 from counties.brazos.stage_reporting import SilentStageReporter
 from counties.common.models import ImportCandidate
 

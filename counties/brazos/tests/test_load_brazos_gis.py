@@ -27,9 +27,9 @@ from django.core.management import CommandError, call_command
 from django.test import TestCase
 from django.urls import reverse
 
-from counties.brazos.property_import import RefreshOptions
 from counties.brazos.gis_refresh import GisRefreshStage
 from counties.brazos.models import BrazosPropertySnapshot, PropertyAccount, SnapshotOutcome
+from counties.brazos.property_import import RefreshOptions
 from counties.common.models import ImportCandidate
 
 # Real page structure (see docs/research/brazos-gis-parcel-shapefile.md):

@@ -19,6 +19,7 @@ from counties.common.contracts import (
     Comp,
     CountyAdapter,
     CountyProfile,
+    PropertyCapabilities,
     ScoreComponent,
     SearchField,
     Subject,
@@ -293,6 +294,51 @@ class HarrisAdapter(CountyAdapter):
             median_assessed_value=median_assessed_value,
             county=COUNTY_SLUG,
         )
+
+    def capabilities(self, key: str) -> PropertyCapabilities:
+        subject = self.get_subject(key)
+        if subject is None:
+            reason = "Property not found"
+            return PropertyCapabilities(
+                search_ready=False,
+                comparable_ready=False,
+                report_ready=False,
+                tax_impact_ready=False,
+                reasons={
+                    "search": reason,
+                    "comparable": reason,
+                    "report": reason,
+                    "tax": reason,
+                },
+            )
+        reasons: dict[str, str] = {}
+        comparable_ready = True
+        report_ready = True
+        tax_impact_ready = True
+
+        if not subject.has_location:
+            reason = "This property does not have location data required for similarity search."
+            reasons["comparable"] = reason
+            reasons["report"] = reason
+            comparable_ready = False
+            report_ready = False
+
+        if self.published_year() is None:
+            reason = "Published property source year is not recorded; matching-year tax impact is unavailable."
+            reasons["tax"] = reason
+            tax_impact_ready = False
+
+        return PropertyCapabilities(
+            search_ready=True,
+            comparable_ready=comparable_ready,
+            report_ready=report_ready,
+            tax_impact_ready=tax_impact_ready,
+            reasons=reasons,
+        )
+
+    def unavailable_reason(self, key: str, capability: str) -> str | None:
+        caps = self.capabilities(key)
+        return caps.reason_for(capability)
 
 
 adapter = HarrisAdapter()

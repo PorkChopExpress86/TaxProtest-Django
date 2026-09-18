@@ -11,7 +11,6 @@ from counties.common.candidate_staging import (
     compute_dataset_hash,
     cutover_staged_tables,
     staged_candidate_schema,
-    switch_search_path,
     validate_schema_name,
 )
 from counties.common.models import ImportCandidate, ImportOperation

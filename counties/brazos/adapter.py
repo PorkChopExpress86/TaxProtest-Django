@@ -32,6 +32,7 @@ from counties.common.contracts import (
     CountyAdapter,
     CountyProfile,
     DetailRow,
+    PropertyCapabilities,
     ScoreComponent,
     SearchField,
     Subject,
@@ -311,6 +312,35 @@ class BrazosAdapter(CountyAdapter):
         if capability == "report" and not readiness.report_ready:
             return readiness.reason_for("report")
         return None
+
+    def capabilities(self, key: str) -> PropertyCapabilities:
+        readiness = self._readiness.project(key)
+        if readiness is None:
+            reason = "No active detailed Brazos property record is available for this property."
+            return PropertyCapabilities(
+                search_ready=False,
+                comparable_ready=False,
+                report_ready=False,
+                tax_impact_ready=False,
+                reasons={
+                    "search": reason,
+                    "comparable": reason,
+                    "report": reason,
+                    "tax": reason,
+                },
+            )
+        reasons: dict[str, str] = {}
+        for cap in ("search", "comparable", "report", "tax"):
+            r = readiness.reason_for(cap)
+            if r:
+                reasons[cap] = r
+        return PropertyCapabilities(
+            search_ready=readiness.search_ready,
+            comparable_ready=readiness.comparable_ready,
+            report_ready=readiness.report_ready,
+            tax_impact_ready=readiness.tax_impact_ready,
+            reasons=reasons,
+        )
 
 
 adapter = BrazosAdapter()

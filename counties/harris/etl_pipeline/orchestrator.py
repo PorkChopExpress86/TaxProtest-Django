@@ -1192,15 +1192,35 @@ def run_harris_import(
         and request.candidate_id is None
         and result.status is HarrisImportStatus.PREPARED
     ):
-        applied = run_harris_import(
-            replace(request, candidate_id=result.candidate_id), reporter=reporter, reviewer=reviewer
+        from .publication import publish_candidate
+
+        candidate = ImportCandidate.objects.get(pk=result.candidate_id, county="harris")
+        operation.evidence["application_reason"] = request.application_reason
+        operation.save()
+        publish_candidate(candidate.pk, operation, user=reviewer)
+        result = replace(
+            result,
+            status=HarrisImportStatus.COMPLETED,
+            wrote_data="already_applied" not in operation.evidence,
+            already_applied="already_applied" in operation.evidence,
+            completed_at=datetime.now(),
         )
-        return replace(
-            applied,
-            stages=result.stages,
-            started_at=result.started_at,
-            warnings=result.warnings + applied.warnings,
+        operation.status = (
+            "already_applied"
+            if result.already_applied
+            else "published" if result.wrote_data else result.status.value
         )
+        operation.evidence = {
+            **operation.evidence,
+            "result": result.to_dict(),
+            "wrote_data": result.wrote_data,
+            "qualified_publication": operation.evidence.get(
+                "qualified_publication", "Published data unchanged"
+            ),
+        }
+        operation.finished_at = timezone.now()
+        operation.save()
+        return result
     return result
 
 

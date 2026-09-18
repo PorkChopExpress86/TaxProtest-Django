@@ -1,8 +1,5 @@
 """County-owned staging for the Brazos detailed snapshot and its PACS facts."""
 
-import hashlib
-import re
-from contextlib import contextmanager
 from dataclasses import replace
 from uuid import uuid4
 
@@ -17,7 +14,11 @@ from counties.brazos.models import (
     PropertyImprovementDetail,
     PropertyLand,
 )
-from counties.brazos.property_import import AnnualRefreshStage, BrazosPropertyImport, PropertyImportRequest
+from counties.brazos.property_import import (
+    AnnualRefreshStage,
+    BrazosPropertyImport,
+    PropertyImportRequest,
+)
 from counties.brazos.source_validation import inspect_cad, inspect_gis
 from counties.common.candidate_staging import (
     compute_dataset_hash,
@@ -25,7 +26,6 @@ from counties.common.candidate_staging import (
     switch_search_path,
 )
 from counties.common.import_coverage import compare_coverage
-from counties.common.import_writers import fenced_write
 from counties.common.models import ImportCandidate, ImportOperation
 from counties.common.tax_models import PropertyJurisdictionExemption
 

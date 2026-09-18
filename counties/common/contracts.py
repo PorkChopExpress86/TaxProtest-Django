@@ -228,6 +228,23 @@ class CountyProfile:
         return self.export_columns or self.search_columns
 
 
+# --------------------------------------------------------------------------- capabilities
+
+
+@dataclass(frozen=True)
+class PropertyCapabilities:
+    """Declared capabilities and unavailability reasons for one property key."""
+
+    search_ready: bool = True
+    comparable_ready: bool = True
+    report_ready: bool = True
+    tax_impact_ready: bool = True
+    reasons: Mapping[str, str] = field(default_factory=dict)
+
+    def reason_for(self, capability: str) -> str | None:
+        return self.reasons.get(capability)
+
+
 # --------------------------------------------------------------------------- adapter
 
 
@@ -297,3 +314,18 @@ class CountyAdapter(ABC):
     def unavailable_reason(self, key: str, capability: str) -> str | None:
         """Reason a shared capability is unavailable for one county record."""
         return None
+
+    def capabilities(self, key: str) -> PropertyCapabilities:
+        """Declared capabilities and unavailability reasons for one county record."""
+        reason_comp = self.unavailable_reason(key, "comparable")
+        reason_report = self.unavailable_reason(key, "report")
+        reasons: dict[str, str] = {}
+        if reason_comp:
+            reasons["comparable"] = reason_comp
+        if reason_report:
+            reasons["report"] = reason_report
+        return PropertyCapabilities(
+            comparable_ready=reason_comp is None,
+            report_ready=reason_report is None,
+            reasons=reasons,
+        )

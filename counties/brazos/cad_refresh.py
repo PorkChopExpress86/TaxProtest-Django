@@ -51,7 +51,6 @@ from bs4 import BeautifulSoup
 from django.conf import settings
 from django.core.management.base import CommandError
 
-from counties.brazos.property_import import RefreshOptions, StagePreparation, StageResult
 from counties.brazos.models import (
     PropertyAccount,
     PropertyBuildingCharacteristic,
@@ -74,6 +73,7 @@ from counties.brazos.portal import (
     extract_zip,
     resolve_timestamped_file,
 )
+from counties.brazos.property_import import RefreshOptions, StagePreparation, StageResult
 from counties.brazos.stage_reporting import SilentStageReporter, StageReporter
 from counties.common.import_writers import working_source_root
 from counties.common.tax_models import PropertyJurisdictionExemption

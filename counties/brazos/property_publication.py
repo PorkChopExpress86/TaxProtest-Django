@@ -1,7 +1,5 @@
 """Atomic publication of qualified Brazos candidate facts and active snapshot."""
 
-from django.db import connection
-
 from counties.brazos.models import BrazosPropertySnapshot, SnapshotOutcome
 from counties.brazos.property_candidate import MODELS, published_identity
 from counties.common.candidate_staging import cutover_staged_tables

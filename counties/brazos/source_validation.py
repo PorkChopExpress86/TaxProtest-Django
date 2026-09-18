@@ -7,11 +7,11 @@ from zipfile import BadZipFile, ZipFile
 
 from django.core.management.base import CommandError
 
-from counties.brazos.property_import import StagePreparation, StageResult
 from counties.brazos.cad_refresh import CadRefreshStage, _CadStagePayload
 from counties.brazos.gis_coordinates import interpret_gis_coordinates
 from counties.brazos.gis_refresh import GisSourcePayload
 from counties.brazos.parsers import pacs
+from counties.brazos.property_import import StagePreparation, StageResult
 from counties.common.import_audit import record_sources
 from counties.common.models import ImportOperation
 
