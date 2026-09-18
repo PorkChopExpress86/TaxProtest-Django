@@ -85,7 +85,7 @@ class BrazosPropertyImport:
         except Exception as exc:
             operation.status = "failed"
             operation.errors = [str(exc)]
-            operation.warnings = warnings
+            operation.warnings = list(dict.fromkeys([*operation.warnings, *warnings]))
             operation.finished_at = timezone.now()
             operation.save()
             raise
@@ -97,13 +97,16 @@ class BrazosPropertyImport:
             else operation.publication_before
         )
         operation.evidence = {
+            **operation.evidence,
             "outcome": result.outcome.value,
             "dry_run": result.dry_run,
             "cad": dict(result.cad.metrics) if result.cad else None,
             "gis": dict(result.gis.metrics) if result.gis else None,
             "qualified_publication": "Not yet verified",
         }
-        operation.warnings = list(dict.fromkeys([*warnings, *result.cleanup_warnings]))
+        operation.warnings = list(
+            dict.fromkeys([*operation.warnings, *warnings, *result.cleanup_warnings])
+        )
         operation.finished_at = timezone.now()
         operation.save()
         return result
@@ -119,10 +122,10 @@ class BrazosPropertyImport:
 
     def _run_annual(self, options: RefreshOptions) -> PropertyImportResult:
         gis = self._required_gis()
-        cad_preparation = self._cad.prepare(options)
+        cad_preparation = self._prepare(self._cad, options)
         target_year = options.tax_year or cad_preparation.target_year
-        gis_preparation = gis.prepare(
-            replace(options, tax_year=target_year, source_year=target_year)
+        gis_preparation = self._prepare(
+            gis, replace(options, tax_year=target_year, source_year=target_year)
         )
         self._validate_cad(target_year, cad_preparation, inspect_source=not options.dry_run)
         self._validate_gis(target_year, gis_preparation)
@@ -156,7 +159,7 @@ class BrazosPropertyImport:
         )
 
     def _run_cad_recovery(self, options: RefreshOptions) -> PropertyImportResult:
-        preparation = self._cad.prepare(options)
+        preparation = self._prepare(self._cad, options)
         target_year = options.tax_year or preparation.target_year
         self._validate_cad(target_year, preparation, inspect_source=not options.dry_run)
         if options.dry_run:
@@ -199,7 +202,9 @@ class BrazosPropertyImport:
             raise CommandError(
                 "GIS recovery requires the requested year to be the active Partial Brazos property snapshot."
             )
-        preparation = gis.prepare(replace(options, tax_year=target_year, source_year=target_year))
+        preparation = self._prepare(
+            gis, replace(options, tax_year=target_year, source_year=target_year)
+        )
         self._validate_gis(target_year, preparation)
         if options.dry_run:
             return PropertyImportResult(
@@ -228,6 +233,11 @@ class BrazosPropertyImport:
             dry_run=False,
             cleanup_warnings=self._cleanup(options, preparation),
         )
+
+    @staticmethod
+    def _prepare(stage: AnnualRefreshStage, options: RefreshOptions) -> StagePreparation:
+        with fenced_write():
+            return stage.prepare(options)
 
     @staticmethod
     def _validate_source_year(target_year: int, preparation: StagePreparation, label: str) -> None:

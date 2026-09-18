@@ -75,6 +75,7 @@ from counties.brazos.portal import (
     resolve_timestamped_file,
 )
 from counties.brazos.stage_reporting import SilentStageReporter, StageReporter
+from counties.common.import_writers import working_source_root
 from counties.common.tax_models import PropertyJurisdictionExemption
 
 logger = logging.getLogger("brazos_cad")
@@ -752,8 +753,8 @@ class CadRefreshStage:
 
     def prepare(self, options: RefreshOptions) -> StagePreparation:
         """Stage the certified source without changing database rows."""
-        download_dir = Path(settings.BCAD_DOWNLOAD_DIR)
-        extract_root = Path(settings.BCAD_EXTRACT_DIR)
+        download_dir = working_source_root(Path(settings.BCAD_DOWNLOAD_DIR))
+        extract_root = working_source_root(Path(settings.BCAD_EXTRACT_DIR))
 
         if options.skip_download:
             source_year = self._selected_offline_source_year(

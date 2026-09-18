@@ -18,7 +18,7 @@ from django.db import DatabaseError
 from django.utils import timezone
 
 from counties.common.import_logging import import_warnings
-from counties.common.import_writers import county_writer, fenced_write
+from counties.common.import_writers import county_writer, fenced_write, working_source_root
 from counties.common.models import ImportOperation
 from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG, HcadSourceId
 
@@ -263,6 +263,8 @@ class _HarrisImportExecution:
         self.sources = sources
         self.data_year = data_year
         self.config = config or ETLConfig.from_env()
+        self.config.download_dir = working_source_root(self.config.download_dir)
+        self.config.extract_dir = working_source_root(self.config.extract_dir)
         self.logger = logger or ETLLogger(
             name="etl_orchestrator",
             log_dir=self.config.log_dir,
@@ -300,11 +302,15 @@ class _HarrisImportExecution:
         )
 
         if self.request.acquisition is HarrisAcquisitionMode.FETCH:
-            if not self._record_stage(self._execute_download(sources), strict=strict):
+            with fenced_write():
+                download_result = self._execute_download(sources)
+            if not self._record_stage(download_result, strict=strict):
                 return self._finish(started_at, HarrisImportStatus.FAILED, wrote_data=False)
 
         if self.request.extraction is HarrisExtractionMode.EXTRACT:
-            if not self._record_stage(self._execute_extract(sources), strict=strict):
+            with fenced_write():
+                extract_result = self._execute_extract(sources)
+            if not self._record_stage(extract_result, strict=strict):
                 return self._finish(started_at, HarrisImportStatus.FAILED, wrote_data=False)
 
         with fenced_write():
@@ -992,18 +998,19 @@ def run_harris_import(
     except Exception as exc:
         operation.status = "failed"
         operation.errors = [str(exc)]
-        operation.warnings = warnings
+        operation.warnings = list(dict.fromkeys([*operation.warnings, *warnings]))
         operation.finished_at = timezone.now()
         operation.save()
         raise
     result = replace(result, operation_id=operation.pk)
     operation.status = result.status.value
     operation.evidence = {
+        **operation.evidence,
         "result": result.to_dict(),
         "wrote_data": result.wrote_data,
         "qualified_publication": "Not yet verified",
     }
-    operation.warnings = list(dict.fromkeys([*warnings, *result.warnings]))
+    operation.warnings = list(dict.fromkeys([*operation.warnings, *warnings, *result.warnings]))
     operation.errors = list(result.errors)
     operation.finished_at = timezone.now()
     operation.save()

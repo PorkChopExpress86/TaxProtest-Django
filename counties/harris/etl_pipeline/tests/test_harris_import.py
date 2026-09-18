@@ -147,7 +147,10 @@ class HarrisImportBoundaryTests(TestCase):
 
             self.assertIs(result.status, HarrisImportStatus.COMPLETED)
             self.assertFalse(result.wrote_data)
-            translate.assert_called_once_with(str(shapefile))
+            self.assertEqual(
+                result.stages[HarrisImportPhase.LOAD].metrics["gis_coordinates_updated"], 1
+            )
+            self.assertEqual(shapefile.read_text(encoding="utf-8"), "stub")
             load.assert_not_called()
 
     def test_apply_writes_then_refreshes_once(self):

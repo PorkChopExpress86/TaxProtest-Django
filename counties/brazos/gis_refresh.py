@@ -69,6 +69,7 @@ from counties.brazos.gis_coordinates import interpret_gis_coordinates, normalize
 from counties.brazos.models import PropertyAccount
 from counties.brazos.portal import USER_AGENT, download_archive, extract_zip
 from counties.brazos.stage_reporting import SilentStageReporter, StageReporter
+from counties.common.import_writers import working_source_root
 
 logger = logging.getLogger("brazos_cad")
 
@@ -369,8 +370,8 @@ class GisRefreshStage:
 
     def prepare(self, options: RefreshOptions) -> StagePreparation:
         """Stage a parcel shapefile without changing database rows."""
-        download_dir = Path(settings.BCAD_DOWNLOAD_DIR)
-        extract_root = Path(settings.BCAD_EXTRACT_DIR) / "gis"
+        download_dir = working_source_root(Path(settings.BCAD_DOWNLOAD_DIR))
+        extract_root = working_source_root(Path(settings.BCAD_EXTRACT_DIR)) / "gis"
 
         if options.skip_download:
             source_year = self._selected_offline_source_year(

@@ -1,11 +1,15 @@
 """County-scoped database ownership; this module does not execute ETL."""
 
+import hashlib
+import os
+import shutil
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
+from pathlib import Path
 from uuid import UUID
 
-from django.db import connection, transaction
+from django.db import DatabaseError, connection, transaction
 
 from counties.common.models import CountyWriter, ImportAuditEntry, ImportOperation
 
@@ -19,6 +23,57 @@ class FencedWriter(RuntimeError):
 
 class RecoveryRejected(RuntimeError):
     pass
+
+
+def _source_digests(root: Path) -> dict[str, str]:
+    digests = {}
+    for directory, children, files in os.walk(root):
+        children[:] = [name for name in children if name != ".imports"]
+        for filename in sorted(files):
+            source = Path(directory) / filename
+            digest = hashlib.sha256()
+            with source.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            digests[str(source.relative_to(root))] = digest.hexdigest()
+    return digests
+
+
+def working_source_root(root: Path) -> Path:
+    """Isolate attempt-owned files, so a lost worker cannot overwrite another attempt."""
+    operation = _CURRENT_WRITER.get()
+    if operation is None:
+        return root
+    working = root / ".imports" / str(operation.pk)
+    if not working.exists():
+        base_digests = _source_digests(root)
+        source_root = root
+        for prior in ImportOperation.objects.filter(
+            county=operation.county, status__in=("completed", "partial", "published", "validated")
+        ).exclude(pk=operation.pk):
+            retained = root / ".imports" / str(prior.pk)
+            if str(retained) not in prior.evidence.get("working_sources", []):
+                continue
+            if prior.evidence.get("base_sources", {}).get(str(root)) != base_digests:
+                break  # Explicitly changed base inputs take precedence over cached outputs.
+            expected = prior.evidence.get("retained_source_digests", {}).get(str(retained))
+            if expected is None or not retained.exists() or _source_digests(retained) != expected:
+                raise RuntimeError(f"Retained source files changed or are unavailable: {prior.pk}")
+            source_root = retained
+            operation.evidence.setdefault("reused_from", {})[str(root)] = str(prior.pk)
+            break
+        operation.evidence.setdefault("base_sources", {})[str(root)] = base_digests
+        working.mkdir(parents=True)
+        for source in source_root.iterdir():
+            if source.name == ".imports":
+                continue
+            target = working / source.name
+            if source.is_dir():
+                shutil.copytree(source, target)
+            else:
+                shutil.copy2(source, target)
+        operation.evidence.setdefault("working_sources", []).append(str(working))
+    return working
 
 
 class WriterConflict(RuntimeError):
@@ -89,6 +144,13 @@ def county_writer(operation: ImportOperation) -> Iterator[None]:
         token = _CURRENT_WRITER.set(operation)
         yield
     finally:
+        try:
+            operation.evidence["retained_source_digests"] = {
+                path: _source_digests(Path(path))
+                for path in operation.evidence.get("working_sources", [])
+            }
+        except OSError as exc:
+            operation.warnings.append(f"Retained source verification unavailable: {exc}")
         if token is not None:
             _CURRENT_WRITER.reset(token)
         # A lost database session leaves durable uncertainty, even if execution reconnects.
@@ -172,16 +234,21 @@ def recover_writer(operation: ImportOperation, *, actor: str, reason: str) -> No
                 evidence=evidence,
                 result="released",
             )
-    except RecoveryRejected as exc:
+    except (RecoveryRejected, DatabaseError) as exc:
+        explanation = (
+            str(exc)
+            if isinstance(exc, RecoveryRejected)
+            else "Unable to verify release: writer reservation is busy or unavailable"
+        )
         ImportAuditEntry.objects.create(
             operation=operation,
             kind="writer_recovery",
             actor=actor,
             reason=reason,
-            evidence={**evidence, "explanation": str(exc)},
+            evidence={**evidence, "explanation": explanation},
             result="rejected",
         )
-        raise
+        raise RecoveryRejected(explanation) from exc
     finally:
         if locked:
             with connection.cursor() as cursor:
