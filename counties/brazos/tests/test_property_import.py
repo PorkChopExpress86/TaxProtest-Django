@@ -5,16 +5,19 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
+from django.contrib.auth import get_user_model
 from django.core.management.base import CommandError
 from django.test import TestCase
+from django.urls import reverse
 
-from counties.brazos.annual_refresh import RefreshOptions, StagePreparation, StageResult
+from counties.brazos.annual_refresh import RefreshOptions
 from counties.brazos.cad_refresh import (
     ENTITY_INFO_FILENAME,
     IMPROVEMENT_DETAIL_ATTR_FILENAME,
     IMPROVEMENT_DETAIL_FILENAME,
     CadRefreshStage,
 )
+from counties.brazos.gis_refresh import GisRefreshStage
 from counties.brazos.models import BrazosPropertySnapshot, PropertyAccount
 from counties.brazos.property_import import (
     BrazosPropertyImport,
@@ -22,51 +25,7 @@ from counties.brazos.property_import import (
     PropertyImportOutcome,
     PropertyImportRequest,
 )
-
-
-class _CadStage:
-    name = "cad"
-
-    def prepare(self, options: RefreshOptions) -> StagePreparation:
-        return StagePreparation(
-            name=self.name,
-            source_year=2026,
-            target_year=2026,
-            payload=None,
-            cleanup_paths=(Path("cad"),),
-        )
-
-    def validate_preflight(self, preparation: StagePreparation) -> None:
-        return None
-
-    def persist(self, preparation: StagePreparation) -> StageResult:
-        PropertyAccount.objects.create(
-            prop_id="000000010013", tax_year=2026, owner_name="Partial CAD owner"
-        )
-        return StageResult(name=self.name, metrics={"accounts": 1})
-
-    def cleanup(self, preparation: StagePreparation) -> None:
-        return None
-
-
-class _GisStage:
-    name = "gis"
-
-    def prepare(self, options: RefreshOptions) -> StagePreparation:
-        return StagePreparation(
-            name=self.name,
-            source_year=2026,
-            target_year=2026,
-            payload=None,
-            cleanup_paths=(Path("gis"),),
-        )
-
-    def persist(self, preparation: StagePreparation) -> StageResult:
-        PropertyAccount.objects.filter(tax_year=2026).update(coordinate_source_year=2026)
-        return StageResult(name=self.name, metrics={"matched": 1})
-
-    def cleanup(self, preparation: StagePreparation) -> None:
-        return None
+from counties.common.models import ImportCandidate
 
 
 def _line(length: int, fields: dict[tuple[int, int], str]) -> str:
@@ -107,13 +66,47 @@ def _stage_complete_pacs_export(root: Path, year: int) -> None:
 
 
 class PropertyImportPublicationTests(TestCase):
-    def test_qualified_cad_recovery_publishes_an_active_partial_snapshot(self):
-        result = BrazosPropertyImport(cad=_CadStage(), gis=None).run(
-            PropertyImportRequest(
-                mode=PropertyImportMode.CAD_RECOVERY,
-                options=RefreshOptions(tax_year=2026),
-            )
+    def _review_and_apply(self, candidate_id):
+        candidate = ImportCandidate.objects.get(pk=candidate_id)
+        self.assertEqual(candidate.state, "awaiting_review")
+        user = get_user_model().objects.create_superuser("property-reviewer", password="test")
+        self.client.force_login(user)
+        url = reverse("admin:data_importcandidate_review", args=[candidate.pk])
+        binding = self.client.get(url).context["form"]["binding"].value()
+        self.assertEqual(
+            self.client.post(
+                url,
+                {"decision": "approved", "reason": "Verified source fixtures", "binding": binding},
+            ).status_code,
+            302,
         )
+        self.assertEqual(
+            self.client.post(
+                reverse("admin:data_importcandidate_apply", args=[candidate.pk]),
+                {"reason": "Publish verified fixture"},
+            ).status_code,
+            302,
+        )
+
+    def test_qualified_cad_recovery_publishes_an_active_partial_snapshot(self):
+        from counties.brazos.tests.test_property_coverage import write_pacs
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_pacs(root, ["000000010013"], equity=True)
+            with self.settings(
+                BCAD_DOWNLOAD_DIR=str(root / "downloads"), BCAD_EXTRACT_DIR=str(root / "extracted")
+            ):
+                result = BrazosPropertyImport(cad=CadRefreshStage(), gis=None).run(
+                    PropertyImportRequest(
+                        mode=PropertyImportMode.CAD_RECOVERY,
+                        options=RefreshOptions(
+                            tax_year=2026, skip_download=True, skip_extract=True
+                        ),
+                    )
+                )
+                self.assertFalse(BrazosPropertySnapshot.objects.exists())
+                self._review_and_apply(result.candidate_id)
 
         self.assertEqual(result.outcome, PropertyImportOutcome.PARTIAL)
         self.assertEqual(result.tax_year, 2026)
@@ -199,14 +192,31 @@ class PropertyImportPublicationTests(TestCase):
             outcome=PropertyImportOutcome.PARTIAL,
             cad_source_year=2026,
         )
-        PropertyAccount.objects.create(prop_id="000000010013", tax_year=2026)
-
-        result = BrazosPropertyImport(cad=_CadStage(), gis=_GisStage()).run(
-            PropertyImportRequest(
-                mode=PropertyImportMode.GIS_RECOVERY,
-                options=RefreshOptions(tax_year=2026),
-            )
+        PropertyAccount.objects.create(
+            prop_id="000000010013", tax_year=2026, owner_name="Partial CAD owner"
         )
+
+        from counties.brazos.tests.test_property_coverage import write_gis
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_gis(root, ["000000010013"])
+            with self.settings(
+                BCAD_DOWNLOAD_DIR=str(root / "downloads"), BCAD_EXTRACT_DIR=str(root / "extracted")
+            ):
+                result = BrazosPropertyImport(cad=CadRefreshStage(), gis=GisRefreshStage()).run(
+                    PropertyImportRequest(
+                        mode=PropertyImportMode.GIS_RECOVERY,
+                        options=RefreshOptions(
+                            tax_year=2026, skip_download=True, skip_extract=True
+                        ),
+                    )
+                )
+                self.assertEqual(
+                    BrazosPropertySnapshot.objects.get(is_active=True).outcome,
+                    PropertyImportOutcome.PARTIAL,
+                )
+                self._review_and_apply(result.candidate_id)
 
         self.assertEqual(result.outcome, PropertyImportOutcome.COMPLETED)
         active = BrazosPropertySnapshot.objects.get(is_active=True)

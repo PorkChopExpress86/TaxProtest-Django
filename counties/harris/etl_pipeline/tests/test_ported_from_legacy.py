@@ -271,7 +271,7 @@ class LoadGisParcelsTests(TestCase):
             [
                 {"ACCT": "GIS1", "PARCEL_ID": "P1", "x": -95.1, "y": 29.1},
                 {"ACCT": "GIS2", "PARCEL_ID": "P2", "x": -95.2, "y": 29.2},
-                {"ACCT": "GIS2", "PARCEL_ID": "P2B", "x": -95.25, "y": 29.25},
+                {"ACCT": "GIS2", "PARCEL_ID": "P2", "x": -95.2, "y": 29.2},
                 {"ACCT": "GIS_NON", "PARCEL_ID": "PNR", "x": -95.26, "y": 29.26},
                 {"ACCT": "MISSING", "PARCEL_ID": "P3", "x": -95.3, "y": 29.3},
                 {"ACCT": "", "PARCEL_ID": "P4", "x": -95.4, "y": 29.4},
@@ -285,7 +285,18 @@ class LoadGisParcelsTests(TestCase):
         prop2.refresh_from_db()
         non_res.refresh_from_db()
         self.assertEqual(prop1.parcel_id, "P1")
-        self.assertEqual(prop2.parcel_id, "P2B")
+        self.assertEqual(prop2.parcel_id, "P2")
+
+        mocked_read_file.return_value = _FakeGDF(
+            [
+                {"ACCT": "GIS2", "PARCEL_ID": "P2", "x": -95.2, "y": 29.2},
+                {"ACCT": "GIS2", "PARCEL_ID": "P2B", "x": -95.25, "y": 29.25},
+            ]
+        )
+        with self.assertRaisesRegex(ValueError, "Conflicting canonical GIS account identity: GIS2"):
+            load_gis_parcels("fake.shp", chunk_size=2, refresh_readiness=False)
+        prop2.refresh_from_db()
+        self.assertEqual(prop2.parcel_id, "P2")
         self.assertIsNone(non_res.latitude)
         self.assertIsNone(non_res.longitude)
         self.assertNotEqual(non_res.parcel_id, "PNR")

@@ -20,13 +20,17 @@ import warnings
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+from zipfile import ZipFile
 
+from django.contrib.auth import get_user_model
 from django.core.management import CommandError, call_command
 from django.test import TestCase
+from django.urls import reverse
 
 from counties.brazos.annual_refresh import RefreshOptions
 from counties.brazos.gis_refresh import GisRefreshStage
 from counties.brazos.models import BrazosPropertySnapshot, PropertyAccount, SnapshotOutcome
+from counties.common.models import ImportCandidate
 
 # Real page structure (see docs/research/brazos-gis-parcel-shapefile.md):
 # certified-year links, a non-year-labeled monthly variant, and unrelated
@@ -345,12 +349,45 @@ class OfflineRerunTests(TestCase):
         )
 
     def _stage_archive(self, year: int) -> None:
-        (self.download_dir / f"bcad_gis_{year}.zip").write_bytes(b"not-really-a-zip")
+        target = self.extract_root / "gis" / str(year)
+        with ZipFile(self.download_dir / f"bcad_gis_{year}.zip", "w") as archive:
+            if target.exists():
+                for source in target.iterdir():
+                    archive.write(source, source.name)
 
     def _stage_extracted_shapefile(self, year: int) -> None:
         target = self.extract_root / "gis" / str(year)
         target.mkdir(parents=True)
         write_fixture_shapefile(target / "parcels.shp")
+        if (self.download_dir / f"bcad_gis_{year}.zip").exists():
+            self._stage_archive(year)
+
+    def _apply_offline_import(self):
+        candidate = ImportCandidate.objects.get(county="brazos")
+        self.assertEqual(candidate.state, "awaiting_review")
+        self.assertEqual(
+            BrazosPropertySnapshot.objects.get(is_active=True).outcome, SnapshotOutcome.PARTIAL
+        )
+        user = get_user_model().objects.create_superuser("offline-reviewer", password="test")
+        self.client.force_login(user)
+        url = reverse("admin:data_importcandidate_review", args=[candidate.pk])
+        binding = self.client.get(url).context["form"]["binding"].value()
+        self.assertEqual(
+            self.client.post(
+                url, {"decision": "approved", "reason": "Verified offline GIS", "binding": binding}
+            ).status_code,
+            302,
+        )
+        self.assertEqual(
+            self.client.post(
+                reverse("admin:data_importcandidate_apply", args=[candidate.pk]),
+                {"reason": "Publish offline GIS"},
+            ).status_code,
+            302,
+        )
+        self.assertEqual(
+            BrazosPropertySnapshot.objects.get(is_active=True).outcome, SnapshotOutcome.COMPLETED
+        )
 
     def test_resolves_year_from_the_extracted_directory(self):
         self._activate_partial_snapshot(2025)
@@ -360,6 +397,7 @@ class OfflineRerunTests(TestCase):
 
         with self._settings():
             call_command("load_brazos_gis", "--skip-download", "--skip-extract")
+            self._apply_offline_import()
 
         row = PropertyAccount.objects.get(prop_id="000000010013", tax_year=2025)
         self.assertEqual(row.situs_address, "5000 SILVER HILL RD")
@@ -386,6 +424,7 @@ class OfflineRerunTests(TestCase):
 
         with self._settings():
             call_command("load_brazos_gis", "--skip-download", "--skip-extract")
+            self._apply_offline_import()
 
         self.assertEqual(
             PropertyAccount.objects.get(prop_id="000000010013").situs_address,
@@ -426,6 +465,7 @@ class OfflineRerunTests(TestCase):
 
         with self._settings():
             call_command("load_brazos_gis", "--skip-download", "--skip-extract")
+            self._apply_offline_import()
 
         self.assertIsNotNone(PropertyAccount.objects.get(prop_id="000000010013").latitude)
 

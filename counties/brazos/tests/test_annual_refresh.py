@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import tempfile
+from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
+from zipfile import ZipFile
 
+from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import SimpleTestCase, TestCase
+from django.urls import reverse
 
 from counties.brazos.annual_refresh import (
     BrazosAnnualRefresh,
@@ -22,18 +26,38 @@ from counties.brazos.cad_refresh import CadRefreshStage
 from counties.brazos.gis_refresh import GisRefreshStage
 from counties.brazos.models import BrazosPropertySnapshot, PropertyAccount, SnapshotOutcome
 from counties.brazos.stage_reporting import SilentStageReporter
-from counties.common.models import ImportOperation
+from counties.common.models import ImportCandidate
+
+
+def _valid_sources(root: Path) -> None:
+    from counties.brazos.tests.test_property_coverage import write_gis, write_pacs
+
+    write_pacs(root, ["000000010013"], equity=True)
+    source = root / "extracted" / "2026"
+    for path in source.glob("*.TXT"):
+        path.write_text(path.read_text().replace("2026", "2025"))
+    source.rename(source.with_name("2025"))
+    write_gis(root, ["000000010013"])
+    source = root / "extracted" / "gis" / "2026"
+    source.rename(source.with_name("2025"))
 
 
 class _Stage:
-    def __init__(self, name: str, *, source_year: int, target_year: int):
+    def __init__(self, name: str, *, source_year: int, target_year: int, delegate=None):
         self.name = name
         self.source_year = source_year
         self.target_year = target_year
         self.persisted = False
         self.cleaned = False
+        self.delegate = delegate
 
     def prepare(self, options: RefreshOptions) -> StagePreparation:
+        if self.delegate is not None:
+            return replace(
+                self.delegate.prepare(options),
+                source_year=self.source_year,
+                target_year=self.target_year,
+            )
         return StagePreparation(
             name=self.name,
             source_year=self.source_year,
@@ -44,25 +68,12 @@ class _Stage:
 
     def persist(self, preparation: StagePreparation) -> StageResult:
         self.persisted = True
+        if self.delegate is not None:
+            return self.delegate.persist(preparation)
         return StageResult(name=self.name, metrics={"loaded": 1})
 
     def cleanup(self, preparation: StagePreparation) -> None:
         self.cleaned = True
-
-
-class _ReplacingCadStage(_Stage):
-    def persist(self, preparation: StagePreparation) -> StageResult:
-        from counties.brazos.models import PropertyAccount
-
-        self.persisted = True
-        PropertyAccount.objects.filter(tax_year=preparation.target_year).delete()
-        PropertyAccount.objects.create(
-            prop_id="000000010013",
-            tax_year=preparation.target_year,
-            owner_name="Replacement owner",
-            assessed_value=Decimal("250000"),
-        )
-        return StageResult(name=self.name, metrics={"loaded": 1})
 
 
 class _FailingGisStage(_Stage):
@@ -114,11 +125,19 @@ class AnnualRefreshOnlineDryRunTests(SimpleTestCase):
 
 class AnnualRefreshYearContractTests(TestCase):
     def test_source_year_mismatch_stops_before_any_persistence(self):
-        cad = _Stage("cad", source_year=2025, target_year=2025)
-        gis = _Stage("gis", source_year=2024, target_year=2025)
+        cad = _Stage("cad", source_year=2025, target_year=2025, delegate=CadRefreshStage())
+        gis = _Stage("gis", source_year=2024, target_year=2025, delegate=GisRefreshStage())
 
-        with self.assertRaisesRegex(CommandError, "GIS source year 2024"):
-            BrazosAnnualRefresh(cad, gis).run(RefreshOptions(tax_year=2025))
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _valid_sources(root)
+            with self.settings(
+                BCAD_DOWNLOAD_DIR=str(root / "downloads"), BCAD_EXTRACT_DIR=str(root / "extracted")
+            ):
+                with self.assertRaisesRegex(CommandError, "GIS source year 2024"):
+                    BrazosAnnualRefresh(cad, gis).run(
+                        RefreshOptions(tax_year=2025, skip_download=True, skip_extract=True)
+                    )
 
         self.assertFalse(cad.persisted)
         self.assertFalse(gis.persisted)
@@ -148,11 +167,21 @@ class AnnualRefreshPublicationTests(TestCase):
             situs_address="100 Original Street",
             assessed_value=Decimal("100000"),
         )
-        cad = _ReplacingCadStage("cad", source_year=2025, target_year=2025)
-        gis = _FailingGisStage("gis", source_year=2025, target_year=2025)
+        cad = _Stage("cad", source_year=2025, target_year=2025, delegate=CadRefreshStage())
+        gis = _FailingGisStage(
+            "gis", source_year=2025, target_year=2025, delegate=GisRefreshStage()
+        )
 
-        with self.assertRaisesRegex(RuntimeError, "GIS enrichment failed"):
-            BrazosAnnualRefresh(cad, gis).run(RefreshOptions(tax_year=2025))
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _valid_sources(root)
+            with self.settings(
+                BCAD_DOWNLOAD_DIR=str(root / "downloads"), BCAD_EXTRACT_DIR=str(root / "extracted")
+            ):
+                with self.assertRaisesRegex(RuntimeError, "GIS enrichment failed"):
+                    BrazosAnnualRefresh(cad, gis).run(
+                        RefreshOptions(tax_year=2025, skip_download=True, skip_extract=True)
+                    )
 
         restored = PropertyAccount.objects.get(prop_id="000000010013", tax_year=2025)
         self.assertEqual(restored.owner_name, "Original owner")
@@ -272,14 +301,36 @@ class AnnualRefreshCommandTests(TestCase):
         download_dir = root / "downloads"
         extract_root = root / "extracted"
         download_dir.mkdir()
-        (download_dir / "bcad_certified_2025.zip").write_bytes(b"retained archive")
 
         cad_extract = extract_root / "2025"
         gis_extract = extract_root / "gis" / "2025"
         self._write_cad_source(cad_extract)
         gis_extract.mkdir(parents=True)
         self._write_gis_source(gis_extract / "parcels.shp")
+        with ZipFile(download_dir / "bcad_certified_2025.zip", "w") as archive:
+            for source in cad_extract.iterdir():
+                archive.write(source, source.name)
         return download_dir, cad_extract, gis_extract
+
+    def _review_and_apply(self, candidate):
+        user = get_user_model().objects.create_superuser("annual-reviewer", password="test")
+        self.client.force_login(user)
+        review_url = reverse("admin:data_importcandidate_review", args=[candidate.pk])
+        binding = self.client.get(review_url).context["form"]["binding"].value()
+        self.assertEqual(
+            self.client.post(
+                review_url,
+                {"decision": "approved", "reason": "Verified annual fixture", "binding": binding},
+            ).status_code,
+            302,
+        )
+        self.assertEqual(
+            self.client.post(
+                reverse("admin:data_importcandidate_apply", args=[candidate.pk]),
+                {"reason": "Publish annual fixture"},
+            ).status_code,
+            302,
+        )
 
     def test_command_publishes_cad_and_gis_as_one_complete_snapshot(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -297,6 +348,11 @@ class AnnualRefreshCommandTests(TestCase):
                     "--year",
                     "2025",
                 )
+                candidate = ImportCandidate.objects.get(county="brazos")
+                self.assertEqual(candidate.state, "awaiting_review")
+                self.assertFalse(PropertyAccount.objects.exists())
+                operation = candidate.operation
+                self._review_and_apply(candidate)
 
             account = PropertyAccount.objects.get(prop_id="000000010013", tax_year=2025)
             self.assertEqual(account.owner_name, "CAD owner")
@@ -311,10 +367,9 @@ class AnnualRefreshCommandTests(TestCase):
             self.assertEqual(snapshot.tax_year, 2025)
             self.assertEqual(snapshot.cad_source_year, 2025)
             self.assertEqual(snapshot.gis_source_year, 2025)
-            operation = ImportOperation.objects.latest("started_at")
             working = root / "extracted" / ".imports" / str(operation.pk)
-            self.assertFalse((working / "2025").exists())
-            self.assertFalse((working / "gis" / "2025").exists())
+            self.assertTrue((working / "2025").exists())
+            self.assertTrue((working / "gis" / "2025").exists())
             self.assertTrue(cad_extract.exists())
             self.assertTrue(gis_extract.exists())
 

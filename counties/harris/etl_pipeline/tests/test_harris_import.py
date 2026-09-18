@@ -9,6 +9,7 @@ from unittest.mock import patch
 from django.db import DatabaseError
 from django.test import TestCase, override_settings
 
+from counties.common.models import ImportCandidate
 from counties.harris.etl_pipeline import (
     ExtractedSourceRetention,
     HarrisAcquisitionMode,
@@ -22,6 +23,7 @@ from counties.harris.etl_pipeline import (
     InvalidHarrisImportRequest,
     run_harris_import,
 )
+from counties.harris.etl_pipeline.candidate import candidate_tables
 from counties.harris.etl_pipeline.import_plan import HarrisImportPlan
 from counties.harris.models import BuildingDetail, ExtraFeature, PropertyRecord
 
@@ -157,7 +159,7 @@ class HarrisImportBoundaryTests(TestCase):
             self.assertEqual(shapefile.read_bytes(), contents)
             load.assert_not_called()
 
-    def test_apply_writes_then_refreshes_once(self):
+    def test_apply_prepares_then_refreshes_once_without_publishing_unready_data(self):
         with (
             tempfile.TemporaryDirectory() as root,
             override_settings(**_runtime_settings(root)),
@@ -176,9 +178,15 @@ class HarrisImportBoundaryTests(TestCase):
 
             result = run_harris_import(request)
 
-            self.assertIs(result.status, HarrisImportStatus.COMPLETED)
-            self.assertTrue(result.wrote_data)
-            self.assertTrue(PropertyRecord.objects.filter(account_number="P200").exists())
+            self.assertIs(result.status, HarrisImportStatus.BLOCKED)
+            self.assertFalse(result.wrote_data)
+            self.assertFalse(PropertyRecord.objects.filter(account_number="P200").exists())
+            self.assertEqual(
+                ImportCandidate.objects.get(pk=result.candidate_id).evidence["population"][
+                    "properties"
+                ],
+                1,
+            )
             refresh.assert_called_once_with()
             self.assertTrue(source.exists())
 
@@ -200,9 +208,11 @@ class HarrisImportBoundaryTests(TestCase):
                 )
             )
 
-        property_record = PropertyRecord.objects.get(account_number="P225")
-        building = BuildingDetail.objects.get(account_number="P225", building_number=1)
-        self.assertIs(result.status, HarrisImportStatus.COMPLETED)
+        self.assertFalse(PropertyRecord.objects.filter(account_number="P225").exists())
+        with candidate_tables(ImportCandidate.objects.get(pk=result.candidate_id)):
+            property_record = PropertyRecord.objects.get(account_number="P225")
+            building = BuildingDetail.objects.get(account_number="P225", building_number=1)
+        self.assertIs(result.status, HarrisImportStatus.BLOCKED)
         self.assertEqual(result.stages[HarrisImportPhase.LOAD].metrics["records_loaded"], 3)
         self.assertEqual(building.property_id, property_record.id)
 
@@ -225,11 +235,15 @@ class HarrisImportBoundaryTests(TestCase):
                 )
             )
 
-        features = ExtraFeature.objects.filter(account_number="P230").order_by("feature_code")
-        self.assertIs(result.status, HarrisImportStatus.COMPLETED)
+        self.assertFalse(ExtraFeature.objects.filter(account_number="P230").exists())
+        with candidate_tables(ImportCandidate.objects.get(pk=result.candidate_id)):
+            features = list(
+                ExtraFeature.objects.filter(account_number="P230").order_by("feature_code")
+            )
+        self.assertIs(result.status, HarrisImportStatus.BLOCKED)
         self.assertEqual(result.stages[HarrisImportPhase.LOAD].metrics["records_loaded"], 4)
-        self.assertEqual(list(features.values_list("feature_code", flat=True)), ["GAR", "POOL"])
-        self.assertEqual(len(set(features.values_list("import_batch_id", flat=True))), 1)
+        self.assertEqual([feature.feature_code for feature in features], ["GAR", "POOL"])
+        self.assertEqual(len({feature.import_batch_id for feature in features}), 1)
 
     def test_strict_missing_required_extract_returns_failed_result(self):
         with tempfile.TemporaryDirectory() as root, override_settings(**_runtime_settings(root)):
@@ -308,7 +322,7 @@ class HarrisImportBoundaryTests(TestCase):
         self.assertIn("no loadable rows", result.errors[0])
         self.assertTrue(PropertyRecord.objects.filter(account_number="KEEP_EMPTY").exists())
 
-    def test_best_effort_failure_is_partial_when_useful_work_completed(self):
+    def test_best_effort_missing_sources_cannot_publish_partial_property_work(self):
         with tempfile.TemporaryDirectory() as root, override_settings(**_runtime_settings(root)):
             _write_property_source(root, account="P300")
             result = run_harris_import(
@@ -325,18 +339,19 @@ class HarrisImportBoundaryTests(TestCase):
                 )
             )
 
-            self.assertIs(result.status, HarrisImportStatus.PARTIAL)
-            self.assertTrue(result.wrote_data)
-            self.assertTrue(PropertyRecord.objects.filter(account_number="P300").exists())
+            self.assertIs(result.status, HarrisImportStatus.FAILED)
+            self.assertFalse(result.wrote_data)
+            self.assertFalse(PropertyRecord.objects.filter(account_number="P300").exists())
+            self.assertTrue(result.errors)
 
-    def test_cleanup_failure_after_commit_is_a_completed_warning(self):
+    def test_candidate_preparation_retains_sources_without_early_cleanup(self):
         with (
             tempfile.TemporaryDirectory() as root,
             override_settings(**_runtime_settings(root)),
             patch(
                 "counties.harris.etl_pipeline.orchestrator.ExtractManager.cleanup",
                 side_effect=PermissionError("locked"),
-            ),
+            ) as cleanup,
         ):
             _write_property_source(root, account="P400")
             result = run_harris_import(
@@ -351,9 +366,10 @@ class HarrisImportBoundaryTests(TestCase):
                 )
             )
 
-            self.assertIs(result.status, HarrisImportStatus.COMPLETED)
-            self.assertTrue(result.wrote_data)
-            self.assertIn("cleanup failed", result.warnings[0])
+            self.assertIs(result.status, HarrisImportStatus.BLOCKED)
+            self.assertFalse(result.wrote_data)
+            cleanup.assert_not_called()
+            self.assertTrue(ImportCandidate.objects.get(pk=result.candidate_id).sources)
 
     def test_reporter_failure_is_observational(self):
         class BrokenReporter:

@@ -13,6 +13,8 @@ from counties.harris.models import BuildingDetail, ExtraFeature, PropertyRecord
 class PropertySearchViewTests(TestCase):
     def setUp(self):
         PropertyRecord.objects.create(
+            is_residential=True,
+            is_data_ready=True,
             address="123 Main St",
             city="Houston",
             zipcode="77001",
@@ -23,6 +25,8 @@ class PropertySearchViewTests(TestCase):
             value=150000,
         )
         PropertyRecord.objects.create(
+            is_residential=True,
+            is_data_ready=True,
             address="456 Oak St",
             city="Houston",
             zipcode="77001",
@@ -46,6 +50,8 @@ class PropertySearchViewTests(TestCase):
     def test_index_bulk_loads_related_buildings_and_features(self):
         for i in range(5):
             prop = PropertyRecord.objects.create(
+                is_residential=True,
+                is_data_ready=True,
                 address=f"{i} Search St",
                 city="Houston",
                 zipcode="77333",
@@ -73,7 +79,8 @@ class PropertySearchViewTests(TestCase):
                 is_active=True,
             )
 
-        with self.assertNumQueries(4):
+        # Four batched reads, publication provenance, and the snapshot savepoint pair.
+        with self.assertNumQueries(7):
             response = self.client.get(reverse("index"), {"zip_code": "77333"})
 
         self.assertEqual(response.status_code, 200)
@@ -100,6 +107,8 @@ class PropertySearchViewTests(TestCase):
     def test_export_csv_limits_exported_rows(self):
         for i in range(1005):
             PropertyRecord.objects.create(
+                is_residential=True,
+                is_data_ready=True,
                 address=f"{i} Cap St",
                 city="Houston",
                 zipcode="77099",
@@ -119,6 +128,8 @@ class PropertySearchViewTests(TestCase):
     def test_export_csv_bulk_loads_related_data(self):
         for i in range(5):
             prop = PropertyRecord.objects.create(
+                is_residential=True,
+                is_data_ready=True,
                 address=f"{i} Bulk St",
                 city="Houston",
                 zipcode="77111",
@@ -146,13 +157,16 @@ class PropertySearchViewTests(TestCase):
                 is_active=True,
             )
 
-        with self.assertNumQueries(3):
+        # Three batched reads plus the snapshot savepoint pair; no per-property queries.
+        with self.assertNumQueries(5):
             response = self.client.get(reverse("export_csv"), {"zip_code": "77111"})
 
         self.assertEqual(response.status_code, 200)
 
     def test_export_csv_escapes_formula_like_text_fields(self):
         PropertyRecord.objects.create(
+            is_residential=True,
+            is_data_ready=True,
             address="789 Formula St",
             city="Houston",
             zipcode="77222",
@@ -175,6 +189,8 @@ class PropertySearchViewTests(TestCase):
 class SimilarPropertiesViewTests(TestCase):
     def setUp(self):
         self.target = PropertyRecord.objects.create(
+            is_residential=True,
+            is_data_ready=True,
             address="16213 Wall St",
             city="Houston",
             zipcode="77040",
@@ -208,6 +224,8 @@ class SimilarPropertiesViewTests(TestCase):
         )
 
         self.low_ppsf_property = PropertyRecord.objects.create(
+            is_residential=True,
+            is_data_ready=True,
             address="123 Value Ln",
             city="Houston",
             zipcode="77040",
@@ -227,6 +245,8 @@ class SimilarPropertiesViewTests(TestCase):
         )
 
         self.high_ppsf_property = PropertyRecord.objects.create(
+            is_residential=True,
+            is_data_ready=True,
             address="456 Premium Dr",
             city="Houston",
             zipcode="77040",
@@ -346,6 +366,8 @@ class ProtestRecommendationTests(TestCase):
     def setUp(self):
         # Target property: $150/sqft (high PPSF)
         self.target_high = PropertyRecord.objects.create(
+            is_residential=True,
+            is_data_ready=True,
             address="100 Target St",
             city="Houston",
             zipcode="77001",
@@ -367,6 +389,8 @@ class ProtestRecommendationTests(TestCase):
 
         # Target property: $120/sqft (near median)
         self.target_neutral = PropertyRecord.objects.create(
+            is_residential=True,
+            is_data_ready=True,
             address="200 Target St",
             city="Houston",
             zipcode="77001",
@@ -397,6 +421,8 @@ class ProtestRecommendationTests(TestCase):
 
         for acct, street_num, area, value in comps_data:
             prop = PropertyRecord.objects.create(
+                is_residential=True,
+                is_data_ready=True,
                 address=f"{street_num} Comp St",
                 city="Houston",
                 zipcode="77001",
@@ -518,6 +544,8 @@ class ProtestRecommendationTests(TestCase):
         """Test that comparables without PPSF are excluded from calculation."""
         # Create a comp without assessed value
         prop_no_value = PropertyRecord.objects.create(
+            is_residential=True,
+            is_data_ready=True,
             address="999 No Value St",
             city="Houston",
             zipcode="77001",
@@ -580,6 +608,8 @@ class ProtestRecommendationTests(TestCase):
 class ProtestAnalysisViewTests(TestCase):
     def setUp(self):
         self.target = PropertyRecord.objects.create(
+            is_residential=True,
+            is_data_ready=True,
             address="16213 Wall St",
             city="Houston",
             zipcode="77040",
@@ -622,6 +652,8 @@ class ProtestAnalysisViewTests(TestCase):
             market_value=360000,
         )
         self.comp = PropertyRecord.objects.create(
+            is_residential=True,
+            is_data_ready=True,
             address="100 Similar Ln",
             city="Houston",
             zipcode="77040",
@@ -811,6 +843,8 @@ class ProtestAnalysisViewTests(TestCase):
 class ProtestAnalysisExportTests(TestCase):
     def setUp(self):
         self.target = PropertyRecord.objects.create(
+            is_residential=True,
+            is_data_ready=True,
             address="200 Export Ave",
             city="Houston",
             zipcode="77040",
@@ -835,6 +869,8 @@ class ProtestAnalysisExportTests(TestCase):
             is_active=True,
         )
         self.comp = PropertyRecord.objects.create(
+            is_residential=True,
+            is_data_ready=True,
             address="201 Export Ave",
             city="Houston",
             zipcode="77040",

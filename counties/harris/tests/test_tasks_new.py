@@ -136,6 +136,10 @@ class AuthoritativeTaskDelegationTests(TestCase):
             success=True,
             status=HarrisImportStatus.COMPLETED,
             errors=(),
+            operation_id="operation-123",
+            candidate_id="candidate-123",
+            wrote_data=False,
+            already_applied=False,
         )
         result.to_dict.return_value = {"status": "completed"}
         mocked_import.return_value = result
@@ -151,7 +155,16 @@ class AuthoritativeTaskDelegationTests(TestCase):
         )
 
         request = mocked_import.call_args.args[0]
-        self.assertEqual(payload, {"status": "completed"})
+        self.assertEqual(
+            payload,
+            {
+                "status": "completed",
+                "operation_id": "operation-123",
+                "candidate_id": "candidate-123",
+                "wrote_data": False,
+                "already_applied": False,
+            },
+        )
         self.assertEqual(request.plan, HarrisImportPlan.from_legacy_scope("building-only"))
         self.assertEqual(request.data_year, 2025)
         self.assertIs(request.acquisition, HarrisAcquisitionMode.REUSE_DOWNLOADED)

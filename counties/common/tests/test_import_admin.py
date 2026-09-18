@@ -11,12 +11,15 @@ from django.urls import reverse
 from counties.brazos.annual_refresh import RefreshOptions
 from counties.brazos.cad_refresh import CadRefreshStage
 from counties.brazos.gis_refresh import GisRefreshStage
+from counties.brazos.models import BrazosPropertySnapshot, PropertyAccount
 from counties.brazos.property_import import (
     BrazosPropertyImport,
     PropertyImportMode,
     PropertyImportRequest,
 )
+from counties.brazos.tests.test_property_coverage import write_pacs
 from counties.brazos.tests.test_property_import import _stage_complete_pacs_export
+from counties.common.models import ImportOperation
 from counties.harris.etl_pipeline import (
     HarrisAcquisitionMode,
     HarrisExtractionMode,
@@ -28,7 +31,7 @@ from counties.harris.etl_pipeline.import_plan import HarrisImportPlan
 
 
 class ImportAdminTests(TestCase):
-    def test_observed_source_warning_is_available_in_a_new_admin_session(self):
+    def test_observed_source_failure_is_available_in_a_new_admin_session(self):
         import geopandas as gpd
         from shapely.geometry import Point
 
@@ -45,22 +48,32 @@ class ImportAdminTests(TestCase):
             gpd.GeoDataFrame(
                 {"PROP_ID": ["invalid"]}, geometry=[Point(3556000, 10120000)], crs="EPSG:2277"
             ).to_file(shape)
-            result = BrazosPropertyImport(CadRefreshStage(), GisRefreshStage()).run(
-                PropertyImportRequest(
-                    mode=PropertyImportMode.ANNUAL,
-                    options=RefreshOptions(
-                        tax_year=2026, skip_download=True, skip_extract=True, keep_extracted=True
-                    ),
+            with self.assertRaisesMessage(CommandError, "no usable parcel coordinates"):
+                BrazosPropertyImport(CadRefreshStage(), GisRefreshStage()).run(
+                    PropertyImportRequest(
+                        mode=PropertyImportMode.ANNUAL,
+                        options=RefreshOptions(
+                            tax_year=2026,
+                            skip_download=True,
+                            skip_extract=True,
+                            keep_extracted=True,
+                        ),
+                    )
                 )
-            )
+            operation = ImportOperation.objects.get(county="brazos")
         user = get_user_model().objects.create_superuser("auditor", password="test")
         self.client.force_login(user)
         response = self.client.get(
-            reverse("admin:data_importoperation_change", args=[result.operation_id])
+            reverse("admin:data_importoperation_change", args=[operation.pk])
         )
-        self.assertContains(response, "No usable PROP_ID rows found")
+        self.assertContains(response, "no usable parcel coordinates")
+        self.assertContains(response, "failed")
 
     def test_brazos_publication_records_its_observed_snapshot(self):
+        PropertyAccount.objects.create(tax_year=2026, prop_id="000000010013", owner_name="Old")
+        BrazosPropertySnapshot.objects.create(
+            tax_year=2026, cad_source_year=2026, outcome="partial"
+        )
         with (
             tempfile.TemporaryDirectory() as root,
             self.settings(
@@ -68,7 +81,7 @@ class ImportAdminTests(TestCase):
                 BCAD_EXTRACT_DIR=str(Path(root) / "extracted"),
             ),
         ):
-            _stage_complete_pacs_export(Path(root), 2026)
+            write_pacs(Path(root), ["000000010013"])
             result = BrazosPropertyImport(CadRefreshStage(), None).run(
                 PropertyImportRequest(
                     mode=PropertyImportMode.CAD_RECOVERY,
@@ -84,7 +97,7 @@ class ImportAdminTests(TestCase):
         )
         self.assertContains(response, "snapshot_id")
         self.assertContains(response, str(result.snapshot_id))
-        self.assertContains(response, "Not yet verified")
+        self.assertContains(response, "Observed atomic publication")
 
     def test_brazos_failure_is_durable_and_does_not_claim_publication(self):
         with (

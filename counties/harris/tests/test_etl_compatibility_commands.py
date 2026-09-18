@@ -10,12 +10,12 @@ from django.test import SimpleTestCase
 
 from counties.harris.etl_pipeline import (
     HarrisAcquisitionMode,
+    HarrisApply,
     HarrisExtractionMode,
     HarrisFailurePolicy,
     HarrisPreview,
 )
 from counties.harris.etl_pipeline.import_plan import HarrisImportPlan
-from counties.harris.etl_pipeline.translated_loader import TranslatedLoadResult
 
 
 class ImportBuildingDataCommandTests(SimpleTestCase):
@@ -95,19 +95,13 @@ class ETLPipelineCommandTests(SimpleTestCase):
 
 
 class LoadHcadRealAcctCommandTests(SimpleTestCase):
-    @patch("counties.harris.management.commands.load_hcad_real_acct.refresh_property_readiness")
-    @patch("counties.harris.management.commands.load_hcad_real_acct.load_property_file")
-    @patch("counties.harris.management.commands.load_hcad_real_acct.ETLConfig.from_env")
-    def test_command_uses_the_translated_row_loader(
-        self,
-        mocked_config,
-        mocked_load,
-        mocked_readiness,
-    ):
-        mocked_load.return_value = TranslatedLoadResult(
-            records_loaded=2,
-            records_invalid=0,
-            records_skipped=1,
+    @patch("counties.harris.management.commands.load_hcad_real_acct.run_harris_import")
+    def test_command_delegates_property_file_to_authoritative_import(self, mocked_import):
+        mocked_import.return_value = SimpleNamespace(
+            status=SimpleNamespace(value="completed"),
+            wrote_data=True,
+            operation_id="operation-123",
+            candidate_id="candidate-123",
         )
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -121,12 +115,16 @@ class LoadHcadRealAcctCommandTests(SimpleTestCase):
                 no_truncate=True,
             )
 
-        mocked_config.assert_called_once_with()
-        mocked_load.assert_called_once_with(
-            mocked_config.return_value,
-            filepath,
-            batch_size=125,
-            limit=2,
-            truncate=False,
-        )
-        mocked_readiness.assert_called_once_with()
+        mocked_import.assert_called_once()
+        request = mocked_import.call_args.args[0]
+        self.assertEqual(request.plan, HarrisImportPlan.from_legacy_scope("property-only"))
+        self.assertIs(request.acquisition, HarrisAcquisitionMode.REUSE_DOWNLOADED)
+        self.assertIs(request.extraction, HarrisExtractionMode.REUSE_EXTRACTED)
+        self.assertIsInstance(request.load, HarrisApply)
+        self.assertTrue(request.load.refresh_readiness)
+        self.assertFalse(request.load.validate_completeness)
+        self.assertEqual(request.property_file.path, filepath)
+        self.assertEqual(request.property_file.batch_size, 125)
+        self.assertEqual(request.property_file.limit, 2)
+        self.assertTrue(request.property_file.append)
+        self.assertEqual(request.origin, "command")

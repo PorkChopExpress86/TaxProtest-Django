@@ -27,6 +27,7 @@ from counties.harris.etl_pipeline import (
     HarrisApply,
     HarrisExtractionMode,
     HarrisImportRequest,
+    HarrisImportStatus,
     HarrisPreview,
     run_harris_import,
 )
@@ -215,4 +216,7 @@ class ImportWriterTests(TransactionTestCase):
             self.assertFalse(worker.is_alive())
             self.assertEqual(failures, [])
             self.assertEqual(results[0].operation_id, owner)
-            self.assertTrue(run_harris_import(request).success)
+            retried = run_harris_import(request)
+            self.assertIs(retried.status, HarrisImportStatus.BLOCKED)
+            self.assertFalse(retried.wrote_data)
+            self.assertNotEqual(retried.operation_id, owner)
