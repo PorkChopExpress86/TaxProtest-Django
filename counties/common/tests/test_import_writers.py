@@ -3,6 +3,7 @@
 import tempfile
 from pathlib import Path
 from threading import Event, Thread
+from uuid import UUID
 
 from django.contrib.auth import get_user_model
 from django.core.management.base import CommandError
@@ -26,12 +27,61 @@ from counties.harris.etl_pipeline import (
     HarrisApply,
     HarrisExtractionMode,
     HarrisImportRequest,
+    HarrisPreview,
     run_harris_import,
 )
 from counties.harris.etl_pipeline.import_plan import HarrisImportPlan
+from counties.harris.etl_pipeline.tests.test_harris_import import (
+    _runtime_settings,
+    _write_property_source,
+)
 
 
 class ImportWriterTests(TransactionTestCase):
+    def test_competing_acquisition_always_reports_a_durable_owner(self):
+        acquired, release = Event(), Event()
+        results, failures = [], []
+
+        def pause_database_acquisition(execute, sql, params, many, context):
+            result = execute(sql, params, many, context)
+            if "pg_try_advisory_lock" in sql:
+                acquired.set()
+                if not release.wait(15):
+                    raise TimeoutError("Test did not release database acquisition")
+            return result
+
+        with tempfile.TemporaryDirectory() as root, self.settings(**_runtime_settings(root)):
+            _write_property_source(root)
+            request = HarrisImportRequest(
+                plan=HarrisImportPlan.from_legacy_scope("property-only"),
+                acquisition=HarrisAcquisitionMode.REUSE_DOWNLOADED,
+                extraction=HarrisExtractionMode.REUSE_EXTRACTED,
+                load=HarrisPreview(),
+            )
+
+            def run():
+                try:
+                    with connections["default"].execute_wrapper(pause_database_acquisition):
+                        results.append(run_harris_import(request))
+                except Exception as exc:
+                    failures.append(exc)
+                finally:
+                    connections.close_all()
+
+            worker = Thread(target=run)
+            worker.start()
+            try:
+                self.assertTrue(acquired.wait(15))
+                with self.assertRaises(WriterConflict) as rejected:
+                    run_harris_import(request)
+                owner = rejected.exception.operation_id
+                self.assertIsInstance(owner, UUID)
+            finally:
+                release.set()
+                worker.join(20)
+            self.assertEqual(failures, [])
+            self.assertEqual(results[0].operation_id, owner)
+
     def test_definitively_failed_writer_releases_before_retry(self):
         with (
             tempfile.TemporaryDirectory() as root,

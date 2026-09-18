@@ -47,11 +47,8 @@ def county_writer(operation: ImportOperation) -> Iterator[None]:
     pid = None
     if connection.vendor == "postgresql":
         with connection.cursor() as cursor:
-            cursor.execute("SELECT pg_try_advisory_lock(%s), pg_backend_pid()", [key])
-            locked, pid = cursor.fetchone()
-        if not locked:
-            owner = CountyWriter.objects.filter(county=county).first()
-            raise WriterConflict(county, owner.operation_id if owner else None)
+            cursor.execute("SELECT pg_backend_pid()")
+            pid = cursor.fetchone()[0]
     reserved = False
     try:
         writer, _ = CountyWriter.objects.get_or_create(county=county)
@@ -59,22 +56,33 @@ def county_writer(operation: ImportOperation) -> Iterator[None]:
             raise WriterConflict(
                 county, writer.operation_id, uncertain=not _lock_held(county, writer.backend_pid)
             )
-        reserved = bool(
-            CountyWriter.objects.filter(county=county, operation__isnull=True).update(
-                operation=operation, backend_pid=pid
+        while not reserved:
+            reserved = bool(
+                CountyWriter.objects.filter(county=county, operation__isnull=True).update(
+                    operation=operation, backend_pid=pid
+                )
             )
-        )
-        if not reserved:
-            writer.refresh_from_db()
-            raise WriterConflict(county, writer.operation_id)
+            if not reserved:
+                writer.refresh_from_db()
+                if writer.operation_id is not None:
+                    raise WriterConflict(county, writer.operation_id)
+                # The winner already ended; a currently free county may be acquired.
+        # Publish the owner before taking the session lock, so even acquisition
+        # contention has a durable identity. Never clear ownership before unlock.
+        if connection.vendor == "postgresql":
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT pg_try_advisory_lock(%s)", [key])
+                locked = cursor.fetchone()[0]
+            if not locked:
+                raise WriterConflict(county, operation.pk, uncertain=True)
         yield
     finally:
         # A lost database session leaves durable uncertainty, even if execution reconnects.
         ended_safely = connection.vendor != "postgresql" or _lock_held(county, pid)
+        if locked and ended_safely:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT pg_advisory_unlock(%s)", [key])
         if reserved and ended_safely:
             CountyWriter.objects.filter(county=county, operation=operation).update(
                 operation=None, backend_pid=None
             )
-        if locked and ended_safely:
-            with connection.cursor() as cursor:
-                cursor.execute("SELECT pg_advisory_unlock(%s)", [key])
