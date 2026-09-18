@@ -162,7 +162,7 @@ def prepare_candidate(cad, gis, request: PropertyImportRequest, operation: Impor
             _CandidateSource(cad, operation), _CandidateSource(gis, operation) if gis else None
         )
         with candidate_tables(candidate):
-            result = importer._run(
+            result = importer._run_unstaged(
                 replace(
                     request,
                     prepare_only=False,
@@ -187,6 +187,8 @@ def prepare_candidate(cad, gis, request: PropertyImportRequest, operation: Impor
                 .values("prop_id", "coordinate_source", "coordinate_source_year")
             )
         operation.evidence["source_validation"]["valid"] = True
+        candidate.request["tax_year"] = result.tax_year
+        operation.requested_year = result.tax_year
         candidate.evidence.update(
             {
                 "outcome": result.outcome.value,

@@ -56,6 +56,9 @@ class AnnualRefreshResult:
     cad: StageResult
     gis: StageResult
     dry_run: bool
+    workflow_state: str = "published"
+    candidate_id: str | None = None
+    operation_id: str | None = None
 
 
 class AnnualRefreshStage(Protocol):
@@ -93,6 +96,9 @@ class BrazosAnnualRefresh:
             cad=result.cad or StageResult(name=self._cad.name, metrics={}),
             gis=result.gis or StageResult(name=self._gis.name, metrics={}),
             dry_run=result.dry_run,
+            workflow_state=result.workflow_state,
+            candidate_id=str(result.candidate_id) if result.candidate_id else None,
+            operation_id=str(result.operation_id) if result.operation_id else None,
         )
 
     @staticmethod

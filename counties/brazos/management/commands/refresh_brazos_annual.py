@@ -64,6 +64,11 @@ class Command(BaseCommand):
             )
             return
 
+        if result.workflow_state in ("prepared", "awaiting_review", "blocked"):
+            self.stdout.write(
+                f"Brazos annual import {result.workflow_state}; published data unchanged. Candidate {result.candidate_id}; operation {result.operation_id}. Review in Django admin /admin/data/importcandidate/."
+            )
+            return
         self.stdout.write(
             self.style.SUCCESS(
                 f"Brazos annual refresh complete for tax_year={result.tax_year}: "

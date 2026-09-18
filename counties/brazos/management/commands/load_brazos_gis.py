@@ -67,6 +67,11 @@ class Command(BaseCommand):
                 )
             )
             return
+        if result.prepared:
+            self.stdout.write(
+                f"Brazos GIS import {result.workflow_state}; published data unchanged. Candidate {result.candidate_id}; operation {result.operation_id}. Review in Django admin /admin/data/importcandidate/."
+            )
+            return
         self.stdout.write(
             self.style.SUCCESS(
                 f"Brazos GIS recovery completed the property snapshot for "

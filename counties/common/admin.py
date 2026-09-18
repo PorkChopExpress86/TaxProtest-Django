@@ -237,24 +237,30 @@ class ImportCandidateAdmin(admin.ModelAdmin):
         form = CandidateApplyForm(request.POST if request.method == "POST" else None)
         if request.method == "POST" and form.is_valid():
             try:
-                if candidate.county != "harris":
-                    raise ImportReviewRejected("County publication is not yet available")
-                from counties.harris.etl_pipeline import HarrisImportRequest, run_harris_import
-                from counties.harris.etl_pipeline.import_plan import HarrisImportPlan
+                if candidate.county == "brazos":
+                    from counties.brazos.annual_refresh import RefreshOptions
+                    from counties.brazos.property_import import (
+                        PropertyImportMode,
+                        PropertyImportRequest,
+                        build_default_property_import,
+                    )
 
-                result = run_harris_import(
-                    HarrisImportRequest(
-                        plan=HarrisImportPlan.from_legacy_scope(candidate.request["plan"]),
-                        data_year=candidate.request["data_year"],
-                        candidate_id=candidate.pk,
-                        actor=request.user.get_username(),
-                        origin="admin",
-                        application_reason=form.cleaned_data["reason"],
-                    ),
-                    reviewer=request.user,
-                )
-                if not result.success:
-                    raise ImportReviewRejected("Candidate was not applied")
+                    result = build_default_property_import(self).run(
+                        PropertyImportRequest(
+                            mode=PropertyImportMode(candidate.request["mode"]),
+                            options=RefreshOptions(tax_year=candidate.request["tax_year"]),
+                            candidate_id=candidate.pk,
+                            actor=request.user.get_username(),
+                            origin="admin",
+                            application_reason=form.cleaned_data["reason"],
+                        ),
+                        reviewer=request.user,
+                    )
+                    if result.workflow_state not in ("published", "already_applied"):
+                        raise ImportReviewRejected("Candidate was not applied")
+                else:
+                    self.apply_harris(candidate, request, form)
+                    return redirect("admin:data_importcandidate_change", candidate.pk)
             except (ImportReviewRejected, ValueError) as exc:
                 form.add_error(None, str(exc))
             else:
@@ -277,6 +283,32 @@ class ImportCandidateAdmin(admin.ModelAdmin):
                 "candidate": candidate,
                 "form": form,
             },
+        )
+
+    def apply_harris(self, candidate, request, form):
+        from counties.harris.etl_pipeline import HarrisImportRequest, run_harris_import
+        from counties.harris.etl_pipeline.import_plan import HarrisImportPlan
+
+        result = run_harris_import(
+            HarrisImportRequest(
+                plan=HarrisImportPlan.from_legacy_scope(candidate.request["plan"]),
+                data_year=candidate.request["data_year"],
+                candidate_id=candidate.pk,
+                actor=request.user.get_username(),
+                origin="admin",
+                application_reason=form.cleaned_data["reason"],
+            ),
+            reviewer=request.user,
+        )
+        if not result.success:
+            raise ImportReviewRejected("Candidate was not applied")
+        messages.success(
+            request,
+            (
+                "Candidate already applied; no new write."
+                if result.already_applied
+                else "Candidate publication observed. Data is applied."
+            ),
         )
 
     def has_add_permission(self, request):
