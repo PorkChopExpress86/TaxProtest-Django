@@ -36,9 +36,11 @@ PROPERTY_MODELS = (
 MODELS = (*PROPERTY_MODELS, PropertyJurisdictionExemption, BrazosPropertySnapshot)
 
 
-def published_identity() -> dict:
+def dataset_identity(schema: str = "public") -> dict:
+    if schema != "public" and not re.fullmatch(r"brazos_candidate_[0-9a-f]{32}", schema):
+        raise ValueError("Invalid Brazos dataset storage identity")
+    quoted_schema = connection.ops.quote_name(schema)
     digest = hashlib.sha256()
-    snapshot = BrazosPropertySnapshot.objects.filter(is_active=True).first()
     with connection.cursor() as cursor:
         for model in MODELS:
             table = connection.ops.quote_name(model._meta.db_table)
@@ -47,7 +49,7 @@ def published_identity() -> dict:
             last_id = 0
             while True:
                 cursor.execute(
-                    f"SELECT id, row_to_json(t)::text FROM public.{table} t WHERE id > %s {scope} ORDER BY id LIMIT 1000",
+                    f"SELECT id, row_to_json(t)::text FROM {quoted_schema}.{table} t WHERE id > %s {scope} ORDER BY id LIMIT 1000",
                     [last_id],
                 )
                 rows = cursor.fetchall()
@@ -57,8 +59,13 @@ def published_identity() -> dict:
                     digest.update(record.encode())
                     digest.update(b"\n")
                     last_id = row_id
+    return {"sha256": digest.hexdigest()}
+
+
+def published_identity() -> dict:
+    snapshot = BrazosPropertySnapshot.objects.filter(is_active=True).first()
     return {
-        "sha256": digest.hexdigest(),
+        **dataset_identity(),
         "snapshot_id": snapshot.pk if snapshot else None,
         "tax_year": snapshot.tax_year if snapshot else None,
         "outcome": snapshot.outcome if snapshot else None,
@@ -195,6 +202,7 @@ def prepare_candidate(cad, gis, request: PropertyImportRequest, operation: Impor
             }
         )
         candidate.state = "prepared"
+        candidate.evidence["content_identity"] = dataset_identity(candidate.storage_schema)
         coverage = candidate.evidence["coverage"]
         if coverage["hard_failures"]:
             candidate.state = "blocked"

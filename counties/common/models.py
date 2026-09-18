@@ -29,7 +29,10 @@ class ImportOperation(models.Model):
         verbose_name_plural = "Imports"
         ordering = ("-started_at",)
         default_permissions = ("view",)
-        permissions = (("recover_county_writer", "Can recover a county writer"),)
+        permissions = (
+            ("recover_county_writer", "Can recover a county writer"),
+            ("approve_import_coverage", "Can review import coverage exceptions"),
+        )
 
     def __str__(self):
         return f"{self.get_county_display()} {self.intent}: {self.id}"

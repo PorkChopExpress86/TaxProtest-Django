@@ -4,13 +4,28 @@ from django.core.exceptions import PermissionDenied
 from django.shortcuts import get_object_or_404, redirect
 from django.template.response import TemplateResponse
 from django.urls import path, reverse
+from django.utils.html import format_html_join
 
+from counties.common.import_review import (
+    ImportReviewRejected,
+    captured_binding,
+    checked_binding,
+    review_candidate,
+)
 from counties.common.import_writers import RecoveryRejected, recover_writer, writer_status
 from counties.common.models import ImportAuditEntry, ImportCandidate, ImportOperation
 
 
 class WriterRecoveryForm(forms.Form):
     reason = forms.CharField(widget=forms.Textarea, label="Recovery reason", strip=True)
+
+
+class CandidateReviewForm(forms.Form):
+    decision = forms.ChoiceField(
+        choices=(("approved", "Approve coverage exception"), ("rejected", "Reject candidate"))
+    )
+    reason = forms.CharField(widget=forms.Textarea, label="Review justification", strip=True)
+    binding = forms.CharField(widget=forms.HiddenInput)
 
 
 class ImportAuditInline(admin.TabularInline):
@@ -119,10 +134,89 @@ class ImportOperationAdmin(admin.ModelAdmin):
 
 @admin.register(ImportCandidate)
 class ImportCandidateAdmin(admin.ModelAdmin):
+    change_form_template = "admin/imports/candidate.html"
     list_display = ("id", "county", "state", "created_at")
     list_filter = ("county", "state")
-    readonly_fields = tuple(field.name for field in ImportCandidate._meta.fields)
+    readonly_fields = (
+        *tuple(field.name for field in ImportCandidate._meta.fields),
+        "review_history",
+    )
     actions = None
+
+    def get_urls(self):
+        return [
+            path(
+                "<uuid:candidate_id>/review/",
+                self.admin_site.admin_view(self.review_view),
+                name="data_importcandidate_review",
+            )
+        ] + super().get_urls()
+
+    def change_view(self, request, object_id, form_url="", extra_context=None):
+        context = dict(extra_context or {})
+        if request.user.has_perm("data.approve_import_coverage"):
+            context["review_url"] = reverse("admin:data_importcandidate_review", args=[object_id])
+        return super().change_view(request, object_id, form_url, context)
+
+    @admin.display(description="Coverage review history — Approval does not publish")
+    def review_history(self, obj):
+        return (
+            format_html_join(
+                "",
+                "<p>{} — {} — {} — {}</p>",
+                (
+                    (entry.created_at, entry.actor, entry.result, entry.reason)
+                    for entry in obj.operation.audit_entries.filter(
+                        kind="coverage_review"
+                    ).order_by("created_at")
+                ),
+            )
+            or "No review decisions recorded. Approval does not publish."
+        )
+
+    def review_view(self, request, candidate_id):
+        if not self.has_view_permission(request) or not request.user.has_perm(
+            "data.approve_import_coverage"
+        ):
+            raise PermissionDenied
+        candidate = get_object_or_404(ImportCandidate, pk=candidate_id)
+        review_error = None
+        if request.method == "POST":
+            form = CandidateReviewForm(request.POST)
+            if form.is_valid():
+                try:
+                    review_candidate(
+                        candidate,
+                        user=request.user,
+                        reason=form.cleaned_data["reason"],
+                        decision=form.cleaned_data["decision"],
+                        expected_binding=form.cleaned_data["binding"],
+                    )
+                except ImportReviewRejected as exc:
+                    form.add_error(None, str(exc))
+                else:
+                    messages.success(
+                        request, "Review decision recorded. Approval does not publish data."
+                    )
+                    return redirect("admin:data_importcandidate_change", candidate.pk)
+        else:
+            try:
+                checked_binding(candidate)
+            except ImportReviewRejected as exc:
+                review_error = str(exc)
+            form = CandidateReviewForm(initial={"binding": captured_binding(candidate)})
+        return TemplateResponse(
+            request,
+            "admin/imports/review.html",
+            {
+                **self.admin_site.each_context(request),
+                "opts": self.model._meta,
+                "title": "Review exact import candidate",
+                "candidate": candidate,
+                "form": form,
+                "review_error": review_error,
+            },
+        )
 
     def has_add_permission(self, request):
         return False

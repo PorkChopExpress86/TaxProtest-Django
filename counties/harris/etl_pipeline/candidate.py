@@ -20,7 +20,10 @@ if TYPE_CHECKING:
 MODELS = (PropertyRecord, BuildingDetail, ExtraFeature)
 
 
-def published_identity() -> dict:
+def dataset_identity(schema: str = "public") -> dict:
+    if schema != "public" and not re.fullmatch(r"harris_candidate_[0-9a-f]{32}", schema):
+        raise ValueError("Invalid Harris dataset storage identity")
+    quoted_schema = connection.ops.quote_name(schema)
     digest = hashlib.sha256()
     with connection.cursor() as cursor:
         for model in MODELS:
@@ -29,7 +32,7 @@ def published_identity() -> dict:
             last_id = 0
             while True:
                 cursor.execute(
-                    f"SELECT id, row_to_json(t)::text FROM public.{table} t WHERE id > %s ORDER BY id LIMIT 1000",
+                    f"SELECT id, row_to_json(t)::text FROM {quoted_schema}.{table} t WHERE id > %s ORDER BY id LIMIT 1000",
                     [last_id],
                 )
                 rows = cursor.fetchall()
@@ -40,6 +43,10 @@ def published_identity() -> dict:
                     digest.update(b"\n")
                     last_id = row_id
     return {"sha256": digest.hexdigest()}
+
+
+def published_identity() -> dict:
+    return dataset_identity()
 
 
 @contextmanager
@@ -150,6 +157,7 @@ def prepare_candidate(execution: "_HarrisImportExecution", operation: ImportOper
             }
         candidate.sources = operation.evidence.get("sources", [])
         candidate.evidence["result"] = result.to_dict()
+        candidate.evidence["content_identity"] = dataset_identity(candidate.storage_schema)
         candidate.state = "prepared" if result.status is HarrisImportStatus.COMPLETED else "blocked"
         status = HarrisImportStatus.PREPARED
         if candidate.state == "prepared":

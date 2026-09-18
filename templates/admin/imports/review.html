@@ -1,0 +1,10 @@
+{% extends "admin/base_site.html" %}
+{% block content %}
+<p>Candidate {{ candidate.id }} — {{ candidate.get_county_display }} — {{ candidate.state }}</p>
+<p>Approval does not publish. Review can authorize coverage loss or a first import; it cannot override source integrity, zero eligible supported outcomes, or missing prerequisites.</p>
+<h2>Exact sources and years</h2><pre>{{ candidate.sources }}</pre>
+<h2>Comparison baseline</h2><pre>{{ candidate.baseline }}</pre>
+<h2>Qualification and coverage evidence</h2><pre>{{ candidate.evidence }}</pre>
+{% if review_error %}<p class="errornote">Approval unavailable: {{ review_error }}. You may reject this candidate with a justification.</p>{% endif %}
+<form method="post">{% csrf_token %}{{ form.as_p }}<input type="submit" value="Record review decision"></form>
+{% endblock %}
