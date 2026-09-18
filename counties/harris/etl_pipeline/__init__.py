@@ -10,6 +10,7 @@ Modules:
     extract: Archive extraction with streaming support
     transform: Data parsing, validation, and normalization
     persistence: Authoritative translated-row persistence and database adapters
+    source_pipeline: Stateless tabular transformation and persistence pipeline
     orchestrator: Deep, stateless Harris import boundary
     logging: Structured logging infrastructure
 
@@ -47,6 +48,7 @@ from .orchestrator import (
     InvalidHarrisImportRequest,
     run_harris_import,
 )
+from .source_pipeline import HarrisSourcePipeline, resolve_schema_name
 from .transform import DataTransformer
 
 __all__ = [
@@ -57,6 +59,8 @@ __all__ = [
     "DataTransformer",
     "ETLLogger",
     "HarrisImportPlan",
+    "HarrisSourcePipeline",
+    "resolve_schema_name",
     "ExtractedSourceRetention",
     "HarrisAcquisitionMode",
     "HarrisApply",

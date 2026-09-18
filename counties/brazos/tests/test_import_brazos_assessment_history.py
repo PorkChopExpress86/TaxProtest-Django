@@ -672,7 +672,7 @@ class EvaluateCapStatusIntegrationTests(TestCase):
         PropertyAccount.objects.create(prop_id="000000010013", tax_year=2025)
 
     def test_prior_year_row_feeds_the_cap_calculation(self):
-        from counties.common.history import assessment_history_rows
+        from counties.common.analysis import assessment_history_rows
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

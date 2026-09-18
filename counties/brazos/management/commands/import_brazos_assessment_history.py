@@ -12,7 +12,7 @@ market value, so this command is a per-year download-extract-parse loop, one
 ``AssessmentHistory`` row written directly per (property, year). The
 year-to-year comparison ``evaluate_cap_status`` needs comes for free once
 multiple years' rows exist in the table: it walks consecutive tax_year rows
-itself (see ``counties.common.history.assessment_history_rows``), the same
+itself (see ``counties.common.analysis.assessment_history_rows``), the same
 way it already does for Harris.
 
 Field mapping, all from ``APPRAISAL_ENTITY_INFO.TXT`` (``parsers/pacs.py``'s

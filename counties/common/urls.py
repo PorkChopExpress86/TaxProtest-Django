@@ -8,7 +8,7 @@ from django.urls import path
 
 from counties.common import views
 from counties.common.contracts import CountyAdapter
-from counties.common.published_reads import consistent_published_read
+from counties.common.views import consistent_published_read
 
 #: (view function, path suffix, URL-name suffix). ``<str:key>`` is the county's
 #: own property identifier — an HCAD account number, a BCAD prop_id, and so on.

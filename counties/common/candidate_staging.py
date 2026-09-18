@@ -13,14 +13,13 @@ import re
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
-from uuid import uuid4
 
 from django.db import connection, models
 
 from counties.common.import_writers import fenced_write
 
 if TYPE_CHECKING:
-    from counties.common.models import ImportCandidate, ImportOperation
+    from counties.common.models import ImportCandidate
 
 SCHEMA_PATTERN = re.compile(r"^[a-z_]+_candidate_[0-9a-f]{32}$")
 
@@ -198,4 +197,3 @@ def cutover_staged_tables(
 
         if drop_staged:
             cursor.execute(f'DROP SCHEMA IF EXISTS "{schema_name}" CASCADE')
-

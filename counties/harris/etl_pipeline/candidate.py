@@ -1,11 +1,11 @@
 """Harris-owned durable staging of the existing translated property contract."""
 
-import hashlib
-import re
 from contextlib import contextmanager
 from dataclasses import replace
 from typing import TYPE_CHECKING
 from uuid import uuid4
+
+from django.db import connection
 
 from counties.common.candidate_staging import (
     compute_dataset_hash,
@@ -13,7 +13,6 @@ from counties.common.candidate_staging import (
     switch_search_path,
 )
 from counties.common.import_coverage import compare_coverage
-from counties.common.import_writers import fenced_write
 from counties.common.models import ImportCandidate, ImportOperation
 from counties.harris.models import BuildingDetail, ExtraFeature, PropertyRecord
 

@@ -18,16 +18,16 @@ from django.shortcuts import render
 from django.urls import reverse
 
 from counties.common.analysis import (
-    history_availability_notice,
+    PROTEST_MAX_MIN_SCORE,
+    PROTEST_MIN_MIN_SCORE,
+    build_protest_dossier,
+    clamped_float,
     percentile_of,
     recommend_protest,
     sort_comps_for_display,
-    summarize_equity,
 )
 from counties.common.charts import (
     assessment_history_chart,
-    ppsf_distribution_chart,
-    score_breakdown_summary,
 )
 from counties.common.contracts import Comp, CountyAdapter, Subject
 from counties.common.exports import (
@@ -69,22 +69,6 @@ SIMILAR_MAX_MAX_RESULTS = 100
 SIMILAR_DEFAULT_MIN_SCORE = 30.0
 SIMILAR_MIN_MIN_SCORE = 0.0
 SIMILAR_MAX_MIN_SCORE = 100.0
-
-# The protest report only argues equity from reasonably close matches, so its
-# floor is higher than the exploratory comparables page's.
-PROTEST_DEFAULT_MIN_SCORE = 70.0
-PROTEST_MIN_MIN_SCORE = 52.0
-PROTEST_MAX_MIN_SCORE = 100.0
-PROTEST_MAX_COMPS = 50
-PROTEST_MAX_DISTANCE = 10.0
-
-
-def clamped_float(value: Any, default: float, lower: float, upper: float) -> float:
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError):
-        return default
-    return max(lower, min(upper, parsed))
 
 
 def clamped_int(value: Any, default: int, lower: int, upper: int) -> int:
@@ -273,134 +257,90 @@ def similar_properties(request, key, *, adapter: CountyAdapter):
 # --------------------------------------------------------------------------- protest report
 
 
-def _protest_inputs(request, subject: Subject, adapter: CountyAdapter):
-    """Shared setup for the report and both of its exports.
-
-    ``subject`` must already be fetched by the caller — every one of the three
-    views needs it before this call, either to apply the ``has_location``
-    guard below or to build the response itself, so it is fetched once and
-    threaded through rather than re-derived here.
-
-    Returns ``None`` when ``subject`` lacks the location data comparable
-    search requires, so every caller sees the same guard ``protest_analysis``
-    has always applied, not just the one that happened to check beforehand.
-    """
-    if not subject.has_location:
-        return None
-
-    min_score = clamped_float(
-        request.GET.get("min_score"),
-        PROTEST_DEFAULT_MIN_SCORE,
-        PROTEST_MIN_MIN_SCORE,
-        PROTEST_MAX_MIN_SCORE,
-    )
-    comps = adapter.find_comps(
-        subject.key,
-        max_distance_miles=PROTEST_MAX_DISTANCE,
-        max_results=PROTEST_MAX_COMPS,
-        min_score=min_score,
-    )
-    comps = sort_comps_for_display(comps)
-    equity = summarize_equity(subject, comps)
-    history = adapter.assessment_history(subject.key)
-    tax_impact = adapter.tax_impact(subject.key, subject.tax_year, equity.median_assessed_value)
-    return comps, equity, history, tax_impact, min_score
-
-
 def protest_analysis(request, key, *, adapter: CountyAdapter):
     """ARB evidence report: equity comparison, tax impact, comparable table."""
     profile = adapter.profile
-    subject = _subject_or_404(adapter, key)
-    caps = adapter.capabilities(key)
-    if not caps.report_ready:
+    outcome = build_protest_dossier(adapter, key, min_score=request.GET.get("min_score"))
+    if not outcome.is_ready:
+        if outcome.error == "Property not found":
+            raise Http404("Property not found")
+        subject = outcome.subject or adapter.get_subject(key)
         return render(
             request,
             "counties/protest_analysis.html",
             {
                 "county": profile,
                 "subject": subject,
-                "error": caps.reason_for("report")
-                or "This property does not have location data required for similarity search.",
+                "error": outcome.error,
+                "subject_key": key,
             },
         )
-    inputs = _protest_inputs(request, subject, adapter)
-    if inputs is None:
-        return render(
-            request, "counties/protest_analysis.html", _no_location_context(adapter, subject)
-        )
-    comps, equity, history, tax_impact, min_score = inputs
-
-    comp_rows = [
-        {
-            "comp": comp,
-            "value_per_sqft": comp.value_per_sqft,
-            "delta": comp.delta_vs(equity.subject_value_per_sqft),
-            "breakdown_summary": score_breakdown_summary(comp.score_breakdown),
-        }
-        for comp in comps
-    ]
+    dossier = outcome.dossier
+    assert dossier is not None
 
     context = {
         "county": profile,
-        "subject": subject,
-        "comps": comps,
-        "comp_rows": comp_rows,
+        "subject": dossier.subject,
+        "comps": dossier.comps,
+        "comp_rows": dossier.comp_rows,
         "columns": profile.comp_columns,
-        "equity": equity,
-        "assessment_history": history,
-        "history_notice": history_availability_notice(history, subject.tax_year),
-        "assessment_history_chart": assessment_history_chart(history),
-        "ppsf_distribution_chart": ppsf_distribution_chart(
-            equity.qualifying_ppsf, equity.subject_value_per_sqft
-        ),
-        "tax_impact": tax_impact,
-        "min_score": min_score,
+        "equity": dossier.equity,
+        "assessment_history": dossier.history,
+        "history_notice": dossier.history_notice,
+        "assessment_history_chart": dossier.assessment_history_chart,
+        "ppsf_distribution_chart": dossier.ppsf_distribution_chart,
+        "tax_impact": dossier.tax_impact,
+        "min_score": dossier.min_score,
         "min_score_floor": int(PROTEST_MIN_MIN_SCORE),
         "min_score_ceiling": int(PROTEST_MAX_MIN_SCORE),
-        "back_url": _county_url(adapter, "similar_properties", subject.key),
+        "back_url": _county_url(adapter, "similar_properties", dossier.subject.key),
         "back_label": "Back to Similar Properties",
-        "export_url": _county_url(adapter, "protest_analysis_export", subject.key),
-        "pdf_url": _county_url(adapter, "protest_analysis_pdf", subject.key),
+        "export_url": _county_url(adapter, "protest_analysis_export", dossier.subject.key),
+        "pdf_url": _county_url(adapter, "protest_analysis_pdf", dossier.subject.key),
     }
     return render(request, "counties/protest_analysis.html", context)
 
 
 def protest_analysis_export(request, key, *, adapter: CountyAdapter):
     """CSV of the report's comparable table plus its tax-impact totals."""
-    subject = _subject_or_404(adapter, key)
-    caps = adapter.capabilities(key)
-    if not caps.report_ready:
+    outcome = build_protest_dossier(adapter, key, min_score=request.GET.get("min_score"))
+    if not outcome.is_ready:
+        if outcome.error == "Property not found":
+            raise Http404("Property not found")
         return HttpResponseBadRequest(
-            caps.reason_for("report")
+            outcome.error
             or "This property does not have location data required for similarity search."
         )
-    inputs = _protest_inputs(request, subject, adapter)
-    if inputs is None:
-        return HttpResponseBadRequest(
-            "This property does not have location data required for similarity search."
-        )
-    comps, equity, _history, tax_impact, _min_score = inputs
+    dossier = outcome.dossier
+    assert dossier is not None
     return protest_comps_csv(
-        subject, comps, equity, tax_impact, history_availability_notice(_history, subject.tax_year)
+        dossier.subject,
+        dossier.comps,
+        dossier.equity,
+        dossier.tax_impact,
+        dossier.history_notice,
     )
 
 
 def protest_analysis_pdf(request, key, *, adapter: CountyAdapter):
     """Printable evidence report."""
-    subject = _subject_or_404(adapter, key)
-    caps = adapter.capabilities(key)
-    if not caps.report_ready:
+    outcome = build_protest_dossier(adapter, key, min_score=request.GET.get("min_score"))
+    if not outcome.is_ready:
+        if outcome.error == "Property not found":
+            raise Http404("Property not found")
         return HttpResponseBadRequest(
-            caps.reason_for("report")
+            outcome.error
             or "This property does not have location data required for similarity search."
         )
-    inputs = _protest_inputs(request, subject, adapter)
-    if inputs is None:
-        return HttpResponseBadRequest(
-            "This property does not have location data required for similarity search."
-        )
-    comps, _equity, history, tax_impact, _min_score = inputs
-    return protest_report_pdf(adapter.profile, subject, comps, history, tax_impact)
+    dossier = outcome.dossier
+    assert dossier is not None
+    return protest_report_pdf(
+        adapter.profile,
+        dossier.subject,
+        dossier.comps,
+        dossier.history,
+        dossier.tax_impact,
+    )
 
 
 __all__ = [

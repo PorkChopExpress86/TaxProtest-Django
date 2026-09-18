@@ -19,7 +19,6 @@ from counties.brazos.property_import import (
     BrazosPropertyImport,
     PropertyImportRequest,
 )
-from counties.brazos.source_validation import inspect_cad, inspect_gis
 from counties.common.candidate_staging import (
     compute_dataset_hash,
     staged_candidate_schema,
@@ -70,10 +69,7 @@ class _CandidateSource:
 
     def prepare(self, options):
         preparation = self.stage.prepare(options)
-        if self.name == "cad":
-            measured = inspect_cad(self.operation, preparation)
-        else:
-            measured = inspect_gis(self.operation, preparation)
+        measured = self.stage.inspect(preparation, self.operation)
         self.operation.evidence.setdefault("inspection", {})[self.name] = dict(measured.metrics)
         return preparation
 

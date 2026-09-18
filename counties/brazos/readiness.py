@@ -19,7 +19,7 @@ from counties.brazos.models import (
     PropertyLand,
 )
 from counties.brazos.similarity import find_similar_properties
-from counties.common.history import assessment_history_rows
+from counties.common.analysis import assessment_history_rows
 from counties.common.tax_models import AssessmentHistory, PropertyJurisdictionExemption, TaxUnitRate
 
 

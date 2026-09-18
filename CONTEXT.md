@@ -62,6 +62,14 @@ A durable county-owned record of one completed Coordinate enrichment analysis,
 including safe coverage evidence, outcome, and any resulting update count.
 _Avoid_: source archive, coordinate cache, command log
 
+## Shared protest analysis
+
+**Protest evidence dossier**:
+The complete, source-backed package of comparable properties, equity math,
+tax impact estimates, and assessment-history availability notices required for
+an ARB hearing on one subject property.
+_Avoid_: report context, view data, protest tuple
+
 ## County ETL parity
 
 **Outcome readiness**:

@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import os
 import shutil
-from collections.abc import Iterator, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import Enum, StrEnum
-from itertools import islice
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Protocol
@@ -23,7 +22,7 @@ from counties.common.import_logging import import_warnings
 from counties.common.import_recovery import ReplayRequest, requested_replay, verify_replay
 from counties.common.import_writers import county_writer, fenced_write, working_source_root
 from counties.common.models import ImportCandidate, ImportOperation
-from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG, HcadSourceId
+from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG
 
 from .config import DataSource, DataSourceType, ETLConfig
 from .download import DownloadManager
@@ -31,8 +30,7 @@ from .extract import ExtractManager
 from .fixtures_aggregator import FixturesAggregator
 from .import_plan import HarrisImportPlan
 from .logging import ETLLogger
-from .persistence import UnsafeReplacementError
-from .row_reader import RowResult, iter_building_rows, iter_extra_feature_rows, iter_property_rows
+from .source_pipeline import HarrisSourcePipeline, resolve_schema_name
 
 
 class HarrisImportPhase(Enum):
@@ -330,7 +328,6 @@ class _HarrisImportExecution:
         )
         self.extract_manager = ExtractManager(self.config, self.logger)
         self.fixtures_aggregator = FixturesAggregator()
-        self._account_to_property: dict[str, int] | None = None
 
         self.reporter = reporter
         self.stages: dict[HarrisImportPhase, HarrisImportStageResult] = {}
@@ -381,8 +378,6 @@ class _HarrisImportExecution:
             )
             if not self._record_stage(source_result, strict=True):
                 return self._finish(started_at, HarrisImportStatus.FAILED, wrote_data=False)
-            if not preview:
-                self._account_to_property = None
 
         if preview:
             load_result = _StageResult(
@@ -597,46 +592,6 @@ class _HarrisImportExecution:
         stage_result.completed_at = datetime.now()
         return stage_result
 
-    def _preload_fixtures(self, sources: list[DataSource]) -> None:
-        """
-        Pre-load fixtures.txt to extract bedroom/bathroom counts.
-
-        This must be called before processing building_res.txt so that
-        bedroom/bathroom data is available during building loading.
-
-        Args:
-            sources: List of data sources to search for fixtures.txt
-        """
-        self.logger.info("Pre-loading fixtures for bedroom/bathroom data...")
-
-        # Find the Real Building Land source
-        for source in sources:
-            if DEFAULT_HCAD_SOURCE_CATALOG.is_source(source, HcadSourceId.REAL_BUILDING_LAND):
-                extract_path = self.extract_manager.get_extract_path(source)
-                fixtures_path = extract_path / "fixtures.txt"
-
-                if fixtures_path.exists():
-                    try:
-                        self.fixtures_aggregator.load_fixtures_file(fixtures_path)
-
-                        # Log statistics
-                        stats = self.fixtures_aggregator.get_stats()
-                        self.logger.info(
-                            f"Fixtures loaded: {stats['total_buildings']:,} buildings, "
-                            f"{stats['with_bedrooms']:,} with bedrooms, "
-                            f"{stats['with_bathrooms']:,} with bathrooms"
-                        )
-                        return
-                    except (OSError, UnicodeError, ValueError, KeyError) as e:
-                        self.logger.error(f"Error loading fixtures: {e}")
-                        # Continue without fixtures - fields will be NULL
-                        return
-                else:
-                    self.logger.warning(f"Fixtures file not found: {fixtures_path}")
-                    return
-
-        self.logger.warning("Real Building Land source not found in sources list")
-
     def _execute_transform_load(
         self,
         sources: list[DataSource],
@@ -661,15 +616,16 @@ class _HarrisImportExecution:
             source_errors: list[str] = []
             sources_succeeded = 0
 
-            # STEP 1: Pre-load fixtures for bedroom/bathroom data
-            # This must happen before processing building_res.txt
-            self._preload_fixtures(sources)
+            pipeline = HarrisSourcePipeline(
+                extract_manager=self.extract_manager,
+                fixtures_aggregator=self.fixtures_aggregator,
+                property_file=self.request.property_file,
+                logger=self.logger,
+            )
+            pipeline.preload_fixtures(sources)
 
-            # Process each source type
             for source in sources:
-                source_did_work = False
                 if source.source_type == DataSourceType.GIS_DATA:
-                    # GIS data requires special handling
                     gis_result = self._process_gis_source(source, preview=skip_load)
                     gis_loaded += gis_result.get("loaded", 0)
                     total_invalid += gis_result.get("invalid", 0)
@@ -683,105 +639,19 @@ class _HarrisImportExecution:
                         sources_succeeded += 1
                     continue
 
-                # Find extracted files for this source
-                extract_path = self.extract_manager.get_extract_path(source)
-                if not extract_path.exists():
-                    msg = f"Extract path not found for {source.name}: {extract_path}"
-                    if source.required:
-                        source_errors.append(msg)
-                        self.logger.error(msg)
-                        if strict:
-                            break
-                    else:
-                        self.warnings.append(msg)
-                        self.logger.warning(msg)
-                    continue
-
-                # Process each data file in deterministic order. Extra Feature
-                # files are collected below and persisted as one logical dataset.
-                schema_loaded: dict[str, bool] = {}
-                data_files = sorted(extract_path.rglob("*.txt"))
-
-                missing_required_files = self._missing_required_files(source, data_files)
-                if missing_required_files:
-                    msg = (
-                        f"Required files missing for {source.name}: "
-                        f"{', '.join(missing_required_files)}"
-                    )
-                    if source.required:
-                        source_errors.append(msg)
-                        self.logger.error(msg)
-                        if strict:
-                            break
-                    else:
-                        self.warnings.append(msg)
-                        self.logger.warning(msg)
-                    continue
-
-                # Prefer detailed extra feature files when present (legacy parity).
-                if DEFAULT_HCAD_SOURCE_CATALOG.is_source(source, HcadSourceId.REAL_BUILDING_LAND):
-                    has_extra_feature_details = any(
-                        path.stem.lower().startswith("extra_features_detail") for path in data_files
-                    )
-                    if has_extra_feature_details:
-                        data_files = [
-                            path for path in data_files if path.stem.lower() != "extra_features"
-                        ]
-
-                extra_feature_files: list[Path] = []
-                for file_path in data_files:
-                    schema_name = self._resolve_schema_name(file_path.stem)
-                    if schema_name is None:
-                        continue
-                    if schema_name == "extra_features":
-                        extra_feature_files.append(file_path)
-                        continue
-                    truncate = not schema_loaded.get(schema_name, False)
-                    try:
-                        result = self._process_data_file(
-                            file_path,
-                            skip_load,
-                            truncate=truncate,
-                        )
-                    except (DatabaseError, OSError, UnsafeReplacementError, ValueError) as exc:
-                        message = f"Failed processing {file_path.name}: {exc}"
-                        source_errors.append(message)
-                        total_failed += 1
-                        self.logger.error(message)
-                        if strict:
-                            break
-                        continue
-                    schema_loaded[schema_name] = True
-                    source_did_work = True
-                    total_loaded += result.get("loaded", 0)
-                    total_invalid += result.get("invalid", 0)
-                    total_skipped += result.get("skipped", 0)
-                    total_failed += result.get("failed", 0)
-
-                if strict and source_errors:
-                    break
-
-                if extra_feature_files:
-                    try:
-                        result = self._process_extra_feature_files(
-                            extra_feature_files,
-                            skip_load=skip_load,
-                        )
-                    except (DatabaseError, OSError, UnsafeReplacementError, ValueError) as exc:
-                        message = f"Failed processing Extra Feature dataset: {exc}"
-                        source_errors.append(message)
-                        total_failed += 1
-                        self.logger.error(message)
-                        if strict:
-                            break
-                    else:
-                        source_did_work = True
-                        total_loaded += result.get("loaded", 0)
-                        total_invalid += result.get("invalid", 0)
-                        total_skipped += result.get("skipped", 0)
-                        total_failed += result.get("failed", 0)
-
-                if source_did_work:
+                source_result = pipeline.process_tabular_source(
+                    source,
+                    skip_load=skip_load,
+                    strict=strict,
+                )
+                self.warnings.extend(source_result.warnings)
+                if source_result.errors:
+                    source_errors.extend(source_result.errors)
+                total_loaded += source_result.loaded
+                total_invalid += source_result.invalid
+                total_skipped += source_result.skipped
+                total_failed += source_result.failed
+                if source_result.did_work:
                     sources_succeeded += 1
 
                 if strict and source_errors:
@@ -812,183 +682,7 @@ class _HarrisImportExecution:
         stage_result.completed_at = datetime.now()
         return stage_result
 
-    def _iter_translated_rows(
-        self,
-        schema_name: str,
-        file_path: Path,
-    ) -> Iterator[RowResult]:
-        """Return the shared translation stream for one supported source file."""
-        if schema_name == "real_acct":
-            return iter_property_rows(file_path)
-
-        account_map = self._get_account_to_property_map()
-        if schema_name == "building_res":
-            return iter_building_rows(
-                file_path,
-                account_map,
-                self.fixtures_aggregator,
-            )
-        if schema_name == "extra_features":
-            return iter_extra_feature_rows(file_path, account_map)
-        raise ValueError(f"Unsupported translated schema: {schema_name}")
-
-    def _process_data_file(
-        self,
-        file_path: Path,
-        skip_load: bool = False,
-        truncate: bool = True,
-    ) -> dict[str, int]:
-        """Process a single data file.
-
-        Args:
-            file_path: Path to the data file
-            skip_load: If True, only transform without loading to database
-            truncate: If True, truncate the table before loading
-
-        Returns:
-            Dictionary with loaded/invalid/skipped/failed counts
-        """
-        # Determine schema based on filename
-        filename = file_path.stem.lower()
-        schema_name = self._resolve_schema_name(filename)
-
-        if not schema_name:
-            self.logger.debug(f"No schema for {file_path.name}, skipping")
-            return {"loaded": 0, "invalid": 0, "skipped": 0, "failed": 0}
-
-        self.logger.info(f"Processing {file_path.name} with schema {schema_name}")
-
-        if skip_load:
-            counts = {"loaded": 0, "invalid": 0, "skipped": 0, "failed": 0}
-            for row in self._iter_translated_rows(schema_name, file_path):
-                if row.skip:
-                    counts["skipped"] += 1
-                elif row.invalid:
-                    counts["invalid"] += 1
-                else:
-                    counts["loaded"] += 1
-            return counts
-
-        rows = self._iter_translated_rows(schema_name, file_path)
-        property_file = self.request.property_file if schema_name == "real_acct" else None
-        if property_file:
-            if property_file.limit is not None:
-                if property_file.limit < 1:
-                    raise ValueError("limit must be at least one")
-                rows = islice(rows, property_file.limit)
-            truncate = not property_file.append
-        if schema_name in {"real_acct", "building_res"}:
-            from .persistence import (
-                PersistenceDataset,
-                PersistenceRequest,
-                PersistenceWriteMode,
-                persistence_for_connection,
-            )
-
-            persisted = persistence_for_connection(
-                orm_batch_size=property_file.batch_size if property_file else 5000
-            ).persist(
-                PersistenceRequest(
-                    dataset=(
-                        PersistenceDataset.PROPERTY
-                        if schema_name == "real_acct"
-                        else PersistenceDataset.BUILDING
-                    ),
-                    rows=rows,
-                    write_mode=(
-                        PersistenceWriteMode.REPLACE
-                        if truncate
-                        else PersistenceWriteMode.ADD_MISSING
-                    ),
-                )
-            )
-            if schema_name == "real_acct":
-                # PropertyRecord ids changed; rebuild the account caches that the
-                # building/extra-feature translators depend on.
-                self._account_to_property = None
-            return {
-                "loaded": persisted.loaded,
-                "invalid": persisted.invalid,
-                "skipped": persisted.skipped,
-                "failed": 0,
-            }
-
-        return {"loaded": 0, "invalid": 0, "skipped": 0, "failed": 0}
-
-    def _get_account_to_property_map(self) -> dict[str, int]:
-        """Return the per-import residential account map used by translation."""
-        if self._account_to_property is None:
-            from counties.harris.models import PropertyRecord
-
-            self._account_to_property = dict(
-                PropertyRecord.objects.filter(is_residential=True).values_list(
-                    "account_number", "id"
-                )
-            )
-            self.logger.info(f"Loaded {len(self._account_to_property)} account->property mappings")
-        return self._account_to_property
-
-    def _process_extra_feature_files(
-        self,
-        file_paths: list[Path],
-        *,
-        skip_load: bool,
-    ) -> dict[str, int]:
-        """Persist every selected Extra Feature source as one logical dataset."""
-
-        def translated_rows() -> Iterator[RowResult]:
-            for file_path in file_paths:
-                yield from self._iter_translated_rows("extra_features", file_path)
-
-        rows = translated_rows()
-        if skip_load:
-            counts = {"loaded": 0, "invalid": 0, "skipped": 0, "failed": 0}
-            for row in rows:
-                if row.skip:
-                    counts["skipped"] += 1
-                elif row.invalid:
-                    counts["invalid"] += 1
-                else:
-                    counts["loaded"] += 1
-            return counts
-
-        from .persistence import (
-            PersistenceDataset,
-            PersistenceRequest,
-            PersistenceWriteMode,
-            persistence_for_connection,
-        )
-
-        persisted = persistence_for_connection().persist(
-            PersistenceRequest(
-                dataset=PersistenceDataset.EXTRA_FEATURE,
-                rows=rows,
-                write_mode=PersistenceWriteMode.REPLACE,
-            )
-        )
-        return {
-            "loaded": persisted.loaded,
-            "invalid": persisted.invalid,
-            "skipped": persisted.skipped,
-            "failed": 0,
-        }
-
-    @staticmethod
-    def _resolve_schema_name(filename_stem: str) -> str | None:
-        """Map a source filename stem to a transform schema name."""
-        filename = filename_stem.lower()
-
-        # Skip code description files (lookup tables, not actual data)
-        if filename.startswith("desc_"):
-            return None
-
-        if filename == "real_acct":
-            return "real_acct"
-        if filename == "building_res":
-            return "building_res"
-        if filename == "extra_features" or filename.startswith("extra_features_detail"):
-            return "extra_features"
-        return None
+    _resolve_schema_name = staticmethod(resolve_schema_name)
 
     def _process_gis_source(
         self,

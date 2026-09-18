@@ -17,10 +17,15 @@ import statistics
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Any
+from typing import Any, Literal
 
 from counties.common.cap_status import evaluate_cap_status
-from counties.common.contracts import Comp, Subject
+from counties.common.charts import (
+    assessment_history_chart,
+    ppsf_distribution_chart,
+    score_breakdown_summary,
+)
+from counties.common.contracts import Comp, CountyAdapter, Subject
 from counties.common.tax_models import AssessmentHistory
 
 ONE_HUNDRED = Decimal("100")
@@ -229,3 +234,133 @@ def assessment_history_rows(
             }
         )
     return rows
+
+
+# --------------------------------------------------------------------------- protest dossier
+
+PROTEST_DEFAULT_MIN_SCORE = 70.0
+PROTEST_MIN_MIN_SCORE = 52.0
+PROTEST_MAX_MIN_SCORE = 100.0
+PROTEST_MAX_COMPS = 50
+PROTEST_MAX_DISTANCE = 10.0
+
+
+def clamped_float(value: Any, default: float, lower: float, upper: float) -> float:
+    """Parse and clamp numeric values to bounds, falling back to default."""
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return max(lower, min(upper, parsed))
+
+
+@dataclass(frozen=True)
+class ProtestCompRow:
+    """Formatted comparable property row for evidence tables and exports."""
+
+    comp: Comp
+    value_per_sqft: float | None
+    delta: float | None
+    breakdown_summary: str
+
+
+@dataclass(frozen=True)
+class ProtestEvidenceDossier:
+    """The complete evidence package required for an ARB hearing."""
+
+    subject: Subject
+    comps: Sequence[Comp]
+    equity: EquitySummary
+    history: Sequence[Mapping[str, Any]]
+    history_notice: str
+    tax_impact: Any
+    comp_rows: Sequence[ProtestCompRow]
+    min_score: float
+    assessment_history_chart: Mapping[str, Any] | None
+    ppsf_distribution_chart: Mapping[str, Any] | None
+
+
+@dataclass(frozen=True)
+class ProtestDossierOutcome:
+    """Polymorphic result of evaluating a protest evidence dossier request."""
+
+    status: Literal["ready", "unavailable"]
+    dossier: ProtestEvidenceDossier | None = None
+    subject: Subject | None = None
+    error: str | None = None
+
+    @property
+    def is_ready(self) -> bool:
+        return self.status == "ready" and self.dossier is not None
+
+
+def build_protest_dossier(
+    adapter: CountyAdapter,
+    key: str,
+    *,
+    min_score: Any = None,
+) -> ProtestDossierOutcome:
+    """Prepare a full protest evidence dossier across the county adapter seam."""
+    subject = adapter.get_subject(key)
+    if subject is None:
+        return ProtestDossierOutcome(status="unavailable", subject=None, error="Property not found")
+
+    caps = adapter.capabilities(key)
+    if not caps.report_ready:
+        return ProtestDossierOutcome(
+            status="unavailable",
+            subject=subject,
+            error=caps.reason_for("report")
+            or "This property does not have location data required for similarity search.",
+        )
+
+    if not subject.has_location:
+        return ProtestDossierOutcome(
+            status="unavailable",
+            subject=subject,
+            error="This property does not have location data required for similarity search.",
+        )
+
+    effective_min_score = clamped_float(
+        min_score,
+        PROTEST_DEFAULT_MIN_SCORE,
+        PROTEST_MIN_MIN_SCORE,
+        PROTEST_MAX_MIN_SCORE,
+    )
+    raw_comps = adapter.find_comps(
+        subject.key,
+        max_distance_miles=PROTEST_MAX_DISTANCE,
+        max_results=PROTEST_MAX_COMPS,
+        min_score=effective_min_score,
+    )
+    comps = sort_comps_for_display(raw_comps)
+    equity = summarize_equity(subject, comps)
+    history = adapter.assessment_history(subject.key)
+    history_notice = history_availability_notice(history, subject.tax_year)
+    tax_impact = adapter.tax_impact(subject.key, subject.tax_year, equity.median_assessed_value)
+
+    comp_rows = [
+        ProtestCompRow(
+            comp=comp,
+            value_per_sqft=comp.value_per_sqft,
+            delta=comp.delta_vs(equity.subject_value_per_sqft),
+            breakdown_summary=score_breakdown_summary(comp.score_breakdown),
+        )
+        for comp in comps
+    ]
+
+    dossier = ProtestEvidenceDossier(
+        subject=subject,
+        comps=comps,
+        equity=equity,
+        history=history,
+        history_notice=history_notice,
+        tax_impact=tax_impact,
+        comp_rows=comp_rows,
+        min_score=effective_min_score,
+        assessment_history_chart=assessment_history_chart(history),
+        ppsf_distribution_chart=ppsf_distribution_chart(
+            equity.qualifying_ppsf, equity.subject_value_per_sqft
+        ),
+    )
+    return ProtestDossierOutcome(status="ready", dossier=dossier, subject=subject)

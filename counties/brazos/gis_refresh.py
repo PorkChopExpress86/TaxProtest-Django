@@ -70,6 +70,7 @@ from counties.brazos.portal import USER_AGENT, download_archive, extract_zip
 from counties.brazos.property_import import RefreshOptions, StagePreparation, StageResult
 from counties.brazos.stage_reporting import SilentStageReporter, StageReporter
 from counties.common.import_writers import working_source_root
+from counties.common.models import ImportOperation
 
 logger = logging.getLogger("brazos_cad")
 
@@ -446,6 +447,12 @@ class GisRefreshStage:
             ),
             cleanup_paths=(extract_dir,),
         )
+
+    def inspect(self, preparation: StagePreparation, operation: ImportOperation) -> StageResult:
+        """Inspect and record evidence for prepared GIS inputs without persisting."""
+        from counties.brazos.source_validation import inspect_gis
+
+        return inspect_gis(operation, preparation)
 
     def persist(self, preparation: StagePreparation) -> StageResult:
         """Enrich the target year's CAD rows inside the caller's transaction."""

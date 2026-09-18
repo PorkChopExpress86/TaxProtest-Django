@@ -26,7 +26,7 @@ from counties.brazos.property_import import (
     build_default_refresh,
 )
 from counties.brazos.stage_reporting import SilentStageReporter
-from counties.common.models import ImportCandidate
+from counties.common.models import ImportCandidate, ImportOperation
 
 
 def _valid_sources(root: Path) -> None:
@@ -65,6 +65,11 @@ class _Stage:
             payload=None,
             cleanup_paths=(Path(self.name),),
         )
+
+    def inspect(self, preparation: StagePreparation, operation: ImportOperation) -> StageResult:
+        if self.delegate is not None:
+            return self.delegate.inspect(preparation, operation)
+        return StageResult(name=self.name, metrics={"inspected": 1})
 
     def persist(self, preparation: StagePreparation) -> StageResult:
         self.persisted = True

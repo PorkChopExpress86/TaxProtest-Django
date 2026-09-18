@@ -8,10 +8,9 @@ from typing import Any
 
 from django.http import HttpResponse
 
-from counties.common.analysis import EquitySummary
+from counties.common.analysis import EquitySummary, history_availability_notice
 from counties.common.charts import score_breakdown_summary
 from counties.common.contracts import Column, Comp, CountyProfile, Subject
-from counties.common.history import history_availability_notice
 
 #: Leading characters a spreadsheet would evaluate as a formula.
 CSV_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")

@@ -14,6 +14,7 @@ from typing import Any
 
 from django.urls import reverse
 
+from counties.common.analysis import assessment_history_rows
 from counties.common.contracts import (
     Column,
     Comp,
@@ -24,7 +25,6 @@ from counties.common.contracts import (
     SearchField,
     Subject,
 )
-from counties.common.history import assessment_history_rows
 from counties.common.models import ImportOperation
 from counties.common.tax_impact import calculate_tax_impact, unavailable_tax_impact
 from counties.harris.models import BuildingDetail, ExtraFeature, PropertyRecord

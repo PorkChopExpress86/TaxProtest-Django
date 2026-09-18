@@ -76,6 +76,7 @@ from counties.brazos.portal import (
 from counties.brazos.property_import import RefreshOptions, StagePreparation, StageResult
 from counties.brazos.stage_reporting import SilentStageReporter, StageReporter
 from counties.common.import_writers import working_source_root
+from counties.common.models import ImportOperation
 from counties.common.tax_models import PropertyJurisdictionExemption
 
 logger = logging.getLogger("brazos_cad")
@@ -874,6 +875,12 @@ class CadRefreshStage:
                 raise CommandError(
                     f"CAD preflight failed PACS key/year integrity for {spec.filename}."
                 )
+
+    def inspect(self, preparation: StagePreparation, operation: ImportOperation) -> StageResult:
+        """Inspect and record evidence for prepared CAD inputs without persisting."""
+        from counties.brazos.source_validation import inspect_cad
+
+        return inspect_cad(operation, preparation)
 
     def persist(self, preparation: StagePreparation) -> StageResult:
         """Replace the target year's certified rows inside the caller's transaction."""

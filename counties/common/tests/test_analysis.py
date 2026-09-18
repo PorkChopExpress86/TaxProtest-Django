@@ -6,8 +6,14 @@ from decimal import Decimal
 
 from django.test import SimpleTestCase
 
-from counties.common.analysis import sort_comps_for_display
-from counties.common.contracts import Comp
+from counties.common.analysis import build_protest_dossier, sort_comps_for_display
+from counties.common.contracts import (
+    Comp,
+    CountyAdapter,
+    CountyProfile,
+    PropertyCapabilities,
+    Subject,
+)
 
 
 def _comp(
@@ -109,3 +115,122 @@ class SortCompsForDisplayTests(SimpleTestCase):
         sort_comps_for_display(original)
 
         self.assertEqual([c.key for c in original], ["A", "B"])
+
+
+class FakeAdapter(CountyAdapter):
+    profile = CountyProfile(
+        slug="test",
+        display_name="Test County",
+        district_abbr="TCAD",
+        district_name="Test County Appraisal District",
+        key_label="Account",
+        url_prefix="test/",
+        url_name_prefix="test_",
+        search_fields=(),
+        search_columns=(),
+        comp_columns=(),
+    )
+
+    def __init__(
+        self,
+        subject: Subject | None = None,
+        caps: PropertyCapabilities | None = None,
+        comps: list[Comp] | None = None,
+    ):
+        self._subject = subject
+        self._caps = caps or PropertyCapabilities()
+        self._comps = comps or []
+
+    def search_queryset(self, params):
+        return []
+
+    def search_rows(self, records):
+        return []
+
+    def get_subject(self, key: str) -> Subject | None:
+        return self._subject
+
+    def capabilities(self, key: str) -> PropertyCapabilities:
+        return self._caps
+
+    def find_comps(
+        self, key: str, *, max_distance_miles: float, max_results: int, min_score: float
+    ) -> list[Comp]:
+        return [c for c in self._comps if (c.similarity_score or 0) >= min_score]
+
+    def assessment_history(self, key: str, limit: int = 5):
+        return [{"tax_year": 2026, "assessed_value": 300000}]
+
+    def tax_impact(self, key: str, tax_year: int | None, median_assessed_value: Decimal | None):
+        return None
+
+
+class BuildProtestDossierTests(SimpleTestCase):
+    def test_unknown_property_returns_unavailable(self):
+        adapter = FakeAdapter(subject=None)
+        outcome = build_protest_dossier(adapter, "missing")
+
+        self.assertFalse(outcome.is_ready)
+        self.assertEqual(outcome.error, "Property not found")
+
+    def test_not_report_ready_returns_unavailable_with_reason(self):
+        subject = Subject(
+            key="1",
+            address_line="123 Main",
+            has_location=True,
+        )
+        caps = PropertyCapabilities(report_ready=False, reasons={"report": "Need 3 comps"})
+        adapter = FakeAdapter(subject=subject, caps=caps)
+
+        outcome = build_protest_dossier(adapter, "1")
+
+        self.assertFalse(outcome.is_ready)
+        self.assertEqual(outcome.error, "Need 3 comps")
+        self.assertEqual(outcome.subject, subject)
+
+    def test_missing_location_returns_unavailable(self):
+        subject = Subject(
+            key="1",
+            address_line="123 Main",
+            has_location=False,
+        )
+        adapter = FakeAdapter(subject=subject)
+
+        outcome = build_protest_dossier(adapter, "1")
+
+        self.assertFalse(outcome.is_ready)
+        self.assertIn("location data", outcome.error)
+        self.assertEqual(outcome.subject, subject)
+
+    def test_ready_subject_builds_complete_dossier(self):
+        subject = Subject(
+            key="1",
+            address_line="123 Main",
+            has_location=True,
+            assessed_value=Decimal("300000"),
+            living_area=2000,
+            tax_year=2026,
+        )
+        comps = [
+            _comp(
+                "C1",
+                similarity_score=85.0,
+                distance=0.5,
+                assessed_value=Decimal("250000"),
+                living_area=2000,
+            )
+        ]
+        adapter = FakeAdapter(subject=subject, comps=comps)
+
+        outcome = build_protest_dossier(adapter, "1", min_score="75")
+
+        self.assertTrue(outcome.is_ready)
+        self.assertIsNotNone(outcome.dossier)
+        dossier = outcome.dossier
+        self.assertEqual(dossier.min_score, 75.0)
+        self.assertEqual(len(dossier.comps), 1)
+        self.assertEqual(len(dossier.comp_rows), 1)
+        self.assertIsNotNone(dossier.comp_rows[0].delta)
+        self.assertIsNotNone(dossier.comp_rows[0].breakdown_summary)
+        self.assertEqual(dossier.subject.key, "1")
+        self.assertEqual(outcome.subject, subject)
