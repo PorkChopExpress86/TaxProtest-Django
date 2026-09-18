@@ -37,6 +37,7 @@ class HarrisImportPhase(Enum):
 
     DOWNLOAD = "download"
     EXTRACT = "extract"
+    SOURCE_VALIDATION = "source_validation"
     LOAD = "load"
 
 
@@ -258,8 +259,10 @@ class _HarrisImportExecution:
         config: ETLConfig | None = None,
         logger: ETLLogger | None = None,
         reporter: HarrisImportReporter | None = None,
+        operation: ImportOperation | None = None,
     ):
         self.request = request
+        self.operation = operation
         self.sources = sources
         self.data_year = data_year
         self.config = config or ETLConfig.from_env()
@@ -269,6 +272,7 @@ class _HarrisImportExecution:
             name="etl_orchestrator",
             log_dir=self.config.log_dir,
             log_level=self.config.logging.level,
+            operation_id=str(operation.pk) if operation else None,
         )
 
         # Initialize managers
@@ -313,12 +317,34 @@ class _HarrisImportExecution:
             if not self._record_stage(extract_result, strict=strict):
                 return self._finish(started_at, HarrisImportStatus.FAILED, wrote_data=False)
 
-        with fenced_write():
-            load_result = self._execute_transform_load(
-                sources,
-                skip_load=preview,
-                strict=strict,
+        if preview:
+            from .source_validation import validate_harris_sources
+
+            assert self.operation is not None
+            validation = validate_harris_sources(
+                self.config, sources, self.data_year, self.operation
             )
+            self._account_to_property = validation.account_map
+            source_result = _StageResult(
+                stage=HarrisImportPhase.SOURCE_VALIDATION,
+                success=not validation.errors,
+                error="; ".join(validation.errors) or None,
+                metrics=validation.evidence(),
+                completed_at=datetime.now(),
+            )
+            if not self._record_stage(source_result, strict=True):
+                return self._finish(started_at, HarrisImportStatus.FAILED, wrote_data=False)
+
+        if preview:
+            load_result = _StageResult(
+                stage=HarrisImportPhase.LOAD,
+                success=True,
+                metrics=validation.metrics(),
+                completed_at=datetime.now(),
+            )
+        else:
+            with fenced_write():
+                load_result = self._execute_transform_load(sources, strict=strict)
         wrote_data = bool(load_result.metrics.get("_wrote_data", False))
         useful_work = bool(load_result.metrics.get("_sources_succeeded", 0))
         if not self._record_stage(load_result, strict=strict):
@@ -442,6 +468,25 @@ class _HarrisImportExecution:
 
         with self.logger.stage("download") as metrics:
             results = self.download_manager.download_batch(sources)
+            if self.operation is not None:
+                self.operation.evidence["acquired_sources"] = {
+                    result.source.filename: {
+                        "source_url": result.source_url,
+                        "source_year": next(
+                            (
+                                candidate
+                                for candidate in DEFAULT_HCAD_SOURCE_CATALOG.candidate_years(
+                                    self.data_year
+                                )
+                                if "{year}" in result.source.url_template
+                                and result.source.get_url(candidate) == result.source_url
+                            ),
+                            None,
+                        ),
+                    }
+                    for result in results
+                    if result.success
+                }
 
             # Collect metrics
             success_count = sum(1 for r in results if r.success)
@@ -993,8 +1038,13 @@ def run_harris_import(
         origin=request.origin,
     )
     try:
-        with import_warnings("etl_orchestrator") as warnings, county_writer(operation):
-            result = _HarrisImportExecution(request, sources, data_year, reporter=reporter).run()
+        with (
+            import_warnings("etl_orchestrator", operation_id=str(operation.pk)) as warnings,
+            county_writer(operation),
+        ):
+            result = _HarrisImportExecution(
+                request, sources, data_year, reporter=reporter, operation=operation
+            ).run()
     except Exception as exc:
         operation.status = "failed"
         operation.errors = [str(exc)]

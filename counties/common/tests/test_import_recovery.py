@@ -178,9 +178,11 @@ class ImportRecoveryTests(TransactionTestCase):
                     DEFAULT_HCAD_SOURCE_CATALOG.required_sources()
                 )[0]
                 current_archive = Path(root) / "downloads" / catalog_source.filename
-                current_archive.write_bytes(b"new writer retained source")
                 new_source = _write_property_source(root, account="NEW")
                 new_contents = new_source.read_bytes()
+                with zipfile.ZipFile(current_archive, "w") as archive:
+                    archive.writestr("real_acct.txt", new_contents)
+                new_archive_contents = current_archive.read_bytes()
                 current = run_harris_import(
                     replace(
                         request,
@@ -193,7 +195,7 @@ class ImportRecoveryTests(TransactionTestCase):
             finally:
                 release.set()
                 worker.join(20)
-            self.assertEqual(current_archive.read_bytes(), b"new writer retained source")
+            self.assertEqual(current_archive.read_bytes(), new_archive_contents)
             self.assertEqual(new_source.read_bytes(), new_contents)
             self.assertEqual(len(failures), 1)
 

@@ -122,19 +122,23 @@ class HarrisImportBoundaryTests(TestCase):
             self.assertTrue(source.exists())
 
     def test_gis_preview_translates_without_calling_the_persistence_adapter(self):
+        import geopandas as gpd
+        from shapely.geometry import Point
+
         with (
             tempfile.TemporaryDirectory() as root,
             override_settings(**_runtime_settings(root)),
-            patch(
-                "counties.harris.etl_pipeline.gis_loader.translate_gis_parcels",
-                return_value={"P100": (29.7, -95.3, "parcel-1")},
-            ) as translate,
             patch("counties.harris.etl_pipeline.gis_loader.load_gis_parcels") as load,
         ):
             source_dir = Path(root) / "extracted" / "Parcels"
             source_dir.mkdir(parents=True)
             shapefile = source_dir / "Parcels.shp"
-            shapefile.write_text("stub", encoding="utf-8")
+            gpd.GeoDataFrame(
+                {"ACCT": ["P100"], "PARCEL_ID": ["parcel-1"]},
+                geometry=[Point(3100000, 13800000)],
+                crs="EPSG:2278",
+            ).to_file(shapefile)
+            contents = shapefile.read_bytes()
 
             result = run_harris_import(
                 HarrisImportRequest(
@@ -150,7 +154,7 @@ class HarrisImportBoundaryTests(TestCase):
             self.assertEqual(
                 result.stages[HarrisImportPhase.LOAD].metrics["gis_coordinates_updated"], 1
             )
-            self.assertEqual(shapefile.read_text(encoding="utf-8"), "stub")
+            self.assertEqual(shapefile.read_bytes(), contents)
             load.assert_not_called()
 
     def test_apply_writes_then_refreshes_once(self):

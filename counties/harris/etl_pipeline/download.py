@@ -12,7 +12,7 @@ import random
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import requests
@@ -37,6 +37,7 @@ class DownloadResult:
     duration: float = 0.0
     checksum_verified: bool = False
     attempts: int = 1
+    source_url: str | None = None
 
     def __str__(self) -> str:
         status = "SUCCESS" if self.success else "FAILED"
@@ -215,7 +216,7 @@ class DownloadManager:
         if self.download_config.skip_if_unchanged and dest_path.exists():
             cached = self._cached_result_if_unchanged(url, dest_path, source, start_time)
             if cached is not None:
-                return cached
+                return replace(cached, source_url=url)
 
         self.logger.info(f"Downloading {source.name} from {url}")
 
@@ -225,13 +226,16 @@ class DownloadManager:
         for attempt in range(self.download_config.retry.max_retries + 1):
             attempts += 1
             try:
-                return self._download_with_progress(
-                    url=url,
-                    dest_path=dest_path,
-                    source=source,
-                    progress_callback=progress_callback,
-                    start_time=start_time,
-                    attempts=attempts,
+                return replace(
+                    self._download_with_progress(
+                        url=url,
+                        dest_path=dest_path,
+                        source=source,
+                        progress_callback=progress_callback,
+                        start_time=start_time,
+                        attempts=attempts,
+                    ),
+                    source_url=url,
                 )
             except requests.exceptions.RequestException as e:
                 last_error = str(e)
@@ -358,6 +362,7 @@ class DownloadManager:
             duration=duration,
             checksum_verified=checksum_verified,
             attempts=attempts,
+            source_url=url,
         )
 
     def download_batch(

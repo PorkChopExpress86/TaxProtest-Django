@@ -12,6 +12,8 @@ import io
 import logging
 import math
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 
 from django.db import connection, transaction
@@ -81,14 +83,26 @@ def select_preferred_gis_shapefile(search_roots: Sequence[Path]) -> Path | None:
     return max(shapefiles, key=priority)
 
 
-def translate_gis_parcels(shapefile_path: str) -> dict[str, tuple[float, float, str]]:
-    """Translate a parcel layer into account-keyed coordinate updates without writing."""
+@dataclass(frozen=True)
+class GisParcelInspection:
+    coordinates: dict[str, tuple[float, float, str]]
+    invalid: int
+    skipped: int
+    source_years: tuple[int, ...]
+
+
+def inspect_gis_parcels(
+    shapefile_path: str, *, expected_source_year: int | None = None
+) -> GisParcelInspection:
+    """Inspect canonical parcel identities, coordinates, and recorded source years."""
     if not GEOPANDAS_AVAILABLE or gpd is None:
         raise ImportError(
             "geopandas is required to process GIS data. Install with: pip install geopandas pyogrio"
         )
 
     gdf = gpd.read_file(shapefile_path)
+    if gdf.crs is None:
+        raise ValueError("GIS coordinate reference system is missing")
     centroids = gdf.geometry.centroid
     if gdf.crs and gdf.crs.to_epsg() != 4326:
         centroids = centroids.to_crs(epsg=4326)
@@ -119,21 +133,67 @@ def translate_gis_parcels(shapefile_path: str) -> dict[str, tuple[float, float, 
     )
 
     updates_by_account: dict[str, tuple[float, float, str]] = {}
+    invalid = skipped = 0
+    source_years: set[int] = set()
+    year_column = next(
+        (
+            column
+            for column in gdf.columns
+            if column.lower() in ("tax_year", "taxyear", "data_year", "year")
+        ),
+        None,
+    )
     for row in gdf.itertuples(index=False):
+        if year_column is not None:
+            raw_year = getattr(row, year_column)
+            if raw_year is not None and str(raw_year).strip().lower() not in (
+                "",
+                "nan",
+                "none",
+                "<na>",
+            ):
+                year = Decimal(str(raw_year))
+                if not year.is_finite() or year != year.to_integral_value():
+                    raise ValueError("Invalid GIS source year")
+                source_years.add(int(year))
+                if expected_source_year is not None and year != expected_source_year:
+                    raise ValueError(
+                        f"GIS source year {year} differs from requested {expected_source_year}"
+                    )
         account_num = str(getattr(row, account_col)).strip()
-        if not account_num:
+        if not account_num or account_num.lower() in ("nan", "none", "<na>"):
+            invalid += 1
             continue
+        if len(account_num) > 20:
+            raise ValueError("GIS canonical account identity exceeds 20 characters")
 
         lat = getattr(row, "latitude", None)
         lon = getattr(row, "longitude", None)
-        if lat is None or lon is None or _is_nan(lat) or _is_nan(lon):
+        if (
+            lat is None
+            or lon is None
+            or not math.isfinite(lat)
+            or not math.isfinite(lon)
+            or not (-90 <= lat <= 90 and -180 <= lon <= 180)
+        ):
+            invalid += 1
             continue
 
         parcel_raw = getattr(row, parcel_col) if parcel_col else ""
         parcel_id = str(parcel_raw).strip() if parcel_raw is not None else ""
-        updates_by_account[account_num] = (lat, lon, parcel_id)
+        coordinates = (lat, lon, parcel_id)
+        if account_num in updates_by_account and updates_by_account[account_num] != coordinates:
+            raise ValueError(f"Conflicting canonical GIS account identity: {account_num}")
+        if account_num in updates_by_account:
+            skipped += 1
+        updates_by_account[account_num] = coordinates
 
-    return updates_by_account
+    return GisParcelInspection(updates_by_account, invalid, skipped, tuple(sorted(source_years)))
+
+
+def translate_gis_parcels(shapefile_path: str) -> dict[str, tuple[float, float, str]]:
+    """Translate without writing; preserve the existing coordinates-only contract."""
+    return inspect_gis_parcels(shapefile_path).coordinates
 
 
 def load_gis_parcels(
