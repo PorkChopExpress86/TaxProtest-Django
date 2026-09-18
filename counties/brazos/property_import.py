@@ -44,6 +44,7 @@ class PropertyImportRequest:
     options: RefreshOptions
     actor: str = ""
     origin: str = "operator"
+    prepare_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -58,6 +59,8 @@ class PropertyImportResult:
     dry_run: bool
     cleanup_warnings: tuple[str, ...] = ()
     operation_id: UUID | None = None
+    candidate_id: UUID | None = None
+    prepared: bool = False
 
 
 class BrazosPropertyImport:
@@ -90,7 +93,7 @@ class BrazosPropertyImport:
             operation.save()
             raise
         result = replace(result, operation_id=operation.pk)
-        operation.status = "completed"
+        operation.status = "prepared" if result.prepared else "completed"
         operation.publication_after = (
             {"snapshot_id": result.snapshot_id, "tax_year": result.tax_year}
             if result.snapshot_id
@@ -116,6 +119,10 @@ class BrazosPropertyImport:
     ) -> PropertyImportResult:
         if request.options.dry_run:
             return self._preview(request, operation)
+        if request.prepare_only:
+            from counties.brazos.property_candidate import prepare_candidate
+
+            return prepare_candidate(self._cad, self._gis, request, operation)
         if request.mode is PropertyImportMode.ANNUAL:
             return self._run_annual(request.options)
         if request.mode is PropertyImportMode.CAD_RECOVERY:
