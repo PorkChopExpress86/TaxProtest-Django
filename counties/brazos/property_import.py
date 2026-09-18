@@ -21,6 +21,7 @@ from counties.brazos.annual_refresh import (
     StageResult,
 )
 from counties.brazos.models import BrazosPropertySnapshot, SnapshotOutcome
+from counties.common.import_logging import import_warnings
 from counties.common.models import ImportOperation
 
 
@@ -79,10 +80,12 @@ class BrazosPropertyImport:
             ),
         )
         try:
-            result = self._run(request)
+            with import_warnings("brazos_cad") as warnings:
+                result = self._run(request)
         except Exception as exc:
             operation.status = "failed"
             operation.errors = [str(exc)]
+            operation.warnings = warnings
             operation.finished_at = timezone.now()
             operation.save()
             raise
@@ -100,7 +103,7 @@ class BrazosPropertyImport:
             "gis": dict(result.gis.metrics) if result.gis else None,
             "qualified_publication": "Not yet verified",
         }
-        operation.warnings = list(result.cleanup_warnings)
+        operation.warnings = list(dict.fromkeys([*warnings, *result.cleanup_warnings]))
         operation.finished_at = timezone.now()
         operation.save()
         return result

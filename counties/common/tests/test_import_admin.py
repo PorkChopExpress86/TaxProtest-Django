@@ -10,6 +10,7 @@ from django.urls import reverse
 
 from counties.brazos.annual_refresh import RefreshOptions
 from counties.brazos.cad_refresh import CadRefreshStage
+from counties.brazos.gis_refresh import GisRefreshStage
 from counties.brazos.property_import import (
     BrazosPropertyImport,
     PropertyImportMode,
@@ -27,6 +28,38 @@ from counties.harris.etl_pipeline.import_plan import HarrisImportPlan
 
 
 class ImportAdminTests(TestCase):
+    def test_observed_source_warning_is_available_in_a_new_admin_session(self):
+        import geopandas as gpd
+        from shapely.geometry import Point
+
+        with (
+            tempfile.TemporaryDirectory() as root,
+            self.settings(
+                BCAD_DOWNLOAD_DIR=str(Path(root) / "downloads"),
+                BCAD_EXTRACT_DIR=str(Path(root) / "extracted"),
+            ),
+        ):
+            _stage_complete_pacs_export(Path(root), 2026)
+            shape = Path(root) / "extracted" / "gis" / "2026" / "parcels.shp"
+            shape.parent.mkdir(parents=True)
+            gpd.GeoDataFrame(
+                {"PROP_ID": ["invalid"]}, geometry=[Point(3556000, 10120000)], crs="EPSG:2277"
+            ).to_file(shape)
+            result = BrazosPropertyImport(CadRefreshStage(), GisRefreshStage()).run(
+                PropertyImportRequest(
+                    mode=PropertyImportMode.ANNUAL,
+                    options=RefreshOptions(
+                        tax_year=2026, skip_download=True, skip_extract=True, keep_extracted=True
+                    ),
+                )
+            )
+        user = get_user_model().objects.create_superuser("auditor", password="test")
+        self.client.force_login(user)
+        response = self.client.get(
+            reverse("admin:data_importoperation_change", args=[result.operation_id])
+        )
+        self.assertContains(response, "No usable PROP_ID rows found")
+
     def test_brazos_publication_records_its_observed_snapshot(self):
         with (
             tempfile.TemporaryDirectory() as root,
