@@ -46,7 +46,12 @@ def dataset_identity(schema: str = "public") -> dict:
 
 
 def published_identity() -> dict:
-    return dataset_identity()
+    current = ImportCandidate.objects.filter(county="harris", state="published").first()
+    return {
+        **dataset_identity(),
+        "candidate_id": str(current.pk) if current else None,
+        "property_source_year": current.evidence.get("property_source_year") if current else None,
+    }
 
 
 @contextmanager
@@ -67,6 +72,8 @@ def candidate_tables(candidate: ImportCandidate):
 
 def prepare_candidate(execution: "_HarrisImportExecution", operation: ImportOperation):
     from counties.common.import_retention import baseline_sources, retain_baseline_sources
+    from counties.harris.adapter import adapter
+    from counties.harris.source_catalog import HarrisImportStage
 
     from .config import DataSourceType
     from .coverage import outcome_populations
@@ -90,6 +97,20 @@ def prepare_candidate(execution: "_HarrisImportExecution", operation: ImportOper
         },
         evidence={"publication": "Published data unchanged"},
     )
+    candidate.evidence["property_source_year"] = (
+        execution.data_year
+        if HarrisImportStage.PROPERTY in execution.request.plan.stages
+        and execution.request.property_file is None
+        else (
+            adapter.published_year()
+            if HarrisImportStage.PROPERTY not in execution.request.plan.stages
+            else None
+        )
+    )
+    if execution.request.replay is not None:
+        candidate.evidence["property_source_year"] = operation.evidence["recovery"].get(
+            "property_source_year"
+        )
     operation.evidence["candidate_id"] = str(candidate.pk)
     assert isinstance(execution.request.load, HarrisApply)
     candidate.request["validate_completeness"] = execution.request.load.validate_completeness
@@ -101,10 +122,7 @@ def prepare_candidate(execution: "_HarrisImportExecution", operation: ImportOper
             "limit": source.limit,
             "batch_size": source.batch_size,
         }
-    previous_operation = ImportOperation.objects.filter(county="harris", status="published").first()
-    previous = outcome_populations(
-        previous_operation.requested_year if previous_operation else None
-    )
+    previous = outcome_populations(adapter.published_year())
     try:
         with fenced_write(), connection.cursor() as cursor:
             schema = connection.ops.quote_name(candidate.storage_schema)
@@ -156,7 +174,7 @@ def prepare_candidate(execution: "_HarrisImportExecution", operation: ImportOper
                 coverage = compare_coverage(
                     previous,
                     outcome_populations(
-                        execution.data_year,
+                        candidate.evidence["property_source_year"],
                         claimed_gis=any(
                             source.source_type is DataSourceType.GIS_DATA
                             for source in execution.sources

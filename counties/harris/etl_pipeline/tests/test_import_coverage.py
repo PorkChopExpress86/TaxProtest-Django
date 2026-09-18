@@ -154,7 +154,11 @@ class HarrisCoverageTests(TransactionTestCase):
         self.baseline(4)
         PropertyRecord.objects.update(value=250000)
         ImportOperation.objects.create(
-            county="harris", intent="full", status="published", requested_year=2025
+            county="harris",
+            intent="full",
+            status="published",
+            requested_year=2025,
+            publication_after={"property_source_year": 2025},
         )
         TaxUnitRate.objects.create(
             county="harris", tax_year=2025, tax_unit_code="C", adopted_rate="0.01"

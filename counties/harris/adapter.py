@@ -125,7 +125,9 @@ class HarrisAdapter(CountyAdapter):
     @staticmethod
     def published_year():
         operation = ImportOperation.objects.filter(county="harris", status="published").first()
-        return operation.requested_year if operation else None
+        return (
+            (operation.publication_after or {}).get("property_source_year") if operation else None
+        )
 
     def search_context(self, params):
         year = self.published_year()

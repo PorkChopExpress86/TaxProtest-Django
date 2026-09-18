@@ -19,7 +19,11 @@ from counties.harris.models import BuildingDetail, PropertyRecord
 class PublishedCapabilitiesTests(TestCase):
     def setUp(self):
         ImportOperation.objects.create(
-            county="harris", intent="full", status="published", requested_year=2026
+            county="harris",
+            intent="full",
+            status="published",
+            requested_year=2026,
+            publication_after={"property_source_year": 2026},
         )
         for index in range(4):
             prop = PropertyRecord.objects.create(
@@ -122,6 +126,9 @@ class PublishedCapabilitiesTests(TestCase):
         PropertyRecord.objects.filter(account_number="P0").update(is_data_ready=False)
         self.assertIsNone(adapter.get_subject("P0"))
         ImportOperation.objects.all().delete()
+        ImportOperation.objects.create(
+            county="harris", intent="legacy", status="published", requested_year=2026
+        )
         self.tax_rows()
         subject = adapter.get_subject("P1")
         self.assertIsNone(subject.tax_year)

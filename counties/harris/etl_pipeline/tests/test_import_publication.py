@@ -1,5 +1,7 @@
 """Harris publication through authoritative imports and admin requests."""
 
+import csv
+import io
 import tempfile
 import threading
 from dataclasses import replace
@@ -14,6 +16,7 @@ from django.test import Client, TransactionTestCase
 from django.urls import reverse
 
 from counties.common.models import ImportAuditEntry, ImportCandidate, ImportOperation
+from counties.common.tax_models import PropertyJurisdictionExemption, TaxUnitRate
 from counties.harris.etl_pipeline import (
     HarrisAcquisitionMode,
     HarrisApply,
@@ -104,6 +107,132 @@ class HarrisPublicationTests(TransactionTestCase):
                 ImportAuditEntry.objects.filter(kind="publication", result="published").count(), 1
             )
 
+    def test_gis_refresh_preserves_property_year_in_reports_and_exports(self):
+        from decimal import Decimal
+
+        import geopandas as gpd
+        from shapely.geometry import Point
+
+        self.client.force_login(
+            get_user_model().objects.create_superuser("year-review", password="test")
+        )
+        with tempfile.TemporaryDirectory() as root, self.settings(**_runtime_settings(root)):
+            request = replace(harris_request(root), data_year=2025)
+            base = Path(root) / "extracted"
+            keys = [f"P{number}" for number in range(4)]
+            (base / "Real_acct_owner/real_acct.txt").write_text(
+                "acct\tstate_class\ttot_appr_val\n"
+                + "".join(f"{key}\tA1\t250000\n" for key in keys)
+            )
+            (base / "Real_building_land/building_res.txt").write_text(
+                "acct\tbld_num\theat_ar\n" + "".join(f"{key}\t1\t1800\n" for key in keys)
+            )
+            (base / "Real_building_land/fixtures.txt").write_text(
+                "acct\tbld_num\ttype\tunits\n"
+                + "".join(f"{key}\t1\tRMB\t3\n{key}\t1\tRMF\t2\n" for key in keys)
+            )
+            (base / "Real_building_land/extra_features.txt").write_text(
+                "acct\tbld_num\tcd\n" + "".join(f"{key}\t1\tGAR\n" for key in keys)
+            )
+            gpd.GeoDataFrame(
+                {"ACCT": keys},
+                geometry=[Point(3100000 + i, 13800000) for i in range(4)],
+                crs="EPSG:2278",
+            ).to_file(base / "Parcels/parcels.shp")
+            first = run_harris_import(request)
+            review = reverse("admin:data_importcandidate_review", args=[first.candidate_id])
+            binding = self.client.get(review).context["form"]["binding"].value()
+            self.assertEqual(
+                self.client.post(
+                    review,
+                    {"decision": "approved", "reason": "Reviewed source year", "binding": binding},
+                ).status_code,
+                302,
+            )
+            self.assertEqual(
+                self.client.post(
+                    reverse("admin:data_importcandidate_apply", args=[first.candidate_id]),
+                    {"reason": "Publish 2025 properties"},
+                ).status_code,
+                302,
+            )
+            TaxUnitRate.objects.create(
+                county="harris", tax_year=2026, tax_unit_code="A", adopted_rate=Decimal("0.01")
+            )
+            PropertyJurisdictionExemption.objects.create(
+                county="harris",
+                tax_year=2026,
+                account_number="P0",
+                tax_unit_code="A",
+                taxable_value=250000,
+            )
+            refreshed = run_harris_import(
+                replace(
+                    request, data_year=2026, plan=HarrisImportPlan.from_legacy_scope("gis-only")
+                )
+            )
+            self.assertTrue(refreshed.wrote_data)
+            publication = ImportOperation.objects.get(pk=refreshed.operation_id)
+            self.assertEqual(publication.publication_after["property_source_year"], 2025)
+            report = self.client.get(reverse("protest_analysis", args=["P0"]))
+            self.assertEqual(report.context["subject"].tax_year, 2025)
+            self.assertEqual(report.context["tax_impact"].tax_year, 2025)
+            self.assertNotEqual(report.context["tax_impact"].completeness, "complete")
+            exported = self.client.get(reverse("protest_analysis_export", args=["P0"]))
+            rows = list(csv.DictReader(io.StringIO(exported.content.decode())))
+            self.assertTrue(rows)
+            self.assertTrue(all(row["property_source_year"] == "2025" for row in rows))
+            pdf = self.client.get(reverse("protest_analysis_pdf", args=["P0"]))
+            self.assertIn(b"Property Source Year: 2025", pdf.content)
+            current = run_harris_import(replace(request, data_year=2026))
+            if current.status is HarrisImportStatus.AWAITING_REVIEW:
+                review = reverse("admin:data_importcandidate_review", args=[current.candidate_id])
+                binding = self.client.get(review).context["form"]["binding"].value()
+                self.assertEqual(
+                    self.client.post(
+                        review,
+                        {
+                            "decision": "approved",
+                            "reason": "Reviewed 2026 facts",
+                            "binding": binding,
+                        },
+                    ).status_code,
+                    302,
+                )
+                self.assertEqual(
+                    self.client.post(
+                        reverse("admin:data_importcandidate_apply", args=[current.candidate_id]),
+                        {"reason": "Publish 2026 facts"},
+                    ).status_code,
+                    302,
+                )
+            self.assertEqual(
+                ImportOperation.objects.filter(county="harris", status="published")
+                .first()
+                .publication_after["property_source_year"],
+                2026,
+            )
+            recovery = reverse("admin:data_importoperation_recover_dataset", args=[publication.pk])
+            binding = self.client.get(recovery).context["form"]["binding"].value()
+            self.assertEqual(
+                self.client.post(
+                    recovery, {"reason": "Restore mixed stage years", "binding": binding}
+                ).status_code,
+                302,
+            )
+            candidate = ImportOperation.objects.get(origin="admin_recovery").candidate
+            self.assertEqual(candidate.evidence["property_source_year"], 2025)
+            self.assertEqual(
+                self.client.post(
+                    reverse("admin:data_importcandidate_apply", args=[candidate.pk]),
+                    {"reason": "Restore retained 2025 property facts"},
+                ).status_code,
+                302,
+            )
+            report = self.client.get(reverse("protest_analysis", args=["P0"]))
+            self.assertEqual(report.context["subject"].tax_year, 2025)
+            self.assertNotEqual(report.context["tax_impact"].completeness, "complete")
+
     def test_preview_and_prepare_cannot_apply_a_candidate(self):
         self.baseline()
         with tempfile.TemporaryDirectory() as root, self.settings(**_runtime_settings(root)):
@@ -165,7 +294,7 @@ class HarrisPublicationTests(TransactionTestCase):
     def test_apply_rechecks_sources_and_live_reviewer_permission(self):
         reviewer = get_user_model().objects.create_superuser("reviewer", password="test")
         operator = get_user_model().objects.create_superuser("operator", password="test")
-        for changed in ("source", "permission"):
+        for changed in ("source", "property_year", "permission"):
             with (
                 self.subTest(changed=changed),
                 tempfile.TemporaryDirectory() as root,
@@ -190,6 +319,10 @@ class HarrisPublicationTests(TransactionTestCase):
                 if changed == "source":
                     Path(candidate.sources[0]["path"]).write_text("changed")
                     expected = "Retained source changed"
+                elif changed == "property_year":
+                    candidate.evidence["property_source_year"] = 2025
+                    candidate.save(update_fields=["evidence"])
+                    expected = "Approved qualification changed"
                 else:
                     reviewer.is_superuser = False
                     reviewer.save()

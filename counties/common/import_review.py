@@ -10,7 +10,7 @@ from django.utils import timezone
 from counties.common.import_audit import audited_operation
 from counties.common.import_coverage import compare_coverage
 from counties.common.import_writers import fenced_write
-from counties.common.models import ImportAuditEntry, ImportCandidate, ImportOperation
+from counties.common.models import ImportAuditEntry, ImportCandidate
 
 
 class ImportReviewRejected(ValueError):
@@ -42,20 +42,16 @@ def county_identities(candidate):
 
 def current_coverage(candidate):
     if candidate.county == "harris":
+        from counties.harris.adapter import adapter
         from counties.harris.etl_pipeline.candidate import candidate_tables
         from counties.harris.etl_pipeline.coverage import outcome_populations
         from counties.harris.etl_pipeline.import_plan import HarrisImportPlan
         from counties.harris.source_catalog import HarrisImportStage
 
-        previous_operation = ImportOperation.objects.filter(
-            county="harris", status="published"
-        ).first()
-        previous = outcome_populations(
-            previous_operation.requested_year if previous_operation else None
-        )
+        previous = outcome_populations(adapter.published_year())
         with candidate_tables(candidate):
             current = outcome_populations(
-                candidate.request["data_year"],
+                candidate.evidence.get("property_source_year"),
                 claimed_gis=HarrisImportStage.GIS
                 in HarrisImportPlan.from_legacy_scope(candidate.request["plan"]).stages,
             )
@@ -120,6 +116,7 @@ def checked_binding(candidate: ImportCandidate) -> str:
         "content": content,
         "coverage": coverage,
         "validation": validation,
+        "property_source_year": candidate.evidence.get("property_source_year"),
     }
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()

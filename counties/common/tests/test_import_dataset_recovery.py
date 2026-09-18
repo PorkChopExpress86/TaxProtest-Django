@@ -369,6 +369,7 @@ class ImportRecoveryTests(TransactionTestCase):
             )
             self.assertTrue(appended.wrote_data)
             historical = ImportCandidate.objects.get(pk=appended.candidate_id)
+            self.assertIsNone(historical.evidence["property_source_year"])
             url = reverse(
                 "admin:data_importoperation_recover_dataset", args=[historical.operation_id]
             )

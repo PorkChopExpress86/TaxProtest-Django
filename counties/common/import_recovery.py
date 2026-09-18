@@ -47,6 +47,7 @@ def replay_binding(candidate):
                 "request": candidate.request,
                 "sources": candidate.sources,
                 "content_identity": candidate.evidence.get("content_identity"),
+                "property_source_year": candidate.evidence.get("property_source_year"),
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -73,6 +74,7 @@ def verify_replay(request, operation, before):
         "reason": request.reason,
         "request": candidate.request,
         "sources": candidate.sources,
+        "property_source_year": candidate.evidence.get("property_source_year"),
     }
     operation.save(update_fields=["publication_before", "evidence"])
     if not request.reason.strip():

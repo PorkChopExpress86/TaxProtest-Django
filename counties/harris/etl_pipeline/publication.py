@@ -47,6 +47,7 @@ def publish_candidate(candidate_id, operation, *, user=None):
             **published_identity(),
             "candidate_id": str(candidate.pk),
             "data_year": candidate.request["data_year"],
+            "property_source_year": candidate.evidence.get("property_source_year"),
         }
         operation.status = "published"
         operation.evidence["qualified_publication"] = "Observed atomic publication"
