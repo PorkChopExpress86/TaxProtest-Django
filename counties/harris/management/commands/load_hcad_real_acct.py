@@ -3,11 +3,15 @@ from pathlib import Path
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
-from counties.common.import_audit import audited_operation, record_sources
-from counties.common.import_writers import fenced_write
-from counties.harris.etl_pipeline import ETLConfig
-from counties.harris.etl_pipeline.readiness import refresh_property_readiness
-from counties.harris.etl_pipeline.translated_loader import load_property_file
+from counties.harris.etl_pipeline import (
+    HarrisAcquisitionMode,
+    HarrisApply,
+    HarrisExtractionMode,
+    HarrisImportPlan,
+    HarrisImportRequest,
+    run_harris_import,
+)
+from counties.harris.etl_pipeline.orchestrator import HarrisPropertyFile
 
 
 class Command(BaseCommand):
@@ -42,14 +46,6 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        with audited_operation(
-            "harris", "property_file_recovery", actor=options["actor"]
-        ) as operation:
-            with fenced_write():
-                self._handle(operation, *args, **options)
-            operation.evidence["committed"] = True
-
-    def _handle(self, operation, *args, **options):
         if options.get("filepath"):
             filepath = Path(options["filepath"])
         else:
@@ -58,27 +54,27 @@ class Command(BaseCommand):
             filepath = Path(settings.BASE_DIR) / filepath
         if not filepath.exists():
             raise CommandError(f"File not found: {filepath}")
-        record_sources(operation, [filepath], source_year=None, target_year=None)
-
-        # Handle truncate flag (--no-truncate overrides --truncate)
-        truncate = not options.get("no_truncate", False)
-
-        if truncate:
-            self.stdout.write(self.style.WARNING("Table will be TRUNCATED before import."))
-        else:
-            self.stdout.write(self.style.WARNING("Appending to existing data (no truncate)."))
-
-        self.stdout.write(self.style.WARNING(f"Loading properties from: {filepath}"))
-        result = load_property_file(
-            ETLConfig.from_env(),
-            filepath,
-            batch_size=options["chunk"],
-            limit=options.get("limit"),
-            truncate=truncate,
+        result = run_harris_import(
+            HarrisImportRequest(
+                plan=HarrisImportPlan.from_legacy_scope("property-only"),
+                acquisition=HarrisAcquisitionMode.REUSE_DOWNLOADED,
+                extraction=HarrisExtractionMode.REUSE_EXTRACTED,
+                load=HarrisApply(
+                    refresh_readiness=not options.get("no_refresh_readiness"),
+                    validate_completeness=False,
+                ),
+                property_file=HarrisPropertyFile(
+                    path=filepath,
+                    append=options.get("no_truncate", False),
+                    limit=options.get("limit"),
+                    batch_size=options["chunk"],
+                ),
+                actor=options["actor"],
+                origin="command",
+            )
         )
-        if not options.get("no_refresh_readiness", False):
-            refresh_property_readiness()
-        operation.evidence.update(records_loaded=result.records_loaded)
         self.stdout.write(
-            self.style.SUCCESS(f"Inserted {result.records_loaded} PropertyRecord rows.")
+            f"Status: {result.status.value}; applied: {result.wrote_data}; operation: {result.operation_id}; candidate: {result.candidate_id}. Review in Django admin /admin/data/importcandidate/."
         )
+        if result.status.value in ("failed", "partial"):
+            raise CommandError("Property source import failed: " + "; ".join(result.errors))

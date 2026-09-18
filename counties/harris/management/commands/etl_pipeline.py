@@ -333,6 +333,13 @@ class Command(BaseCommand):
             for error in result.errors[:5]:
                 self.stdout.write(self.style.ERROR(f"  - {error}"))
 
+        if result.status.value in ("prepared", "awaiting_review", "blocked"):
+            self.stdout.write(
+                self.style.WARNING(
+                    f"Published data unchanged. Candidate {result.candidate_id}; operation {result.operation_id}. Review in Django admin /admin/data/importcandidate/."
+                )
+            )
+            return
         if options.get("strict", True):
             if not result.success:
                 raise CommandError("Pipeline execution failed")

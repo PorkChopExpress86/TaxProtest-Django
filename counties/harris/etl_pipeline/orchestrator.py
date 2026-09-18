@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import os
+import shutil
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import Enum, StrEnum
+from itertools import islice
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Protocol
@@ -19,7 +21,7 @@ from django.utils import timezone
 
 from counties.common.import_logging import import_warnings
 from counties.common.import_writers import county_writer, fenced_write, working_source_root
-from counties.common.models import ImportOperation
+from counties.common.models import ImportCandidate, ImportOperation
 from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG, HcadSourceId
 
 from .config import DataSource, DataSourceType, ETLConfig
@@ -105,6 +107,7 @@ class HarrisImportResult:
     errors: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
     wrote_data: bool = False
+    already_applied: bool = False
     operation_id: UUID | None = None
     candidate_id: UUID | None = None
 
@@ -197,6 +200,14 @@ class HarrisPrepare(HarrisApply):
 HarrisLoadIntent = HarrisPreview | HarrisApply | HarrisPrepare
 
 
+@dataclass(frozen=True)
+class HarrisPropertyFile:
+    path: Path
+    append: bool = False
+    limit: int | None = None
+    batch_size: int = 5000
+
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class HarrisImportRequest:
     """One complete, validated request to import catalog-selected HCAD data."""
@@ -209,10 +220,19 @@ class HarrisImportRequest:
     failure_policy: HarrisFailurePolicy = HarrisFailurePolicy.STRICT
     actor: str = ""
     origin: str = "operator"
+    candidate_id: UUID | None = None
+    property_file: HarrisPropertyFile | None = None
+    application_reason: str = ""
 
     def __post_init__(self) -> None:
         if not isinstance(self.plan, HarrisImportPlan):
             raise InvalidHarrisImportRequest("plan must be a HarrisImportPlan")
+        if self.candidate_id is not None and (
+            not isinstance(self.load, HarrisApply) or isinstance(self.load, HarrisPrepare)
+        ):
+            raise InvalidHarrisImportRequest(
+                "Candidate application requires explicit HarrisApply intent"
+            )
         if self.data_year is not None and (
             not isinstance(self.data_year, int) or isinstance(self.data_year, bool)
         ):
@@ -277,6 +297,10 @@ class _HarrisImportExecution:
         self.config = config or ETLConfig.from_env()
         self.config.download_dir = working_source_root(self.config.download_dir)
         self.config.extract_dir = working_source_root(self.config.extract_dir)
+        if request.property_file is not None:
+            directory = self.config.extract_dir / "Real_acct_owner"
+            directory.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(request.property_file.path, directory / "real_acct.txt")
         self.logger = logger or ETLLogger(
             name="etl_orchestrator",
             log_dir=self.config.log_dir,
@@ -832,6 +856,13 @@ class _HarrisImportExecution:
             return counts
 
         rows = self._iter_translated_rows(schema_name, file_path)
+        property_file = self.request.property_file if schema_name == "real_acct" else None
+        if property_file:
+            if property_file.limit is not None:
+                if property_file.limit < 1:
+                    raise ValueError("limit must be at least one")
+                rows = islice(rows, property_file.limit)
+            truncate = not property_file.append
         if schema_name in {"real_acct", "building_res"}:
             from .persistence import (
                 PersistenceDataset,
@@ -840,7 +871,9 @@ class _HarrisImportExecution:
                 persistence_for_connection,
             )
 
-            persisted = persistence_for_connection().persist(
+            persisted = persistence_for_connection(
+                orm_batch_size=property_file.batch_size if property_file else 5000
+            ).persist(
                 PersistenceRequest(
                     dataset=(
                         PersistenceDataset.PROPERTY
@@ -1031,6 +1064,7 @@ def run_harris_import(
     request: HarrisImportRequest,
     *,
     reporter: HarrisImportReporter | None = None,
+    reviewer=None,
 ) -> HarrisImportResult:
     """Run one Harris import through the catalog-owned, stateless boundary."""
     if not isinstance(request, HarrisImportRequest):
@@ -1053,34 +1087,101 @@ def run_harris_import(
             import_warnings("etl_orchestrator", operation_id=str(operation.pk)) as warnings,
             county_writer(operation),
         ):
-            execution = _HarrisImportExecution(
-                request, sources, data_year, reporter=reporter, operation=operation
-            )
-            if isinstance(request.load, HarrisPrepare):
+            if request.candidate_id is None:
+                execution = _HarrisImportExecution(
+                    request, sources, data_year, reporter=reporter, operation=operation
+                )
+            if request.candidate_id is not None:
+                from .publication import publish_candidate
+
+                operation.evidence["application_reason"] = request.application_reason
+
+                candidate = ImportCandidate.objects.get(pk=request.candidate_id, county="harris")
+                if {key: candidate.request[key] for key in ("plan", "data_year")} != {
+                    "plan": request.plan.legacy_scope,
+                    "data_year": data_year,
+                }:
+                    raise InvalidHarrisImportRequest(
+                        "Candidate request identity differs from application"
+                    )
+                publish_candidate(candidate.pk, operation, user=reviewer)
+                result = HarrisImportResult(
+                    status=HarrisImportStatus.COMPLETED,
+                    started_at=datetime.now(),
+                    completed_at=datetime.now(),
+                    wrote_data="already_applied" not in operation.evidence,
+                    already_applied="already_applied" in operation.evidence,
+                    candidate_id=candidate.pk,
+                )
+            elif isinstance(request.load, HarrisApply):
                 from .candidate import prepare_candidate
 
+                execution.request = replace(
+                    request,
+                    load=HarrisPrepare(
+                        refresh_readiness=request.load.refresh_readiness,
+                        validate_completeness=request.load.validate_completeness,
+                        extracted_source_retention=ExtractedSourceRetention.RETAIN,
+                    ),
+                )
                 result = prepare_candidate(execution, operation)
             else:
                 result = execution.run()
     except Exception as exc:
-        operation.status = "failed"
+        operation.refresh_from_db(fields=["status", "publication_before", "publication_after"])
+        if operation.status == "published":
+            operation.warnings.append(str(exc))
+            operation.finished_at = timezone.now()
+            operation.save()
+            return HarrisImportResult(
+                status=HarrisImportStatus.COMPLETED,
+                started_at=datetime.now(),
+                completed_at=datetime.now(),
+                wrote_data=True,
+                operation_id=operation.pk,
+                candidate_id=request.candidate_id,
+                warnings=(str(exc),),
+            )
+        if operation.status != "published":
+            operation.status = "failed"
         operation.errors = [str(exc)]
         operation.warnings = list(dict.fromkeys([*operation.warnings, *warnings]))
         operation.finished_at = timezone.now()
         operation.save()
         raise
     result = replace(result, operation_id=operation.pk)
-    operation.status = result.status.value
+    operation.status = (
+        "already_applied"
+        if result.already_applied
+        else "published" if result.wrote_data else result.status.value
+    )
     operation.evidence = {
         **operation.evidence,
         "result": result.to_dict(),
         "wrote_data": result.wrote_data,
-        "qualified_publication": "Not yet verified",
+        "qualified_publication": operation.evidence.get(
+            "qualified_publication", "Published data unchanged"
+        ),
     }
     operation.warnings = list(dict.fromkeys([*operation.warnings, *warnings, *result.warnings]))
     operation.errors = list(result.errors)
     operation.finished_at = timezone.now()
     operation.save()
+    if (
+        isinstance(request.load, HarrisApply)
+        and not isinstance(request.load, HarrisPrepare)
+        and request.candidate_id is None
+        and result.status is HarrisImportStatus.PREPARED
+    ):
+        applied = run_harris_import(
+            replace(request, candidate_id=result.candidate_id), reporter=reporter, reviewer=reviewer
+        )
+        return replace(
+            applied,
+            stages=result.stages,
+            started_at=result.started_at,
+            warnings=result.warnings + applied.warnings,
+        )
     return result
 
 

@@ -8,6 +8,7 @@ from django.urls import path
 
 from counties.common import views
 from counties.common.contracts import CountyAdapter
+from counties.common.published_reads import consistent_published_read
 
 #: (view function, path suffix, URL-name suffix). ``<str:key>`` is the county's
 #: own property identifier — an HCAD account number, a BCAD prop_id, and so on.
@@ -33,6 +34,10 @@ def county_urlpatterns(adapter: CountyAdapter) -> list:
         if name == "export_csv" and not adapter.profile.supports_search_export:
             continue
         patterns.append(
-            path(suffix, partial(view, adapter=adapter), name=adapter.profile.url_name(name))
+            path(
+                suffix,
+                partial(consistent_published_read(view), adapter=adapter),
+                name=adapter.profile.url_name(name),
+            )
         )
     return patterns

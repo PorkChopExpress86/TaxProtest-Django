@@ -28,6 +28,10 @@ class CandidateReviewForm(forms.Form):
     binding = forms.CharField(widget=forms.HiddenInput)
 
 
+class CandidateApplyForm(forms.Form):
+    reason = forms.CharField(widget=forms.Textarea, label="Application reason", strip=True)
+
+
 class ImportAuditInline(admin.TabularInline):
     model = ImportAuditEntry
     readonly_fields = ("kind", "actor", "reason", "created_at", "evidence", "result")
@@ -146,16 +150,22 @@ class ImportCandidateAdmin(admin.ModelAdmin):
     def get_urls(self):
         return [
             path(
+                "<uuid:candidate_id>/apply/",
+                self.admin_site.admin_view(self.apply_view),
+                name="data_importcandidate_apply",
+            ),
+            path(
                 "<uuid:candidate_id>/review/",
                 self.admin_site.admin_view(self.review_view),
                 name="data_importcandidate_review",
-            )
+            ),
         ] + super().get_urls()
 
     def change_view(self, request, object_id, form_url="", extra_context=None):
         context = dict(extra_context or {})
         if request.user.has_perm("data.approve_import_coverage"):
             context["review_url"] = reverse("admin:data_importcandidate_review", args=[object_id])
+            context["apply_url"] = reverse("admin:data_importcandidate_apply", args=[object_id])
         return super().change_view(request, object_id, form_url, context)
 
     @admin.display(description="Coverage review history — Approval does not publish")
@@ -215,6 +225,57 @@ class ImportCandidateAdmin(admin.ModelAdmin):
                 "candidate": candidate,
                 "form": form,
                 "review_error": review_error,
+            },
+        )
+
+    def apply_view(self, request, candidate_id):
+        if not self.has_view_permission(request) or not request.user.has_perm(
+            "data.approve_import_coverage"
+        ):
+            raise PermissionDenied
+        candidate = get_object_or_404(ImportCandidate, pk=candidate_id)
+        form = CandidateApplyForm(request.POST if request.method == "POST" else None)
+        if request.method == "POST" and form.is_valid():
+            try:
+                if candidate.county != "harris":
+                    raise ImportReviewRejected("County publication is not yet available")
+                from counties.harris.etl_pipeline import HarrisImportRequest, run_harris_import
+                from counties.harris.etl_pipeline.import_plan import HarrisImportPlan
+
+                result = run_harris_import(
+                    HarrisImportRequest(
+                        plan=HarrisImportPlan.from_legacy_scope(candidate.request["plan"]),
+                        data_year=candidate.request["data_year"],
+                        candidate_id=candidate.pk,
+                        actor=request.user.get_username(),
+                        origin="admin",
+                        application_reason=form.cleaned_data["reason"],
+                    ),
+                    reviewer=request.user,
+                )
+                if not result.success:
+                    raise ImportReviewRejected("Candidate was not applied")
+            except (ImportReviewRejected, ValueError) as exc:
+                form.add_error(None, str(exc))
+            else:
+                messages.success(
+                    request,
+                    (
+                        "Candidate already applied; no new write."
+                        if result.already_applied
+                        else "Candidate publication observed. Data is applied."
+                    ),
+                )
+                return redirect("admin:data_importcandidate_change", candidate.pk)
+        return TemplateResponse(
+            request,
+            "admin/imports/apply.html",
+            {
+                **self.admin_site.each_context(request),
+                "opts": self.model._meta,
+                "title": "Apply exact qualified candidate",
+                "candidate": candidate,
+                "form": form,
             },
         )
 

@@ -267,6 +267,22 @@ def _run_authoritative_pipeline(
     result = run_harris_import(request, reporter=reporter)
 
     result_dict = result.to_dict()
+    result_dict.update(
+        operation_id=str(result.operation_id) if result.operation_id else None,
+        candidate_id=str(result.candidate_id) if result.candidate_id else None,
+        wrote_data=result.wrote_data,
+        already_applied=result.already_applied,
+    )
+    if result.status.value in ("prepared", "awaiting_review", "blocked"):
+        if task_instance is not None:
+            task_instance.update_state(
+                state="SUCCESS",
+                meta={
+                    "step": f"Import {result.status.value}; published data unchanged",
+                    **result_dict,
+                },
+            )
+        return result_dict
     if strict and not result.success:
         if task_instance is not None:
             task_instance.update_state(

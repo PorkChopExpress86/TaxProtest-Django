@@ -125,6 +125,40 @@ def checked_binding(candidate: ImportCandidate) -> str:
     ).hexdigest()
 
 
+def authorize_publication(candidate, *, user=None):
+    binding = checked_binding(candidate)
+    if candidate.state in ("blocked", "rejected", "preparing"):
+        raise ImportReviewRejected("Candidate is not qualified for publication")
+    if not candidate.evidence["coverage"]["requires_review"]:
+        return None
+    from django.contrib.auth import get_user_model
+
+    review = candidate.operation.audit_entries.filter(
+        kind="coverage_review", result="approved"
+    ).last()
+    if candidate.state != "approved" or review is None:
+        raise ImportReviewRejected("Coverage review approval is required before publication")
+    reviewer = (
+        get_user_model()
+        .objects.filter(username=review.actor, is_active=True, is_staff=True)
+        .first()
+    )
+    if reviewer is None or not reviewer.has_perm("data.approve_import_coverage"):
+        raise ImportReviewRejected("Reviewer's coverage permission is no longer valid")
+    if review.evidence.get("qualification_binding") != binding:
+        raise ImportReviewRejected("Approved qualification changed; prepare fresh review evidence")
+    if (
+        user is None
+        or not user.is_active
+        or not user.is_staff
+        or not user.has_perm("data.approve_import_coverage")
+    ):
+        raise ImportReviewRejected(
+            "An authorized operator must explicitly apply reviewed candidates"
+        )
+    return review
+
+
 def review_candidate(candidate, *, user, reason: str, decision: str, expected_binding: str):
     if (
         not user.is_authenticated

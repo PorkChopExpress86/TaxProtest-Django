@@ -1,0 +1,6 @@
+{% extends "admin/base_site.html" %}
+{% block content %}
+<p>Apply candidate {{ candidate.id }} — {{ candidate.state }}. This publishes its qualified data after rechecking sources, baseline, and authorization.</p>
+<pre>{{ candidate.evidence }}</pre>
+<form method="post">{% csrf_token %}{{ form.as_p }}<input type="submit" value="Apply candidate"></form>
+{% endblock %}

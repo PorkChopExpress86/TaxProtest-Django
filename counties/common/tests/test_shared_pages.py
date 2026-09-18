@@ -8,6 +8,7 @@ so adding a third county cannot quietly ship a narrower site.
 from __future__ import annotations
 
 from decimal import Decimal
+from inspect import unwrap
 
 from django.test import SimpleTestCase, TestCase
 from django.urls import NoReverseMatch, resolve, reverse
@@ -45,7 +46,7 @@ class EveryCountyHasTheSamePagesTests(SimpleTestCase):
                 args = ["KEY123"] if "<str:key>" in suffix else []
                 match = resolve(reverse(adapter.profile.url_name(name), args=args))
                 # county_urlpatterns binds the adapter with functools.partial.
-                self.assertIs(match.func.func, view)
+                self.assertIs(unwrap(match.func.func), view)
                 self.assertIs(match.func.keywords["adapter"], adapter)
 
     def test_counties_do_not_collide_on_url_names(self):

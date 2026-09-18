@@ -1,5 +1,6 @@
 {% extends "admin/change_form.html" %}
 {% block object-tools-items %}
+{% if apply_url %}<li><a href="{{ apply_url }}">Apply qualified candidate</a></li>{% endif %}
   {{ block.super }}
   {% if review_url %}<li><a href="{{ review_url }}">Review coverage</a></li>{% endif %}
 {% endblock %}

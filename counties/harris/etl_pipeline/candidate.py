@@ -84,6 +84,14 @@ def prepare_candidate(execution: "_HarrisImportExecution", operation: ImportOper
         evidence={"publication": "Published data unchanged"},
     )
     operation.evidence["candidate_id"] = str(candidate.pk)
+    if execution.request.property_file is not None:
+        source = execution.request.property_file
+        candidate.request["property_file"] = {
+            "path": str(source.path),
+            "append": source.append,
+            "limit": source.limit,
+            "batch_size": source.batch_size,
+        }
     previous_operation = ImportOperation.objects.filter(county="harris", status="published").first()
     previous = outcome_populations(
         previous_operation.requested_year if previous_operation else None
