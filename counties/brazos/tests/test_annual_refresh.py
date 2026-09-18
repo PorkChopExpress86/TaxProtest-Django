@@ -22,6 +22,7 @@ from counties.brazos.cad_refresh import CadRefreshStage
 from counties.brazos.gis_refresh import GisRefreshStage
 from counties.brazos.models import BrazosPropertySnapshot, PropertyAccount, SnapshotOutcome
 from counties.brazos.stage_reporting import SilentStageReporter
+from counties.common.models import ImportOperation
 
 
 class _Stage:
@@ -79,7 +80,7 @@ class AnnualRefreshWiringTests(SimpleTestCase):
 
 
 class AnnualRefreshOnlineDryRunTests(SimpleTestCase):
-    def test_dry_run_selects_online_sources_without_creating_archives(self):
+    def test_discovery_selects_online_sources_without_claiming_a_validated_preview(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             cad = CadRefreshStage()
@@ -101,15 +102,17 @@ class AnnualRefreshOnlineDryRunTests(SimpleTestCase):
                     return_value=("https://example.test/gis.zip", 2026),
                 ),
             ):
-                result = BrazosAnnualRefresh(cad, gis).run(RefreshOptions(dry_run=True))
+                cad_source = cad.prepare(RefreshOptions(dry_run=True))
+                gis_source = gis.prepare(RefreshOptions(tax_year=2026, dry_run=True))
 
-            self.assertEqual(result.tax_year, 2026)
-            self.assertTrue(result.dry_run)
+            self.assertEqual(cad_source.target_year, 2026)
+            self.assertEqual(gis_source.target_year, 2026)
+            self.assertIsNone(gis_source.payload.shapefile_path)
             self.assertFalse((root / "downloads" / "bcad_certified_2026.zip").exists())
             self.assertFalse((root / "downloads" / "bcad_gis_2026.zip").exists())
 
 
-class AnnualRefreshYearContractTests(SimpleTestCase):
+class AnnualRefreshYearContractTests(TestCase):
     def test_source_year_mismatch_stops_before_any_persistence(self):
         cad = _Stage("cad", source_year=2025, target_year=2025)
         gis = _Stage("gis", source_year=2024, target_year=2025)
@@ -126,10 +129,8 @@ class AnnualRefreshYearContractTests(SimpleTestCase):
         cad = _Stage("cad", source_year=2025, target_year=2025)
         gis = _Stage("gis", source_year=2025, target_year=2025)
 
-        result = BrazosAnnualRefresh(cad, gis).run(RefreshOptions(dry_run=True))
-
-        self.assertEqual(result.tax_year, 2025)
-        self.assertTrue(result.dry_run)
+        with self.assertRaisesRegex(CommandError, "inspectable PACS"):
+            BrazosAnnualRefresh(cad, gis).run(RefreshOptions(dry_run=True))
         self.assertFalse(cad.persisted)
         self.assertFalse(gis.persisted)
         self.assertFalse(cad.cleaned)
@@ -310,8 +311,12 @@ class AnnualRefreshCommandTests(TestCase):
             self.assertEqual(snapshot.tax_year, 2025)
             self.assertEqual(snapshot.cad_source_year, 2025)
             self.assertEqual(snapshot.gis_source_year, 2025)
-            self.assertFalse(cad_extract.exists())
-            self.assertFalse(gis_extract.exists())
+            operation = ImportOperation.objects.latest("started_at")
+            working = root / "extracted" / ".imports" / str(operation.pk)
+            self.assertFalse((working / "2025").exists())
+            self.assertFalse((working / "gis" / "2025").exists())
+            self.assertTrue(cad_extract.exists())
+            self.assertTrue(gis_extract.exists())
 
     def test_command_rolls_back_and_retains_both_sources_when_gis_fails(self):
         PropertyAccount.objects.create(

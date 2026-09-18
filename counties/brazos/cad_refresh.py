@@ -227,6 +227,8 @@ PACS_PREFLIGHT_SPECS: tuple[_PacsPreflightSpec, ...] = (
 class _CadStagePayload:
     text_files: dict[str, Path]
     extract_dir: Path
+    archive: Path | None = None
+    source_url: str = ""
 
 
 class CadRefreshStage:
@@ -810,7 +812,9 @@ class CadRefreshStage:
             name=self.name,
             source_year=source_year,
             target_year=target_year,
-            payload=_CadStagePayload(text_files=text_files, extract_dir=extract_dir),
+            payload=_CadStagePayload(
+                text_files=text_files, extract_dir=extract_dir, archive=archive, source_url=url
+            ),
             cleanup_paths=(extract_dir,),
         )
 

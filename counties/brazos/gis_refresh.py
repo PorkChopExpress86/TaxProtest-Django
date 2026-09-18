@@ -137,6 +137,8 @@ def _clean_int(value: Any) -> int | None:
 class GisSourcePayload:
     shapefile_path: Path | None
     extract_dir: Path
+    archive: Path | None = None
+    source_url: str = ""
 
 
 class GisRefreshStage:
@@ -436,7 +438,12 @@ class GisRefreshStage:
             name=self.name,
             source_year=source_year,
             target_year=target_year,
-            payload=GisSourcePayload(shapefile_path=shapefile_path, extract_dir=extract_dir),
+            payload=GisSourcePayload(
+                shapefile_path=shapefile_path,
+                extract_dir=extract_dir,
+                archive=archive,
+                source_url=url,
+            ),
             cleanup_paths=(extract_dir,),
         )
 

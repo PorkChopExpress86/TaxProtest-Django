@@ -81,7 +81,7 @@ class BrazosPropertyImport:
         )
         try:
             with import_warnings("brazos_cad") as warnings, county_writer(operation):
-                result = self._run(request)
+                result = self._run(request, operation)
         except Exception as exc:
             operation.status = "failed"
             operation.errors = [str(exc)]
@@ -111,7 +111,11 @@ class BrazosPropertyImport:
         operation.save()
         return result
 
-    def _run(self, request: PropertyImportRequest) -> PropertyImportResult:
+    def _run(
+        self, request: PropertyImportRequest, operation: ImportOperation
+    ) -> PropertyImportResult:
+        if request.options.dry_run:
+            return self._preview(request, operation)
         if request.mode is PropertyImportMode.ANNUAL:
             return self._run_annual(request.options)
         if request.mode is PropertyImportMode.CAD_RECOVERY:
@@ -119,6 +123,57 @@ class BrazosPropertyImport:
         if request.mode is PropertyImportMode.GIS_RECOVERY:
             return self._run_gis_recovery(request.options)
         raise CommandError(f"Unsupported Brazos property-import mode: {request.mode}.")
+
+    def _preview(
+        self, request: PropertyImportRequest, operation: ImportOperation
+    ) -> PropertyImportResult:
+        from counties.brazos.source_validation import inspect_cad, inspect_gis
+
+        # Source preparation actually acquires/extracts the selected bytes. Only
+        # persistence and cleanup are suppressed by a property preview.
+        options = replace(request.options, dry_run=False)
+        operation.evidence["source_validation"] = {
+            "valid": False,
+            "database_publication": "Database publication untested",
+        }
+        cad = gis = None
+        if request.mode in (PropertyImportMode.ANNUAL, PropertyImportMode.CAD_RECOVERY):
+            preparation = self._prepare(self._cad, options)
+            target_year = options.tax_year or preparation.target_year
+            cad = inspect_cad(operation, preparation)
+            self._validate_source_year(target_year, preparation, "CAD")
+        else:
+            active = BrazosPropertySnapshot.objects.filter(is_active=True).first()
+            target_year = options.tax_year or (active.tax_year if active else None)
+            if (
+                active is None
+                or active.tax_year != target_year
+                or active.outcome != PropertyImportOutcome.PARTIAL
+            ):
+                raise CommandError(
+                    "GIS recovery requires the active Partial Brazos property snapshot."
+                )
+        if request.mode in (PropertyImportMode.ANNUAL, PropertyImportMode.GIS_RECOVERY):
+            preparation = self._prepare(
+                self._required_gis(),
+                replace(options, tax_year=target_year, source_year=target_year),
+            )
+            gis = inspect_gis(operation, preparation)
+            self._validate_source_year(target_year, preparation, "GIS")
+        operation.evidence["source_validation"]["valid"] = True
+        operation.evidence["capabilities"] = (
+            "GIS capabilities unavailable" if gis is None else "Year-matched GIS inspected"
+        )
+        return PropertyImportResult(
+            tax_year=target_year,
+            outcome=(
+                PropertyImportOutcome.PARTIAL if gis is None else PropertyImportOutcome.COMPLETED
+            ),
+            cad=cad,
+            gis=gis,
+            snapshot_id=None,
+            dry_run=True,
+        )
 
     def _run_annual(self, options: RefreshOptions) -> PropertyImportResult:
         gis = self._required_gis()
