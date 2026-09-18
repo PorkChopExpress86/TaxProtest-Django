@@ -21,6 +21,7 @@ class Command(BaseCommand):
     )
 
     def add_arguments(self, parser):
+        parser.add_argument("--actor", default="")
         parser.add_argument("--year", type=int, required=True, help="CAD tax year to enrich.")
         parser.add_argument(
             "--source-year",
@@ -59,6 +60,8 @@ class Command(BaseCommand):
             skip_download=options["skip_download"],
             skip_extract=options["skip_extract"],
             keep_extracted=options["keep_extracted"],
+            actor=options["actor"],
+            origin="command",
         )
         try:
             if not options["apply"]:

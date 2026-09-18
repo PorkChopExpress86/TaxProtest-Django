@@ -7,8 +7,6 @@ from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 
-from django.db import transaction
-
 from counties.brazos.annual_refresh import RefreshOptions, StagePreparation
 from counties.brazos.gis_coordinates import interpret_gis_coordinates
 from counties.brazos.gis_refresh import GisRefreshStage, GisSourcePayload
@@ -21,6 +19,8 @@ from counties.brazos.models import (
 )
 from counties.brazos.models import CoordinateEnrichmentOutcome as ModelCoordinateEnrichmentOutcome
 from counties.brazos.stage_reporting import SilentStageReporter, StageReporter
+from counties.common.import_audit import audited_operation, record_sources
+from counties.common.import_writers import fenced_write
 
 COORDINATE_SOURCE = "bcad-certified-gis"
 COORDINATE_FIELDS_UPDATED = (
@@ -79,6 +79,8 @@ class CoordinateEnrichmentRequest:
     skip_download: bool = False
     skip_extract: bool = False
     keep_extracted: bool = False
+    actor: str = ""
+    origin: str = "operator"
 
 
 class CoordinateEnrichmentError(Exception):
@@ -173,9 +175,19 @@ class BrazosCoordinateEnrichment:
     def analyze(self, request: CoordinateEnrichmentRequest) -> CoordinateEnrichmentReport:
         """Measure one source-to-target join without writing or cleaning anything."""
         self._validate_request(request)
-        source = self._prepare_source(request)
-        accounts = list(PropertyAccount.objects.filter(tax_year=request.target_year))
-        return self._report_for_accounts(source, accounts)
+        with audited_operation(
+            "brazos",
+            "coordinate_analysis",
+            actor=request.actor,
+            origin=request.origin,
+            requested_year=request.target_year,
+        ) as operation:
+            with fenced_write():
+                source = self._prepare_source(request)
+            accounts = list(PropertyAccount.objects.filter(tax_year=request.target_year))
+            report = self._report_for_accounts(source, accounts)
+            self._record_operation_source(operation, source, report)
+            return report
 
     def apply(
         self,
@@ -186,21 +198,66 @@ class BrazosCoordinateEnrichment:
         """Apply one independently staged and measured coordinate update."""
         self._validate_request(request)
         self._validate_minimum_match_rate(minimum_match_rate)
-        source = self._prepare_source(request)
-        audit, report = self._apply_measured_population(
-            source=source,
+        with audited_operation(
+            "brazos",
+            "coordinate_enrichment",
+            actor=request.actor,
+            origin=request.origin,
+            requested_year=request.target_year,
+        ) as operation:
+            return self._apply(request, minimum_match_rate, operation)
+
+    def _apply(self, request, minimum_match_rate, operation):
+        with fenced_write():
+            source = self._prepare_source(request)
+        self._record_operation_source(operation, source)
+        try:
+            audit, report = self._apply_measured_population(
+                source=source,
+                minimum_match_rate=minimum_match_rate,
+            )
+        except CoordinateEnrichmentRejected as exc:
+            operation.evidence["measured"] = exc.report.evidence()
+            raise
+        operation.evidence["measured"] = report.evidence()
+        operation.publication_before = {
+            "snapshot_id": audit.snapshot_id,
+            "tax_year": report.target_year,
+        }
+        operation.publication_after = operation.publication_before
+        operation.evidence.update(
+            committed=True,
+            coordinate_audit_id=audit.pk,
+            updated_count=audit.updated_count,
             minimum_match_rate=minimum_match_rate,
         )
         try:
             self._finalize_cleanup(audit, source.preparation, request)
         except Exception as exc:
             audit.refresh_from_db()
+            operation.status = "completed_with_warnings"
             raise CoordinateEnrichmentCleanupError(
                 self._result(audit, report),
                 self._retained_cleanup_paths(source.preparation),
             ) from exc
         audit.refresh_from_db()
         return self._result(audit, report)
+
+    @staticmethod
+    def _record_operation_source(operation, source, report=None):
+        operation.evidence.update(
+            source_year=source.preparation.source_year,
+            target_year=source.preparation.target_year,
+        )
+        if report is not None:
+            operation.evidence["measured"] = report.evidence()
+        payload = source.preparation.payload
+        record_sources(
+            operation,
+            list(payload.shapefile_path.parent.glob("*")),
+            source_year=source.preparation.source_year,
+            target_year=source.preparation.target_year,
+        )
 
     def _prepare_source(self, request: CoordinateEnrichmentRequest) -> _PreparedCoordinateSource:
         options = RefreshOptions(
@@ -323,7 +380,7 @@ class BrazosCoordinateEnrichment:
         source: _PreparedCoordinateSource,
         minimum_match_rate: float,
     ) -> tuple[CoordinateEnrichmentAudit, CoordinateEnrichmentReport]:
-        with transaction.atomic():
+        with fenced_write():
             locked_snapshot = (
                 BrazosPropertySnapshot.objects.select_for_update()
                 .filter(
@@ -404,7 +461,8 @@ class BrazosCoordinateEnrichment:
         if request.keep_extracted or request.skip_extract:
             return
         try:
-            self._source_stage.cleanup(preparation)
+            with fenced_write():
+                self._source_stage.cleanup(preparation)
             retained_paths = self._retained_cleanup_paths(preparation)
             if retained_paths:
                 raise OSError(

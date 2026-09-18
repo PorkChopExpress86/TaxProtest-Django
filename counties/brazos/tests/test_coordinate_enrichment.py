@@ -33,9 +33,20 @@ from counties.brazos.models import (
     SnapshotOutcome,
 )
 from counties.brazos.tests.test_load_brazos_gis import write_fixture_shapefile
+from counties.common.models import ImportOperation
 
 
 class CoordinateEnrichmentTests(TestCase):
+    def _observed_shapefile(self):
+        operation = ImportOperation.objects.filter(intent="coordinate_enrichment").latest(
+            "started_at"
+        )
+        return next(
+            Path(source["path"])
+            for source in operation.evidence["sources"]
+            if source["path"].endswith(".shp")
+        )
+
     def _request(
         self,
         *,
@@ -285,7 +296,7 @@ class CoordinateEnrichmentTests(TestCase):
 
         account.refresh_from_db()
         self.assertIsNone(account.latitude)
-        self.assertTrue(shapefile_path.exists())
+        self.assertTrue(self._observed_shapefile().exists())
         self.assertFalse(CoordinateEnrichmentAudit.objects.exists())
 
     def test_committed_application_cleans_extracted_source(self):
@@ -296,7 +307,7 @@ class CoordinateEnrichmentTests(TestCase):
         result = BrazosCoordinateEnrichment().apply(request, minimum_match_rate=0.5)
 
         self.assertEqual(result.cleanup_state, CoordinateCleanupState.CLEANED)
-        self.assertFalse(shapefile_path.parent.exists())
+        self.assertFalse(self._observed_shapefile().parent.exists())
 
     def test_requested_retention_suppresses_cleanup(self):
         self._active_partial_snapshot()
@@ -309,7 +320,7 @@ class CoordinateEnrichmentTests(TestCase):
         result = BrazosCoordinateEnrichment().apply(request, minimum_match_rate=0.5)
 
         self.assertEqual(result.cleanup_state, CoordinateCleanupState.RETAINED)
-        self.assertTrue(shapefile_path.exists())
+        self.assertTrue(self._observed_shapefile().exists())
 
     def test_cleanup_failure_carries_committed_outcome_and_retained_paths(self):
         self._active_partial_snapshot()
@@ -326,8 +337,8 @@ class CoordinateEnrichmentTests(TestCase):
         self.assertEqual(account.coordinate_source_year, 2025)
         self.assertEqual(ctx.exception.outcome.updated_count, 1)
         self.assertEqual(ctx.exception.outcome.cleanup_state, CoordinateCleanupState.FAILED)
-        self.assertIn(shapefile_path.parent, ctx.exception.retained_paths)
-        self.assertTrue(shapefile_path.exists())
+        self.assertIn(self._observed_shapefile().parent, ctx.exception.retained_paths)
+        self.assertTrue(self._observed_shapefile().exists())
 
     def test_cleanup_that_suppresses_deletion_error_is_still_reported_as_failed(self):
         self._active_partial_snapshot()
@@ -341,7 +352,7 @@ class CoordinateEnrichmentTests(TestCase):
             BrazosCoordinateEnrichment().apply(request, minimum_match_rate=0.5)
 
         self.assertEqual(ctx.exception.outcome.cleanup_state, CoordinateCleanupState.FAILED)
-        self.assertEqual(ctx.exception.retained_paths, (shapefile_path.parent,))
+        self.assertEqual(ctx.exception.retained_paths, (self._observed_shapefile().parent,))
 
     def test_command_reports_committed_success_before_cleanup_warning_and_exits_zero(self):
         self._active_partial_snapshot()
@@ -365,7 +376,7 @@ class CoordinateEnrichmentTests(TestCase):
 
         output = stdout.getvalue()
         self.assertLess(output.index("Coordinate enrichment applied"), output.index("WARNING"))
-        self.assertIn(str(shapefile_path.parent), output)
+        self.assertIn(str(self._observed_shapefile().parent), output)
 
     def test_command_preserves_analysis_and_rejection_output(self):
         self._active_partial_snapshot()

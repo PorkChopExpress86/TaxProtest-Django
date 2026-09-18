@@ -13,6 +13,8 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.db.models import Exists, OuterRef
 
+from counties.common.import_audit import audited_operation
+from counties.common.import_writers import fenced_write
 from counties.harris.etl_pipeline.readiness import refresh_property_readiness
 from counties.harris.etl_pipeline.reconciliation import link_orphaned_records
 from counties.harris.models import BuildingDetail, ExtraFeature, PropertyRecord
@@ -25,6 +27,7 @@ class Command(BaseCommand):
     )
 
     def add_arguments(self, parser) -> None:  # type: ignore[override]
+        parser.add_argument("--actor", default="")
         parser.add_argument(
             "--apply",
             action="store_true",
@@ -38,6 +41,14 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options) -> None:  # type: ignore[override]
+        with audited_operation(
+            "harris", "property_reconciliation", actor=options["actor"]
+        ) as operation:
+            with fenced_write():
+                self._handle(operation, *args, **options)
+            operation.evidence["committed"] = options["apply"]
+
+    def _handle(self, operation, *args, **options) -> None:
         apply_changes: bool = options["apply"]
         chunk_size: int = options["chunk_size"]
 
@@ -46,6 +57,7 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS("=" * 70))
 
         preview = self._preview_cleanup(chunk_size=chunk_size)
+        operation.evidence.update(preview=preview, dry_run=not apply_changes)
 
         self.stdout.write(
             f"\nProperties examined:                 {preview['properties_examined']:>10,}"
@@ -152,6 +164,12 @@ class Command(BaseCommand):
                 f"{remaining_non_residential:,} non-residential and "
                 f"{remaining_incomplete:,} incomplete residential properties remain."
             )
+        operation.evidence.update(
+            sync=sync_results,
+            linking=link_results,
+            readiness=readiness_results,
+            deleted=dict(deletion_totals),
+        )
 
         self.stdout.write(
             self.style.SUCCESS(

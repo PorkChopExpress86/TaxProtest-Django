@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import csv
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -33,6 +33,8 @@ def _parse_int(value: Any) -> int | None:
 class HistoryImportCounts:
     years_processed: int = 0
     records_loaded: int = 0
+    tax_year_counts: dict[int, int] = field(default_factory=dict)
+    source_years: set[int] = field(default_factory=set)
 
 
 class AssessmentHistoryImporter:
@@ -40,11 +42,12 @@ class AssessmentHistoryImporter:
 
     def __init__(self, *, batch_size: int = 5000):
         self.batch_size = batch_size
+        self.counts = HistoryImportCounts()
 
     def import_year_range(
         self, start_year: int, end_year: int, extract_root: Path
     ) -> HistoryImportCounts:
-        counts = HistoryImportCounts()
+        counts = self.counts = HistoryImportCounts()
         years = list(range(start_year, end_year + 1))
 
         with transaction.atomic():
@@ -82,6 +85,12 @@ class AssessmentHistoryImporter:
 
                 hearing = hearing_rows.pop(account_number, None)
                 history = self._build_history_from_real_acct(account_number, row, year, hearing)
+                observed_year = _parse_int(row.get("yr"))
+                if observed_year is not None:
+                    self.counts.source_years.add(observed_year)
+                self.counts.tax_year_counts[history.tax_year] = (
+                    self.counts.tax_year_counts.get(history.tax_year, 0) + 1
+                )
                 batch.append(history)
 
                 if len(batch) >= self.batch_size:
@@ -90,7 +99,11 @@ class AssessmentHistoryImporter:
                     batch.clear()
 
         for account_number, hearing in hearing_rows.items():
-            batch.append(self._build_history_from_hearing_only(account_number, year, hearing))
+            history = self._build_history_from_hearing_only(account_number, year, hearing)
+            self.counts.tax_year_counts[history.tax_year] = (
+                self.counts.tax_year_counts.get(history.tax_year, 0) + 1
+            )
+            batch.append(history)
             if len(batch) >= self.batch_size:
                 AssessmentHistory.objects.bulk_create(batch, batch_size=self.batch_size)
                 loaded += len(batch)
@@ -113,6 +126,9 @@ class AssessmentHistoryImporter:
                 if not account_number:
                     continue
                 tax_year = _parse_int(row.get("Tax_Year")) or default_year
+                observed_year = _parse_int(row.get("Tax_Year"))
+                if observed_year is not None:
+                    self.counts.source_years.add(observed_year)
                 rows[account_number] = {
                     "tax_year": tax_year,
                     "final_appraised_value": _parse_decimal(row.get("Final_Appraised_Value")),

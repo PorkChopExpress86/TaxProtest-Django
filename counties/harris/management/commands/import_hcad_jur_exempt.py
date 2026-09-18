@@ -77,6 +77,8 @@ from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.db import connection, transaction
 
+from counties.common.import_audit import audited_operation, record_sources
+from counties.common.import_writers import fenced_write, working_source_root
 from counties.common.tax_models import TaxUnitRate
 from counties.harris.models import PropertyRecord
 
@@ -148,6 +150,7 @@ class Command(BaseCommand):
     help = "Import Harris jurisdiction/exemption rows and tax unit rates from Real_jur_exempt."
 
     def add_arguments(self, parser):
+        parser.add_argument("--actor", default="")
         parser.add_argument(
             "--tax-year",
             type=int,
@@ -188,9 +191,11 @@ class Command(BaseCommand):
         if option:
             directory = Path(option)
         else:
-            directory = Path(settings.HCAD_EXTRACT_DIR) / "Real_jur_exempt"
+            directory = working_source_root(Path(settings.HCAD_EXTRACT_DIR)) / "Real_jur_exempt"
             if not directory.is_dir():
-                zip_path = Path(settings.HCAD_DOWNLOAD_DIR) / "Real_jur_exempt.zip"
+                zip_path = (
+                    working_source_root(Path(settings.HCAD_DOWNLOAD_DIR)) / "Real_jur_exempt.zip"
+                )
                 if zip_path.exists():
                     self.stdout.write(f"Extracting {zip_path} -> {directory} ...")
                     directory.mkdir(parents=True, exist_ok=True)
@@ -259,6 +264,9 @@ class Command(BaseCommand):
     def _load_descriptions(self, directory: Path) -> dict[str, str]:
         path = directory / DESCRIPTION_FILE
         if not path.exists():
+            self._operation.warnings.append(
+                f"{DESCRIPTION_FILE} missing; exemption descriptions will be blank"
+            )
             logger.warning("%s missing; exemption descriptions will be blank", DESCRIPTION_FILE)
             return {}
         return {
@@ -462,6 +470,16 @@ class Command(BaseCommand):
     # ------------------------------------------------------------------ main
 
     def handle(self, *args, **options):
+        with audited_operation(
+            "harris",
+            "jurisdictions_exemptions_rates",
+            actor=options["actor"],
+            requested_year=options["tax_year"],
+        ) as operation:
+            self._operation = operation
+            self._handle(operation, *args, **options)
+
+    def _handle(self, operation, *args, **options):
         tax_year: int = options["tax_year"]
         dry_run: bool = options["dry_run"]
 
@@ -471,7 +489,12 @@ class Command(BaseCommand):
                 f"a PostgreSQL database (current vendor: {connection.vendor})."
             )
 
-        directory = self._resolve_dir(options.get("path"))
+        with fenced_write():
+            directory = self._resolve_dir(options.get("path"))
+        record_sources(
+            operation, list(directory.glob("*.txt")), target_year=tax_year, source_year=None
+        )
+        operation.evidence.update(target_year=tax_year, dry_run=dry_run)
         self.stdout.write(f"Reading HCAD jurisdiction data from {directory}")
 
         stamp = datetime.now(UTC)
@@ -479,7 +502,7 @@ class Command(BaseCommand):
         # Rates and exemption rows are written in one transaction: a failed
         # verification must not leave the rates behind without the rows they
         # apply to, which would silently change every account's tax figures.
-        with transaction.atomic():
+        with fenced_write():
             names = self._load_rates(directory, tax_year, options["rate_column"], dry_run=dry_run)
             descriptions = self._load_descriptions(directory)
             self.stdout.write(f"  {DESCRIPTION_FILE}: {len(descriptions)} exemption codes")
@@ -519,6 +542,14 @@ class Command(BaseCommand):
                 self.stdout.write(f"  {EXEMPT_FILE}: staged {exempt_count:,} exemption rows")
 
                 pairs, over_itemised, under_itemised = self._itemisation_gaps(cursor)
+                operation.evidence.update(
+                    base_rows=base_count,
+                    exemption_rows=exempt_count,
+                    pairs=pairs,
+                    over_itemised=over_itemised,
+                    under_itemised=under_itemised,
+                    rates_parsed=len(names),
+                )
                 self.stdout.write(
                     f"  {pairs:,} (account, taxing unit) pairs; jur_exempt.txt itemises more "
                     f"than was applied on {over_itemised:,} and less on {under_itemised:,}"
@@ -605,6 +636,7 @@ class Command(BaseCommand):
                     [stamp, stamp, stamp, stamp],
                 )
                 inserted = cursor.rowcount
+                operation.evidence.update(rows_deleted=deleted, rows_inserted=inserted)
 
                 wrong = self._verify_applied(cursor, tax_year)
                 if wrong:
@@ -613,6 +645,8 @@ class Command(BaseCommand):
                         "stored gross minus stored exemptions does not reproduce HCAD's "
                         "taxable_val. Rolling back."
                     )
+
+        operation.evidence["committed"] = True
 
         self.stdout.write(
             self.style.SUCCESS(
@@ -627,5 +661,6 @@ class Command(BaseCommand):
             and not dry_run
             and directory.exists()
         ):
-            shutil.rmtree(directory, ignore_errors=True)
+            with fenced_write():
+                shutil.rmtree(directory)
             self.stdout.write(self.style.SUCCESS("Cleaned up uncompressed extracted files."))

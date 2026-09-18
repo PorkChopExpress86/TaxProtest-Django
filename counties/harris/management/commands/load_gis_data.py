@@ -5,8 +5,11 @@ from pathlib import Path
 
 from django.core.management.base import BaseCommand, CommandError
 
+from counties.common.import_audit import audited_operation, record_sources
+from counties.common.import_writers import fenced_write, working_source_root
 from counties.harris.etl_pipeline import DownloadManager, ETLConfig, ExtractManager
 from counties.harris.etl_pipeline.gis_loader import load_gis_parcels, select_preferred_gis_shapefile
+from counties.harris.etl_pipeline.logging import ETLLogger
 from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG, HcadSourceId
 
 
@@ -20,6 +23,7 @@ class Command(BaseCommand):
     help = "Download and load GIS parcel data from HCAD"
 
     def add_arguments(self, parser):
+        parser.add_argument("--actor", default="")
         default_source = DEFAULT_HCAD_SOURCE_CATALOG.source_for_id(HcadSourceId.GIS_PARCELS)
         parser.add_argument(
             "--url",
@@ -39,13 +43,22 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        with audited_operation("harris", "gis_coordinates", actor=options["actor"]) as operation:
+            with fenced_write():
+                self._handle(operation, *args, **options)
+            operation.evidence["committed"] = "records_updated" in operation.evidence
+
+    def _handle(self, operation, *args, **options):
         config = ETLConfig.from_env()
+        config.download_dir = working_source_root(config.download_dir)
+        config.extract_dir = working_source_root(config.extract_dir)
         source = DEFAULT_HCAD_SOURCE_CATALOG.source_for_id(HcadSourceId.GIS_PARCELS)
         if options["url"] != source.url_template:
             source = replace(source, url_template=options["url"])
 
-        download_manager = DownloadManager(config)
-        extract_manager = ExtractManager(config)
+        logger = ETLLogger(name="etl_orchestrator", operation_id=str(operation.pk))
+        download_manager = DownloadManager(config, logger)
+        extract_manager = ExtractManager(config, logger)
         if not options["skip_download"]:
             self.stdout.write(
                 self.style.SUCCESS(f"Downloading GIS data from {source.url_template}...")
@@ -67,10 +80,18 @@ class Command(BaseCommand):
         shapefile = select_preferred_gis_shapefile([extract_dir, legacy_extract_dir])
 
         if shapefile is None:
+            operation.warnings.append("No GIS shapefile is available")
             self.stdout.write(self.style.ERROR(f"No shapefile (.shp) found in {extract_dir}"))
             return
 
         shapefile_path = str(shapefile)
+        record_sources(
+            operation,
+            list(shapefile.parent.glob("*")),
+            source_year=None,
+            target_year=None,
+            source_url=source.url_template,
+        )
         self.stdout.write(self.style.SUCCESS(f"Found shapefile: {shapefile_path}"))
         self.stdout.write(self.style.SUCCESS("Loading GIS data into database..."))
 
@@ -80,6 +101,7 @@ class Command(BaseCommand):
                 shapefile_path,
                 refresh_readiness=not options.get("no_refresh_readiness", False),
             )
+            operation.evidence.update(records_updated=count)
             self.stdout.write(
                 self.style.SUCCESS(
                     f"Successfully updated {count} property records with GIS coordinates"

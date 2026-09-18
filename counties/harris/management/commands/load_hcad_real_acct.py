@@ -3,6 +3,8 @@ from pathlib import Path
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
+from counties.common.import_audit import audited_operation, record_sources
+from counties.common.import_writers import fenced_write
 from counties.harris.etl_pipeline import ETLConfig
 from counties.harris.etl_pipeline.readiness import refresh_property_readiness
 from counties.harris.etl_pipeline.translated_loader import load_property_file
@@ -12,6 +14,7 @@ class Command(BaseCommand):
     help = "Load HCAD Real Account (real_acct.txt) into PropertyRecord table."
 
     def add_arguments(self, parser):
+        parser.add_argument("--actor", default="")
         parser.add_argument(
             "filepath",
             nargs="?",
@@ -39,6 +42,14 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        with audited_operation(
+            "harris", "property_file_recovery", actor=options["actor"]
+        ) as operation:
+            with fenced_write():
+                self._handle(operation, *args, **options)
+            operation.evidence["committed"] = True
+
+    def _handle(self, operation, *args, **options):
         if options.get("filepath"):
             filepath = Path(options["filepath"])
         else:
@@ -47,6 +58,7 @@ class Command(BaseCommand):
             filepath = Path(settings.BASE_DIR) / filepath
         if not filepath.exists():
             raise CommandError(f"File not found: {filepath}")
+        record_sources(operation, [filepath], source_year=None, target_year=None)
 
         # Handle truncate flag (--no-truncate overrides --truncate)
         truncate = not options.get("no_truncate", False)
@@ -66,6 +78,7 @@ class Command(BaseCommand):
         )
         if not options.get("no_refresh_readiness", False):
             refresh_property_readiness()
+        operation.evidence.update(records_loaded=result.records_loaded)
         self.stdout.write(
             self.style.SUCCESS(f"Inserted {result.records_loaded} PropertyRecord rows.")
         )

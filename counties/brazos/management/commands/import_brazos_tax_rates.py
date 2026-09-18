@@ -20,6 +20,7 @@ Usage:
 
 from __future__ import annotations
 
+import hashlib
 import re
 from decimal import Decimal, InvalidOperation
 
@@ -27,6 +28,8 @@ import requests
 from bs4 import BeautifulSoup
 from django.core.management.base import BaseCommand, CommandError
 
+from counties.common.import_audit import audited_operation
+from counties.common.import_writers import fenced_write
 from counties.common.tax_models import TaxUnitRate
 
 BCAD_RATES_URL = "https://brazoscad.org/tax-information/adopted-tax-rates/"
@@ -42,6 +45,7 @@ class Command(BaseCommand):
     help = "Scrape BCAD's published adopted tax rates into the shared TaxUnitRate table."
 
     def add_arguments(self, parser):
+        parser.add_argument("--actor", default="")
         parser.add_argument(
             "--year",
             type=int,
@@ -55,6 +59,12 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        with audited_operation(
+            "brazos", "tax_rates", actor=options["actor"], requested_year=options.get("year")
+        ) as operation:
+            self._handle(operation, *args, **options)
+
+    def _handle(self, operation, *args, **options):
         dry_run: bool = options["dry_run"]
         requested_year: int | None = options.get("year")
 
@@ -82,6 +92,13 @@ class Command(BaseCommand):
         heading_text = rows[0].get_text(strip=True)
         year_match = YEAR_RE.search(heading_text)
         target_year = requested_year or (int(year_match.group(0)) if year_match else 0)
+        operation.evidence.update(
+            source_url=BCAD_RATES_URL,
+            source_sha256=hashlib.sha256(response.text.encode()).hexdigest(),
+            source_year=int(year_match.group(0)) if year_match else None,
+            target_year=target_year,
+            dry_run=dry_run,
+        )
         if not target_year:
             raise CommandError(
                 f"Could not determine a tax year from heading {heading_text!r}. Pass --year YYYY."
@@ -115,6 +132,7 @@ class Command(BaseCommand):
             parsed.append((match.group("code").strip(), match.group("name").strip(), rate))
 
         if skipped:
+            operation.warnings.append(f"Skipped {skipped} source rows")
             self.stdout.write(
                 self.style.WARNING(
                     f"Skipped {skipped} row(s) that didn't match the expected shape."
@@ -122,6 +140,7 @@ class Command(BaseCommand):
             )
         if not parsed:
             raise CommandError("No jurisdiction rows parsed; the page layout may have changed.")
+        operation.evidence.update(rows_parsed=len(parsed), rows_skipped=skipped)
 
         if dry_run:
             for code, name, rate_text in parsed:
@@ -129,18 +148,20 @@ class Command(BaseCommand):
             return
 
         upserted = 0
-        for code, name, rate_text in parsed:
-            TaxUnitRate.objects.update_or_create(
-                tax_year=target_year,
-                tax_unit_code=code,
-                county="brazos",
-                defaults={
-                    "tax_unit_name": name,
-                    "adopted_rate": rate_text,
-                    "source": SOURCE,
-                },
-            )
-            upserted += 1
+        with fenced_write():
+            for code, name, rate_text in parsed:
+                TaxUnitRate.objects.update_or_create(
+                    tax_year=target_year,
+                    tax_unit_code=code,
+                    county="brazos",
+                    defaults={
+                        "tax_unit_name": name,
+                        "adopted_rate": rate_text,
+                        "source": SOURCE,
+                    },
+                )
+                upserted += 1
+        operation.evidence.update(rows_upserted=upserted, committed=True)
 
         self.stdout.write(
             self.style.SUCCESS(f"Upserted {upserted} Brazos tax-unit rate rows for {target_year}.")

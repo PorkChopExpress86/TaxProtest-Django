@@ -7,15 +7,19 @@ from pathlib import Path
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
+from counties.common.import_audit import audited_operation, record_sources
+from counties.common.import_writers import fenced_write, working_source_root
 from counties.harris.assessment_history import AssessmentHistoryImporter
 from counties.harris.etl_pipeline import DownloadManager, ETLConfig, ExtractManager
 from counties.harris.etl_pipeline.config import DataSource
+from counties.harris.etl_pipeline.logging import ETLLogger
 
 
 class Command(BaseCommand):
     help = "Import multi-year assessed value history from HCAD Real Account and Hearing files"
 
     def add_arguments(self, parser):
+        parser.add_argument("--actor", default="")
         current_year = datetime.now().year
         parser.add_argument("--start-year", type=int, default=current_year - 4)
         parser.add_argument("--end-year", type=int, default=current_year)
@@ -38,32 +42,66 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        with audited_operation(
+            "harris",
+            "assessment_history",
+            actor=options["actor"],
+            requested_year=options["end_year"],
+        ) as operation:
+            self._operation = operation
+            self._handle(operation, *args, **options)
+
+    def _handle(self, operation, *args, **options):
         start_year = options["start_year"]
         end_year = options["end_year"]
         if start_year > end_year:
             raise CommandError("--start-year must be less than or equal to --end-year")
 
-        download_root = Path(options["download_root"])
-        extract_root = Path(options["extract_root"])
+        with fenced_write():
+            download_root = working_source_root(Path(options["download_root"]))
+            extract_root = working_source_root(Path(options["extract_root"]))
         skip_download = options["skip_download"]
         skip_extract = options["skip_extract"]
         keep_extracted = options["keep_extracted"]
 
         years = list(range(start_year, end_year + 1))
+        operation.evidence["target_years"] = years
         for year in years:
-            self._prepare_year_data(
-                year=year,
-                download_root=download_root,
-                extract_root=extract_root,
-                skip_download=skip_download,
-                skip_extract=skip_extract,
+            with fenced_write():
+                self._prepare_year_data(
+                    year=year,
+                    download_root=download_root,
+                    extract_root=extract_root,
+                    skip_download=skip_download,
+                    skip_extract=skip_extract,
+                )
+            record_sources(
+                operation,
+                list((extract_root / str(year)).rglob("*.txt")),
+                source_year=None,
+                selected_year=year,
+            )
+            record_sources(
+                operation,
+                list((download_root / str(year)).glob("*.zip")),
+                source_year=None,
+                selected_year=year,
             )
 
         importer = AssessmentHistoryImporter()
-        counts = importer.import_year_range(start_year, end_year, extract_root)
+        with fenced_write():
+            counts = importer.import_year_range(start_year, end_year, extract_root)
+        operation.evidence.update(
+            records_loaded=counts.records_loaded,
+            years_processed=counts.years_processed,
+            committed=True,
+            observed_source_years=sorted(counts.source_years),
+            rows_by_tax_year=counts.tax_year_counts,
+        )
 
         if not skip_extract and not keep_extracted and extract_root.exists():
-            shutil.rmtree(extract_root, ignore_errors=True)
+            with fenced_write():
+                shutil.rmtree(extract_root)
             self.stdout.write(self.style.SUCCESS("Cleaned up uncompressed extracted files."))
 
         self.stdout.write(
@@ -89,8 +127,9 @@ class Command(BaseCommand):
         config.extract_dir.mkdir(parents=True, exist_ok=True)
         config.log_dir.mkdir(parents=True, exist_ok=True)
 
-        download_manager = DownloadManager(config, data_year=year)
-        extract_manager = ExtractManager(config)
+        logger = ETLLogger(name="etl_orchestrator", operation_id=str(self._operation.pk))
+        download_manager = DownloadManager(config, logger, data_year=year)
+        extract_manager = ExtractManager(config, logger)
         sources = self._history_sources()
 
         if not skip_download:

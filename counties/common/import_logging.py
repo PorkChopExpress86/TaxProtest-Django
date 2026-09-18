@@ -7,13 +7,16 @@ from threading import get_ident
 
 
 @contextmanager
-def import_warnings(logger_name: str) -> Iterator[list[str]]:
+def import_warnings(logger_name: str, *, operation_id: str | None = None) -> Iterator[list[str]]:
     warnings: list[str] = []
     thread_id = get_ident()
 
     class OperationWarnings(logging.Handler):
         def emit(self, record: logging.LogRecord) -> None:
-            if record.thread == thread_id:
+            recorded_operation = getattr(record, "import_operation", None)
+            if (recorded_operation is not None and recorded_operation == operation_id) or (
+                recorded_operation is None and record.thread == thread_id
+            ):
                 warnings.append(record.getMessage())
 
     handler = OperationWarnings(level=logging.WARNING)

@@ -71,7 +71,6 @@ import requests
 from bs4 import BeautifulSoup
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
-from django.db import transaction
 
 from counties.brazos.models import (
     BrazosHistoricalCoverage,
@@ -85,6 +84,8 @@ from counties.brazos.portal import (
     extract_zip,
     resolve_timestamped_file,
 )
+from counties.common.import_audit import audited_operation, record_sources
+from counties.common.import_writers import fenced_write, working_source_root
 from counties.common.tax_models import AssessmentHistory
 
 logger = logging.getLogger("brazos_cad")
@@ -137,6 +138,7 @@ class Command(BaseCommand):
     help = "Import multi-year Brazos assessed/appraised/market value history from BCAD."
 
     def add_arguments(self, parser):
+        parser.add_argument("--actor", default="")
         parser.add_argument("--start-year", type=int, help="First tax year to load (inclusive).")
         parser.add_argument(
             "--end-year",
@@ -360,27 +362,42 @@ class Command(BaseCommand):
                 "against this year's real export before retrying."
             )
 
-    @staticmethod
-    def _record_unavailable_coverage(tax_year: int, failure_category: str) -> None:
-        BrazosHistoricalCoverage.objects.update_or_create(
-            tax_year=tax_year,
-            defaults={
-                "status": HistoricalCoverageStatus.UNAVAILABLE,
-                "failure_category": failure_category,
-            },
-        )
+    def _record_unavailable_coverage(self, tax_year: int, failure_category: str) -> None:
+        self._operation.warnings.append(f"History {tax_year}: {failure_category}")
+        self._operation.evidence.setdefault("unavailable_years", {})[
+            str(tax_year)
+        ] = failure_category
+        with fenced_write():
+            BrazosHistoricalCoverage.objects.update_or_create(
+                tax_year=tax_year,
+                defaults={
+                    "status": HistoricalCoverageStatus.UNAVAILABLE,
+                    "failure_category": failure_category,
+                },
+            )
 
     # ------------------------------------------------------------------ main
 
     def handle(self, *args, **options):
+        with audited_operation(
+            "brazos",
+            "assessment_history",
+            actor=options["actor"],
+            requested_year=options.get("end_year"),
+        ) as operation:
+            self._operation = operation
+            self._handle(*args, **options)
+
+    def _handle(self, *args, **options):
         force: bool = options["force"]
         skip_download: bool = options["skip_download"]
         skip_extract: bool = options["skip_extract"]
         dry_run: bool = options["dry_run"]
         all_accounts: bool = options["all_accounts"]
 
-        download_dir = Path(settings.BCAD_DOWNLOAD_DIR)
-        extract_root = Path(settings.BCAD_EXTRACT_DIR)
+        with fenced_write():
+            download_dir = working_source_root(Path(settings.BCAD_DOWNLOAD_DIR))
+            extract_root = working_source_root(Path(settings.BCAD_EXTRACT_DIR))
 
         archives: dict[int, str] = {}
         if not skip_download:
@@ -427,6 +444,7 @@ class Command(BaseCommand):
             raise CommandError("--start-year must be less than or equal to --end-year")
 
         years = list(range(start_year, end_year + 1))
+        self._operation.evidence.update(target_years=years, dry_run=dry_run)
         self.stdout.write(f"Loading Brazos assessment history for {years}")
 
         accounts: set[str] | None = None
@@ -455,7 +473,8 @@ class Command(BaseCommand):
                     )
                     continue
                 try:
-                    self._download(url, archive, force=force, dry_run=dry_run)
+                    with fenced_write():
+                        self._download(url, archive, force=force, dry_run=dry_run)
                 except (CommandError, OSError, requests.RequestException) as exc:
                     if not dry_run:
                         self._record_unavailable_coverage(year, "source_download_failed")
@@ -475,7 +494,8 @@ class Command(BaseCommand):
 
             if not skip_extract:
                 try:
-                    self._extract(archive, extract_dir, dry_run=dry_run)
+                    with fenced_write():
+                        self._extract(archive, extract_dir, dry_run=dry_run)
                 except (CommandError, OSError) as exc:
                     if not dry_run:
                         self._record_unavailable_coverage(year, "source_extract_failed")
@@ -500,6 +520,13 @@ class Command(BaseCommand):
                         )
                     )
                     continue
+                record_sources(
+                    self._operation,
+                    [archive, entity_info_path],
+                    source_year=year,
+                    target_year=year,
+                    source_url=archives.get(year),
+                )
                 rollups = self._roll_up_year(entity_info_path, year, accounts)
                 self._verify_sane_order(year, rollups)
             except (OSError, UnicodeError) as exc:
@@ -525,7 +552,7 @@ class Command(BaseCommand):
 
         total_written = 0
         for year, rollups in per_year_rollups.items():
-            with transaction.atomic():
+            with fenced_write():
                 # The shared table remains county scoped; each qualified year
                 # commits independently so an old layout cannot block newer data.
                 AssessmentHistory.objects.filter(tax_year=year, county=COUNTY).delete()
@@ -550,6 +577,12 @@ class Command(BaseCommand):
                     },
                 )
                 total_written += len(instances)
+            self._operation.evidence.update(committed=True)
+            self._operation.evidence.setdefault("rows_by_year", {})[str(year)] = len(instances)
+
+        self._operation.evidence.update(
+            records_loaded=total_written, years_processed=len(per_year_rollups)
+        )
 
         self.stdout.write(
             self.style.SUCCESS(
@@ -562,5 +595,6 @@ class Command(BaseCommand):
             for year in years:
                 year_extract_dir = extract_root / str(year)
                 if year_extract_dir.exists():
-                    shutil.rmtree(year_extract_dir, ignore_errors=True)
+                    with fenced_write():
+                        shutil.rmtree(year_extract_dir)
             self.stdout.write(self.style.SUCCESS("Cleaned up uncompressed extracted files."))

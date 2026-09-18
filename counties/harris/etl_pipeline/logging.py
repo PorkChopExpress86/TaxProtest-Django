@@ -140,6 +140,7 @@ class ETLLogger:
         structured: bool = True,
         max_bytes: int = 10 * 1024 * 1024,
         backup_count: int = 5,
+        operation_id: str | None = None,
     ):
         self.name = name
         self.log_level = getattr(logging, log_level.upper(), logging.INFO)
@@ -148,6 +149,7 @@ class ETLLogger:
         self.structured = structured
         self.max_bytes = max_bytes
         self.backup_count = backup_count
+        self.operation_id = operation_id
 
         self.logger = logging.getLogger(name)
         self.logger.setLevel(self.log_level)
@@ -202,17 +204,32 @@ class ETLLogger:
         self.logger.info(msg, extra=kwargs)
 
     def warning(self, msg: str, **kwargs: Any) -> None:
-        self.logger.warning(msg, extra=kwargs)
+        self.logger.warning(
+            msg,
+            extra=(
+                {**kwargs, "import_operation": self.operation_id} if self.operation_id else kwargs
+            ),
+        )
         if self._current_stage and self._current_stage in self.metrics:
             self.metrics[self._current_stage].add_warning(msg, kwargs)
 
     def error(self, msg: str, **kwargs: Any) -> None:
-        self.logger.error(msg, extra=kwargs)
+        self.logger.error(
+            msg,
+            extra=(
+                {**kwargs, "import_operation": self.operation_id} if self.operation_id else kwargs
+            ),
+        )
         if self._current_stage and self._current_stage in self.metrics:
             self.metrics[self._current_stage].add_error(msg, kwargs)
 
     def exception(self, msg: str, **kwargs: Any) -> None:
-        self.logger.exception(msg, extra=kwargs)
+        self.logger.exception(
+            msg,
+            extra=(
+                {**kwargs, "import_operation": self.operation_id} if self.operation_id else kwargs
+            ),
+        )
         if self._current_stage and self._current_stage in self.metrics:
             self.metrics[self._current_stage].add_error(msg, kwargs)
 
