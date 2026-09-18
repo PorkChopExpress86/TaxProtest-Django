@@ -181,4 +181,5 @@ def prepare_candidate(cad, gis, request: PropertyImportRequest, operation: Impor
     finally:
         retain_baseline_sources(operation, inherited)
         candidate.sources = operation.evidence.get("sources", [])
+        operation.save()
         candidate.save()

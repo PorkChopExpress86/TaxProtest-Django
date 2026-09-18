@@ -162,7 +162,6 @@ class BrazosPropertyImport:
                     verify_replay(request.replay, operation, published_identity())
                 if request.candidate_id is not None:
                     from counties.brazos.property_publication import publish_candidate
-                    from counties.common.models import ImportCandidate
 
                     candidate = ImportCandidate.objects.get(
                         pk=request.candidate_id, county="brazos"
@@ -210,6 +209,7 @@ class BrazosPropertyImport:
                         )
                         operation.requested_year = candidate.request["tax_year"]
                         operation.evidence["application_reason"] = request.application_reason
+                        operation.save()
                         publish_candidate(candidate.pk, operation, user=reviewer)
                         active = BrazosPropertySnapshot.objects.get(is_active=True)
                         result = PropertyImportResult(
