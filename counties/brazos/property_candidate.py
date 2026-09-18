@@ -20,6 +20,7 @@ from counties.brazos.models import (
 )
 from counties.brazos.property_import import BrazosPropertyImport, PropertyImportRequest
 from counties.brazos.source_validation import inspect_cad, inspect_gis
+from counties.common.import_coverage import compare_coverage
 from counties.common.import_writers import fenced_write
 from counties.common.models import ImportCandidate, ImportOperation
 from counties.common.tax_models import PropertyJurisdictionExemption
@@ -102,6 +103,9 @@ class _CandidateSource:
 
 
 def prepare_candidate(cad, gis, request: PropertyImportRequest, operation: ImportOperation):
+    from counties.brazos.property_coverage import outcome_populations
+    from counties.brazos.property_import import PropertyImportMode
+
     if connection.vendor != "postgresql":
         raise ValueError("Durable Brazos candidate preparation requires PostgreSQL")
     candidate = ImportCandidate.objects.create(
@@ -113,6 +117,7 @@ def prepare_candidate(cad, gis, request: PropertyImportRequest, operation: Impor
         evidence={"publication": "Published data unchanged"},
     )
     operation.evidence["candidate_id"] = str(candidate.pk)
+    previous = outcome_populations()
     operation.evidence["source_validation"] = {
         "valid": False,
         "database_publication": "Database publication untested",
@@ -162,6 +167,18 @@ def prepare_candidate(cad, gis, request: PropertyImportRequest, operation: Impor
                 model._meta.model_name: model.objects.filter(tax_year=result.tax_year).count()
                 for model in PROPERTY_MODELS
             }
+            candidate.evidence["coverage"] = compare_coverage(
+                previous,
+                outcome_populations(
+                    claimed_gis=request.mode is not PropertyImportMode.CAD_RECOVERY,
+                    deliberately_absent_gis=request.mode is PropertyImportMode.CAD_RECOVERY,
+                ),
+            )
+            candidate.evidence["coordinate_provenance"] = list(
+                PropertyAccount.objects.filter(tax_year=result.tax_year)
+                .exclude(coordinate_source="")
+                .values("prop_id", "coordinate_source", "coordinate_source_year")
+            )
         operation.evidence["source_validation"]["valid"] = True
         candidate.evidence.update(
             {
@@ -178,7 +195,18 @@ def prepare_candidate(cad, gis, request: PropertyImportRequest, operation: Impor
             }
         )
         candidate.state = "prepared"
-        return replace(result, snapshot_id=None, prepared=True, candidate_id=candidate.pk)
+        coverage = candidate.evidence["coverage"]
+        if coverage["hard_failures"]:
+            candidate.state = "blocked"
+        elif coverage["requires_review"]:
+            candidate.state = "awaiting_review"
+        return replace(
+            result,
+            snapshot_id=None,
+            prepared=True,
+            candidate_id=candidate.pk,
+            workflow_state=candidate.state,
+        )
     except Exception as exc:
         candidate.state = "blocked"
         candidate.evidence["error"] = str(exc)

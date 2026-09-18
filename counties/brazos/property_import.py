@@ -61,6 +61,7 @@ class PropertyImportResult:
     operation_id: UUID | None = None
     candidate_id: UUID | None = None
     prepared: bool = False
+    workflow_state: str = "published"
 
 
 class BrazosPropertyImport:
@@ -93,7 +94,10 @@ class BrazosPropertyImport:
             operation.save()
             raise
         result = replace(result, operation_id=operation.pk)
-        operation.status = "prepared" if result.prepared else "completed"
+        if result.prepared:
+            operation.status = result.workflow_state
+        else:
+            operation.status = "completed"
         operation.publication_after = (
             {"snapshot_id": result.snapshot_id, "tax_year": result.tax_year}
             if result.snapshot_id
@@ -180,6 +184,7 @@ class BrazosPropertyImport:
             gis=gis,
             snapshot_id=None,
             dry_run=True,
+            workflow_state="validated",
         )
 
     def _run_annual(self, options: RefreshOptions) -> PropertyImportResult:

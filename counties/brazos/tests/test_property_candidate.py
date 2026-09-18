@@ -66,6 +66,9 @@ class BrazosCandidateTests(TransactionTestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             _stage_complete_pacs_export(root, 2026)
+            source = root / "extracted" / "2026" / "APPRAISAL_INFO.TXT"
+            contents = source.read_text()
+            source.write_text(contents[:608] + "Candidate owner" + contents[623:])
             result = self.run_candidate(root)
             self.assertTrue(result.prepared)
             self.assertIsNone(result.snapshot_id)
