@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from django.db import connection
 
+from counties.common.import_coverage import compare_coverage
 from counties.common.import_writers import fenced_write
 from counties.common.models import ImportCandidate, ImportOperation
 from counties.harris.models import BuildingDetail, ExtraFeature, PropertyRecord
@@ -58,6 +59,8 @@ def candidate_tables(candidate: ImportCandidate):
 
 
 def prepare_candidate(execution: "_HarrisImportExecution", operation: ImportOperation):
+    from .config import DataSourceType
+    from .coverage import outcome_populations
     from .orchestrator import ExtractedSourceRetention, HarrisImportStatus
 
     if connection.vendor != "postgresql":
@@ -74,6 +77,10 @@ def prepare_candidate(execution: "_HarrisImportExecution", operation: ImportOper
         evidence={"publication": "Published data unchanged"},
     )
     operation.evidence["candidate_id"] = str(candidate.pk)
+    previous_operation = ImportOperation.objects.filter(county="harris", status="published").first()
+    previous = outcome_populations(
+        previous_operation.requested_year if previous_operation else None
+    )
     try:
         with fenced_write(), connection.cursor() as cursor:
             schema = connection.ops.quote_name(candidate.storage_schema)
@@ -121,6 +128,18 @@ def prepare_candidate(execution: "_HarrisImportExecution", operation: ImportOper
         )
         with candidate_tables(candidate):
             result = execution.run()
+            if result.status is HarrisImportStatus.COMPLETED:
+                coverage = compare_coverage(
+                    previous,
+                    outcome_populations(
+                        execution.data_year,
+                        claimed_gis=any(
+                            source.source_type is DataSourceType.GIS_DATA
+                            for source in execution.sources
+                        ),
+                    ),
+                )
+                candidate.evidence["coverage"] = coverage
             candidate.evidence["population"] = {
                 "properties": PropertyRecord.objects.count(),
                 "buildings": BuildingDetail.objects.count(),
@@ -132,11 +151,17 @@ def prepare_candidate(execution: "_HarrisImportExecution", operation: ImportOper
         candidate.sources = operation.evidence.get("sources", [])
         candidate.evidence["result"] = result.to_dict()
         candidate.state = "prepared" if result.status is HarrisImportStatus.COMPLETED else "blocked"
+        status = HarrisImportStatus.PREPARED
+        if candidate.state == "prepared":
+            if coverage["hard_failures"]:
+                candidate.state, status = "blocked", HarrisImportStatus.BLOCKED
+            elif coverage["requires_review"]:
+                candidate.state, status = "awaiting_review", HarrisImportStatus.AWAITING_REVIEW
         return replace(
             result,
             candidate_id=candidate.pk,
             wrote_data=False,
-            status=HarrisImportStatus.PREPARED if candidate.state == "prepared" else result.status,
+            status=status if result.status is HarrisImportStatus.COMPLETED else result.status,
         )
     except Exception as exc:
         candidate.state = "blocked"

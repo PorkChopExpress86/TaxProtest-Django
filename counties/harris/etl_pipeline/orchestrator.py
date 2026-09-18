@@ -48,6 +48,8 @@ class HarrisImportStatus(Enum):
     FAILED = "failed"
     PARTIAL = "partial"
     PREPARED = "prepared"
+    AWAITING_REVIEW = "awaiting_review"
+    BLOCKED = "blocked"
 
 
 @dataclass(frozen=True)

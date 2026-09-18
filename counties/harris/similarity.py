@@ -497,7 +497,9 @@ def find_similar_properties(
     """
     # Get the target property
     try:
-        target = PropertyRecord.objects.filter(account_number=account_number).first()
+        target = PropertyRecord.objects.filter(
+            account_number=account_number, is_residential=True, is_data_ready=True
+        ).first()
         if not target:
             return []
     except Exception:
@@ -529,6 +531,8 @@ def find_similar_properties(
 
     # 1. Base filter by bounding box (uses database index)
     candidates = PropertyRecord.objects.filter(
+        is_residential=True,
+        is_data_ready=True,
         latitude__gte=min_lat,
         latitude__lte=max_lat,
         longitude__gte=min_lon,

@@ -58,10 +58,11 @@ class HarrisCandidateTests(TransactionTestCase):
             _write_property_source(root)
             _write_building_sources(root, "P100")
             result = run_harris_import(self.request())
-            self.assertEqual(result.status.value, "prepared")
+            self.assertEqual(result.status.value, "blocked")
             self.assertFalse(result.wrote_data)
             candidate = ImportCandidate.objects.get(pk=result.candidate_id)
-            self.assertEqual(candidate.state, "prepared")
+            self.assertEqual(candidate.state, "blocked")
+            self.assertTrue(candidate.evidence["coverage"]["hard_failures"])
             self.assertEqual(candidate.evidence["population"]["properties"], 1)
             self.assertEqual(candidate.evidence["population"]["buildings"], 1)
             self.assertTrue(candidate.sources)
@@ -76,7 +77,7 @@ class HarrisCandidateTests(TransactionTestCase):
         response = self.client.get(
             reverse("admin:data_importcandidate_change", args=[candidate.pk])
         )
-        self.assertContains(response, "prepared")
+        self.assertContains(response, "blocked")
         self.assertContains(response, "Published data unchanged")
 
     def test_shared_reads_continue_while_candidate_load_is_paused(self):
@@ -122,7 +123,7 @@ class HarrisCandidateTests(TransactionTestCase):
                 release.set()
                 worker.join(25)
             self.assertEqual(errors, [])
-            self.assertEqual(results[0].status.value, "prepared")
+            self.assertEqual(results[0].status.value, "blocked")
 
     def test_interruption_after_property_stage_preserves_published_rows(self):
         old = PropertyRecord.objects.create(
@@ -160,7 +161,7 @@ class HarrisCandidateTests(TransactionTestCase):
                 _write_property_source(root)
                 _write_building_sources(root, "P100")
                 result = run_harris_import(self.request())
-                self.assertEqual(result.status.value, "prepared")
+                self.assertEqual(result.status.value, "blocked")
                 with connection.cursor() as cursor:
                     cursor.execute("SELECT last_value FROM public.data_propertyrecord_id_seq")
                     self.assertEqual(cursor.fetchone()[0], 9000)
