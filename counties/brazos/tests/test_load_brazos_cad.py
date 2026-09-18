@@ -338,7 +338,7 @@ class LoadEntityInfoTests(TestCase):
         base = rows.get(exemption_code="")
         self.assertEqual(base.tax_unit_code, "G1")
         self.assertEqual(base.assessed_value, Decimal("242613"))
-        self.assertEqual(base.taxable_value, Decimal("167613"))
+        self.assertEqual(base.taxable_value, Decimal("242613"))
         self.assertIsNone(base.exemption_amount)
 
         ov65 = rows.get(exemption_code="OV65")

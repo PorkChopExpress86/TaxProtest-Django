@@ -6,6 +6,49 @@ from django.test import TransactionTestCase
 
 
 class ImportMigrationTests(TransactionTestCase):
+    def test_brazos_gross_base_repair_preserves_other_rows(self):
+        executor = MigrationExecutor(connection)
+        latest = executor.loader.graph.leaf_nodes()
+        before = [("data", "0021_import_coverage_permission")]
+        try:
+            executor.migrate(before)
+            model = executor.loader.project_state(before).apps.get_model(
+                "data", "PropertyJurisdictionExemption"
+            )
+            rows = []
+            for county, source, code, assessed in (
+                ("brazos", "APPRAISAL_ENTITY_INFO.TXT", "", 242613),
+                ("brazos", "APPRAISAL_ENTITY_INFO.TXT", "OV65", 242613),
+                ("harris", "APPRAISAL_ENTITY_INFO.TXT", "", 242613),
+                ("brazos", "Legacy unknown", "", 242613),
+                ("brazos", "APPRAISAL_ENTITY_INFO.TXT", "", None),
+            ):
+                rows.append(
+                    model.objects.create(
+                        account_number="REPAIR0" if len(rows) < 2 else f"REPAIR{len(rows)}",
+                        county=county,
+                        source=source,
+                        exemption_code=code,
+                        assessed_value=assessed,
+                        taxable_value=167613,
+                        tax_year=2026,
+                        tax_unit_code="G1",
+                        exemption_amount=75000 if code else None,
+                    )
+                )
+            executor = MigrationExecutor(connection)
+            executor.migrate(latest)
+            model = executor.loader.project_state(latest).apps.get_model(
+                "data", "PropertyJurisdictionExemption"
+            )
+            self.assertEqual(
+                [model.objects.get(pk=row.pk).taxable_value for row in rows],
+                [242613, 167613, 167613, 167613, None],
+            )
+            self.assertEqual(model.objects.get(pk=rows[1].pk).exemption_amount, 75000)
+        finally:
+            MigrationExecutor(connection).migrate(latest)
+
     def test_audit_migration_preserves_existing_property(self):
         executor = MigrationExecutor(connection)
         latest = executor.loader.graph.leaf_nodes()

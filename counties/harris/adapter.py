@@ -24,7 +24,8 @@ from counties.common.contracts import (
     Subject,
 )
 from counties.common.history import assessment_history_rows
-from counties.common.tax_impact import calculate_tax_impact
+from counties.common.models import ImportOperation
+from counties.common.tax_impact import calculate_tax_impact, unavailable_tax_impact
 from counties.harris.models import BuildingDetail, ExtraFeature, PropertyRecord
 from counties.harris.query import build_property_search_queryset
 from counties.harris.similarity import (
@@ -121,6 +122,18 @@ def _ppsf(value: Decimal | float | None, area: float | int | None) -> float | No
 class HarrisAdapter(CountyAdapter):
     profile = HARRIS_PROFILE
 
+    @staticmethod
+    def published_year():
+        operation = ImportOperation.objects.filter(county="harris", status="published").first()
+        return operation.requested_year if operation else None
+
+    def search_context(self, params):
+        year = self.published_year()
+        return {
+            "active_year": year,
+            "dataset_notice": "Harris property source year: " + str(year or "Not recorded"),
+        }
+
     # -- search ------------------------------------------------------------
 
     def search_queryset(self, params: Mapping[str, str]):
@@ -181,7 +194,9 @@ class HarrisAdapter(CountyAdapter):
     def get_subject(self, key: str) -> Subject | None:
         # filter().first() rather than get(): legacy imports can leave duplicate
         # rows for one account, and the report only needs one of them.
-        prop = PropertyRecord.objects.filter(account_number=key).first()
+        prop = PropertyRecord.objects.filter(
+            account_number=key, is_residential=True, is_data_ready=True
+        ).first()
         if prop is None:
             return None
 
@@ -210,6 +225,7 @@ class HarrisAdapter(CountyAdapter):
             quality_code=building.quality_code if building else None,
             features=format_feature_list(features),
             has_location=bool(prop.latitude and prop.longitude),
+            tax_year=self.published_year(),
         )
 
     def find_comps(
@@ -263,9 +279,15 @@ class HarrisAdapter(CountyAdapter):
         return assessment_history_rows(key, county=COUNTY_SLUG, limit=limit)
 
     def tax_impact(self, key: str, tax_year: int | None, median_assessed_value: Decimal | None):
+        year = tax_year or self.published_year()
+        if year is None:
+            return unavailable_tax_impact(
+                None,
+                "Published property source year is not recorded; matching-year tax impact is unavailable.",
+            )
         return calculate_tax_impact(
             account_number=key,
-            tax_year=tax_year,
+            tax_year=year,
             median_assessed_value=median_assessed_value,
             county=COUNTY_SLUG,
         )

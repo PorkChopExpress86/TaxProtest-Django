@@ -55,20 +55,21 @@ def outcome_populations(year: int | None, *, claimed_gis=False) -> dict[str, Out
                 report_ready.add(key)
             else:
                 report_exclusions[key] = ["At least three qualifying comparables are required"]
-    tax_supported = bool(
+    tax_prerequisites = bool(
         year
         and report_supported
         and TaxUnitRate.objects.filter(county="harris", tax_year=year).exists()
         and PropertyJurisdictionExemption.objects.filter(county="harris", tax_year=year).exists()
     )
     tax_ready, tax_exclusions = set(), dict(report_exclusions)
-    if tax_supported:
+    if tax_prerequisites:
         for key in report_ready:
             result = adapter.tax_impact(key, year, None)
             if result.completeness == "complete":
                 tax_ready.add(key)
             else:
                 tax_exclusions[key] = list(result.warnings)
+    tax_supported = bool(tax_ready)
     return {
         "search": OutcomePopulation(ready, exclusions=exclusions),
         "comparable": OutcomePopulation(

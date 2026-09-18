@@ -49,6 +49,14 @@ class TaxImpactCalculatorTests(TestCase):
             exemption_percent=Decimal("10"),
         )
 
+        for code in ("U1", "U2"):
+            PropertyJurisdictionExemption.objects.create(
+                account_number="TAX001",
+                tax_year=2026,
+                tax_unit_code=code,
+                taxable_value=Decimal("300000"),
+                exemption_code="",
+            )
         result = calculate_tax_impact("TAX001", 2026, Decimal("250000"))
 
         self.assertEqual(result.completeness, "complete")
@@ -111,6 +119,13 @@ class TaxImpactCalculatorTests(TestCase):
             exemption_percent=Decimal("10"),
         )
 
+        PropertyJurisdictionExemption.objects.create(
+            account_number="TAX001",
+            tax_year=2026,
+            tax_unit_code="U1",
+            taxable_value=Decimal("300000"),
+            exemption_code="",
+        )
         result = calculate_tax_impact("TAX001", 2026, Decimal("250000"))
 
         self.assertEqual(result.current_tax_owed, Decimal("5220.00"))

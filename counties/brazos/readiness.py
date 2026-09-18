@@ -287,6 +287,14 @@ class BrazosActiveSnapshotReadiness:
         unit_codes = {row.tax_unit_code for row in rows if row.tax_unit_code}
         if not unit_codes:
             return "Matching-year jurisdiction and exemption rows are unavailable."
+        bases = [row for row in rows if not row.exemption_code]
+        if any(
+            row.exemption_code and row.exemption_amount is None and row.exemption_percent is None
+            for row in rows
+        ):
+            return "One or more matching-year exemption inputs are unverified."
+        if {row.tax_unit_code for row in bases} != unit_codes:
+            return "One or more matching-year gross jurisdiction bases are unavailable."
         rate_codes = set(
             TaxUnitRate.objects.filter(
                 county="brazos", tax_year=projection.tax_year, tax_unit_code__in=unit_codes
@@ -295,9 +303,12 @@ class BrazosActiveSnapshotReadiness:
         if rate_codes != unit_codes:
             return "One or more matching-year tax-unit rates are unavailable."
         has_assessment = AssessmentHistory.objects.filter(
-            account_number=account.prop_id, tax_year=projection.tax_year, county="brazos"
+            account_number=account.prop_id,
+            tax_year=projection.tax_year,
+            county="brazos",
+            assessed_value__isnull=False,
         ).exists()
-        if any(row.taxable_value is None for row in rows) and not has_assessment:
+        if any(row.taxable_value is None for row in bases) and not has_assessment:
             return "Matching-year taxable or assessed value is unavailable."
         return None
 

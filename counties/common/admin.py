@@ -66,6 +66,7 @@ class ImportOperationAdmin(admin.ModelAdmin):
     readonly_fields = (
         *tuple(field.name for field in ImportOperation._meta.fields),
         "county_writer",
+        "qualified_capabilities",
     )
     empty_value_display = "Not recorded"
     actions = None
@@ -125,6 +126,27 @@ class ImportOperationAdmin(admin.ModelAdmin):
     @admin.display(description="County writer")
     def county_writer(self, obj):
         return writer_status(obj.county)
+
+    @admin.display(description="Property publication qualification")
+    def qualified_capabilities(self, obj):
+        candidate = ImportCandidate.objects.filter(pk=obj.evidence.get("candidate_id")).first()
+        if candidate is None:
+            return "No property candidate qualification recorded"
+        return format_html_join(
+            "",
+            "<p>{}: {} ready; supported: {}. {}</p>",
+            (
+                (
+                    name,
+                    outcome["total_ready"],
+                    outcome["supported"],
+                    outcome.get("unavailable_reason") or "",
+                )
+                for name, outcome in candidate.evidence.get("coverage", {})
+                .get("outcomes", {})
+                .items()
+            ),
+        )
 
     def has_add_permission(self, request):
         return False

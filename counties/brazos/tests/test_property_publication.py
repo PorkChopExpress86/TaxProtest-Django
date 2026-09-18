@@ -1,8 +1,11 @@
 """Observe qualified Brazos publication through imports and admin."""
 
+import csv
+import io
 import tempfile
 import threading
 from dataclasses import replace
+from decimal import Decimal
 from pathlib import Path
 
 from django.contrib.auth import get_user_model
@@ -21,10 +24,99 @@ from counties.brazos.property_import import (
 )
 from counties.brazos.tests.test_property_coverage import write_gis, write_pacs
 from counties.common.models import ImportAuditEntry, ImportCandidate, ImportOperation
-from counties.common.tax_models import PropertyJurisdictionExemption
+from counties.common.tax_models import PropertyJurisdictionExemption, TaxUnitRate
 
 
 class BrazosPublicationTests(TransactionTestCase):
+    def test_imported_gross_base_is_exempted_once_in_shared_report_and_exports(self):
+        self.client.force_login(
+            get_user_model().objects.create_superuser("gross-reviewer", password="test")
+        )
+        other = PropertyJurisdictionExemption.objects.create(
+            county="harris",
+            account_number="H1",
+            tax_year=2026,
+            tax_unit_code="G1",
+            taxable_value=333333,
+        )
+        TaxUnitRate.objects.create(
+            county="brazos",
+            tax_year=2026,
+            tax_unit_code="G1",
+            adopted_rate=Decimal("0.01"),
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            ids = [f"{10013 + i:012d}" for i in range(4)]
+            write_pacs(root, ids, equity=True)
+            write_gis(root, ids)
+            source = root / "extracted" / "2026" / "APPRAISAL_ENTITY_INFO.TXT"
+            lines = []
+            for raw in source.read_text().splitlines():
+                line = list(raw)
+                line[148:163] = list("000000000242613")
+                line[163:178] = list("000000000167613")
+                line[313:328] = list("000000000075000")
+                lines.append("".join(line))
+            source.write_text("\n".join(lines) + "\n")
+            with self.settings(
+                BCAD_DOWNLOAD_DIR=str(root / "downloads"),
+                BCAD_EXTRACT_DIR=str(root / "extracted"),
+            ):
+                result = BrazosPropertyImport(CadRefreshStage(), GisRefreshStage()).run(
+                    self.request(annual=True)
+                )
+                candidate = ImportCandidate.objects.get(pk=result.candidate_id)
+                url = reverse("admin:data_importcandidate_review", args=[candidate.pk])
+                binding = self.client.get(url).context["form"]["binding"].value()
+                self.assertEqual(
+                    self.client.post(
+                        url,
+                        {
+                            "decision": "approved",
+                            "reason": "Verified gross source and exemptions",
+                            "binding": binding,
+                        },
+                    ).status_code,
+                    302,
+                )
+                self.assertEqual(
+                    self.client.post(
+                        reverse("admin:data_importcandidate_apply", args=[candidate.pk]),
+                        {"reason": "Publish verified gross base"},
+                    ).status_code,
+                    302,
+                )
+                report = self.client.get(reverse("brazos_protest_analysis", args=[ids[0]]))
+                self.assertEqual(report.status_code, 200)
+                tax = report.context["tax_impact"]
+                self.assertEqual(tax.completeness, "complete")
+                self.assertEqual(tax.current_tax_owed, Decimal("1676.13"))
+                exported = self.client.get(reverse("brazos_protest_analysis_export", args=[ids[0]]))
+                rows = list(csv.DictReader(io.StringIO(exported.content.decode())))
+                self.assertTrue(rows)
+                self.assertEqual(Decimal(rows[0]["current_tax_owed"]), Decimal("1676.13"))
+                pdf = self.client.get(reverse("brazos_protest_analysis_pdf", args=[ids[0]]))
+                self.assertIn(b"1,676.13", pdf.content)
+                other.refresh_from_db()
+                self.assertEqual(other.taxable_value, 333333)
+                # An unverified reduction (for example DV) remains unavailable.
+                for index, raw in enumerate(lines):
+                    line = list(raw)
+                    line[163:178] = list("000000000000000")
+                    lines[index] = "".join(line)
+                source.write_text("\n".join(lines) + "\n")
+                changed = BrazosPropertyImport(CadRefreshStage(), GisRefreshStage()).run(
+                    self.request(annual=True)
+                )
+                self.assertEqual(changed.workflow_state, "published")
+                report = self.client.get(reverse("brazos_protest_analysis", args=[ids[0]]))
+                self.assertNotEqual(report.context["tax_impact"].completeness, "complete")
+                self.assertContains(report, "Tax totals unavailable")
+                self.assertContains(report, "unverified")
+                other.refresh_from_db()
+                self.assertEqual(other.taxable_value, 333333)
+
     def tearDown(self):
         with connection.cursor() as cursor:
             for candidate in ImportCandidate.objects.filter(county="brazos"):

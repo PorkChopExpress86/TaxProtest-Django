@@ -34,6 +34,7 @@ from counties.common.exports import (
     protest_report_pdf,
     search_results_csv,
 )
+from counties.common.history import history_availability_notice
 
 RESULTS_PER_PAGE = 200
 
@@ -279,12 +280,7 @@ def _protest_inputs(request, subject: Subject, adapter: CountyAdapter):
     comps = sort_comps_for_display(comps)
     equity = summarize_equity(subject, comps)
     history = adapter.assessment_history(subject.key)
-    # Deliberately not pinned to the newest assessment-history year: rates and
-    # jurisdiction rows come from a different archive and can lag it by a year,
-    # and asking for a year with no taxing units yields "missing" rather than an
-    # estimate. Passing None lets the county resolve the newest year it can
-    # actually cost, and the report prints whichever year that was.
-    tax_impact = adapter.tax_impact(subject.key, None, equity.median_assessed_value)
+    tax_impact = adapter.tax_impact(subject.key, subject.tax_year, equity.median_assessed_value)
     return comps, equity, history, tax_impact, min_score
 
 
@@ -324,6 +320,7 @@ def protest_analysis(request, key, *, adapter: CountyAdapter):
         "columns": profile.comp_columns,
         "equity": equity,
         "assessment_history": history,
+        "history_notice": history_availability_notice(history, subject.tax_year),
         "assessment_history_chart": assessment_history_chart(history),
         "ppsf_distribution_chart": ppsf_distribution_chart(
             equity.qualifying_ppsf, equity.subject_value_per_sqft
@@ -352,7 +349,9 @@ def protest_analysis_export(request, key, *, adapter: CountyAdapter):
             "This property does not have location data required for similarity search."
         )
     comps, equity, _history, tax_impact, _min_score = inputs
-    return protest_comps_csv(subject, comps, equity, tax_impact)
+    return protest_comps_csv(
+        subject, comps, equity, tax_impact, history_availability_notice(_history, subject.tax_year)
+    )
 
 
 def protest_analysis_pdf(request, key, *, adapter: CountyAdapter):

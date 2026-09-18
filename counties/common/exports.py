@@ -11,6 +11,7 @@ from django.http import HttpResponse
 from counties.common.analysis import EquitySummary
 from counties.common.charts import score_breakdown_summary
 from counties.common.contracts import Column, Comp, CountyProfile, Subject
+from counties.common.history import history_availability_notice
 
 #: Leading characters a spreadsheet would evaluate as a formula.
 CSV_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
@@ -81,6 +82,7 @@ def protest_comps_csv(
     comps: Sequence[Comp],
     equity: EquitySummary,
     tax_impact: Any,
+    history_warning: str = "",
 ) -> HttpResponse:
     """One row per comparable, with the shared tax-impact columns appended."""
     response = _attachment(f"protest_analysis_{subject.key}.csv")
@@ -110,6 +112,7 @@ def protest_comps_csv(
             "estimated_tax_savings",
             "tax_impact_warnings",
         ]
+    header += ["property_source_year", "assessment_history_availability"]
     writer.writerow(header)
 
     subject_ppsf = equity.subject_value_per_sqft
@@ -135,11 +138,24 @@ def protest_comps_csv(
             row += [
                 tax_impact.tax_year or "",
                 tax_impact.completeness,
-                f"{float(tax_impact.current_tax_owed):.2f}",
-                f"{float(tax_impact.median_tax_owed):.2f}",
-                f"{float(tax_impact.estimated_savings):.2f}",
+                (
+                    f"{float(tax_impact.current_tax_owed):.2f}"
+                    if tax_impact.completeness == "complete"
+                    else ""
+                ),
+                (
+                    f"{float(tax_impact.median_tax_owed):.2f}"
+                    if tax_impact.completeness == "complete"
+                    else ""
+                ),
+                (
+                    f"{float(tax_impact.estimated_savings):.2f}"
+                    if tax_impact.completeness == "complete"
+                    else ""
+                ),
                 " | ".join(tax_impact.warnings),
             ]
+        row += [subject.tax_year or "Not recorded", csv_safe_text(history_warning)]
         writer.writerow(row)
 
     return response
@@ -216,6 +232,10 @@ def protest_report_pdf(
         lines.append(f"Living Area: {float(subject.living_area):,.0f} sqft")
         if subject.value_per_sqft is not None:
             lines.append(f"Subject Value/Sqft: ${subject.value_per_sqft:,.2f}")
+    lines.append(f"Property Source Year: {subject.tax_year or 'Not recorded'}")
+    notice = history_availability_notice(history_rows, subject.tax_year)
+    if notice:
+        lines.append(notice)
 
     if history_rows:
         lines.append("")
@@ -244,11 +264,18 @@ def protest_report_pdf(
                 "",
                 "Tax Impact (Estimated)",
                 f"Tax Year Used: {tax_impact.tax_year or '-'} ({tax_impact.completeness})",
-                f"Current Taxes Owed: ${float(tax_impact.current_tax_owed):,.2f}",
-                f"Median-Scenario Taxes Owed: ${float(tax_impact.median_tax_owed):,.2f}",
-                f"Estimated Annual Savings: ${float(tax_impact.estimated_savings):,.2f}",
             ]
         )
+        if tax_impact.completeness == "complete":
+            lines.extend(
+                [
+                    f"Current Taxes Owed: ${float(tax_impact.current_tax_owed):,.2f}",
+                    f"Median-Scenario Taxes Owed: ${float(tax_impact.median_tax_owed):,.2f}",
+                    f"Estimated Annual Savings: ${float(tax_impact.estimated_savings):,.2f}",
+                ]
+            )
+        else:
+            lines.append("Tax totals unavailable until matching-year inputs are complete.")
         if tax_impact.warnings:
             lines.append(f"Warnings: {' | '.join(tax_impact.warnings)}")
 

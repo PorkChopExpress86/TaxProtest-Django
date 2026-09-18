@@ -73,7 +73,7 @@ def _dedupe_units(rows: list[PropertyJurisdictionExemption]) -> list[PropertyJur
     return out
 
 
-def _empty_result(tax_year: int | None, warning: str) -> TaxImpactResult:
+def unavailable_tax_impact(tax_year: int | None, warning: str) -> TaxImpactResult:
     """Shared shape for the two "nothing to compute" early returns.
 
     Both callers stop before any unit has been priced, so every totals field
@@ -169,7 +169,7 @@ def calculate_tax_impact(
     exemptions_summary: list[dict[str, object]] = []
 
     if resolved_year is None:
-        return _empty_result(None, "No assessment year is available for this account.")
+        return unavailable_tax_impact(None, "No assessment year is available for this account.")
 
     median_value = _to_decimal(median_assessed_value)
     if median_value is None or median_value < ZERO:
@@ -184,7 +184,7 @@ def calculate_tax_impact(
     )
 
     if not unit_rows:
-        return _empty_result(
+        return unavailable_tax_impact(
             resolved_year, "No jurisdiction/exemption rows were found for this account and year."
         )
 
@@ -219,6 +219,18 @@ def calculate_tax_impact(
     total_taxable_used = ZERO
 
     for unit in unit_bases:
+        unit_records = [r for r in unit_rows if r.tax_unit_code == unit.tax_unit_code]
+        if any(
+            r.exemption_code and r.exemption_amount is None and r.exemption_percent is None
+            for r in unit_records
+        ):
+            missing_units += 1
+            warnings.append(f"Exemption inputs are unverified for {unit.tax_unit_code}.")
+            continue
+        if unit.exemption_code:
+            missing_units += 1
+            warnings.append(f"Gross jurisdiction base is missing for {unit.tax_unit_code}.")
+            continue
         rate_row = rate_map.get(unit.tax_unit_code)
         rate = _to_decimal(rate_row.adopted_rate if rate_row else None)
         if rate is None:
@@ -239,8 +251,6 @@ def calculate_tax_impact(
 
         known_units += 1
         total_rate += rate
-
-        unit_records = [r for r in unit_rows if r.tax_unit_code == unit.tax_unit_code]
 
         taxable_base = _to_decimal(unit.taxable_value)
         if taxable_base is None:

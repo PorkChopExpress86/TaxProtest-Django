@@ -108,6 +108,7 @@
       </div>
     </div>
 
+    {% if history_notice %}<p class="mb-6 rounded-lg bg-amber-50 p-4 text-sm text-amber-900">{{ history_notice }}</p>{% endif %}
     {% if assessment_history %}
     <div class="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden mb-6">
       <div class="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
@@ -179,6 +180,7 @@
           {{ tax_impact.completeness|title }}
         </span>
       </div>
+      {% if tax_impact.completeness == 'complete' %}
       <div class="px-6 py-5 grid grid-cols-1 md:grid-cols-3 gap-4 border-b border-gray-100">
         <div>
           <p class="text-xs text-gray-500 uppercase font-medium">Current Taxes Owed</p>
@@ -194,6 +196,7 @@
           <p class="text-[11px] text-gray-500 mt-1">Year {{ tax_impact.tax_year|default:"-" }} • Avg rate {{ tax_impact.effective_rate|floatformat:6 }}</p>
         </div>
       </div>
+      {% else %}<p class="px-6 py-5 text-sm text-amber-900">Tax totals unavailable until all applicable matching-year jurisdiction, exemption, and rate inputs are complete.</p>{% endif %}
       {% if tax_impact.warnings %}
       <div class="px-6 py-3 border-b border-gray-100 bg-amber-50">
         {% for warning in tax_impact.warnings %}

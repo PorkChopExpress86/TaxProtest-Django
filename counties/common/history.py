@@ -16,6 +16,15 @@ from counties.common.cap_status import evaluate_cap_status
 from counties.common.tax_models import AssessmentHistory
 
 
+def history_availability_notice(history, source_year):
+    years = {row["tax_year"] for row in history if row.get("assessed_value") is not None}
+    if not years:
+        return "Assessment history unavailable. Qualified property evidence remains available."
+    latest = source_year or max(years)
+    gaps = sorted(set(range(max(min(years), latest - 4), latest + 1)) - years)
+    return "Assessment history gaps: " + ", ".join(map(str, gaps)) if gaps else ""
+
+
 def assessment_history_rows(
     account_number: str, county: str = "harris", limit: int = 5
 ) -> list[dict[str, Any]]:
@@ -29,6 +38,8 @@ def assessment_history_rows(
     rows = []
     for index, entry in enumerate(history):
         prior = history[index + 1] if index + 1 < len(history) else None
+        if prior is not None and prior.tax_year != entry.tax_year - 1:
+            prior = None
         rows.append(
             {
                 "tax_year": entry.tax_year,

@@ -136,7 +136,15 @@ class BrazosAdapter(CountyAdapter):
         return qs.order_by(f"{prefix}{primary}", "prop_id")
 
     def search_context(self, params: Mapping[str, str]) -> dict[str, Any]:
-        return {"active_year": self.active_year()}
+        snapshot = self._readiness.active_snapshot()
+        return {
+            "active_year": self.active_year(),
+            "dataset_notice": (
+                f"Brazos property source year: {snapshot.tax_year}; {snapshot.outcome}. CAD source: {snapshot.cad_source_year}; GIS source: {snapshot.gis_source_year or 'Unavailable'}."
+                if snapshot
+                else "No active Brazos property snapshot is available."
+            ),
+        }
 
     def search_rows(self, records: Sequence[PropertyAccount]) -> list[dict[str, Any]]:
         if not records:

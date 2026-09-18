@@ -446,7 +446,7 @@ class CadRefreshStage:
 
         One source line = one (property, taxing entity) association. Always
         emits a "base" row (exemption_code="") carrying that entity's
-        taxable/assessed value -- this is what tells tax_impact.py the
+        gross assessed value -- this is what tells tax_impact.py the
         property owes tax to this entity at all, matching how a property
         with no exemption on a given unit is still represented by Harris's
         own import_jur_exemptions data (see data/tests/test_tax_impact.py).
@@ -505,7 +505,7 @@ class CadRefreshStage:
                     tax_unit_code=tax_unit_code,
                     tax_unit_name=tax_unit_name,
                     exemption_code="",
-                    taxable_value=taxable_value,
+                    taxable_value=assessed_value,
                     assessed_value=assessed_value,
                     source=text_file.name,
                 )
@@ -519,6 +519,24 @@ class CadRefreshStage:
                 "ov65_amt": fields["ov65_amt"],
                 "dp_amt": fields["dp_amt"],
             }
+            verified_total = sum(amount or Decimal(0) for amount in exemption_amounts.values())
+            if (
+                assessed_value is None
+                or taxable_value is None
+                or max(Decimal(0), assessed_value - verified_total) != taxable_value
+            ):
+                instances.append(
+                    PropertyJurisdictionExemption(
+                        account_number=prop_id,
+                        tax_year=tax_year,
+                        county="brazos",
+                        tax_unit_code=tax_unit_code,
+                        tax_unit_name=tax_unit_name,
+                        exemption_code="UNVERIFIED",
+                        exemption_description="Source net value does not reconcile with verified exemptions",
+                        source=text_file.name,
+                    )
+                )
             for amount_field, exemption_code in EXEMPTION_AMOUNT_FIELDS:
                 amount = exemption_amounts.get(amount_field)
                 if not amount:
