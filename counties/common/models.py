@@ -32,3 +32,13 @@ class ImportOperation(models.Model):
 
     def __str__(self):
         return f"{self.get_county_display()} {self.intent}: {self.id}"
+
+
+class CountyWriter(models.Model):
+    county = models.CharField(max_length=16, choices=COUNTY_CHOICES, primary_key=True)
+    operation = models.ForeignKey(ImportOperation, null=True, on_delete=models.PROTECT)
+    backend_pid = models.IntegerField(null=True)
+
+    class Meta:
+        app_label = "data"
+        default_permissions = ()

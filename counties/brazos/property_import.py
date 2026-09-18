@@ -22,6 +22,7 @@ from counties.brazos.annual_refresh import (
 )
 from counties.brazos.models import BrazosPropertySnapshot, SnapshotOutcome
 from counties.common.import_logging import import_warnings
+from counties.common.import_writers import county_writer
 from counties.common.models import ImportOperation
 
 
@@ -80,7 +81,7 @@ class BrazosPropertyImport:
             ),
         )
         try:
-            with import_warnings("brazos_cad") as warnings:
+            with import_warnings("brazos_cad") as warnings, county_writer(operation):
                 result = self._run(request)
         except Exception as exc:
             operation.status = "failed"

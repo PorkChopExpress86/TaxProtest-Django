@@ -18,6 +18,7 @@ from django.db import DatabaseError
 from django.utils import timezone
 
 from counties.common.import_logging import import_warnings
+from counties.common.import_writers import county_writer
 from counties.common.models import ImportOperation
 from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG, HcadSourceId
 
@@ -983,7 +984,7 @@ def run_harris_import(
         origin=request.origin,
     )
     try:
-        with import_warnings("etl_orchestrator") as warnings:
+        with import_warnings("etl_orchestrator") as warnings, county_writer(operation):
             result = _HarrisImportExecution(request, sources, data_year, reporter=reporter).run()
     except Exception as exc:
         operation.status = "failed"
