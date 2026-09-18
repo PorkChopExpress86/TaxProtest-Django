@@ -48,9 +48,22 @@ def working_source_root(root: Path) -> Path:
     if not working.exists():
         base_digests = _source_digests(root)
         source_root = root
-        for prior in ImportOperation.objects.filter(
-            county=operation.county, status__in=("completed", "partial", "published", "validated")
-        ).exclude(pk=operation.pk):
+        for prior in (
+            ImportOperation.objects.filter(
+                county=operation.county,
+                status__in=(
+                    "completed",
+                    "completed_with_warnings",
+                    "partial",
+                    "published",
+                    "validated",
+                    "prepared",
+                    "awaiting_review",
+                ),
+            )
+            .exclude(pk=operation.pk)
+            .exclude(candidate__state__in=("rejected", "superseded"))
+        ):
             retained = root / ".imports" / str(prior.pk)
             if str(retained) not in prior.evidence.get("working_sources", []):
                 continue

@@ -66,12 +66,19 @@ def candidate_tables(candidate: ImportCandidate):
 
 
 def prepare_candidate(execution: "_HarrisImportExecution", operation: ImportOperation):
+    from counties.common.import_retention import baseline_sources, retain_baseline_sources
+
     from .config import DataSourceType
     from .coverage import outcome_populations
     from .orchestrator import ExtractedSourceRetention, HarrisImportStatus
 
     if connection.vendor != "postgresql":
         raise ValueError("Durable Harris candidate preparation requires PostgreSQL")
+    inherited = (
+        baseline_sources("harris")
+        if (not execution.request.plan.is_full or execution.request.property_file is not None)
+        else []
+    )
     candidate = ImportCandidate.objects.create(
         county="harris",
         operation=operation,
@@ -184,5 +191,6 @@ def prepare_candidate(execution: "_HarrisImportExecution", operation: ImportOper
         candidate.evidence["error"] = str(exc)
         raise
     finally:
+        retain_baseline_sources(operation, inherited)
         candidate.sources = operation.evidence.get("sources", [])
         candidate.save()

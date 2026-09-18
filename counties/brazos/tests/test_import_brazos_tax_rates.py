@@ -8,12 +8,14 @@ docs/research/brazos-entity-tax-rates.md for the real page's exact shape.
 
 from __future__ import annotations
 
+import tempfile
 from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
 from django.core.management import CommandError, call_command
 from django.test import TestCase
 
+from counties.common.models import ImportOperation
 from counties.common.tax_impact import calculate_tax_impact
 from counties.common.tax_models import PropertyJurisdictionExemption, TaxUnitRate
 
@@ -32,11 +34,19 @@ FIXTURE_HTML = """
 def _mock_response(html: str) -> MagicMock:
     resp = MagicMock()
     resp.text = html
+    resp.content = html.encode("utf-8")
     resp.raise_for_status = MagicMock()
     return resp
 
 
 class ImportBrazosTaxRatesTests(TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        context = self.settings(BCAD_DOWNLOAD_DIR=temp.name)
+        context.enable()
+        self.addCleanup(context.disable)
+
     def test_scrapes_and_upserts_rates_with_year_from_heading(self):
         with patch(
             "counties.brazos.management.commands.import_brazos_tax_rates.requests.get",
@@ -45,6 +55,11 @@ class ImportBrazosTaxRatesTests(TestCase):
             call_command("import_brazos_tax_rates")
 
         self.assertEqual(TaxUnitRate.objects.filter(county="brazos").count(), 2)
+        source = ImportOperation.objects.get(intent="tax_rates").evidence["sources"][0]
+        from pathlib import Path
+
+        self.assertEqual(Path(source["path"]).read_text(), FIXTURE_HTML)
+        self.assertEqual(source["source_year"], 2025)
         g1 = TaxUnitRate.objects.get(county="brazos", tax_unit_code="G1", tax_year=2025)
         self.assertEqual(g1.tax_unit_name, "Brazos County")
         # BCAD publishes $0.419700 per $100 of value -- tax_impact.py expects

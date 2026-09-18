@@ -32,6 +32,7 @@ class ImportOperation(models.Model):
         permissions = (
             ("recover_county_writer", "Can recover a county writer"),
             ("approve_import_coverage", "Can review import coverage exceptions"),
+            ("cleanup_import_sources", "Can clean obsolete import sources"),
         )
 
     def __str__(self):
@@ -79,6 +80,9 @@ class ImportCandidate(models.Model):
     request = models.JSONField(default=dict)
     evidence = models.JSONField(default=dict)
     created_at = models.DateTimeField(auto_now_add=True)
+    published_at = models.DateTimeField(null=True)
+    superseded_at = models.DateTimeField(null=True)
+    rejected_at = models.DateTimeField(null=True)
 
     class Meta:
         app_label = "data"

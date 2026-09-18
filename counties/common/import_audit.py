@@ -45,7 +45,7 @@ def audited_operation(
             county_writer(operation),
         ):
             yield operation
-        operation.status = "completed"
+        operation.status = "completed_with_warnings" if operation.warnings else "completed"
     except Exception as exc:
         if operation.status == "completed_with_warnings":
             operation.warnings.append(str(exc))

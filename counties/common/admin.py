@@ -6,6 +6,7 @@ from django.template.response import TemplateResponse
 from django.urls import path, reverse
 from django.utils.html import format_html_join
 
+from counties.common.import_retention import cleanup_sources, source_availability
 from counties.common.import_review import (
     ImportReviewRejected,
     captured_binding,
@@ -20,6 +21,25 @@ class WriterRecoveryForm(forms.Form):
     reason = forms.CharField(widget=forms.Textarea, label="Recovery reason", strip=True)
 
 
+def render_source_availability(sources):
+    return (
+        format_html_join(
+            "",
+            "<p>{}: {}. Source year: {}; SHA-256: {}</p>",
+            (
+                (
+                    source["path"],
+                    source["availability"],
+                    source.get("source_year") or "Not recorded",
+                    source.get("sha256") or "Not recorded",
+                )
+                for source in source_availability(sources)
+            ),
+        )
+        or "No exact retained sources recorded"
+    )
+
+
 class CandidateReviewForm(forms.Form):
     decision = forms.ChoiceField(
         choices=(("approved", "Approve coverage exception"), ("rejected", "Reject candidate"))
@@ -30,6 +50,10 @@ class CandidateReviewForm(forms.Form):
 
 class CandidateApplyForm(forms.Form):
     reason = forms.CharField(widget=forms.Textarea, label="Application reason", strip=True)
+
+
+class SourceCleanupForm(forms.Form):
+    reason = forms.CharField(widget=forms.Textarea, label="Source cleanup reason", strip=True)
 
 
 class ImportAuditInline(admin.TabularInline):
@@ -67,6 +91,7 @@ class ImportOperationAdmin(admin.ModelAdmin):
         *tuple(field.name for field in ImportOperation._meta.fields),
         "county_writer",
         "qualified_capabilities",
+        "retained_sources",
     )
     empty_value_display = "Not recorded"
     actions = None
@@ -74,15 +99,24 @@ class ImportOperationAdmin(admin.ModelAdmin):
     def get_urls(self):
         return [
             path(
+                "<uuid:operation_id>/cleanup-sources/",
+                self.admin_site.admin_view(self.cleanup_sources_view),
+                name="data_importoperation_cleanup_sources",
+            ),
+            path(
                 "<uuid:operation_id>/recover-writer/",
                 self.admin_site.admin_view(self.recover_writer_view),
                 name="data_importoperation_recover_writer",
-            )
+            ),
         ] + super().get_urls()
 
     def change_view(self, request, object_id, form_url="", extra_context=None):
         obj = self.get_object(request, object_id)
         context = dict(extra_context or {})
+        if obj and request.user.has_perm("data.cleanup_import_sources"):
+            context["cleanup_url"] = reverse(
+                "admin:data_importoperation_cleanup_sources", args=[obj.pk]
+            )
         if (
             obj
             and request.user.has_perm("data.recover_county_writer")
@@ -127,6 +161,38 @@ class ImportOperationAdmin(admin.ModelAdmin):
     def county_writer(self, obj):
         return writer_status(obj.county)
 
+    def cleanup_sources_view(self, request, operation_id):
+        if not self.has_view_permission(request) or not request.user.has_perm(
+            "data.cleanup_import_sources"
+        ):
+            raise PermissionDenied
+        operation = get_object_or_404(ImportOperation, pk=operation_id)
+        form = SourceCleanupForm(request.POST if request.method == "POST" else None)
+        if request.method == "POST" and form.is_valid():
+            result = cleanup_sources(
+                operation.county,
+                actor=request.user.get_username(),
+                reason=form.cleaned_data["reason"],
+                origin="admin",
+            )
+            messages.success(request, f"Source cleanup audited: {result.pk}")
+            return redirect("admin:data_importoperation_change", result.pk)
+        return TemplateResponse(
+            request,
+            "admin/imports/cleanup.html",
+            {
+                **self.admin_site.each_context(request),
+                "opts": self.model._meta,
+                "title": "Clean obsolete import sources",
+                "operation": operation,
+                "form": form,
+            },
+        )
+
+    @admin.display(description="Retained source availability")
+    def retained_sources(self, obj):
+        return render_source_availability(obj.evidence.get("sources", []))
+
     @admin.display(description="Property publication qualification")
     def qualified_capabilities(self, obj):
         candidate = ImportCandidate.objects.filter(pk=obj.evidence.get("candidate_id")).first()
@@ -166,8 +232,13 @@ class ImportCandidateAdmin(admin.ModelAdmin):
     readonly_fields = (
         *tuple(field.name for field in ImportCandidate._meta.fields),
         "review_history",
+        "retained_sources",
     )
     actions = None
+
+    @admin.display(description="Retained source availability")
+    def retained_sources(self, obj):
+        return render_source_availability(obj.sources)
 
     def get_urls(self):
         return [

@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from django.core.exceptions import PermissionDenied
+from django.utils import timezone
 
 from counties.common.import_audit import audited_operation
 from counties.common.import_coverage import compare_coverage
@@ -182,7 +183,7 @@ def review_candidate(candidate, *, user, reason: str, decision: str, expected_bi
         ):
             with fenced_write():
                 candidate = ImportCandidate.objects.select_for_update().get(pk=candidate.pk)
-                if candidate.state in ("approved", "rejected", "published"):
+                if candidate.state in ("approved", "rejected", "published", "superseded"):
                     raise ImportReviewRejected(
                         "Candidate already has a review decision or publication"
                     )
@@ -201,7 +202,9 @@ def review_candidate(candidate, *, user, reason: str, decision: str, expected_bi
                     result=decision,
                 )
                 candidate.state = decision
-                candidate.save(update_fields=["state"])
+                if decision == "rejected":
+                    candidate.rejected_at = timezone.now()
+                candidate.save(update_fields=["state", "rejected_at"])
     except Exception as exc:
         ImportAuditEntry.objects.create(
             operation=candidate.operation,

@@ -112,9 +112,13 @@ class _CandidateSource:
 def prepare_candidate(cad, gis, request: PropertyImportRequest, operation: ImportOperation):
     from counties.brazos.property_coverage import outcome_populations
     from counties.brazos.property_import import PropertyImportMode
+    from counties.common.import_retention import baseline_sources, retain_baseline_sources
 
     if connection.vendor != "postgresql":
         raise ValueError("Durable Brazos candidate preparation requires PostgreSQL")
+    inherited = (
+        baseline_sources("brazos") if request.mode is PropertyImportMode.GIS_RECOVERY else []
+    )
     candidate = ImportCandidate.objects.create(
         county="brazos",
         operation=operation,
@@ -222,5 +226,6 @@ def prepare_candidate(cad, gis, request: PropertyImportRequest, operation: Impor
         candidate.evidence["error"] = str(exc)
         raise
     finally:
+        retain_baseline_sources(operation, inherited)
         candidate.sources = operation.evidence.get("sources", [])
         candidate.save()

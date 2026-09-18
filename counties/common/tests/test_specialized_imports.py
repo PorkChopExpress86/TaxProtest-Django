@@ -162,7 +162,11 @@ class SpecializedImportTests(TransactionTestCase):
         TaxUnitRate.objects.create(
             county="harris", tax_year=2026, tax_unit_code="G1", adopted_rate=Decimal("0.01")
         )
-        with patch("requests.get", return_value=_mock_response(FIXTURE_HTML)):
+        with (
+            tempfile.TemporaryDirectory() as root,
+            self.settings(BCAD_DOWNLOAD_DIR=root),
+            patch("requests.get", return_value=_mock_response(FIXTURE_HTML)),
+        ):
             call_command("import_brazos_tax_rates", year=2026, actor="county operator")
         self.assertEqual(TaxUnitRate.objects.get(county="harris").adopted_rate, Decimal("0.01"))
         self.assertEqual(

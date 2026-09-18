@@ -4,6 +4,7 @@ from django.db import connection
 
 from counties.brazos.models import BrazosPropertySnapshot, SnapshotOutcome
 from counties.brazos.property_candidate import MODELS, published_identity
+from counties.common.import_retention import record_publication
 from counties.common.import_review import ImportReviewRejected, authorize_publication
 from counties.common.import_writers import fenced_write
 from counties.common.models import ImportAuditEntry, ImportCandidate
@@ -15,7 +16,7 @@ def publish_candidate(candidate_id, operation, *, user=None):
         candidate = ImportCandidate.objects.select_for_update().get(
             pk=candidate_id, county="brazos"
         )
-        if candidate.state == "published":
+        if candidate.state in ("published", "superseded"):
             operation.publication_before = operation.publication_after = published_identity()
             operation.evidence["already_applied"] = str(candidate.pk)
             return candidate
@@ -66,8 +67,7 @@ def publish_candidate(candidate_id, operation, *, user=None):
                     "SELECT setval(%s::regclass, %s, true)",
                     [sequence, max(last_value, cursor.fetchone()[0])],
                 )
-        candidate.state = "published"
-        candidate.save(update_fields=["state"])
+        record_publication(candidate, operation)
         operation.publication_after = {**published_identity(), "candidate_id": str(candidate.pk)}
         operation.status = "published"
         operation.evidence.update(

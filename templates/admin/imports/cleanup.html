@@ -1,0 +1,8 @@
+{% extends "admin/base_site.html" %}
+{% block content %}
+<p>County: {{ operation.get_county_display }}</p>
+<p>This removes managed files for rejected or superseded candidates at least 90 days after their recorded retirement. Current, unresolved, shared, and unknown legacy references remain protected. Audit records remain available.</p>
+<form method="post">{% csrf_token %}{{ form.as_p }}
+<input type="submit" value="Clean eligible county sources">
+</form>
+{% endblock %}

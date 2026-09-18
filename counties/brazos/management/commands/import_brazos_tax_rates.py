@@ -23,13 +23,15 @@ from __future__ import annotations
 import hashlib
 import re
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 
 import requests
 from bs4 import BeautifulSoup
+from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
-from counties.common.import_audit import audited_operation
-from counties.common.import_writers import fenced_write
+from counties.common.import_audit import audited_operation, record_sources
+from counties.common.import_writers import fenced_write, working_source_root
 from counties.common.tax_models import TaxUnitRate
 
 BCAD_RATES_URL = "https://brazoscad.org/tax-information/adopted-tax-rates/"
@@ -76,6 +78,15 @@ class Command(BaseCommand):
             raise CommandError(f"Failed to fetch BCAD adopted-rates page: {exc}") from exc
 
         soup = BeautifulSoup(response.text, "lxml")
+        retained = working_source_root(Path(settings.BCAD_DOWNLOAD_DIR)) / "adopted-tax-rates.html"
+        retained.write_bytes(response.content)
+        record_sources(
+            operation,
+            [retained],
+            source_url=BCAD_RATES_URL,
+            source_id="adopted_tax_rates",
+            source_year=None,
+        )
         tables = soup.find_all("table")
         if not tables:
             raise CommandError(
@@ -92,9 +103,12 @@ class Command(BaseCommand):
         heading_text = rows[0].get_text(strip=True)
         year_match = YEAR_RE.search(heading_text)
         target_year = requested_year or (int(year_match.group(0)) if year_match else 0)
+        operation.evidence["sources"][-1]["source_year"] = (
+            int(year_match.group(0)) if year_match else None
+        )
         operation.evidence.update(
             source_url=BCAD_RATES_URL,
-            source_sha256=hashlib.sha256(response.text.encode()).hexdigest(),
+            source_sha256=hashlib.sha256(response.content).hexdigest(),
             source_year=int(year_match.group(0)) if year_match else None,
             target_year=target_year,
             dry_run=dry_run,
