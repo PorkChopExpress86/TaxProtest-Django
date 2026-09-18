@@ -2,13 +2,23 @@
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from uuid import UUID
 
-from django.db import connection
+from django.db import connection, transaction
 
-from counties.common.models import CountyWriter, ImportOperation
+from counties.common.models import CountyWriter, ImportAuditEntry, ImportOperation
 
 _LOCK_KEYS = {"harris": 742101, "brazos": 742102}
+_CURRENT_WRITER: ContextVar[ImportOperation | None] = ContextVar("county_writer", default=None)
+
+
+class FencedWriter(RuntimeError):
+    """Execution no longer owns the reservation and cannot resume writing."""
+
+
+class RecoveryRejected(RuntimeError):
+    pass
 
 
 class WriterConflict(RuntimeError):
@@ -50,6 +60,7 @@ def county_writer(operation: ImportOperation) -> Iterator[None]:
             cursor.execute("SELECT pg_backend_pid()")
             pid = cursor.fetchone()[0]
     reserved = False
+    token = None
     try:
         writer, _ = CountyWriter.objects.get_or_create(county=county)
         if writer.operation_id is not None:
@@ -75,8 +86,11 @@ def county_writer(operation: ImportOperation) -> Iterator[None]:
                 locked = cursor.fetchone()[0]
             if not locked:
                 raise WriterConflict(county, operation.pk, uncertain=True)
+        token = _CURRENT_WRITER.set(operation)
         yield
     finally:
+        if token is not None:
+            _CURRENT_WRITER.reset(token)
         # A lost database session leaves durable uncertainty, even if execution reconnects.
         ended_safely = connection.vendor != "postgresql" or _lock_held(county, pid)
         if locked and ended_safely:
@@ -86,3 +100,89 @@ def county_writer(operation: ImportOperation) -> Iterator[None]:
             CountyWriter.objects.filter(county=county, operation=operation).update(
                 operation=None, backend_pid=None
             )
+
+
+@contextmanager
+def fenced_write() -> Iterator[None]:
+    """Hold the exact reservation while mutating, including nested persistence."""
+    with transaction.atomic():
+        operation = _CURRENT_WRITER.get()
+        if operation is not None:
+            writer = CountyWriter.objects.select_for_update().get(county=operation.county)
+            if writer.operation_id != operation.pk:
+                raise FencedWriter(f"Writer {operation.pk} has been fenced; mutation rejected")
+            if connection.vendor == "postgresql":
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT pg_backend_pid()")
+                    pid = cursor.fetchone()[0]
+                if pid != writer.backend_pid or not _lock_held(operation.county, pid):
+                    raise FencedWriter(f"Writer {operation.pk} lost its database session")
+        yield
+
+
+def recover_writer(operation: ImportOperation, *, actor: str, reason: str) -> None:
+    """Prove the session ended, then invalidate its token under database fencing."""
+    if not reason.strip():
+        raise RecoveryRejected("A recovery reason is required")
+    if connection.vendor != "postgresql":
+        raise RecoveryRejected("Unable to verify writer ownership without PostgreSQL")
+    key = _LOCK_KEYS[operation.county]
+    evidence: dict = {}
+    locked = False
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT pg_try_advisory_lock(%s)", [key])
+            locked = cursor.fetchone()[0]
+        if not locked:
+            raise RecoveryRejected("Unable to verify release: writer session still owns the lock")
+        with transaction.atomic():
+            writer = (
+                CountyWriter.objects.select_for_update(nowait=True)
+                .filter(county=operation.county)
+                .first()
+            )
+            if writer is None or writer.operation_id != operation.pk:
+                raise RecoveryRejected("Stale recovery: this operation no longer owns the county")
+            if writer.backend_pid is None:
+                raise RecoveryRejected(
+                    "Unable to verify release: database session was not recorded"
+                )
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = %s)",
+                    [writer.backend_pid],
+                )
+                if cursor.fetchone()[0]:
+                    raise RecoveryRejected(
+                        "Unable to verify release: original database session is still present"
+                    )
+            evidence = {
+                "database session ended": True,
+                "backend_pid": writer.backend_pid,
+                "fenced_operation": str(operation.pk),
+            }
+            writer.operation = None
+            writer.backend_pid = None
+            writer.save()
+            ImportAuditEntry.objects.create(
+                operation=operation,
+                kind="writer_recovery",
+                actor=actor,
+                reason=reason,
+                evidence=evidence,
+                result="released",
+            )
+    except RecoveryRejected as exc:
+        ImportAuditEntry.objects.create(
+            operation=operation,
+            kind="writer_recovery",
+            actor=actor,
+            reason=reason,
+            evidence={**evidence, "explanation": str(exc)},
+            result="rejected",
+        )
+        raise
+    finally:
+        if locked:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT pg_advisory_unlock(%s)", [key])

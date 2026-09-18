@@ -11,7 +11,6 @@ from enum import StrEnum
 from uuid import UUID
 
 from django.core.management.base import CommandError
-from django.db import transaction
 from django.utils import timezone
 
 from counties.brazos.annual_refresh import (
@@ -22,7 +21,7 @@ from counties.brazos.annual_refresh import (
 )
 from counties.brazos.models import BrazosPropertySnapshot, SnapshotOutcome
 from counties.common.import_logging import import_warnings
-from counties.common.import_writers import county_writer
+from counties.common.import_writers import county_writer, fenced_write
 from counties.common.models import ImportOperation
 
 
@@ -137,7 +136,7 @@ class BrazosPropertyImport:
                 dry_run=True,
             )
 
-        with transaction.atomic():
+        with fenced_write():
             cad_result = self._cad.persist(cad_preparation)
             gis_result = gis.persist(gis_preparation)
             snapshot = self._publish_snapshot(
@@ -170,7 +169,7 @@ class BrazosPropertyImport:
                 dry_run=True,
             )
 
-        with transaction.atomic():
+        with fenced_write():
             cad_result = self._cad.persist(preparation)
             snapshot = self._publish_snapshot(
                 tax_year=target_year,
@@ -212,7 +211,7 @@ class BrazosPropertyImport:
                 dry_run=True,
             )
 
-        with transaction.atomic():
+        with fenced_write():
             gis_result = gis.persist(preparation)
             snapshot = self._publish_snapshot(
                 tax_year=target_year,
@@ -280,7 +279,8 @@ class BrazosPropertyImport:
             stages[self._gis.name] = self._gis
         for preparation in preparations:
             try:
-                stages[preparation.name].cleanup(preparation)
+                with fenced_write():
+                    stages[preparation.name].cleanup(preparation)
             except Exception as exc:  # cleanup is post-commit and cannot revoke publication
                 warnings.append(f"{preparation.name} cleanup failed: {exc}")
         return tuple(warnings)

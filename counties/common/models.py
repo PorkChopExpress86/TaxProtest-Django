@@ -29,6 +29,7 @@ class ImportOperation(models.Model):
         verbose_name_plural = "Imports"
         ordering = ("-started_at",)
         default_permissions = ("view",)
+        permissions = (("recover_county_writer", "Can recover a county writer"),)
 
     def __str__(self):
         return f"{self.get_county_display()} {self.intent}: {self.id}"
@@ -42,3 +43,19 @@ class CountyWriter(models.Model):
     class Meta:
         app_label = "data"
         default_permissions = ()
+
+
+class ImportAuditEntry(models.Model):
+    operation = models.ForeignKey(
+        ImportOperation, on_delete=models.PROTECT, related_name="audit_entries"
+    )
+    kind = models.CharField(max_length=32)
+    actor = models.CharField(max_length=150)
+    reason = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    evidence = models.JSONField(default=dict)
+    result = models.CharField(max_length=32)
+
+    class Meta:
+        app_label = "data"
+        default_permissions = ("view",)

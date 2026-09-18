@@ -18,7 +18,7 @@ from django.db import DatabaseError
 from django.utils import timezone
 
 from counties.common.import_logging import import_warnings
-from counties.common.import_writers import county_writer
+from counties.common.import_writers import county_writer, fenced_write
 from counties.common.models import ImportOperation
 from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG, HcadSourceId
 
@@ -307,11 +307,12 @@ class _HarrisImportExecution:
             if not self._record_stage(self._execute_extract(sources), strict=strict):
                 return self._finish(started_at, HarrisImportStatus.FAILED, wrote_data=False)
 
-        load_result = self._execute_transform_load(
-            sources,
-            skip_load=preview,
-            strict=strict,
-        )
+        with fenced_write():
+            load_result = self._execute_transform_load(
+                sources,
+                skip_load=preview,
+                strict=strict,
+            )
         wrote_data = bool(load_result.metrics.get("_wrote_data", False))
         useful_work = bool(load_result.metrics.get("_sources_succeeded", 0))
         if not self._record_stage(load_result, strict=strict):
@@ -350,7 +351,8 @@ class _HarrisImportExecution:
         ):
             self.logger.info("Cleaning up selected extracted files after completed import")
             try:
-                self.extract_manager.cleanup(sources=sources)
+                with fenced_write():
+                    self.extract_manager.cleanup(sources=sources)
             except OSError as exc:
                 self.warnings.append(
                     f"Import committed, but extracted-source cleanup failed: {exc}"
@@ -406,7 +408,8 @@ class _HarrisImportExecution:
         from .readiness import refresh_property_readiness
 
         self.logger.info("Refreshing property readiness once after load stage")
-        refresh_property_readiness()
+        with fenced_write():
+            refresh_property_readiness()
 
     def _validate_completeness_contract(self, plan: HarrisImportPlan, strict: bool) -> bool:
         """Run validate_data with scope-aware skip flags."""

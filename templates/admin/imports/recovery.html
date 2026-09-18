@@ -1,0 +1,10 @@
+{% extends "admin/base_site.html" %}
+{% block content %}
+<p><strong>{{ writer_status }}</strong></p>
+<p>Operation: {{ operation.id }} ({{ operation.get_county_display }})</p>
+<p>Recovery verifies that the recorded database session has ended and fences its execution before releasing ownership. Elapsed time or a task revocation request does not establish safe release.</p>
+<form method="post">{% csrf_token %}
+  {{ form.as_p }}
+  <input type="submit" value="Verify and recover writer">
+</form>
+{% endblock %}
