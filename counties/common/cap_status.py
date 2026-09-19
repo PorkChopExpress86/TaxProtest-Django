@@ -160,37 +160,17 @@ def _no_limit_result(cap_type: str, increase_percent: Decimal | None) -> dict[st
 def evaluate_cap_status(
     current: AssessmentHistory,
     prior: AssessmentHistory | None = None,
+    *,
+    has_typed_cap_flag: bool | None = None,
 ) -> dict[str, Any]:
     """Evaluate assessed/appraised value increase against Texas cap thresholds.
 
     Cap *type* selection (homestead 10% vs. circuit-breaker 20%) is only
-    possible for counties in ``COUNTIES_WITH_TYPED_CAP_FLAG``, whose
-    ``cap_account`` flag actually distinguishes them. For any other county,
-    the flag only reports that a cap reduction occurred, not which cap
-    applied -- so this returns an honest "unknown" cap type with no asserted
-    limit_percent/allowed_value/overage, rather than guessing. The
-    year-over-year increase_percent is still real data and always returned.
-
-    Selection is then gated on the row's tax year and value by
-    ``_applicable_cap``, because the circuit breaker is a 2024-2026 provision
-    with a qualifying value ceiling rather than a standing rule.
+    possible for counties with a typed cap flag, whose ``cap_account`` flag
+    actually distinguishes them. For any other county, the flag only reports
+    that a cap reduction occurred, not which cap applied -- so this returns an
+    honest "unknown" cap type with no asserted limit_percent/allowed_value/overage.
     """
-    # Three-tier fallback for last year's value, each tier covering a real gap
-    # in the source data rather than a hypothetical one:
-    #   1. current.prior_appraised_value -- the county's own export sometimes
-    #      carries the prior year's appraised value directly on the current
-    #      row (HCAD's snapshot does this); use it first since it's the
-    #      county's own stated figure, not something we recomputed.
-    #   2. prior.appraised_value -- falls back to actually joining the prior
-    #      year's AssessmentHistory row when the current row's own snapshot
-    #      didn't carry a prior-year figure (no such field that year, or the
-    #      county's export left it blank).
-    #   3. prior.assessed_value -- last resort when even the prior year's row
-    #      is missing an appraised_value (e.g. an incomplete prior-year
-    #      import). assessed_value is an acceptable stand-in because Texas
-    #      assessed value is capped at appraised value (assessed = min(
-    #      appraised, capped value)) -- it's the closest real figure on hand,
-    #      not an arbitrary guess.
     prior_value = current.prior_appraised_value or (prior.appraised_value if prior else None)
     if prior_value is None and prior:
         prior_value = prior.assessed_value
@@ -200,7 +180,12 @@ def evaluate_cap_status(
     new_construction = current.new_construction_value or Decimal("0")
     increase_percent = _percent_change(current_value, prior_value)
 
-    if current.county not in COUNTIES_WITH_TYPED_CAP_FLAG:
+    is_typed = (
+        has_typed_cap_flag
+        if has_typed_cap_flag is not None
+        else (current.county in COUNTIES_WITH_TYPED_CAP_FLAG)
+    )
+    if not is_typed:
         return _no_limit_result("unknown", increase_percent)
 
     # The 23.231 ceiling is expressly an appraised-value test. Keep the

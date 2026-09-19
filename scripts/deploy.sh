@@ -234,6 +234,9 @@ apply_plan() {
             echo "==> Full rebuild: docker compose up -d --build"
             docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
             wait_for_readiness
+            echo "==> Verifying deployment readiness via check_deployment_readiness"
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T web \
+                python manage.py check_deployment_readiness
             echo "==> Pruning dangling build layers"
             docker image prune -f
             ;;

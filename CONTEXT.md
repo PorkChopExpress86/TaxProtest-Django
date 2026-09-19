@@ -188,3 +188,22 @@ A fixed five-year window ending with the active snapshot year, where every year
 is shown as available, unavailable with its safe coverage reason, or not yet
 assessed. It never silently substitutes a shorter run of latest records.
 _Avoid_: latest five rows, collapsed history gap
+
+## Operational risk verification
+
+**Structural layout verification**:
+The automated pure-stream assertion of PDF page objects, line-count chunking,
+and coordinate boundaries without running a headless browser or rasterizing pixels.
+_Avoid_: visual screenshot test, headless browser render, pixel diff
+
+**Synthetic candidate stress**:
+A high-volume synthetic record dataset used to test candidate staging chunking,
+temp-table limits, outcome qualification, and publication memory bounds in CI
+without depending on multi-gigabyte external downloads.
+_Avoid_: full production download test, manual smoke run, mock-only test
+
+**Deployment readiness verification**:
+The automated pre- and post-deployment validation of unapplied database migrations,
+database connectivity across all registered county tables, and Celery beat task schedule
+bindings before or after applying a deployment plan.
+_Avoid_: container ping, basic SELECT 1, manual deploy check

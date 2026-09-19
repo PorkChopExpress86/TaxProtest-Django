@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import csv
+import io
 from collections.abc import Mapping, Sequence
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Literal
 
 from django.http import HttpResponse
 
-from counties.common.analysis import EquitySummary, history_availability_notice
+from counties.common.analysis import (
+    EquitySummary,
+    ProtestEvidenceDossier,
+    history_availability_notice,
+)
 from counties.common.charts import score_breakdown_summary
 from counties.common.contracts import Column, Comp, CountyProfile, Subject
 
@@ -20,6 +26,21 @@ EXPORT_MIN_TEXT_FILTER_LENGTH = 3
 
 #: Hard ceiling on rows in a search-results export.
 EXPORT_CSV_MAX_ROWS = 1000
+
+
+@dataclass(frozen=True)
+class ExportDocument:
+    """Neutral container for rendered reports and exports."""
+
+    filename: str
+    content_type: str
+    payload: bytes
+
+    def to_response(self) -> HttpResponse:
+        response = HttpResponse(self.payload, content_type=self.content_type)
+        safe = self.filename.replace('"', "").replace("\\", "")
+        response["Content-Disposition"] = f'attachment; filename="{safe}"'
+        return response
 
 
 def csv_safe_text(value: Any) -> str:
@@ -52,12 +73,14 @@ def _attachment(filename: str) -> HttpResponse:
     return response
 
 
-def search_results_csv(
-    columns: Sequence[Column], rows: Sequence[Mapping[str, Any]]
-) -> HttpResponse:
-    """Export the search results table using the county's own column set."""
-    response = _attachment("property_search.csv")
-    writer = csv.writer(response)
+def render_search_csv(
+    columns: Sequence[Column],
+    rows: Sequence[Mapping[str, Any]],
+    filename: str = "property_search.csv",
+) -> ExportDocument:
+    """Render search results table to an ExportDocument using the county's column set."""
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
     writer.writerow([column.label for column in columns])
 
     numeric_formats = {"currency", "sqft", "acres", "ppsf", "number"}
@@ -73,19 +96,29 @@ def search_results_csv(
                 record.append(csv_safe_text(value))
         writer.writerow(record)
 
-    return response
+    return ExportDocument(
+        filename=filename,
+        content_type="text/csv",
+        payload=buffer.getvalue().encode("utf-8"),
+    )
 
 
-def protest_comps_csv(
+def search_results_csv(
+    columns: Sequence[Column], rows: Sequence[Mapping[str, Any]]
+) -> HttpResponse:
+    """Export the search results table using the county's own column set."""
+    return render_search_csv(columns, rows).to_response()
+
+
+def _build_protest_csv_doc(
     subject: Subject,
     comps: Sequence[Comp],
     equity: EquitySummary,
     tax_impact: Any,
     history_warning: str = "",
-) -> HttpResponse:
-    """One row per comparable, with the shared tax-impact columns appended."""
-    response = _attachment(f"protest_analysis_{subject.key}.csv")
-    writer = csv.writer(response)
+) -> ExportDocument:
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
 
     header = [
         "address",
@@ -157,7 +190,40 @@ def protest_comps_csv(
         row += [subject.tax_year or "Not recorded", csv_safe_text(history_warning)]
         writer.writerow(row)
 
-    return response
+    safe_key = str(subject.key).replace('"', "").replace("\\", "")
+    return ExportDocument(
+        filename=f"protest_analysis_{safe_key}.csv",
+        content_type="text/csv",
+        payload=buffer.getvalue().encode("utf-8"),
+    )
+
+
+def render_protest_csv(dossier: ProtestEvidenceDossier) -> ExportDocument:
+    """Render a completed protest evidence dossier to a CSV ExportDocument."""
+    return _build_protest_csv_doc(
+        subject=dossier.subject,
+        comps=dossier.comps,
+        equity=dossier.equity,
+        tax_impact=dossier.tax_impact,
+        history_warning=dossier.history_notice,
+    )
+
+
+def protest_comps_csv(
+    subject: Subject,
+    comps: Sequence[Comp],
+    equity: EquitySummary,
+    tax_impact: Any,
+    history_warning: str = "",
+) -> HttpResponse:
+    """One row per comparable, with the shared tax-impact columns appended."""
+    return _build_protest_csv_doc(
+        subject=subject,
+        comps=comps,
+        equity=equity,
+        tax_impact=tax_impact,
+        history_warning=history_warning,
+    ).to_response()
 
 
 # --------------------------------------------------------------------------- PDF
@@ -167,31 +233,59 @@ def _pdf_escape(text: Any) -> str:
     return str(text or "").replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
 
 
-def simple_pdf(lines: Sequence[str]) -> bytes:
-    """A minimal single-page PDF of left-aligned Helvetica text.
+PDF_LINES_PER_PAGE = 38
+
+
+def simple_pdf(lines: Sequence[str], lines_per_page: int = PDF_LINES_PER_PAGE) -> bytes:
+    """A minimal paginated PDF of left-aligned Helvetica text.
 
     Hand-rolled rather than pulled from a rendering library: the evidence report
     is a flat list of lines, and this keeps the image free of a native toolchain.
+    Automatically chunks lines into pages to prevent vertical boundary overflow.
     """
-    text_commands = ["BT", "/F1 12 Tf", "72 760 Td"]
-    for index, line in enumerate(lines):
-        if index:
-            text_commands.append("0 -18 Td")
-        text_commands.append(f"({_pdf_escape(line)}) Tj")
-    text_commands.append("ET")
-    stream = "\n".join(text_commands).encode("latin-1", errors="replace")
-    objects = [
-        b"<< /Type /Catalog /Pages 2 0 R >>",
-        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
-        b"/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
-        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-        b"<< /Length "
-        + str(len(stream)).encode("ascii")
-        + b" >>\nstream\n"
-        + stream
-        + b"\nendstream",
-    ]
+    raw_lines = list(lines)
+    if not raw_lines:
+        pages_lines = [[]]
+    else:
+        pages_lines = [
+            raw_lines[i : i + lines_per_page] for i in range(0, len(raw_lines), lines_per_page)
+        ]
+
+    page_count = len(pages_lines)
+    objects: list[bytes] = []
+
+    # Object 1: Catalog
+    objects.append(b"<< /Type /Catalog /Pages 2 0 R >>")
+
+    # Object 2: Pages tree (kids are objects 4, 6, 8, ...)
+    kids = " ".join(f"{4 + 2 * i} 0 R" for i in range(page_count))
+    objects.append(f"<< /Type /Pages /Kids [{kids}] /Count {page_count} >>".encode("ascii"))
+
+    # Object 3: Helvetica font definition
+    objects.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+
+    # Objects for each page: Page object followed by Content stream object
+    for i, page_lines in enumerate(pages_lines):
+        content_obj_id = 4 + 2 * i + 1
+        page_obj = (
+            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            f"/Resources << /Font << /F1 3 0 R >> >> /Contents {content_obj_id} 0 R >>"
+        ).encode("ascii")
+        objects.append(page_obj)
+
+        text_commands = ["BT", "/F1 12 Tf", "72 760 Td"]
+        for line_index, line in enumerate(page_lines):
+            if line_index:
+                text_commands.append("0 -18 Td")
+            text_commands.append(f"({_pdf_escape(line)}) Tj")
+        text_commands.append("ET")
+        stream = "\n".join(text_commands).encode("latin-1", errors="replace")
+
+        stream_obj = (
+            f"<< /Length {len(stream)} >>\nstream\n".encode("ascii") + stream + b"\nendstream"
+        )
+        objects.append(stream_obj)
+
     output = bytearray(b"%PDF-1.4\n")
     offsets = [0]
     for number, payload in enumerate(objects, start=1):
@@ -211,15 +305,14 @@ def simple_pdf(lines: Sequence[str]) -> bytes:
     return bytes(output)
 
 
-def protest_report_pdf(
+def _build_protest_pdf_doc(
     profile: CountyProfile,
     subject: Subject,
     comps: Sequence[Comp],
     history_rows: Sequence[Mapping[str, Any]],
     tax_impact: Any,
     max_comps: int = 10,
-) -> HttpResponse:
-    """The printable evidence report: subject, history, comparables, tax impact."""
+) -> ExportDocument:
     assessed = subject.assessed_value
     lines = [
         f"{profile.display_name} Property Tax Protest Evidence Report",
@@ -278,7 +371,60 @@ def protest_report_pdf(
         if tax_impact.warnings:
             lines.append(f"Warnings: {' | '.join(tax_impact.warnings)}")
 
-    response = HttpResponse(simple_pdf(lines), content_type="application/pdf")
+    pdf_bytes = simple_pdf(lines)
     safe_key = str(subject.key).replace('"', "").replace("\\", "")
-    response["Content-Disposition"] = f'attachment; filename="protest_analysis_{safe_key}.pdf"'
-    return response
+    return ExportDocument(
+        filename=f"protest_analysis_{safe_key}.pdf",
+        content_type="application/pdf",
+        payload=pdf_bytes,
+    )
+
+
+def render_protest_pdf(
+    profile: CountyProfile,
+    dossier: ProtestEvidenceDossier,
+    max_comps: int = 10,
+) -> ExportDocument:
+    """Render a completed protest evidence dossier to a PDF ExportDocument."""
+    return _build_protest_pdf_doc(
+        profile=profile,
+        subject=dossier.subject,
+        comps=dossier.comps,
+        history_rows=dossier.history,
+        tax_impact=dossier.tax_impact,
+        max_comps=max_comps,
+    )
+
+
+def protest_report_pdf(
+    profile: CountyProfile,
+    subject: Subject,
+    comps: Sequence[Comp],
+    history_rows: Sequence[Mapping[str, Any]],
+    tax_impact: Any,
+    max_comps: int = 10,
+) -> HttpResponse:
+    """The printable evidence report: subject, history, comparables, tax impact."""
+    return _build_protest_pdf_doc(
+        profile=profile,
+        subject=subject,
+        comps=comps,
+        history_rows=history_rows,
+        tax_impact=tax_impact,
+        max_comps=max_comps,
+    ).to_response()
+
+
+def render_protest_export(
+    profile: CountyProfile,
+    dossier: ProtestEvidenceDossier,
+    format: Literal["csv", "pdf"] = "csv",
+    *,
+    max_comps: int = 10,
+) -> ExportDocument:
+    """Unified protest export dispatcher returning an ExportDocument."""
+    if format == "csv":
+        return render_protest_csv(dossier)
+    if format == "pdf":
+        return render_protest_pdf(profile, dossier, max_comps=max_comps)
+    raise ValueError(f"Unsupported export format: {format}")

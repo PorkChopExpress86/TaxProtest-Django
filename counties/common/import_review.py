@@ -34,7 +34,7 @@ def county_identities(candidate):
     if candidate.county == "harris":
         from counties.harris.etl_pipeline.candidate import dataset_identity, published_identity
     elif candidate.county == "brazos":
-        from counties.brazos.property_candidate import dataset_identity, published_identity
+        from counties.brazos.property_import import dataset_identity, published_identity
     else:
         raise ImportReviewRejected("Unknown county candidate")
     return published_identity(), dataset_identity(candidate.storage_schema)
@@ -43,8 +43,7 @@ def county_identities(candidate):
 def current_coverage(candidate):
     if candidate.county == "harris":
         from counties.harris.adapter import adapter
-        from counties.harris.etl_pipeline.candidate import candidate_tables
-        from counties.harris.etl_pipeline.coverage import outcome_populations
+        from counties.harris.etl_pipeline.candidate import candidate_tables, outcome_populations
         from counties.harris.etl_pipeline.import_plan import HarrisImportPlan
         from counties.harris.source_catalog import HarrisImportStage
 
@@ -56,8 +55,7 @@ def current_coverage(candidate):
                 in HarrisImportPlan.from_legacy_scope(candidate.request["plan"]).stages,
             )
     else:
-        from counties.brazos.property_candidate import candidate_tables
-        from counties.brazos.property_coverage import outcome_populations
+        from counties.brazos.property_import import candidate_tables, outcome_populations
 
         previous = outcome_populations()
         with candidate_tables(candidate):

@@ -218,6 +218,8 @@ class CountyProfile:
     export_zip_filter: str | None = None
     #: Whether this county can export the full search result set to CSV.
     supports_search_export: bool = True
+    #: Whether this county's source data distinguishes typed statutory caps (e.g. Harris).
+    has_typed_cap_flag: bool = False
 
     def url_name(self, view: str) -> str:
         """Reverse-able URL name for one of this county's pages."""

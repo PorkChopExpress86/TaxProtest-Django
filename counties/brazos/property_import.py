@@ -1,7 +1,8 @@
 """County-owned publication of one Brazos detailed property snapshot.
 
-The module owns source-year checks, CAD preflight, transactional publication,
-and cleanup.  CAD and GIS source stages remain their own adapters.
+The module owns source-year checks, CAD preflight, candidate staging,
+coverage qualification, transactional publication, recovery staging,
+and cleanup. CAD and GIS source stages remain their own adapters.
 """
 
 from __future__ import annotations
@@ -11,16 +12,48 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
-from uuid import UUID
+from uuid import UUID, uuid4
 
+from django.conf import settings
 from django.core.management.base import CommandError
+from django.db import connection
 from django.utils import timezone
 
-from counties.brazos.models import BrazosPropertySnapshot, SnapshotOutcome
+from counties.brazos.models import (
+    BrazosPropertySnapshot,
+    PropertyAccount,
+    PropertyBuildingCharacteristic,
+    PropertyExtraFeature,
+    PropertyImprovement,
+    PropertyImprovementDetail,
+    PropertyLand,
+    SnapshotOutcome,
+)
+from counties.brazos.readiness import BrazosActiveSnapshotReadiness
+from counties.common.candidate_staging import (
+    compute_dataset_hash,
+    cutover_staged_tables,
+    staged_candidate_schema,
+    switch_search_path,
+)
+from counties.common.import_coverage import OutcomePopulation, compare_coverage
 from counties.common.import_logging import import_warnings
-from counties.common.import_recovery import ReplayRequest, requested_replay, verify_replay
-from counties.common.import_writers import county_writer, fenced_write
-from counties.common.models import ImportCandidate, ImportOperation
+from counties.common.import_recovery import (
+    ReplayRejected,
+    ReplayRequest,
+    copy_exact_source,
+    requested_replay,
+    verify_replay,
+)
+from counties.common.import_retention import (
+    baseline_sources,
+    record_publication,
+    retain_baseline_sources,
+)
+from counties.common.import_review import ImportReviewRejected, authorize_publication
+from counties.common.import_writers import county_writer, fenced_write, working_source_root
+from counties.common.models import ImportAuditEntry, ImportCandidate, ImportOperation
+from counties.common.tax_models import PropertyJurisdictionExemption
 
 
 @dataclass(frozen=True)
@@ -136,6 +169,377 @@ class PropertyImportResult:
     already_applied: bool = False
 
 
+PROPERTY_MODELS = (
+    PropertyAccount,
+    PropertyLand,
+    PropertyImprovement,
+    PropertyImprovementDetail,
+    PropertyBuildingCharacteristic,
+    PropertyExtraFeature,
+)
+MODELS = (*PROPERTY_MODELS, PropertyJurisdictionExemption, BrazosPropertySnapshot)
+
+
+def dataset_identity(schema: str = "public") -> dict:
+    return compute_dataset_hash(
+        MODELS,
+        schema=schema,
+        scope_filters={PropertyJurisdictionExemption: "AND county = 'brazos'"},
+    )
+
+
+def published_identity() -> dict:
+    snapshot = BrazosPropertySnapshot.objects.filter(is_active=True).first()
+    return {
+        **dataset_identity(),
+        "snapshot_id": snapshot.pk if snapshot else None,
+        "tax_year": snapshot.tax_year if snapshot else None,
+        "outcome": snapshot.outcome if snapshot else None,
+    }
+
+
+def candidate_tables(candidate: ImportCandidate):
+    return switch_search_path(candidate.storage_schema)
+
+
+def outcome_populations(
+    *, claimed_gis=False, deliberately_absent_gis=False
+) -> dict[str, OutcomePopulation]:
+    reader = BrazosActiveSnapshotReadiness()
+    snapshot = reader.active_snapshot()
+    names = ("search", "comparable", "report", "tax")
+    eligible = {name: set() for name in names}
+    exclusions = {name: {} for name in names}
+    accounts = list(PropertyAccount.objects.filter(tax_year=snapshot.tax_year)) if snapshot else []
+    for account in accounts:
+        projection = reader.project(account.prop_id)
+        if projection is None:
+            continue
+        for name, ready in (
+            ("search", projection.search_ready),
+            ("comparable", projection.comparable_ready),
+            ("report", projection.report_ready),
+            ("tax", projection.tax_impact_ready),
+        ):
+            if ready and not (deliberately_absent_gis and name != "search"):
+                eligible[name].add(account.prop_id)
+            else:
+                exclusions[name][account.prop_id] = [
+                    projection.reason_for(name)
+                    or "GIS deliberately absent from explicit Partial candidate"
+                ]
+    structural_inputs = any(account.living_area is not None for account in accounts) or bool(
+        snapshot
+        and PropertyLand.objects.filter(tax_year=snapshot.tax_year, acreage__isnull=False).exists()
+    )
+    has_gis = claimed_gis or any(
+        account.coordinate_source and account.coordinate_source_year is not None
+        for account in accounts
+    )
+    comparable_supported = has_gis and structural_inputs and not deliberately_absent_gis
+    report_supported = (
+        comparable_supported
+        and len(accounts) >= 4
+        and any(
+            account.assessed_value is not None and account.living_area is not None
+            for account in accounts
+        )
+    )
+    # A tax gap is independently unavailable. The authoritative projection
+    # requires complete matching-year rates and values before claiming it.
+    tax_supported = bool(eligible["tax"]) and not deliberately_absent_gis
+    supported = {
+        "search": snapshot is not None,
+        "comparable": comparable_supported,
+        "report": report_supported,
+        "tax": tax_supported,
+    }
+    reasons = {
+        "search": "Active property snapshot unavailable",
+        "comparable": "GIS or structural comparable prerequisites unavailable",
+        "report": "Equity facts and at least three qualifying comparables are required",
+        "tax": "Complete matching-year report, jurisdiction, values and rates are required",
+    }
+    return {
+        name: OutcomePopulation(
+            eligible[name],
+            supported=supported[name],
+            reason="" if supported[name] else reasons[name],
+            exclusions=exclusions[name],
+            deliberately_absent=deliberately_absent_gis and name != "search",
+        )
+        for name in names
+    }
+
+
+def publish_candidate(candidate_id, operation, *, user=None):
+    with fenced_write():
+        candidate = ImportCandidate.objects.select_for_update().get(
+            pk=candidate_id, county="brazos"
+        )
+        if candidate.state in ("published", "superseded"):
+            operation.publication_before = operation.publication_after = published_identity()
+            operation.evidence["already_applied"] = str(candidate.pk)
+            return candidate
+        review = authorize_publication(candidate, user=user)
+        active = BrazosPropertySnapshot.objects.filter(is_active=True).first()
+        if candidate.request["mode"] == "gis_recovery" and (
+            active is None
+            or active.pk != candidate.baseline["snapshot_id"]
+            or active.outcome != SnapshotOutcome.PARTIAL
+            or active.tax_year != candidate.request["tax_year"]
+        ):
+            raise ImportReviewRejected(
+                "GIS recovery no longer targets the recorded active Partial snapshot"
+            )
+        operation.publication_before = published_identity()
+        cutover_staged_tables(
+            candidate,
+            MODELS,
+            shared_models_scope={PropertyJurisdictionExemption: " WHERE county = 'brazos'"},
+            shared_models_county={PropertyJurisdictionExemption: "brazos"},
+        )
+        record_publication(candidate, operation)
+        operation.publication_after = {**published_identity(), "candidate_id": str(candidate.pk)}
+        operation.status = "published"
+        operation.evidence.update(
+            candidate_id=str(candidate.pk), qualified_publication="Observed atomic publication"
+        )
+        operation.save()
+        ImportAuditEntry.objects.create(
+            operation=candidate.operation,
+            kind="publication",
+            actor=operation.actor,
+            reason=operation.evidence.get("application_reason") or "Qualified candidate applied",
+            evidence={
+                "before": operation.publication_before,
+                "after": operation.publication_after,
+                "review_id": str(review.pk) if review else None,
+                "operation_id": str(operation.pk),
+                "source_years": candidate.sources,
+                "capabilities": candidate.evidence["capabilities"],
+            },
+            result="published",
+        )
+    return candidate
+
+
+class _CandidateSource:
+    """Keep actual county source inspection beside candidate-only persistence."""
+
+    def __init__(self, stage: AnnualRefreshStage, operation: ImportOperation):
+        self.stage, self.operation, self.name = stage, operation, stage.name
+
+    def prepare(self, options):
+        preparation = self.stage.prepare(options)
+        measured = self.stage.inspect(preparation, self.operation)
+        self.operation.evidence.setdefault("inspection", {})[self.name] = dict(measured.metrics)
+        return preparation
+
+    def persist(self, preparation):
+        return self.stage.persist(preparation)
+
+    def cleanup(self, preparation):
+        return None
+
+
+def prepare_candidate(cad, gis, request: PropertyImportRequest, operation: ImportOperation):
+    if connection.vendor != "postgresql":
+        raise ValueError("Durable Brazos candidate preparation requires PostgreSQL")
+    inherited = (
+        baseline_sources("brazos") if request.mode is PropertyImportMode.GIS_RECOVERY else []
+    )
+    candidate = ImportCandidate.objects.create(
+        county="brazos",
+        operation=operation,
+        storage_schema="brazos_candidate_" + uuid4().hex,
+        baseline=published_identity(),
+        request={"mode": request.mode.value, "tax_year": request.options.tax_year},
+        evidence={"publication": "Published data unchanged"},
+    )
+    operation.evidence["candidate_id"] = str(candidate.pk)
+    previous = outcome_populations()
+    operation.evidence["source_validation"] = {
+        "valid": False,
+        "database_publication": "Database publication untested",
+    }
+    try:
+        importer = BrazosPropertyImport(
+            _CandidateSource(cad, operation), _CandidateSource(gis, operation) if gis else None
+        )
+        with staged_candidate_schema(
+            "brazos",
+            candidate,
+            MODELS,
+            shared_models_scope={PropertyJurisdictionExemption: " WHERE county = 'brazos'"},
+        ):
+            result = importer._run_unstaged(
+                replace(
+                    request,
+                    prepare_only=False,
+                    replay=None,
+                    options=replace(request.options, keep_extracted=True),
+                ),
+                operation,
+            )
+            candidate.evidence["population"] = {
+                model._meta.model_name: model.objects.filter(tax_year=result.tax_year).count()
+                for model in PROPERTY_MODELS
+            }
+            candidate.evidence["coverage"] = compare_coverage(
+                previous,
+                outcome_populations(
+                    claimed_gis=request.mode is not PropertyImportMode.CAD_RECOVERY,
+                    deliberately_absent_gis=request.mode is PropertyImportMode.CAD_RECOVERY,
+                ),
+            )
+            candidate.evidence["coordinate_provenance"] = list(
+                PropertyAccount.objects.filter(tax_year=result.tax_year)
+                .exclude(coordinate_source="")
+                .values("prop_id", "coordinate_source", "coordinate_source_year")
+            )
+        operation.evidence["source_validation"]["valid"] = True
+        candidate.request["tax_year"] = result.tax_year
+        operation.requested_year = result.tax_year
+        candidate.evidence.update(
+            {
+                "outcome": result.outcome.value,
+                "tax_year": result.tax_year,
+                "cad": dict(result.cad.metrics) if result.cad else None,
+                "gis": dict(result.gis.metrics) if result.gis else None,
+                "capabilities": (
+                    "GIS capabilities unavailable"
+                    if result.gis is None
+                    else "Year-matched GIS inspected"
+                ),
+                "inspection": operation.evidence.get("inspection", {}),
+            }
+        )
+        candidate.state = "prepared"
+        candidate.evidence["content_identity"] = dataset_identity(candidate.storage_schema)
+        coverage = candidate.evidence["coverage"]
+        if coverage["hard_failures"]:
+            candidate.state = "blocked"
+        elif coverage["requires_review"]:
+            candidate.state = "awaiting_review"
+        return replace(
+            result,
+            snapshot_id=None,
+            prepared=True,
+            candidate_id=candidate.pk,
+            workflow_state=candidate.state,
+        )
+    except Exception as exc:
+        candidate.state = "blocked"
+        candidate.evidence["error"] = str(exc)
+        raise
+    finally:
+        retain_baseline_sources(operation, inherited)
+        candidate.sources = operation.evidence.get("sources", [])
+        operation.save()
+        candidate.save()
+
+
+def _copy_archive(sources):
+    item = next((item for item in sources if Path(item["path"]).suffix.lower() == ".zip"), None)
+    if item is None:
+        return None
+    destination = (
+        working_source_root(Path(settings.BCAD_DOWNLOAD_DIR), reuse=False) / Path(item["path"]).name
+    )
+    copy_exact_source(item, destination)
+    return destination
+
+
+def prepare_recovery(candidate, replay, *, actor):
+    from counties.brazos.cad_refresh import ALL_FILENAMES, CadRefreshStage, _CadStagePayload
+    from counties.brazos.gis_refresh import GisRefreshStage, GisSourcePayload
+
+    class RetainedCadStage(CadRefreshStage):
+        def __init__(self, sources):
+            super().__init__()
+            self.sources = [item for item in sources if item.get("stage") == "cad"]
+
+        def prepare(self, options):
+            if not self.sources:
+                raise ReplayRejected("Retained CAD sources are unavailable")
+            year = self.sources[0]["source_year"]
+            root = working_source_root(Path(settings.BCAD_EXTRACT_DIR), reuse=False) / str(year)
+            files = {}
+            for filename in ALL_FILENAMES:
+                item = next(
+                    (
+                        item
+                        for item in self.sources
+                        if Path(item["path"]).name.upper().endswith(filename)
+                    ),
+                    None,
+                )
+                if item is None:
+                    raise ReplayRejected(f"Retained CAD input unavailable: {filename}")
+                destination = root / Path(item["path"]).name
+                copy_exact_source(item, destination)
+                files[filename] = destination
+            archive = _copy_archive(self.sources)
+            return StagePreparation(
+                "cad",
+                year,
+                options.tax_year or year,
+                _CadStagePayload(files, root, archive, self.sources[0].get("source_url") or ""),
+                (),
+            )
+
+    class RetainedGisStage(GisRefreshStage):
+        def __init__(self, sources):
+            super().__init__()
+            self.sources = [item for item in sources if item.get("stage") == "gis"]
+
+        def prepare(self, options):
+            shape = next(
+                (item for item in self.sources if Path(item["path"]).suffix.lower() == ".shp"), None
+            )
+            if shape is None:
+                raise ReplayRejected("Retained GIS layer unavailable")
+            original = Path(shape["path"])
+            year = shape["source_year"]
+            root = (
+                working_source_root(Path(settings.BCAD_EXTRACT_DIR), reuse=False)
+                / "gis"
+                / str(year)
+            )
+            for item in self.sources:
+                path = Path(item["path"])
+                if path.parent == original.parent and path.stem == original.stem:
+                    copy_exact_source(item, root / path.name)
+            archive = _copy_archive(self.sources)
+            return StagePreparation(
+                "gis",
+                year,
+                options.tax_year or year,
+                GisSourcePayload(
+                    root / original.name, root, archive, shape.get("source_url") or ""
+                ),
+                (),
+            )
+
+    partial = candidate.evidence["outcome"] == "partial"
+    return BrazosPropertyImport(
+        RetainedCadStage(candidate.sources),
+        None if partial else RetainedGisStage(candidate.sources),
+    ).run(
+        PropertyImportRequest(
+            mode=PropertyImportMode.CAD_RECOVERY if partial else PropertyImportMode.ANNUAL,
+            options=RefreshOptions(
+                tax_year=candidate.request["tax_year"], skip_download=True, skip_extract=True
+            ),
+            prepare_only=True,
+            actor=actor,
+            origin="admin_recovery",
+            replay=replay,
+        )
+    )
+
+
 class BrazosPropertyImport:
     """Prepare and publish a completed or Partial Brazos property snapshot."""
 
@@ -159,12 +563,8 @@ class BrazosPropertyImport:
         try:
             with import_warnings("brazos_cad") as warnings, county_writer(operation):
                 if request.replay is not None:
-                    from counties.brazos.property_candidate import published_identity
-
                     verify_replay(request.replay, operation, published_identity())
                 if request.candidate_id is not None:
-                    from counties.brazos.property_publication import publish_candidate
-
                     candidate = ImportCandidate.objects.get(
                         pk=request.candidate_id, county="brazos"
                     )
@@ -204,8 +604,6 @@ class BrazosPropertyImport:
                         and not request.options.dry_run
                         and result.workflow_state == "prepared"
                     ):
-                        from counties.brazos.property_publication import publish_candidate
-
                         candidate = ImportCandidate.objects.get(
                             pk=result.candidate_id, county="brazos"
                         )
@@ -280,8 +678,6 @@ class BrazosPropertyImport:
     ) -> PropertyImportResult:
         if request.options.dry_run:
             return self._preview(request, operation)
-        from counties.brazos.property_candidate import prepare_candidate
-
         return prepare_candidate(self._cad, self._gis, request, operation)
 
     def _run_unstaged(
@@ -564,3 +960,30 @@ def build_default_refresh(reporter: object) -> BrazosAnnualRefresh:
     from counties.brazos.gis_refresh import GisRefreshStage
 
     return BrazosAnnualRefresh(CadRefreshStage(reporter), GisRefreshStage(reporter))
+
+
+__all__ = [
+    "MODELS",
+    "PROPERTY_MODELS",
+    "AnnualRefreshResult",
+    "AnnualRefreshStage",
+    "BrazosAnnualRefresh",
+    "BrazosPropertyImport",
+    "PropertyImportMode",
+    "PropertyImportOutcome",
+    "PropertyImportRequest",
+    "PropertyImportResult",
+    "PropertyImportStage",
+    "RefreshOptions",
+    "StagePreparation",
+    "StageResult",
+    "build_default_property_import",
+    "build_default_refresh",
+    "candidate_tables",
+    "dataset_identity",
+    "outcome_populations",
+    "prepare_candidate",
+    "prepare_recovery",
+    "publish_candidate",
+    "published_identity",
+]

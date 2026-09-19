@@ -62,8 +62,7 @@ class RowReaderTests(SimpleTestCase):
             path = self._write(
                 directory,
                 "building_res.txt",
-                "acct\tbld_num\tbed_rm\tfull_bath\thalf_bath\n"
-                "P1\t2\t3\t1.5\t1\n",
+                "acct\tbld_num\tbed_rm\tfull_bath\thalf_bath\n" "P1\t2\t3\t1.5\t1\n",
             )
             rows = list(iter_building_rows(path, {"P1": 42}, _EmptyFixtures()))
 

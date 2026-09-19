@@ -35,12 +35,19 @@ class SimplePdfTests(SimpleTestCase):
 
     def test_long_line_list_auto_paginates(self) -> None:
         lines = [f"Line {i}: " + "x" * 80 for i in range(60)]
-        output = simple_pdf(lines)
-        page_count = output.count(b"/Type /Page")
-        assert page_count > 1, (
-            f"60 long lines must auto-paginate; got {page_count} page(s) — "
-            "silent overflow risk if only 1"
-        )
+        output = simple_pdf(lines, lines_per_page=38)
+        page_count = output.count(b"/Type /Page ")
+        assert page_count == 2, f"60 lines with 38/page must produce 2 pages, got {page_count}"
+        assert b"/Count 2" in output
+        assert b"/Kids [4 0 R 6 0 R]" in output
+
+    def test_three_page_pagination_structure(self) -> None:
+        lines = [f"Line {i}" for i in range(100)]
+        output = simple_pdf(lines, lines_per_page=38)
+        page_count = output.count(b"/Type /Page ")
+        assert page_count == 3, f"100 lines with 38/page must produce 3 pages, got {page_count}"
+        assert b"/Count 3" in output
+        assert b"/Kids [4 0 R 6 0 R 8 0 R]" in output
 
     def test_special_characters_are_escaped(self) -> None:
         lines = ["Price: $1,000 (approx.)", "Path: C:\\Users\\test"]

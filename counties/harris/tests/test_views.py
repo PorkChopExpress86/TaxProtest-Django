@@ -789,7 +789,7 @@ class ProtestAnalysisViewTests(TestCase):
         response = self.client.get(reverse("protest_analysis", args=[self.target.account_number]))
         comp_rows = response.context["comp_rows"]
         self.assertEqual(len(comp_rows), 1)
-        self.assertAlmostEqual(comp_rows[0]["delta"], -25.0, places=1)
+        self.assertAlmostEqual(comp_rows[0].delta, -25.0, places=1)
 
     @patch("counties.harris.adapter.find_similar_properties")
     def test_comps_below_subject_counted_correctly(self, mock_find):

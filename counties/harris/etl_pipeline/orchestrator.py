@@ -24,6 +24,7 @@ from counties.common.import_writers import county_writer, fenced_write, working_
 from counties.common.models import ImportCandidate, ImportOperation
 from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG
 
+from .candidate import prepare_candidate, publish_candidate, published_identity, seed_sources
 from .config import DataSource, DataSourceType, ETLConfig
 from .download import DownloadManager
 from .extract import ExtractManager
@@ -306,8 +307,6 @@ class _HarrisImportExecution:
             self.config.extract_dir, reuse=request.replay is None
         )
         if request.replay is not None:
-            from .recovery import seed_sources
-
             seed_sources(self.config, sources, operation)
         if request.property_file is not None:
             directory = self.config.extract_dir / "Real_acct_owner"
@@ -797,16 +796,12 @@ def run_harris_import(
             county_writer(operation),
         ):
             if request.replay is not None:
-                from .candidate import published_identity
-
                 verify_replay(request.replay, operation, published_identity())
             if request.candidate_id is None:
                 execution = _HarrisImportExecution(
                     request, sources, data_year, reporter=reporter, operation=operation
                 )
             if request.candidate_id is not None:
-                from .publication import publish_candidate
-
                 operation.evidence["application_reason"] = request.application_reason
 
                 candidate = ImportCandidate.objects.get(pk=request.candidate_id, county="harris")
@@ -827,8 +822,6 @@ def run_harris_import(
                     candidate_id=candidate.pk,
                 )
             elif isinstance(request.load, HarrisApply):
-                from .candidate import prepare_candidate
-
                 execution.request = replace(
                     request,
                     load=HarrisPrepare(
@@ -886,8 +879,6 @@ def run_harris_import(
         and request.candidate_id is None
         and result.status is HarrisImportStatus.PREPARED
     ):
-        from .publication import publish_candidate
-
         candidate = ImportCandidate.objects.get(pk=result.candidate_id, county="harris")
         operation.evidence["application_reason"] = request.application_reason
         operation.save()

@@ -6,7 +6,11 @@ from decimal import Decimal
 
 from django.test import SimpleTestCase
 
-from counties.common.analysis import build_protest_dossier, sort_comps_for_display
+from counties.common.analysis import (
+    build_comparables_dossier,
+    build_protest_dossier,
+    sort_comps_for_display,
+)
 from counties.common.contracts import (
     Comp,
     CountyAdapter,
@@ -234,3 +238,62 @@ class BuildProtestDossierTests(SimpleTestCase):
         self.assertIsNotNone(dossier.comp_rows[0].breakdown_summary)
         self.assertEqual(dossier.subject.key, "1")
         self.assertEqual(outcome.subject, subject)
+
+
+class BuildComparablesDossierTests(SimpleTestCase):
+    def test_unknown_property_returns_unavailable(self):
+        adapter = FakeAdapter(subject=None)
+        outcome = build_comparables_dossier(adapter, "missing")
+
+        self.assertFalse(outcome.is_ready)
+        self.assertEqual(outcome.error, "Property not found")
+
+    def test_not_comparable_ready_returns_unavailable(self):
+        subject = Subject(key="1", address_line="123 Main", has_location=True)
+        caps = PropertyCapabilities(comparable_ready=False, reasons={"comparable": "No location"})
+        adapter = FakeAdapter(subject=subject, caps=caps)
+
+        outcome = build_comparables_dossier(adapter, "1")
+
+        self.assertFalse(outcome.is_ready)
+        self.assertEqual(outcome.error, "No location")
+        self.assertEqual(outcome.subject, subject)
+
+    def test_ready_subject_builds_comparables_dossier(self):
+        subject = Subject(
+            key="1",
+            address_line="123 Main",
+            has_location=True,
+            assessed_value=Decimal("300000"),
+            living_area=2000,
+            tax_year=2026,
+        )
+        comps = [
+            _comp(
+                "C1",
+                similarity_score=85.0,
+                distance=0.5,
+                assessed_value=Decimal("250000"),
+                living_area=2000,
+            )
+        ]
+        adapter = FakeAdapter(subject=subject, comps=comps)
+
+        outcome = build_comparables_dossier(
+            adapter,
+            "1",
+            max_distance="3.5",
+            max_results="15",
+            min_score="80",
+        )
+
+        self.assertTrue(outcome.is_ready)
+        self.assertIsNotNone(outcome.dossier)
+        dossier = outcome.dossier
+        self.assertEqual(dossier.subject.key, "1")
+        self.assertEqual(len(dossier.comps), 1)
+        self.assertEqual(dossier.max_distance, 3.5)
+        self.assertEqual(dossier.max_results, 15)
+        self.assertEqual(dossier.min_score, 80.0)
+        self.assertIsNone(dossier.recommendation)
+        self.assertIsNotNone(dossier.assessment_history_chart)

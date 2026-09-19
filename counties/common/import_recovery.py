@@ -123,11 +123,9 @@ def start_recovery(candidate, *, user, reason, binding):
     request = ReplayRequest(candidate.pk, binding, reason.strip())
     try:
         if candidate.county == "harris":
-            from counties.harris.etl_pipeline.candidate import published_identity
-            from counties.harris.etl_pipeline.recovery import prepare_recovery
+            from counties.harris.etl_pipeline.candidate import prepare_recovery, published_identity
         else:
-            from counties.brazos.property_candidate import published_identity
-            from counties.brazos.property_recovery import prepare_recovery
+            from counties.brazos.property_import import prepare_recovery, published_identity
         result = prepare_recovery(candidate, request, actor=user.get_username())
         operation = ImportOperation.objects.get(pk=result.operation_id)
     except Exception:

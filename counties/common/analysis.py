@@ -16,17 +16,19 @@ from __future__ import annotations
 import statistics
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import Decimal
 from typing import Any, Literal
 
-from counties.common.cap_status import evaluate_cap_status
 from counties.common.charts import (
     assessment_history_chart,
     ppsf_distribution_chart,
     score_breakdown_summary,
 )
 from counties.common.contracts import Comp, CountyAdapter, Subject
-from counties.common.tax_models import AssessmentHistory
+from counties.common.tax_evaluation import (
+    evaluate_assessment_history,
+    history_availability_notice,
+)
 
 ONE_HUNDRED = Decimal("100")
 PERCENT = Decimal("0.01")
@@ -186,54 +188,133 @@ def percentile_of(value: float | None, population: Sequence[float]) -> float | N
     return (at_or_below / len(population)) * 100.0
 
 
-def year_over_year_percent(current, prior) -> Decimal | None:
-    """Percentage change between two assessed values, rounded to two places."""
-    if current is None or not prior:
-        return None
-    return ((Decimal(current) - Decimal(prior)) / Decimal(prior) * ONE_HUNDRED).quantize(
-        PERCENT, rounding=ROUND_HALF_UP
-    )
-
-
-def history_availability_notice(
-    history: Sequence[Mapping[str, Any]], source_year: int | None
-) -> str:
-    years = {row["tax_year"] for row in history if row.get("assessed_value") is not None}
-    if not years:
-        return "Assessment history unavailable. Qualified property evidence remains available."
-    latest = source_year or max(years)
-    gaps = sorted(set(range(max(min(years), latest - 4), latest + 1)) - years)
-    return "Assessment history gaps: " + ", ".join(map(str, gaps)) if gaps else ""
-
-
 def assessment_history_rows(
     account_number: str, county: str = "harris", limit: int = 5
 ) -> list[dict[str, Any]]:
     """Per-year assessed values, newest first, with YoY change and cap status."""
-    history = list(
-        AssessmentHistory.objects.filter(account_number=account_number, county=county).order_by(
-            "-tax_year"
-        )[:limit]
+    return evaluate_assessment_history(county, account_number, limit=limit)
+
+
+# --------------------------------------------------------------------------- comparables dossier
+
+SIMILAR_DEFAULT_MAX_DISTANCE = 10.0
+SIMILAR_MIN_MAX_DISTANCE = 0.1
+SIMILAR_MAX_MAX_DISTANCE = 50.0
+SIMILAR_DEFAULT_MAX_RESULTS = 20
+SIMILAR_MIN_MAX_RESULTS = 1
+SIMILAR_MAX_MAX_RESULTS = 100
+SIMILAR_DEFAULT_MIN_SCORE = 30.0
+SIMILAR_MIN_MIN_SCORE = 0.0
+SIMILAR_MAX_MIN_SCORE = 100.0
+
+
+def clamped_int(value: Any, default: int, lower: int, upper: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(lower, min(upper, parsed))
+
+
+@dataclass(frozen=True)
+class ComparablesDossier:
+    """The comparables and similarity package for a subject property."""
+
+    subject: Subject
+    comps: Sequence[Comp]
+    subject_percentile: float | None
+    recommendation: ProtestRecommendation | None
+    history: Sequence[Mapping[str, Any]]
+    assessment_history_chart: Mapping[str, Any] | None
+    max_distance: float
+    max_results: int
+    min_score: float
+
+
+@dataclass(frozen=True)
+class ComparablesDossierOutcome:
+    """Polymorphic result of evaluating a comparables request."""
+
+    status: Literal["ready", "unavailable"]
+    dossier: ComparablesDossier | None = None
+    subject: Subject | None = None
+    error: str | None = None
+
+    @property
+    def is_ready(self) -> bool:
+        return self.status == "ready" and self.dossier is not None
+
+
+def build_comparables_dossier(
+    adapter: CountyAdapter,
+    key: str,
+    *,
+    max_distance: Any = None,
+    max_results: Any = None,
+    min_score: Any = None,
+) -> ComparablesDossierOutcome:
+    subject = adapter.get_subject(key)
+    if subject is None:
+        return ComparablesDossierOutcome(
+            status="unavailable", subject=None, error="Property not found"
+        )
+
+    caps = adapter.capabilities(key)
+    if not caps.comparable_ready:
+        return ComparablesDossierOutcome(
+            status="unavailable",
+            subject=subject,
+            error=caps.reason_for("comparable")
+            or "This property does not have location data required for similarity search.",
+        )
+
+    effective_max_distance = clamped_float(
+        max_distance,
+        SIMILAR_DEFAULT_MAX_DISTANCE,
+        SIMILAR_MIN_MAX_DISTANCE,
+        SIMILAR_MAX_MAX_DISTANCE,
+    )
+    effective_max_results = clamped_int(
+        max_results,
+        SIMILAR_DEFAULT_MAX_RESULTS,
+        SIMILAR_MIN_MAX_RESULTS,
+        SIMILAR_MAX_MAX_RESULTS,
+    )
+    effective_min_score = clamped_float(
+        min_score,
+        SIMILAR_DEFAULT_MIN_SCORE,
+        SIMILAR_MIN_MIN_SCORE,
+        SIMILAR_MAX_MIN_SCORE,
     )
 
-    rows = []
-    for index, entry in enumerate(history):
-        prior = history[index + 1] if index + 1 < len(history) else None
-        if prior is not None and prior.tax_year != entry.tax_year - 1:
-            prior = None
-        rows.append(
-            {
-                "tax_year": entry.tax_year,
-                "assessed_value": entry.assessed_value,
-                "appraised_value": entry.appraised_value,
-                "market_value": entry.market_value,
-                "increase_percent": year_over_year_percent(
-                    entry.assessed_value, prior.assessed_value if prior else None
-                ),
-                "cap_status": evaluate_cap_status(entry, prior),
-            }
-        )
-    return rows
+    raw_comps = adapter.find_comps(
+        key,
+        max_distance_miles=effective_max_distance,
+        max_results=effective_max_results,
+        min_score=effective_min_score,
+    )
+    comps = sort_comps_for_display(raw_comps)
+
+    subject_ppsf = subject.value_per_sqft
+    population = [c.value_per_sqft for c in comps if c.value_per_sqft is not None]
+    if subject_ppsf is not None:
+        population.append(subject_ppsf)
+
+    history = adapter.assessment_history(key)
+    recommendation = recommend_protest(subject_ppsf, comps)
+
+    dossier = ComparablesDossier(
+        subject=subject,
+        comps=comps,
+        subject_percentile=percentile_of(subject_ppsf, population),
+        recommendation=recommendation,
+        history=history,
+        assessment_history_chart=assessment_history_chart(history),
+        max_distance=effective_max_distance,
+        max_results=effective_max_results,
+        min_score=effective_min_score,
+    )
+    return ComparablesDossierOutcome(status="ready", dossier=dossier, subject=subject)
 
 
 # --------------------------------------------------------------------------- protest dossier

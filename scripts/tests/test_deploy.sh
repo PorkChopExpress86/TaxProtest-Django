@@ -156,6 +156,7 @@ test_missing_state_forces_full_rebuild() {
 
     assert_file_contains "$CASE_LOG" "compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build"
     assert_file_contains "$CASE_LOG" "compose -f docker-compose.yml -f docker-compose.prod.yml exec -T web python -c from urllib.request import urlopen; response = urlopen(\"http://127.0.0.1:8000/readiness/\", timeout=5); raise SystemExit(0 if response.status == 200 else 1)"
+    assert_file_contains "$CASE_LOG" "compose -f docker-compose.yml -f docker-compose.prod.yml exec -T web python manage.py check_deployment_readiness"
     assert_file_contains "$CASE_LOG" "image prune -f"
     assert_file_contains "$CASE_PROJECT/.deploy-state/last-complete-revision" "$TARGET_REVISION"
 }

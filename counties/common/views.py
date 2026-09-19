@@ -20,22 +20,17 @@ from django.urls import reverse
 from counties.common.analysis import (
     PROTEST_MAX_MIN_SCORE,
     PROTEST_MIN_MIN_SCORE,
+    build_comparables_dossier,
     build_protest_dossier,
     clamped_float,
-    percentile_of,
-    recommend_protest,
-    sort_comps_for_display,
-)
-from counties.common.charts import (
-    assessment_history_chart,
 )
 from counties.common.contracts import Comp, CountyAdapter, Subject
 from counties.common.exports import (
     EXPORT_CSV_MAX_ROWS,
     has_meaningful_export_filter,
-    protest_comps_csv,
-    protest_report_pdf,
-    search_results_csv,
+    render_protest_csv,
+    render_protest_pdf,
+    render_search_csv,
 )
 
 
@@ -159,97 +154,53 @@ def export_csv(request, *, adapter: CountyAdapter):
     queryset = adapter.search_queryset(params)
     records = list(queryset[:EXPORT_CSV_MAX_ROWS])
     rows = adapter.search_rows(records)
-    return search_results_csv(profile.csv_columns, rows)
+    return render_search_csv(profile.csv_columns, rows).to_response()
 
 
 # --------------------------------------------------------------------------- comparables
 
 
-def _subject_or_404(adapter: CountyAdapter, key: str) -> Subject:
-    subject = adapter.get_subject(key)
-    if subject is None:
-        raise Http404("Property not found")
-    return subject
-
-
-def _no_location_context(adapter: CountyAdapter, subject: Subject) -> dict[str, Any]:
-    caps = adapter.capabilities(subject.key)
-    return {
-        "county": adapter.profile,
-        "subject": subject,
-        "error": (
-            caps.reason_for("comparable")
-            or "This property does not have location data required for similarity search."
-        ),
-    }
-
-
 def similar_properties(request, key, *, adapter: CountyAdapter):
     """Comparables ranked by similarity, with a protest recommendation."""
     profile = adapter.profile
-    subject = adapter.get_subject(key)
-    if subject is None:
+    outcome = build_comparables_dossier(
+        adapter,
+        key,
+        max_distance=request.GET.get("max_distance"),
+        max_results=request.GET.get("max_results"),
+        min_score=request.GET.get("min_score"),
+    )
+    if not outcome.is_ready:
         return render(
             request,
             "counties/similar_properties.html",
-            {"county": profile, "error": "Property not found", "subject_key": key},
+            {
+                "county": profile,
+                "subject": outcome.subject,
+                "error": (
+                    outcome.error
+                    or "This property does not have location data required for similarity search."
+                ),
+                "subject_key": key,
+            },
         )
-
-    caps = adapter.capabilities(key)
-    if not caps.comparable_ready:
-        return render(
-            request, "counties/similar_properties.html", _no_location_context(adapter, subject)
-        )
-
-    max_distance = clamped_float(
-        request.GET.get("max_distance"),
-        SIMILAR_DEFAULT_MAX_DISTANCE,
-        SIMILAR_MIN_MAX_DISTANCE,
-        SIMILAR_MAX_MAX_DISTANCE,
-    )
-    max_results = clamped_int(
-        request.GET.get("max_results"),
-        SIMILAR_DEFAULT_MAX_RESULTS,
-        SIMILAR_MIN_MAX_RESULTS,
-        SIMILAR_MAX_MAX_RESULTS,
-    )
-    min_score = clamped_float(
-        request.GET.get("min_score"),
-        SIMILAR_DEFAULT_MIN_SCORE,
-        SIMILAR_MIN_MIN_SCORE,
-        SIMILAR_MAX_MIN_SCORE,
-    )
-
-    comps = adapter.find_comps(
-        key,
-        max_distance_miles=max_distance,
-        max_results=max_results,
-        min_score=min_score,
-    )
-    comps = sort_comps_for_display(comps)
-
-    subject_ppsf = subject.value_per_sqft
-    population = [c.value_per_sqft for c in comps if c.value_per_sqft is not None]
-    if subject_ppsf is not None:
-        population.append(subject_ppsf)
-
-    history = adapter.assessment_history(key)
-    recommendation = recommend_protest(subject_ppsf, comps)
+    dossier = outcome.dossier
+    assert dossier is not None
 
     context = {
         "county": profile,
-        "subject": subject,
-        "comps": comps,
+        "subject": dossier.subject,
+        "comps": dossier.comps,
         "columns": profile.comp_columns,
-        "subject_percentile": percentile_of(subject_ppsf, population),
-        "assessment_history": history,
-        "assessment_history_chart": assessment_history_chart(history),
-        "recommendation": recommendation,
-        "max_distance": max_distance,
-        "max_results": max_results,
-        "min_score": min_score,
+        "subject_percentile": dossier.subject_percentile,
+        "assessment_history": dossier.history,
+        "assessment_history_chart": dossier.assessment_history_chart,
+        "recommendation": dossier.recommendation,
+        "max_distance": dossier.max_distance,
+        "max_results": dossier.max_results,
+        "min_score": dossier.min_score,
         "search_url": _county_url(adapter, "index"),
-        "protest_url": _county_url(adapter, "protest_analysis", subject.key),
+        "protest_url": _county_url(adapter, "protest_analysis", dossier.subject.key),
     }
     return render(request, "counties/similar_properties.html", context)
 
@@ -313,13 +264,7 @@ def protest_analysis_export(request, key, *, adapter: CountyAdapter):
         )
     dossier = outcome.dossier
     assert dossier is not None
-    return protest_comps_csv(
-        dossier.subject,
-        dossier.comps,
-        dossier.equity,
-        dossier.tax_impact,
-        dossier.history_notice,
-    )
+    return render_protest_csv(dossier).to_response()
 
 
 def protest_analysis_pdf(request, key, *, adapter: CountyAdapter):
@@ -334,13 +279,7 @@ def protest_analysis_pdf(request, key, *, adapter: CountyAdapter):
         )
     dossier = outcome.dossier
     assert dossier is not None
-    return protest_report_pdf(
-        adapter.profile,
-        dossier.subject,
-        dossier.comps,
-        dossier.history,
-        dossier.tax_impact,
-    )
+    return render_protest_pdf(adapter.profile, dossier).to_response()
 
 
 __all__ = [
