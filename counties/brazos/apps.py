@@ -8,3 +8,10 @@ class BrazosConfig(AppConfig):
     # (and therefore ``brazos_cad_*`` tables and migration history) did not.
     label = "brazos_cad"
     verbose_name = "Brazos County (BCAD)"
+
+    def ready(self):
+        # Models are importable only once the app registry is ready.
+        from counties.brazos.property_import import BrazosCandidatePort
+        from counties.common.candidate_ports import register
+
+        register("brazos", BrazosCandidatePort())

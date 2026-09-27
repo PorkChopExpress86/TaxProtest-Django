@@ -9,3 +9,10 @@ class HarrisConfig(AppConfig):
     # content types keep working without a data migration.
     label = "data"
     verbose_name = "Harris County (HCAD)"
+
+    def ready(self):
+        # Models are importable only once the app registry is ready.
+        from counties.common.candidate_ports import register
+        from counties.harris.etl_pipeline.candidate import HarrisCandidatePort
+
+        register("harris", HarrisCandidatePort())

@@ -29,11 +29,11 @@ from counties.brazos.models import (
     SnapshotOutcome,
 )
 from counties.brazos.readiness import BrazosActiveSnapshotReadiness
+from counties.common import candidate_ports
+from counties.common.candidate_ports import CandidateTables
 from counties.common.candidate_staging import (
-    compute_dataset_hash,
     cutover_staged_tables,
     staged_candidate_schema,
-    switch_search_path,
 )
 from counties.common.import_audit import OperationStatus, audited_operation
 from counties.common.import_coverage import OutcomePopulation, compare_coverage
@@ -179,26 +179,32 @@ PROPERTY_MODELS = (
 MODELS = (*PROPERTY_MODELS, PropertyJurisdictionExemption, BrazosPropertySnapshot)
 
 
+class BrazosCandidatePort:
+    """What the shared Candidate lifecycle asks Brazos."""
+
+    tables = CandidateTables(MODELS, county_scoped=frozenset({PropertyJurisdictionExemption}))
+
+    def published(self) -> dict:
+        snapshot = BrazosPropertySnapshot.objects.filter(is_active=True).first()
+        return {
+            "snapshot_id": snapshot.pk if snapshot else None,
+            "tax_year": snapshot.tax_year if snapshot else None,
+            "outcome": snapshot.outcome if snapshot else None,
+        }
+
+    def outcomes(self, candidate: ImportCandidate | None) -> dict[str, OutcomePopulation]:
+        if candidate is None:
+            return outcome_populations()
+        partial = candidate.request["mode"] == PropertyImportMode.CAD_RECOVERY.value
+        return outcome_populations(claimed_gis=not partial, deliberately_absent_gis=partial)
+
+
 def dataset_identity(schema: str = "public") -> dict:
-    return compute_dataset_hash(
-        MODELS,
-        schema=schema,
-        scope_filters={PropertyJurisdictionExemption: "AND county = 'brazos'"},
-    )
+    return candidate_ports.dataset_identity("brazos", schema)
 
 
 def published_identity() -> dict:
-    snapshot = BrazosPropertySnapshot.objects.filter(is_active=True).first()
-    return {
-        **dataset_identity(),
-        "snapshot_id": snapshot.pk if snapshot else None,
-        "tax_year": snapshot.tax_year if snapshot else None,
-        "outcome": snapshot.outcome if snapshot else None,
-    }
-
-
-def candidate_tables(candidate: ImportCandidate):
-    return switch_search_path(candidate.storage_schema)
+    return candidate_ports.published_identity("brazos")
 
 
 def outcome_populations(
@@ -963,7 +969,6 @@ __all__ = [
     "StageResult",
     "build_default_property_import",
     "build_default_refresh",
-    "candidate_tables",
     "dataset_identity",
     "outcome_populations",
     "prepare_candidate",

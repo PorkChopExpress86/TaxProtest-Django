@@ -9,6 +9,7 @@ from unittest.mock import patch
 from django.db import DatabaseError
 from django.test import TestCase, override_settings
 
+from counties.common.candidate_staging import switch_search_path
 from counties.common.models import ImportCandidate
 from counties.harris.etl_pipeline import (
     ExtractedSourceRetention,
@@ -23,7 +24,6 @@ from counties.harris.etl_pipeline import (
     InvalidHarrisImportRequest,
     run_harris_import,
 )
-from counties.harris.etl_pipeline.candidate import candidate_tables
 from counties.harris.etl_pipeline.import_plan import HarrisImportPlan
 from counties.harris.models import BuildingDetail, ExtraFeature, PropertyRecord
 
@@ -209,7 +209,7 @@ class HarrisImportBoundaryTests(TestCase):
             )
 
         self.assertFalse(PropertyRecord.objects.filter(account_number="P225").exists())
-        with candidate_tables(ImportCandidate.objects.get(pk=result.candidate_id)):
+        with switch_search_path(ImportCandidate.objects.get(pk=result.candidate_id).storage_schema):
             property_record = PropertyRecord.objects.get(account_number="P225")
             building = BuildingDetail.objects.get(account_number="P225", building_number=1)
         self.assertIs(result.status, HarrisImportStatus.BLOCKED)
@@ -236,7 +236,7 @@ class HarrisImportBoundaryTests(TestCase):
             )
 
         self.assertFalse(ExtraFeature.objects.filter(account_number="P230").exists())
-        with candidate_tables(ImportCandidate.objects.get(pk=result.candidate_id)):
+        with switch_search_path(ImportCandidate.objects.get(pk=result.candidate_id).storage_schema):
             features = list(
                 ExtraFeature.objects.filter(account_number="P230").order_by("feature_code")
             )

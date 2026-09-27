@@ -18,3 +18,6 @@ time, reason, and observed publication result.
 
 Implementation is pending. The existing Harris ETL admin page does not implement
 this review contract.
+
+Refined by ADR-0018: the review and publication lifecycle is shared through county
+candidate ports; validation and readiness remain county-owned.

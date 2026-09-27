@@ -111,6 +111,12 @@ a single classified status. Every county data mutation happens inside one; a
 failure after its publication commits is a warning, never a failed import.
 _Avoid_: job, task, run
 
+**Candidate lifecycle**:
+The shared preparation, qualification, review, publication, and recovery of a
+county property candidate inside an Import operation. It asks each county only
+through its registered county candidate port and never interprets county sources.
+_Avoid_: import framework, shared ETL, cross-county importer
+
 **Candidate staging**:
 The county-neutral database isolation mechanism that provisions a temporary
 PostgreSQL candidate schema, mirrors production table definitions and sequences,

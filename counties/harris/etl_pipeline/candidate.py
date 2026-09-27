@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -10,13 +9,13 @@ from uuid import uuid4
 
 from django.db import connection
 
+from counties.common import candidate_ports
+from counties.common.candidate_ports import CandidateTables
 from counties.common.candidate_staging import (
-    compute_dataset_hash,
     cutover_staged_tables,
     staged_candidate_schema,
-    switch_search_path,
 )
-from counties.common.import_coverage import compare_coverage
+from counties.common.import_coverage import OutcomePopulation, compare_coverage
 from counties.common.import_recovery import ReplayRejected, copy_exact_source
 from counties.common.import_retention import (
     baseline_sources,
@@ -30,30 +29,44 @@ from counties.harris.models import BuildingDetail, ExtraFeature, PropertyRecord
 from counties.harris.readiness import outcome_populations, published_year
 from counties.harris.source_catalog import HarrisImportStage
 
+from .import_plan import HarrisImportPlan
+
 if TYPE_CHECKING:
     from .orchestrator import _HarrisImportExecution
 
 MODELS = (PropertyRecord, BuildingDetail, ExtraFeature)
 
 
+class HarrisCandidatePort:
+    """What the shared Candidate lifecycle asks Harris."""
+
+    tables = CandidateTables(MODELS)
+
+    def published(self) -> dict:
+        current = ImportCandidate.objects.filter(county="harris", state="published").first()
+        return {
+            "candidate_id": str(current.pk) if current else None,
+            "property_source_year": (
+                current.evidence.get("property_source_year") if current else None
+            ),
+        }
+
+    def outcomes(self, candidate: ImportCandidate | None) -> dict[str, OutcomePopulation]:
+        if candidate is None:
+            return outcome_populations(published_year())
+        return outcome_populations(
+            candidate.evidence.get("property_source_year"),
+            claimed_gis=HarrisImportStage.GIS
+            in HarrisImportPlan.from_legacy_scope(candidate.request["plan"]).stages,
+        )
+
+
 def dataset_identity(schema: str = "public") -> dict:
-    return compute_dataset_hash(MODELS, schema=schema)
+    return candidate_ports.dataset_identity("harris", schema)
 
 
 def published_identity() -> dict:
-    current = ImportCandidate.objects.filter(county="harris", state="published").first()
-    return {
-        **dataset_identity(),
-        "candidate_id": str(current.pk) if current else None,
-        "property_source_year": current.evidence.get("property_source_year") if current else None,
-    }
-
-
-@contextmanager
-def candidate_tables(candidate: ImportCandidate):
-    """Bind county loaders to their isolated tables and restore the caller path."""
-    with switch_search_path(candidate.storage_schema):
-        yield
+    return candidate_ports.published_identity("harris")
 
 
 def publish_candidate(candidate_id, operation, *, user=None):
@@ -278,7 +291,6 @@ def prepare_candidate(execution: _HarrisImportExecution, operation: ImportOperat
 
 __all__ = [
     "MODELS",
-    "candidate_tables",
     "dataset_identity",
     "outcome_populations",
     "prepare_candidate",

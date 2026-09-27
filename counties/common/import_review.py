@@ -7,6 +7,8 @@ from pathlib import Path
 from django.core.exceptions import PermissionDenied
 from django.utils import timezone
 
+from counties.common.candidate_ports import dataset_identity, port_for, published_identity
+from counties.common.candidate_staging import switch_search_path
 from counties.common.import_audit import audited_operation
 from counties.common.import_coverage import compare_coverage
 from counties.common.import_writers import fenced_write
@@ -30,37 +32,12 @@ def captured_binding(candidate) -> str:
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
-def county_identities(candidate):
-    if candidate.county == "harris":
-        from counties.harris.etl_pipeline.candidate import dataset_identity, published_identity
-    elif candidate.county == "brazos":
-        from counties.brazos.property_import import dataset_identity, published_identity
-    else:
-        raise ImportReviewRejected("Unknown county candidate")
-    return published_identity(), dataset_identity(candidate.storage_schema)
-
-
 def current_coverage(candidate):
-    if candidate.county == "harris":
-        from counties.harris.adapter import adapter
-        from counties.harris.etl_pipeline.candidate import candidate_tables, outcome_populations
-        from counties.harris.etl_pipeline.import_plan import HarrisImportPlan
-        from counties.harris.source_catalog import HarrisImportStage
-
-        previous = outcome_populations(adapter.published_year())
-        with candidate_tables(candidate):
-            current = outcome_populations(
-                candidate.evidence.get("property_source_year"),
-                claimed_gis=HarrisImportStage.GIS
-                in HarrisImportPlan.from_legacy_scope(candidate.request["plan"]).stages,
-            )
-    else:
-        from counties.brazos.property_import import candidate_tables, outcome_populations
-
-        previous = outcome_populations()
-        with candidate_tables(candidate):
-            partial = candidate.request["mode"] == "cad_recovery"
-            current = outcome_populations(claimed_gis=not partial, deliberately_absent_gis=partial)
+    """Measure the candidate against the published data with the county's own rules."""
+    port = port_for(candidate.county)
+    previous = port.outcomes(None)
+    with switch_search_path(candidate.storage_schema):
+        current = port.outcomes(candidate)
     return compare_coverage(previous, current)
 
 
@@ -89,7 +66,8 @@ def checked_binding(candidate: ImportCandidate) -> str:
             ) from exc
         if digest.hexdigest() != source["sha256"]:
             raise ImportReviewRejected("Retained source changed; prepare fresh evidence")
-    baseline, content = county_identities(candidate)
+    baseline = published_identity(candidate.county)
+    content = dataset_identity(candidate.county, candidate.storage_schema)
     if baseline != candidate.baseline:
         raise ImportReviewRejected("Published baseline changed; prepare fresh comparison evidence")
     if not candidate.evidence.get("content_identity"):
