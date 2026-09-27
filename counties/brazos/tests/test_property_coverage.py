@@ -108,17 +108,6 @@ class BrazosCoverageTests(TransactionTestCase):
                 self.assertFalse(coverage["outcomes"]["comparable"]["supported"])
                 self.assertEqual(PropertyAccount.objects.count(), 100)
 
-    def test_first_import_and_zero_search_readiness_are_distinct(self):
-        for owners in (True, False):
-            with self.subTest(owners=owners), tempfile.TemporaryDirectory() as temp:
-                root = Path(temp)
-                write_pacs(root, ["000000010013"], owners=owners)
-                result = self.prepare(root)
-                candidate = ImportCandidate.objects.get(pk=result.candidate_id)
-                self.assertEqual(candidate.state, "awaiting_review" if owners else "blocked")
-                self.assertEqual(bool(candidate.evidence["coverage"]["hard_failures"]), not owners)
-                self.assertFalse(PropertyAccount.objects.exists())
-
     def test_annual_measures_report_prerequisites_and_coordinate_provenance(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

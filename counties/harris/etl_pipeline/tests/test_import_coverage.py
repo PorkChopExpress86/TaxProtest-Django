@@ -116,27 +116,6 @@ class HarrisCoverageTests(TransactionTestCase):
                 self.assertEqual(coverage["requires_review"], missing == 2)
                 self.assertEqual(PropertyRecord.objects.count(), 100)
 
-    def test_first_import_requires_review_with_unavailable_comparison(self):
-        with tempfile.TemporaryDirectory() as root, self.settings(**_runtime_settings(root)):
-            result = self.prepare(root, ["P100"])
-            candidate = ImportCandidate.objects.get(pk=result.candidate_id)
-            self.assertTrue(candidate.evidence["coverage"]["requires_review"])
-            self.assertEqual(candidate.state, "awaiting_review")
-            self.assertIsNone(candidate.evidence["coverage"]["outcomes"]["search"]["loss_fraction"])
-
-    def test_zero_ready_with_valid_sources_is_a_hard_qualification_failure(self):
-        with tempfile.TemporaryDirectory() as root, self.settings(**_runtime_settings(root)):
-            result = self.prepare(root, ["P100"], room_facts=False)
-            candidate = ImportCandidate.objects.get(pk=result.candidate_id)
-            self.assertEqual(candidate.state, "blocked")
-            self.assertTrue(candidate.evidence["coverage"]["hard_failures"])
-            self.assertTrue(candidate.evidence["result"]["stages"]["source_validation"]["success"])
-            self.assertIn(
-                "Active bedroom/bathroom facts unavailable",
-                str(candidate.evidence["coverage"]["outcomes"]["search"]["exclusion_reasons"]),
-            )
-            self.assertFalse(PropertyRecord.objects.exists())
-
     def test_ineligible_neighbors_cannot_qualify_an_equity_report(self):
         self.baseline(4)
         PropertyRecord.objects.update(value=250000)

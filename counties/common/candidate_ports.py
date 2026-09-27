@@ -29,6 +29,8 @@ class CandidateTables:
 
     models: tuple[type[Model], ...]  # parents first; cutover deletes in reverse
     county_scoped: frozenset[type[Model]] = frozenset()  # shared, scoped by county
+    # (model, column, referenced model, referenced column) keys added to the staged schema
+    deferred_keys: tuple[tuple[type[Model], str, type[Model], str], ...] = ()
 
 
 class CandidatePort(Protocol):

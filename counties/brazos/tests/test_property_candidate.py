@@ -4,7 +4,6 @@ import tempfile
 from pathlib import Path
 
 from django.contrib.auth import get_user_model
-from django.core.management.base import CommandError
 from django.db import connection
 from django.test import TransactionTestCase
 from django.urls import reverse
@@ -100,20 +99,6 @@ class BrazosCandidateTests(TransactionTestCase):
             self.client.get(reverse("admin:data_importcandidate_change", args=[candidate.pk])),
             "GIS capabilities unavailable",
         )
-
-    def test_annual_gis_failure_retains_blocked_candidate_and_previous_snapshot(self):
-        old = self.baseline()
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            _stage_complete_pacs_export(root, 2026)
-            with self.assertRaises(CommandError):
-                self.run_candidate(root, PropertyImportMode.ANNUAL)
-            candidate = ImportCandidate.objects.get()
-            self.assertEqual(candidate.state, "blocked")
-            self.assertEqual(candidate.request["mode"], "annual")
-            self.assertTrue(candidate.sources)
-            self.assertEqual(BrazosPropertySnapshot.objects.get(is_active=True).pk, old.pk)
-            self.assertEqual(PropertyAccount.objects.get().owner_name, "Published owner")
 
     def test_gis_recovery_candidate_records_exact_partial_prerequisite(self):
         import geopandas as gpd

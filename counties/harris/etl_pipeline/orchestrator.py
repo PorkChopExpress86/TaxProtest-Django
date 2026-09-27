@@ -17,14 +17,16 @@ from django.core.management import call_command
 from django.core.management.base import CommandError as DjangoCommandError
 from django.db import DatabaseError
 
-from counties.common.candidate_lifecycle import publish
+from counties.common.candidate_lifecycle import CandidateLoad, Loaded, prepare, publish
 from counties.common.import_audit import OperationStatus, audited_operation
 from counties.common.import_recovery import ReplayRequest, requested_replay, verify_replay
 from counties.common.import_writers import fenced_write, working_source_root
 from counties.common.models import ImportCandidate, ImportOperation
-from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG
+from counties.harris.models import BuildingDetail, ExtraFeature, PropertyRecord
+from counties.harris.readiness import published_year
+from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG, HarrisImportStage
 
-from .candidate import prepare_candidate, published_identity, seed_sources
+from .candidate import published_identity, seed_sources
 from .config import DataSource, DataSourceType, ETLConfig
 from .download import DownloadManager
 from .extract import ExtractManager
@@ -777,11 +779,7 @@ def run_harris_import(
     if not isinstance(request, HarrisImportRequest):
         raise InvalidHarrisImportRequest("request must be a HarrisImportRequest")
     data_year = _resolve_data_year(request)
-    sources = request.plan.select_sources(DEFAULT_HCAD_SOURCE_CATALOG.required_sources())
-    if not sources:
-        raise InvalidHarrisImportRequest(
-            f"No HCAD catalog sources match Harris import plan {request.plan.legacy_scope}"
-        )
+    sources = _selected_sources(request)
     result: HarrisImportResult | None = None
     with audited_operation(
         "harris",
@@ -793,10 +791,6 @@ def run_harris_import(
     ) as operation:
         if request.replay is not None:
             verify_replay(request.replay, operation, published_identity())
-        if request.candidate_id is None:
-            execution = _HarrisImportExecution(
-                request, sources, data_year, reporter=reporter, operation=operation
-            )
         if request.candidate_id is not None:
             candidate = ImportCandidate.objects.get(pk=request.candidate_id, county="harris")
             if {key: candidate.request[key] for key in ("plan", "data_year")} != {
@@ -816,35 +810,33 @@ def run_harris_import(
                 candidate_id=candidate.pk,
             )
         elif isinstance(request.load, HarrisApply):
-            execution.request = replace(
-                request,
-                load=HarrisPrepare(
-                    refresh_readiness=request.load.refresh_readiness,
-                    validate_completeness=request.load.validate_completeness,
-                    extracted_source_retention=ExtractedSourceRetention.RETAIN,
-                ),
+            # An automatic publication runs under the reservation that prepared it.
+            prepared = prepare(
+                operation,
+                harris_candidate_load(request, reporter=reporter),
+                automatic_publication=not isinstance(request.load, HarrisPrepare),
+                user=reviewer,
+                reason=request.application_reason,
             )
-            completed = prepare_candidate(execution, operation)
-            if (
-                not isinstance(request.load, HarrisPrepare)
-                and completed.status is HarrisImportStatus.PREPARED
-            ):
-                # Publish under the reservation that prepared the candidate.
-                publish(
-                    operation,
-                    completed.candidate_id,
-                    user=reviewer,
-                    reason=request.application_reason,
-                )
+            completed = replace(prepared.result, candidate_id=prepared.candidate.pk)
+            if completed.status is HarrisImportStatus.COMPLETED:
+                published = prepared.candidate.state == "published"
                 completed = replace(
                     completed,
-                    status=HarrisImportStatus.COMPLETED,
-                    wrote_data="already_applied" not in operation.evidence,
-                    already_applied="already_applied" in operation.evidence,
+                    status=(
+                        HarrisImportStatus.COMPLETED
+                        if published
+                        else HarrisImportStatus(prepared.candidate.state)
+                    ),
+                    wrote_data=published,
                     completed_at=datetime.now(),
                 )
+            else:
+                completed = replace(completed, wrote_data=False)
         else:
-            completed = execution.run()
+            completed = _HarrisImportExecution(
+                request, sources, data_year, reporter=reporter, operation=operation
+            ).run()
         result = replace(completed, operation_id=operation.pk)
         operation.status = (
             OperationStatus.ALREADY_APPLIED
@@ -879,6 +871,79 @@ def run_harris_import(
     return result
 
 
+def harris_candidate_load(
+    request: HarrisImportRequest, *, reporter: HarrisImportReporter | None = None
+) -> CandidateLoad:
+    """Load the request's translated Harris rows into a staged candidate schema."""
+    assert isinstance(request.load, HarrisApply)
+    data_year = _resolve_data_year(request)
+    sources = _selected_sources(request)
+    staged = replace(
+        request,
+        load=HarrisPrepare(
+            refresh_readiness=request.load.refresh_readiness,
+            validate_completeness=request.load.validate_completeness,
+            extracted_source_retention=ExtractedSourceRetention.RETAIN,
+        ),
+    )
+    identity: dict[str, Any] = {
+        "plan": request.plan.legacy_scope,
+        "data_year": data_year,
+        "validate_completeness": request.load.validate_completeness,
+    }
+    if request.property_file is not None:
+        identity["property_file"] = {
+            "path": str(request.property_file.path),
+            "append": request.property_file.append,
+            "limit": request.property_file.limit,
+            "batch_size": request.property_file.batch_size,
+        }
+
+    def run(candidate: ImportCandidate, operation: ImportOperation) -> Loaded:
+        if request.replay is not None:
+            source_year = operation.evidence["recovery"].get("property_source_year")
+        elif HarrisImportStage.PROPERTY not in request.plan.stages:
+            source_year = published_year()
+        else:
+            source_year = data_year if request.property_file is None else None
+        result = _HarrisImportExecution(
+            staged, sources, data_year, reporter=reporter, operation=operation
+        ).run()
+        return Loaded(
+            complete=result.status is HarrisImportStatus.COMPLETED,
+            evidence={
+                "property_source_year": source_year,
+                "population": {
+                    "properties": PropertyRecord.objects.count(),
+                    "buildings": BuildingDetail.objects.count(),
+                    "extra_features": ExtraFeature.objects.count(),
+                    "ready": PropertyRecord.objects.filter(
+                        is_residential=True, is_data_ready=True
+                    ).count(),
+                },
+                "result": result.to_dict(),
+            },
+            audit={"data_year": data_year},
+            result=result,
+        )
+
+    return CandidateLoad(
+        identity=identity,
+        # A partial plan or a property file keeps published rows, so inherits their sources.
+        carries_published=not request.plan.is_full or request.property_file is not None,
+        run=run,
+    )
+
+
+def _selected_sources(request: HarrisImportRequest) -> list[DataSource]:
+    sources = request.plan.select_sources(DEFAULT_HCAD_SOURCE_CATALOG.required_sources())
+    if not sources:
+        raise InvalidHarrisImportRequest(
+            f"No HCAD catalog sources match Harris import plan {request.plan.legacy_scope}"
+        )
+    return sources
+
+
 def _resolve_data_year(request: HarrisImportRequest) -> int:
     raw_year: int | str = request.data_year or os.getenv("ETL_DATA_YEAR") or datetime.now().year
     try:
@@ -907,5 +972,6 @@ __all__ = [
     "HarrisLoadIntent",
     "HarrisPreview",
     "InvalidHarrisImportRequest",
+    "harris_candidate_load",
     "run_harris_import",
 ]

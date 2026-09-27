@@ -12,11 +12,10 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from django.conf import settings
 from django.core.management.base import CommandError
-from django.db import connection
 
 from counties.brazos.models import (
     BrazosPropertySnapshot,
@@ -30,23 +29,16 @@ from counties.brazos.models import (
 )
 from counties.brazos.readiness import BrazosActiveSnapshotReadiness
 from counties.common import candidate_ports
-from counties.common.candidate_lifecycle import publish
+from counties.common.candidate_lifecycle import CandidateLoad, Loaded, prepare, publish
 from counties.common.candidate_ports import CandidateTables
-from counties.common.candidate_staging import (
-    staged_candidate_schema,
-)
 from counties.common.import_audit import OperationStatus, audited_operation
-from counties.common.import_coverage import OutcomePopulation, compare_coverage
+from counties.common.import_coverage import OutcomePopulation
 from counties.common.import_recovery import (
     ReplayRejected,
     ReplayRequest,
     copy_exact_source,
     requested_replay,
     verify_replay,
-)
-from counties.common.import_retention import (
-    baseline_sources,
-    retain_baseline_sources,
 )
 from counties.common.import_writers import fenced_write, working_source_root
 from counties.common.models import ImportCandidate, ImportOperation
@@ -294,103 +286,65 @@ class _CandidateSource:
         return None
 
 
-def prepare_candidate(cad, gis, request: PropertyImportRequest, operation: ImportOperation):
-    if connection.vendor != "postgresql":
-        raise ValueError("Durable Brazos candidate preparation requires PostgreSQL")
-    inherited = (
-        baseline_sources("brazos") if request.mode is PropertyImportMode.GIS_RECOVERY else []
-    )
-    candidate = ImportCandidate.objects.create(
-        county="brazos",
-        operation=operation,
-        storage_schema="brazos_candidate_" + uuid4().hex,
-        baseline=published_identity(),
-        request={"mode": request.mode.value, "tax_year": request.options.tax_year},
-        evidence={"publication": "Published data unchanged"},
-    )
-    operation.evidence["candidate_id"] = str(candidate.pk)
-    previous = outcome_populations()
-    operation.evidence["validation"] = {
-        "valid": False,
-        "database_publication": "Database publication untested",
-    }
-    try:
+def brazos_candidate_load(
+    cad: AnnualRefreshStage, gis: AnnualRefreshStage | None, request: PropertyImportRequest
+) -> CandidateLoad:
+    """Load the requested Brazos snapshot into a staged candidate schema."""
+
+    def run(candidate: ImportCandidate, operation: ImportOperation) -> Loaded:
+        operation.evidence["validation"] = {
+            "valid": False,
+            "database_publication": "Database publication untested",
+        }
         importer = BrazosPropertyImport(
             _CandidateSource(cad, operation), _CandidateSource(gis, operation) if gis else None
         )
-        with staged_candidate_schema(
-            "brazos",
-            candidate,
-            MODELS,
-            shared_models_scope={PropertyJurisdictionExemption: " WHERE county = 'brazos'"},
-        ):
-            result = importer._run_unstaged(
-                replace(
-                    request,
-                    prepare_only=False,
-                    replay=None,
-                    options=replace(request.options, keep_extracted=True),
-                ),
-                operation,
-            )
-            candidate.evidence["population"] = {
-                model._meta.model_name: model.objects.filter(tax_year=result.tax_year).count()
-                for model in PROPERTY_MODELS
-            }
-            candidate.evidence["coverage"] = compare_coverage(
-                previous,
-                outcome_populations(
-                    claimed_gis=request.mode is not PropertyImportMode.CAD_RECOVERY,
-                    deliberately_absent_gis=request.mode is PropertyImportMode.CAD_RECOVERY,
-                ),
-            )
-            candidate.evidence["coordinate_provenance"] = list(
-                PropertyAccount.objects.filter(tax_year=result.tax_year)
-                .exclude(coordinate_source="")
-                .values("prop_id", "coordinate_source", "coordinate_source_year")
-            )
+        result = importer._run_unstaged(
+            replace(
+                request,
+                prepare_only=False,
+                replay=None,
+                options=replace(request.options, keep_extracted=True),
+            ),
+            operation,
+        )
         operation.evidence["validation"]["valid"] = True
-        candidate.request["tax_year"] = result.tax_year
         operation.requested_year = result.tax_year
-        candidate.evidence.update(
-            {
+        return Loaded(
+            complete=True,
+            identity={"tax_year": result.tax_year},
+            evidence={
+                "population": {
+                    model._meta.model_name: model.objects.filter(tax_year=result.tax_year).count()
+                    for model in PROPERTY_MODELS
+                },
+                "coordinate_provenance": list(
+                    PropertyAccount.objects.filter(tax_year=result.tax_year)
+                    .exclude(coordinate_source="")
+                    .values("prop_id", "coordinate_source", "coordinate_source_year")
+                ),
                 "outcome": result.outcome.value,
                 "tax_year": result.tax_year,
                 "cad": dict(result.cad.metrics) if result.cad else None,
                 "gis": dict(result.gis.metrics) if result.gis else None,
-                "audit": {
-                    "capabilities": (
-                        "GIS capabilities unavailable"
-                        if result.gis is None
-                        else "Year-matched GIS inspected"
-                    )
-                },
                 "inspection": operation.evidence.get("inspection", {}),
-            }
+            },
+            audit={
+                "capabilities": (
+                    "GIS capabilities unavailable"
+                    if result.gis is None
+                    else "Year-matched GIS inspected"
+                )
+            },
+            result=result,
         )
-        candidate.state = "prepared"
-        candidate.evidence["content_identity"] = dataset_identity(candidate.storage_schema)
-        coverage = candidate.evidence["coverage"]
-        if coverage["hard_failures"]:
-            candidate.state = "blocked"
-        elif coverage["requires_review"]:
-            candidate.state = "awaiting_review"
-        return replace(
-            result,
-            snapshot_id=None,
-            prepared=True,
-            candidate_id=candidate.pk,
-            workflow_state=candidate.state,
-        )
-    except Exception as exc:
-        candidate.state = "blocked"
-        candidate.evidence["error"] = str(exc)
-        raise
-    finally:
-        retain_baseline_sources(operation, inherited)
-        candidate.sources = operation.evidence.get("sources", [])
-        operation.save()
-        candidate.save()
+
+    return CandidateLoad(
+        identity={"mode": request.mode.value, "tax_year": request.options.tax_year},
+        # GIS recovery keeps the published CAD rows, so inherits their sources.
+        carries_published=request.mode is PropertyImportMode.GIS_RECOVERY,
+        run=run,
+    )
 
 
 def _copy_archive(sources):
@@ -546,32 +500,32 @@ class BrazosPropertyImport:
                     workflow_state="already_applied" if already else "published",
                     already_applied=already,
                 )
+            elif request.options.dry_run:
+                completed = self._preview(request, operation)
             else:
-                completed = self._run(request, operation)
-                if (
-                    not request.prepare_only
-                    and not request.options.dry_run
-                    and completed.workflow_state == "prepared"
-                ):
-                    candidate = ImportCandidate.objects.get(
-                        pk=completed.candidate_id, county="brazos"
-                    )
-                    operation.requested_year = candidate.request["tax_year"]
-                    publish(
-                        operation, candidate.pk, user=reviewer, reason=request.application_reason
-                    )
+                # An automatic publication runs under the reservation that prepared it.
+                prepared = prepare(
+                    operation,
+                    brazos_candidate_load(self._cad, self._gis, request),
+                    automatic_publication=not request.prepare_only,
+                    user=reviewer,
+                    reason=request.application_reason,
+                )
+                completed = replace(
+                    prepared.result,
+                    snapshot_id=None,
+                    prepared=True,
+                    candidate_id=prepared.candidate.pk,
+                    workflow_state=prepared.candidate.state,
+                )
+                if prepared.candidate.state == "published":
                     active = BrazosPropertySnapshot.objects.get(is_active=True)
-                    completed = PropertyImportResult(
+                    completed = replace(
+                        completed,
                         tax_year=active.tax_year,
                         outcome=PropertyImportOutcome(active.outcome),
-                        cad=completed.cad,
-                        gis=completed.gis,
                         snapshot_id=active.pk,
-                        dry_run=False,
-                        candidate_id=candidate.pk,
-                        workflow_state="published",
-                        already_applied=False,
-                        cleanup_warnings=completed.cleanup_warnings,
+                        prepared=False,
                     )
             result = replace(completed, operation_id=operation.pk)
             operation.status = (
@@ -610,13 +564,6 @@ class BrazosPropertyImport:
                 cleanup_warnings=(operation.evidence["post_publication_failure"],),
             )
         return result
-
-    def _run(
-        self, request: PropertyImportRequest, operation: ImportOperation
-    ) -> PropertyImportResult:
-        if request.options.dry_run:
-            return self._preview(request, operation)
-        return prepare_candidate(self._cad, self._gis, request, operation)
 
     def _run_unstaged(
         self, request: PropertyImportRequest, operation: ImportOperation
@@ -919,7 +866,7 @@ __all__ = [
     "build_default_refresh",
     "dataset_identity",
     "outcome_populations",
-    "prepare_candidate",
+    "brazos_candidate_load",
     "prepare_recovery",
     "published_identity",
 ]
