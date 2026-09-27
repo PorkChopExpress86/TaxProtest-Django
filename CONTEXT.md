@@ -105,6 +105,12 @@ A county's equivalent safe delivery of a shared tax-protest outcome using only
 verified source semantics, with unsupported data reported explicitly.
 _Avoid_: schema parity, field parity, feature parity
 
+**Import operation**:
+One audited county import request run under the county writer reservation, with
+a single classified status. Every county data mutation happens inside one; a
+failure after its publication commits is a warning, never a failed import.
+_Avoid_: job, task, run
+
 **Candidate staging**:
 The county-neutral database isolation mechanism that provisions a temporary
 PostgreSQL candidate schema, mirrors production table definitions and sequences,

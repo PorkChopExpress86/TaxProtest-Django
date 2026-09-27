@@ -16,11 +16,10 @@ from uuid import UUID
 from django.core.management import call_command
 from django.core.management.base import CommandError as DjangoCommandError
 from django.db import DatabaseError
-from django.utils import timezone
 
-from counties.common.import_logging import import_warnings
+from counties.common.import_audit import OperationStatus, audited_operation
 from counties.common.import_recovery import ReplayRequest, requested_replay, verify_replay
-from counties.common.import_writers import county_writer, fenced_write, working_source_root
+from counties.common.import_writers import fenced_write, working_source_root
 from counties.common.models import ImportCandidate, ImportOperation
 from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG
 
@@ -782,111 +781,98 @@ def run_harris_import(
         raise InvalidHarrisImportRequest(
             f"No HCAD catalog sources match Harris import plan {request.plan.legacy_scope}"
         )
-    operation = ImportOperation.objects.create(
-        county="harris",
-        intent="preview" if isinstance(request.load, HarrisPreview) else request.plan.legacy_scope,
-        requested_year=data_year,
+    result: HarrisImportResult | None = None
+    with audited_operation(
+        "harris",
+        "preview" if isinstance(request.load, HarrisPreview) else request.plan.legacy_scope,
         actor=request.actor,
         origin=request.origin,
+        requested_year=data_year,
         evidence=requested_replay(request.replay),
-    )
-    try:
-        with (
-            import_warnings("etl_orchestrator", operation_id=str(operation.pk)) as warnings,
-            county_writer(operation),
-        ):
-            if request.replay is not None:
-                verify_replay(request.replay, operation, published_identity())
-            if request.candidate_id is None:
-                execution = _HarrisImportExecution(
-                    request, sources, data_year, reporter=reporter, operation=operation
-                )
-            if request.candidate_id is not None:
-                operation.evidence["application_reason"] = request.application_reason
+    ) as operation:
+        if request.replay is not None:
+            verify_replay(request.replay, operation, published_identity())
+        if request.candidate_id is None:
+            execution = _HarrisImportExecution(
+                request, sources, data_year, reporter=reporter, operation=operation
+            )
+        if request.candidate_id is not None:
+            operation.evidence["application_reason"] = request.application_reason
 
-                candidate = ImportCandidate.objects.get(pk=request.candidate_id, county="harris")
-                if {key: candidate.request[key] for key in ("plan", "data_year")} != {
-                    "plan": request.plan.legacy_scope,
-                    "data_year": data_year,
-                }:
-                    raise InvalidHarrisImportRequest(
-                        "Candidate request identity differs from application"
-                    )
-                publish_candidate(candidate.pk, operation, user=reviewer)
-                result = HarrisImportResult(
-                    status=HarrisImportStatus.COMPLETED,
-                    started_at=datetime.now(),
-                    completed_at=datetime.now(),
-                    wrote_data="already_applied" not in operation.evidence,
-                    already_applied="already_applied" in operation.evidence,
-                    candidate_id=candidate.pk,
+            candidate = ImportCandidate.objects.get(pk=request.candidate_id, county="harris")
+            if {key: candidate.request[key] for key in ("plan", "data_year")} != {
+                "plan": request.plan.legacy_scope,
+                "data_year": data_year,
+            }:
+                raise InvalidHarrisImportRequest(
+                    "Candidate request identity differs from application"
                 )
-            elif isinstance(request.load, HarrisApply):
-                execution.request = replace(
-                    request,
-                    load=HarrisPrepare(
-                        refresh_readiness=request.load.refresh_readiness,
-                        validate_completeness=request.load.validate_completeness,
-                        extracted_source_retention=ExtractedSourceRetention.RETAIN,
-                    ),
-                )
-                result = prepare_candidate(execution, operation)
-                if (
-                    not isinstance(request.load, HarrisPrepare)
-                    and result.status is HarrisImportStatus.PREPARED
-                ):
-                    # Publish under the reservation that prepared the candidate.
-                    operation.evidence["application_reason"] = request.application_reason
-                    publish_candidate(result.candidate_id, operation, user=reviewer)
-                    result = replace(
-                        result,
-                        status=HarrisImportStatus.COMPLETED,
-                        wrote_data="already_applied" not in operation.evidence,
-                        already_applied="already_applied" in operation.evidence,
-                        completed_at=datetime.now(),
-                    )
-            else:
-                result = execution.run()
-    except Exception as exc:
-        operation.refresh_from_db(fields=["status", "publication_before", "publication_after"])
-        if operation.status == "published":
-            operation.warnings.append(str(exc))
-            operation.finished_at = timezone.now()
-            operation.save()
-            return HarrisImportResult(
+            publish_candidate(candidate.pk, operation, user=reviewer)
+            completed = HarrisImportResult(
                 status=HarrisImportStatus.COMPLETED,
                 started_at=datetime.now(),
                 completed_at=datetime.now(),
-                wrote_data=True,
-                operation_id=operation.pk,
-                candidate_id=request.candidate_id,
-                warnings=(str(exc),),
+                wrote_data="already_applied" not in operation.evidence,
+                already_applied="already_applied" in operation.evidence,
+                candidate_id=candidate.pk,
             )
-        if operation.status != "published":
-            operation.status = "failed"
-        operation.errors = [str(exc)]
-        operation.warnings = list(dict.fromkeys([*operation.warnings, *warnings]))
-        operation.finished_at = timezone.now()
-        operation.save()
-        raise
-    result = replace(result, operation_id=operation.pk)
-    operation.status = (
-        "already_applied"
-        if result.already_applied
-        else "published" if result.wrote_data else result.status.value
-    )
-    operation.evidence = {
-        **operation.evidence,
-        "result": result.to_dict(),
-        "wrote_data": result.wrote_data,
-        "qualified_publication": operation.evidence.get(
-            "qualified_publication", "Published data unchanged"
-        ),
-    }
-    operation.warnings = list(dict.fromkeys([*operation.warnings, *warnings, *result.warnings]))
-    operation.errors = list(result.errors)
-    operation.finished_at = timezone.now()
-    operation.save()
+        elif isinstance(request.load, HarrisApply):
+            execution.request = replace(
+                request,
+                load=HarrisPrepare(
+                    refresh_readiness=request.load.refresh_readiness,
+                    validate_completeness=request.load.validate_completeness,
+                    extracted_source_retention=ExtractedSourceRetention.RETAIN,
+                ),
+            )
+            completed = prepare_candidate(execution, operation)
+            if (
+                not isinstance(request.load, HarrisPrepare)
+                and completed.status is HarrisImportStatus.PREPARED
+            ):
+                # Publish under the reservation that prepared the candidate.
+                operation.evidence["application_reason"] = request.application_reason
+                publish_candidate(completed.candidate_id, operation, user=reviewer)
+                completed = replace(
+                    completed,
+                    status=HarrisImportStatus.COMPLETED,
+                    wrote_data="already_applied" not in operation.evidence,
+                    already_applied="already_applied" in operation.evidence,
+                    completed_at=datetime.now(),
+                )
+        else:
+            completed = execution.run()
+        result = replace(completed, operation_id=operation.pk)
+        operation.status = (
+            OperationStatus.ALREADY_APPLIED
+            if result.already_applied
+            else (
+                OperationStatus.PUBLISHED
+                if result.wrote_data
+                else OperationStatus(result.status.value)
+            )
+        )
+        operation.evidence = {
+            **operation.evidence,
+            "result": result.to_dict(),
+            "wrote_data": result.wrote_data,
+            "qualified_publication": operation.evidence.get(
+                "qualified_publication", "Published data unchanged"
+            ),
+        }
+        operation.warnings.extend(result.warnings)
+        operation.errors = list(result.errors)
+    if result is None:
+        # Publication committed; the operation recorded the later failure as a warning.
+        return HarrisImportResult(
+            status=HarrisImportStatus.COMPLETED,
+            started_at=datetime.now(),
+            completed_at=datetime.now(),
+            wrote_data=True,
+            operation_id=operation.pk,
+            candidate_id=request.candidate_id,
+            warnings=(operation.evidence["post_publication_failure"],),
+        )
     return result
 
 

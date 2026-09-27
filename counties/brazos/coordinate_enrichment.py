@@ -19,7 +19,7 @@ from counties.brazos.models import (
 from counties.brazos.models import CoordinateEnrichmentOutcome as ModelCoordinateEnrichmentOutcome
 from counties.brazos.property_import import RefreshOptions, StagePreparation
 from counties.brazos.stage_reporting import SilentStageReporter, StageReporter
-from counties.common.import_audit import audited_operation, record_sources
+from counties.common.import_audit import OperationStatus, audited_operation, record_sources
 from counties.common.import_writers import fenced_write
 
 COORDINATE_SOURCE = "bcad-certified-gis"
@@ -235,7 +235,7 @@ class BrazosCoordinateEnrichment:
             self._finalize_cleanup(audit, source.preparation, request)
         except Exception as exc:
             audit.refresh_from_db()
-            operation.status = "completed_with_warnings"
+            operation.status = OperationStatus.COMPLETED_WITH_WARNINGS
             raise CoordinateEnrichmentCleanupError(
                 self._result(audit, report),
                 self._retained_cleanup_paths(source.preparation),

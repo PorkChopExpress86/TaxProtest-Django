@@ -17,7 +17,6 @@ from uuid import UUID, uuid4
 from django.conf import settings
 from django.core.management.base import CommandError
 from django.db import connection
-from django.utils import timezone
 
 from counties.brazos.models import (
     BrazosPropertySnapshot,
@@ -36,8 +35,8 @@ from counties.common.candidate_staging import (
     staged_candidate_schema,
     switch_search_path,
 )
+from counties.common.import_audit import OperationStatus, audited_operation
 from counties.common.import_coverage import OutcomePopulation, compare_coverage
-from counties.common.import_logging import import_warnings
 from counties.common.import_recovery import (
     ReplayRejected,
     ReplayRequest,
@@ -51,7 +50,7 @@ from counties.common.import_retention import (
     retain_baseline_sources,
 )
 from counties.common.import_review import ImportReviewRejected, authorize_publication
-from counties.common.import_writers import county_writer, fenced_write, working_source_root
+from counties.common.import_writers import fenced_write, working_source_root
 from counties.common.models import ImportAuditEntry, ImportCandidate, ImportOperation
 from counties.common.tax_models import PropertyJurisdictionExemption
 
@@ -549,128 +548,113 @@ class BrazosPropertyImport:
 
     def run(self, request: PropertyImportRequest, *, reviewer=None) -> PropertyImportResult:
         active = BrazosPropertySnapshot.objects.filter(is_active=True).first()
-        operation = ImportOperation.objects.create(
-            county="brazos",
-            intent="preview" if request.options.dry_run else request.mode.value,
-            requested_year=request.options.tax_year,
+        result: PropertyImportResult | None = None
+        with audited_operation(
+            "brazos",
+            "preview" if request.options.dry_run else request.mode.value,
             actor=request.actor,
             origin=request.origin,
+            requested_year=request.options.tax_year,
             evidence=requested_replay(request.replay),
             publication_before=(
                 {"snapshot_id": active.pk, "tax_year": active.tax_year} if active else None
             ),
-        )
-        try:
-            with import_warnings("brazos_cad") as warnings, county_writer(operation):
-                if request.replay is not None:
-                    verify_replay(request.replay, operation, published_identity())
-                if request.candidate_id is not None:
+        ) as operation:
+            if request.replay is not None:
+                verify_replay(request.replay, operation, published_identity())
+            if request.candidate_id is not None:
+                candidate = ImportCandidate.objects.get(pk=request.candidate_id, county="brazos")
+                if candidate.request != {
+                    "mode": request.mode.value,
+                    "tax_year": request.options.tax_year or candidate.request["tax_year"],
+                }:
+                    raise ValueError("Candidate request identity differs from application")
+                operation.requested_year = candidate.request["tax_year"]
+                operation.evidence["application_reason"] = request.application_reason
+                publish_candidate(candidate.pk, operation, user=reviewer)
+                active = BrazosPropertySnapshot.objects.get(is_active=True)
+                already = "already_applied" in operation.evidence
+                completed = PropertyImportResult(
+                    tax_year=active.tax_year,
+                    outcome=PropertyImportOutcome(active.outcome),
+                    cad=(
+                        StageResult("cad", candidate.evidence["cad"])
+                        if candidate.evidence["cad"]
+                        else None
+                    ),
+                    gis=(
+                        StageResult("gis", candidate.evidence["gis"])
+                        if candidate.evidence["gis"]
+                        else None
+                    ),
+                    snapshot_id=active.pk,
+                    dry_run=False,
+                    candidate_id=candidate.pk,
+                    workflow_state="already_applied" if already else "published",
+                    already_applied=already,
+                )
+            else:
+                completed = self._run(request, operation)
+                if (
+                    not request.prepare_only
+                    and not request.options.dry_run
+                    and completed.workflow_state == "prepared"
+                ):
                     candidate = ImportCandidate.objects.get(
-                        pk=request.candidate_id, county="brazos"
+                        pk=completed.candidate_id, county="brazos"
                     )
-                    if candidate.request != {
-                        "mode": request.mode.value,
-                        "tax_year": request.options.tax_year or candidate.request["tax_year"],
-                    }:
-                        raise ValueError("Candidate request identity differs from application")
                     operation.requested_year = candidate.request["tax_year"]
                     operation.evidence["application_reason"] = request.application_reason
                     publish_candidate(candidate.pk, operation, user=reviewer)
                     active = BrazosPropertySnapshot.objects.get(is_active=True)
-                    already = "already_applied" in operation.evidence
-                    result = PropertyImportResult(
+                    completed = PropertyImportResult(
                         tax_year=active.tax_year,
                         outcome=PropertyImportOutcome(active.outcome),
-                        cad=(
-                            StageResult("cad", candidate.evidence["cad"])
-                            if candidate.evidence["cad"]
-                            else None
-                        ),
-                        gis=(
-                            StageResult("gis", candidate.evidence["gis"])
-                            if candidate.evidence["gis"]
-                            else None
-                        ),
+                        cad=completed.cad,
+                        gis=completed.gis,
                         snapshot_id=active.pk,
                         dry_run=False,
                         candidate_id=candidate.pk,
-                        workflow_state="already_applied" if already else "published",
-                        already_applied=already,
+                        workflow_state="published",
+                        already_applied=False,
+                        cleanup_warnings=completed.cleanup_warnings,
                     )
-                else:
-                    result = self._run(request, operation)
-                    if (
-                        not request.prepare_only
-                        and not request.options.dry_run
-                        and result.workflow_state == "prepared"
-                    ):
-                        candidate = ImportCandidate.objects.get(
-                            pk=result.candidate_id, county="brazos"
-                        )
-                        operation.requested_year = candidate.request["tax_year"]
-                        operation.evidence["application_reason"] = request.application_reason
-                        publish_candidate(candidate.pk, operation, user=reviewer)
-                        active = BrazosPropertySnapshot.objects.get(is_active=True)
-                        result = PropertyImportResult(
-                            tax_year=active.tax_year,
-                            outcome=PropertyImportOutcome(active.outcome),
-                            cad=result.cad,
-                            gis=result.gis,
-                            snapshot_id=active.pk,
-                            dry_run=False,
-                            candidate_id=candidate.pk,
-                            workflow_state="published",
-                            already_applied=False,
-                            cleanup_warnings=result.cleanup_warnings,
-                        )
-        except Exception as exc:
-            operation.refresh_from_db(fields=["status", "publication_before", "publication_after"])
-            if operation.status == "published":
-                operation.warnings.append(str(exc))
-                operation.save()
-                observed = operation.publication_after
-                return PropertyImportResult(
-                    tax_year=observed["tax_year"],
-                    outcome=PropertyImportOutcome(observed["outcome"]),
-                    cad=None,
-                    gis=None,
-                    snapshot_id=observed["snapshot_id"],
-                    dry_run=False,
-                    operation_id=operation.pk,
-                    candidate_id=request.candidate_id,
-                    cleanup_warnings=(str(exc),),
-                )
-            operation.status = "failed"
-            operation.errors = [str(exc)]
-            operation.warnings = list(dict.fromkeys([*operation.warnings, *warnings]))
-            operation.finished_at = timezone.now()
-            operation.save()
-            raise
-        result = replace(result, operation_id=operation.pk)
-        if result.prepared:
-            operation.status = result.workflow_state
-        else:
-            operation.status = "completed" if result.dry_run else result.workflow_state
-        operation.publication_after = (
-            {"snapshot_id": result.snapshot_id, "tax_year": result.tax_year}
-            if result.snapshot_id
-            else operation.publication_before
-        )
-        operation.evidence = {
-            **operation.evidence,
-            "outcome": result.outcome.value,
-            "dry_run": result.dry_run,
-            "cad": dict(result.cad.metrics) if result.cad else None,
-            "gis": dict(result.gis.metrics) if result.gis else None,
-            "qualified_publication": operation.evidence.get(
-                "qualified_publication", "Published data unchanged"
-            ),
-        }
-        operation.warnings = list(
-            dict.fromkeys([*operation.warnings, *warnings, *result.cleanup_warnings])
-        )
-        operation.finished_at = timezone.now()
-        operation.save()
+            result = replace(completed, operation_id=operation.pk)
+            operation.status = (
+                OperationStatus.COMPLETED
+                if result.dry_run and not result.prepared
+                else OperationStatus(result.workflow_state)
+            )
+            operation.publication_after = (
+                {"snapshot_id": result.snapshot_id, "tax_year": result.tax_year}
+                if result.snapshot_id
+                else operation.publication_before
+            )
+            operation.evidence = {
+                **operation.evidence,
+                "outcome": result.outcome.value,
+                "dry_run": result.dry_run,
+                "cad": dict(result.cad.metrics) if result.cad else None,
+                "gis": dict(result.gis.metrics) if result.gis else None,
+                "qualified_publication": operation.evidence.get(
+                    "qualified_publication", "Published data unchanged"
+                ),
+            }
+            operation.warnings.extend(result.cleanup_warnings)
+        if result is None:
+            # Publication committed; the operation recorded the later failure as a warning.
+            observed = operation.publication_after
+            return PropertyImportResult(
+                tax_year=observed["tax_year"],
+                outcome=PropertyImportOutcome(observed["outcome"]),
+                cad=None,
+                gis=None,
+                snapshot_id=observed["snapshot_id"],
+                dry_run=False,
+                operation_id=operation.pk,
+                candidate_id=request.candidate_id,
+                cleanup_warnings=(operation.evidence["post_publication_failure"],),
+            )
         return result
 
     def _run(

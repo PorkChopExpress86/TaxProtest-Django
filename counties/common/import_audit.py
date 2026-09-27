@@ -3,6 +3,7 @@
 import hashlib
 from collections.abc import Iterator
 from contextlib import contextmanager
+from enum import StrEnum
 from pathlib import Path
 
 from django.utils import timezone
@@ -24,6 +25,24 @@ def record_sources(operation: ImportOperation, paths: list[Path], **identity) ->
         sources.append({"path": str(path), "sha256": digest.hexdigest(), **identity})
 
 
+class OperationStatus(StrEnum):
+    """The one status vocabulary of an Import operation."""
+
+    RUNNING = "running"
+    COMPLETED = "completed"
+    COMPLETED_WITH_WARNINGS = "completed_with_warnings"
+    PARTIAL = "partial"
+    PREPARED = "prepared"
+    BLOCKED = "blocked"
+    AWAITING_REVIEW = "awaiting_review"
+    PUBLISHED = "published"
+    ALREADY_APPLIED = "already_applied"
+    FAILED = "failed"
+
+
+_WARNING_LOGGERS = {"harris": "etl_orchestrator", "brazos": "brazos_cad"}
+
+
 @contextmanager
 def audited_operation(
     county: str,
@@ -32,25 +51,53 @@ def audited_operation(
     actor: str = "",
     origin: str = "command",
     requested_year: int | None = None,
+    evidence: dict | None = None,
+    publication_before: dict | None = None,
 ) -> Iterator[ImportOperation]:
+    """Run one Import operation under the county writer reservation.
+
+    The caller may classify ``operation.status`` before the block ends; otherwise it
+    completes. A failure after a committed publication is recorded as a warning and
+    not raised, because the published dataset is live. Any other failure fails the
+    operation and is raised.
+    """
     operation = ImportOperation.objects.create(
-        county=county, intent=intent, actor=actor, origin=origin, requested_year=requested_year
+        county=county,
+        intent=intent,
+        actor=actor,
+        origin=origin,
+        requested_year=requested_year,
+        evidence=evidence or {},
+        publication_before=publication_before,
     )
+    warnings: list[str] = []
     try:
         with (
-            import_warnings(
-                "brazos_cad" if county == "brazos" else "etl_orchestrator",
-                operation_id=str(operation.pk),
-            ) as warnings,
+            import_warnings(_WARNING_LOGGERS[county], operation_id=str(operation.pk)) as warnings,
             county_writer(operation),
         ):
             yield operation
-        operation.status = "completed_with_warnings" if operation.warnings else "completed"
+        if operation.status == OperationStatus.RUNNING:
+            operation.status = (
+                OperationStatus.COMPLETED_WITH_WARNINGS
+                if operation.warnings
+                else OperationStatus.COMPLETED
+            )
+        operation.status = OperationStatus(operation.status)
     except Exception as exc:
-        if operation.status == "completed_with_warnings":
+        if ImportOperation.objects.filter(
+            pk=operation.pk, status=OperationStatus.PUBLISHED
+        ).exists():
+            operation.refresh_from_db(fields=["status", "publication_before", "publication_after"])
+            operation.warnings.append(str(exc))
+            operation.evidence["post_publication_failure"] = str(exc)
+            return
+        if operation.status == OperationStatus.COMPLETED_WITH_WARNINGS:
             operation.warnings.append(str(exc))
         else:
-            operation.status = "failed"
+            # Publication values recorded by a rolled-back transaction were never observed.
+            operation.refresh_from_db(fields=["publication_before", "publication_after"])
+            operation.status = OperationStatus.FAILED
             operation.errors.append(str(exc))
         raise
     finally:
