@@ -23,7 +23,7 @@ from counties.common.candidate_ports import CandidateTables
 from counties.common.import_coverage import OutcomePopulation
 from counties.common.import_recovery import ReplayRejected, copy_exact_source
 from counties.common.import_writers import working_source_root
-from counties.common.models import ImportCandidate
+from counties.common.models import ImportCandidate, ImportOperation
 from counties.common.tax_models import PropertyJurisdictionExemption
 
 
@@ -46,7 +46,7 @@ class BrazosCandidatePort:
         partial = candidate.request["mode"] == PropertyImportMode.CAD_RECOVERY.value
         return outcome_populations(claimed_gis=not partial, deliberately_absent_gis=partial)
 
-    def replay(self, source: ImportCandidate) -> CandidateLoad:
+    def replay(self, source: ImportCandidate, operation: ImportOperation) -> CandidateLoad:
         partial = source.evidence["outcome"] == "partial"
         return brazos_candidate_load(
             RetainedCadStage(source.sources),

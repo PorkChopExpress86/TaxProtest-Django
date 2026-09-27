@@ -806,7 +806,9 @@ def run_harris_import(
             # An automatic publication runs under the reservation that prepared it.
             prepared = prepare(
                 operation,
-                harris_candidate_load(request, reporter=reporter),
+                harris_candidate_load(
+                    replace(request, data_year=data_year), operation, reporter=reporter
+                ),
                 automatic_publication=not isinstance(request.load, HarrisPrepare),
                 user=reviewer,
                 reason=request.application_reason,
@@ -858,7 +860,7 @@ def run_harris_import(
             completed_at=datetime.now(),
             wrote_data=True,
             operation_id=operation.pk,
-            candidate_id=request.candidate_id,
+            candidate_id=UUID(operation.evidence["candidate_id"]),
             warnings=(operation.evidence["post_publication_failure"],),
         )
     return result
@@ -866,25 +868,40 @@ def run_harris_import(
 
 def harris_candidate_load(
     request: HarrisImportRequest,
+    operation: ImportOperation,
     *,
     reporter: HarrisImportReporter | None = None,
     replayed: ImportCandidate | None = None,
 ) -> CandidateLoad:
-    """Load the request's translated Harris rows into a staged candidate schema.
+    """Set up the request's Harris sources, returning the load that stages their rows.
 
-    With ``replayed``, the load reads that candidate's retained sources exactly.
+    Setup (working source roots, a property file, or ``replayed``'s retained sources)
+    runs now, inside ``operation`` and before any candidate exists, so rejected
+    sources never stage a candidate.
     """
     assert isinstance(request.load, HarrisApply)
     data_year = _resolve_data_year(request)
-    sources = _selected_sources(request)
-    staged = replace(
-        request,
-        load=HarrisPrepare(
-            refresh_readiness=request.load.refresh_readiness,
-            validate_completeness=request.load.validate_completeness,
-            extracted_source_retention=ExtractedSourceRetention.RETAIN,
+    execution = _HarrisImportExecution(
+        replace(
+            request,
+            load=HarrisPrepare(
+                refresh_readiness=request.load.refresh_readiness,
+                validate_completeness=request.load.validate_completeness,
+                extracted_source_retention=ExtractedSourceRetention.RETAIN,
+            ),
         ),
+        _selected_sources(request),
+        data_year,
+        reporter=reporter,
+        operation=operation,
+        replayed=replayed,
     )
+    if replayed is not None:
+        source_year = replayed.evidence.get("property_source_year")
+    elif HarrisImportStage.PROPERTY not in request.plan.stages:
+        source_year = published_year()
+    else:
+        source_year = data_year if request.property_file is None else None
     identity: dict[str, Any] = {
         "plan": request.plan.legacy_scope,
         "data_year": data_year,
@@ -899,15 +916,7 @@ def harris_candidate_load(
         }
 
     def run(candidate: ImportCandidate, operation: ImportOperation) -> Loaded:
-        if replayed is not None:
-            source_year = replayed.evidence.get("property_source_year")
-        elif HarrisImportStage.PROPERTY not in request.plan.stages:
-            source_year = published_year()
-        else:
-            source_year = data_year if request.property_file is None else None
-        result = _HarrisImportExecution(
-            staged, sources, data_year, reporter=reporter, operation=operation, replayed=replayed
-        ).run()
+        result = execution.run()
         return Loaded(
             complete=result.status is HarrisImportStatus.COMPLETED,
             evidence={

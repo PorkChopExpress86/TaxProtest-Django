@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 
-from django.db.models import QuerySet
+from django.db.models import Exists, OuterRef, Q, QuerySet
 
 from counties.common.analysis import MIN_COMPS_FOR_RECOMMENDATION
 from counties.common.import_coverage import OutcomePopulation
@@ -95,9 +95,17 @@ class HarrisReadiness:
 
 
 def readiness(
-    record: HarrisRecordFacts, dataset: HarrisDatasetFacts, *, exemption_units: frozenset[str]
+    record: HarrisRecordFacts,
+    dataset: HarrisDatasetFacts,
+    *,
+    has_exemptions: bool,
+    unrated_units: frozenset[str],
 ) -> HarrisReadiness:
-    """The one Harris readiness rule."""
+    """The one Harris readiness rule.
+
+    ``has_exemptions`` says whether the record has matching-year jurisdiction and
+    exemption rows; ``unrated_units`` names its taxing units without an adopted rate.
+    """
     base: list[str] = []
     if not record.is_residential:
         base.append(NOT_RESIDENTIAL)
@@ -124,11 +132,12 @@ def readiness(
         reasons["tax"] = (YEAR_NOT_RECORDED,)
     elif not dataset.tax_inputs:
         reasons["tax"] = (NO_TAX_INPUTS,)
-    elif not exemption_units:
+    elif not has_exemptions:
         reasons["tax"] = (NO_EXEMPTIONS,)
-    elif unrated := sorted(exemption_units - dataset.rated_units):
+    elif unrated_units:
         reasons["tax"] = (
-            f"Adopted {dataset.year} rate unavailable for taxing unit {', '.join(unrated)}",
+            f"Adopted {dataset.year} rate unavailable for taxing unit "
+            f"{', '.join(sorted(unrated_units))}",
         )
     return HarrisReadiness(
         frozenset(outcome for outcome in OUTCOMES if outcome not in reasons), reasons
@@ -193,14 +202,30 @@ def _dataset_facts(year: int | None, pool_supported: bool) -> HarrisDatasetFacts
     )
 
 
-def _exemption_units(year: int | None, **scope) -> dict[str, frozenset[str]]:
-    units: dict[str, set[str]] = {}
-    if year:
-        for account, unit in PropertyJurisdictionExemption.objects.filter(
-            county="harris", tax_year=year, **scope
-        ).values_list("account_number", "tax_unit_code"):
-            units.setdefault(account, set()).add(unit)
-    return {account: frozenset(codes) for account, codes in units.items()}
+def _exemption_facts(
+    dataset: HarrisDatasetFacts, **scope
+) -> tuple[set[str], dict[str, frozenset[str]]]:
+    """Accounts with matching-year exemption rows, and each account's unrated units.
+
+    Only unrated (account, unit) pairs are loaded; they are normally few.
+    """
+    if not dataset.tax_inputs:
+        return set(), {}
+    rows = PropertyJurisdictionExemption.objects.filter(
+        county="harris", tax_year=dataset.year, **scope
+    )
+    accounts = set(
+        rows.values_list("account_number", flat=True).distinct().iterator(chunk_size=_CHUNK)
+    )
+    unrated: dict[str, set[str]] = {}
+    for account, unit in (
+        rows.exclude(tax_unit_code__in=dataset.rated_units)
+        .values_list("account_number", "tax_unit_code")
+        .distinct()
+        .iterator(chunk_size=_CHUNK)
+    ):
+        unrated.setdefault(account, set()).add(unit)
+    return accounts, {account: frozenset(units) for account, units in unrated.items()}
 
 
 def _report_pool_reached(rows: QuerySet) -> bool:
@@ -218,7 +243,16 @@ class HarrisReadinessProjection:
     """Resolve the readiness of one published Harris property with bounded queries."""
 
     def dataset_facts(self) -> HarrisDatasetFacts:
+        # Necessary conditions for positive equity inputs keep the scan to likely
+        # pool members; the rule itself still decides membership.
         pool = PropertyRecord.objects.filter(
+            Q(assessed_value__gt=0) | Q(value__gt=0),
+            Q(building_area__gt=0)
+            | Exists(
+                BuildingDetail.objects.filter(
+                    account_number=OuterRef("account_number"), is_active=True, heat_area__gt=0
+                )
+            ),
             is_residential=True,
             is_data_ready=True,
             latitude__isnull=False,
@@ -240,8 +274,13 @@ class HarrisReadinessProjection:
             return None
         (record,) = _facts_for_chunk([row])
         dataset = self.dataset_facts()
-        units = _exemption_units(dataset.year, account_number=account_number)
-        return readiness(record, dataset, exemption_units=units.get(account_number, frozenset()))
+        exempt, unrated = _exemption_facts(dataset, account_number=account_number)
+        return readiness(
+            record,
+            dataset,
+            has_exemptions=account_number in exempt,
+            unrated_units=unrated.get(account_number, frozenset()),
+        )
 
 
 def outcome_populations(
@@ -256,14 +295,15 @@ def outcome_populations(
         )
     )
     dataset = _dataset_facts(year, sum(record.in_report_pool for record in records) >= _POOL_SIZE)
-    units = _exemption_units(year) if dataset.tax_inputs else {}
+    exempt, unrated = _exemption_facts(dataset)
     eligible: dict[str, set[str]] = {outcome: set() for outcome in OUTCOMES}
     exclusions: dict[str, dict[str, list[str]]] = {outcome: {} for outcome in OUTCOMES}
     for record in records:
         result = readiness(
             record,
             dataset,
-            exemption_units=units.get(record.account_number, frozenset()),
+            has_exemptions=record.account_number in exempt,
+            unrated_units=unrated.get(record.account_number, frozenset()),
         )
         for outcome in OUTCOMES:
             if outcome in result.ready:

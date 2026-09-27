@@ -17,7 +17,7 @@ from counties.common.candidate_staging import compute_dataset_hash
 if TYPE_CHECKING:
     from counties.common.candidate_lifecycle import CandidateLoad
     from counties.common.import_coverage import OutcomePopulation
-    from counties.common.models import ImportCandidate
+    from counties.common.models import ImportCandidate, ImportOperation
 
 
 class UnknownCountyCandidate(LookupError):
@@ -48,8 +48,9 @@ class CandidatePort(Protocol):
         """
         ...
 
-    def replay(self, source: ImportCandidate) -> CandidateLoad:
-        """A load that replays ``source``'s retained sources exactly (ADR-0016)."""
+    def replay(self, source: ImportCandidate, operation: ImportOperation) -> CandidateLoad:
+        """A load, set up inside ``operation``, replaying ``source``'s retained sources
+        exactly (ADR-0016)."""
         ...
 
 

@@ -18,9 +18,9 @@ from counties.common.tests.candidate_contract import (
 class PreparationContract:
     """Behaviour every county port must give preparation, with the load step swapped."""
 
-    def prepare_fixture(self, load, **publication):
+    def prepare_fixture(self, *, ready=True, **publication):
         with audited_operation(self.county, "fixture", actor="operator") as operation:
-            prepared = prepare(operation, load, **publication)
+            prepared = prepare(operation, self.fixture_load(operation, ready=ready), **publication)
         operation.refresh_from_db()
         prepared.candidate.refresh_from_db()
         return operation, prepared.candidate
@@ -32,7 +32,7 @@ class PreparationContract:
 
     def test_first_import_awaits_review(self):
         before = published_identity(self.county)
-        operation, candidate = self.prepare_fixture(self.fixture_load())
+        operation, candidate = self.prepare_fixture()
         self.assertEqual(candidate.state, "awaiting_review")
         self.assertEqual(operation.status, "awaiting_review")
         self.assertEqual(operation.evidence["candidate_id"], str(candidate.pk))
@@ -46,7 +46,7 @@ class PreparationContract:
         self.assertEqual(self.published_keys(), ["PUBLISHED"])
 
     def test_hard_coverage_failure_is_blocked(self):
-        operation, candidate = self.prepare_fixture(self.fixture_load(ready=False))
+        operation, candidate = self.prepare_fixture(ready=False)
         self.assertEqual(candidate.state, "blocked")
         self.assertEqual(operation.status, "blocked")
         self.assertIn(
@@ -58,7 +58,7 @@ class PreparationContract:
     def test_within_threshold_candidate_is_prepared_and_a_preview_never_applies(self):
         self.write_candidate_rows(ready=True)
         before = published_identity(self.county)
-        operation, candidate = self.prepare_fixture(self.fixture_load())
+        operation, candidate = self.prepare_fixture()
         self.assertEqual(candidate.state, "prepared")
         self.assertEqual(operation.status, "prepared")
         self.assertTrue(candidate.evidence["coverage"]["automatic_publication_allowed"])
@@ -67,7 +67,7 @@ class PreparationContract:
     def test_within_threshold_candidate_publishes_automatically_when_asked(self):
         self.write_candidate_rows(ready=True)
         operation, candidate = self.prepare_fixture(
-            self.fixture_load(), automatic_publication=True, reason="Scheduled import"
+            automatic_publication=True, reason="Scheduled import"
         )
         self.assertEqual(candidate.state, "published")
         self.assertEqual(operation.status, "published")
@@ -80,11 +80,15 @@ class PreparationContract:
         self.publish_setup_candidate()
         published = published_identity(self.county)
         inherited = {source["path"] for source in self.candidate.sources}
-        load = replace(
-            self.fixture_load(failure=OSError("Source unreadable")), carries_published=True
-        )
-        with self.assertRaisesMessage(OSError, "Source unreadable"):
-            self.prepare_fixture(load)
+        with (
+            self.assertRaisesMessage(OSError, "Source unreadable"),
+            audited_operation(self.county, "fixture", actor="operator") as operation,
+        ):
+            load = replace(
+                self.fixture_load(operation, failure=OSError("Source unreadable")),
+                carries_published=True,
+            )
+            prepare(operation, load)
         self.assertEqual(published_identity(self.county), published)
         operation = ImportOperation.objects.get(intent="fixture")
         candidate = ImportCandidate.objects.get(operation=operation)

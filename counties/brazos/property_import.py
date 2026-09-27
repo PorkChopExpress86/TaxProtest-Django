@@ -386,11 +386,9 @@ class BrazosPropertyImport:
                 if result.dry_run and not result.prepared
                 else OperationStatus(result.workflow_state)
             )
-            operation.publication_after = (
-                {"snapshot_id": result.snapshot_id, "tax_year": result.tax_year}
-                if result.snapshot_id
-                else operation.publication_before
-            )
+            if result.snapshot_id is None:
+                # Publication, when it happens, records the published identity itself.
+                operation.publication_after = operation.publication_before
             operation.evidence = {
                 **operation.evidence,
                 "outcome": result.outcome.value,
@@ -413,7 +411,7 @@ class BrazosPropertyImport:
                 snapshot_id=observed["snapshot_id"],
                 dry_run=False,
                 operation_id=operation.pk,
-                candidate_id=request.candidate_id,
+                candidate_id=UUID(operation.evidence["candidate_id"]),
                 cleanup_warnings=(operation.evidence["post_publication_failure"],),
             )
         return result

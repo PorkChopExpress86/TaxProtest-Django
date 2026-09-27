@@ -185,6 +185,19 @@ class HarrisReadinessQueryBoundTests(TestCase):
         self.assertFalse(any("row_to_json" in query["sql"] for query in queries))
         return len(queries)
 
+    def test_unsupported_pool_readiness_does_not_scan_unqualified_records(self):
+        def queries(unqualified):
+            PropertyRecord.objects.all().delete()
+            harris_property("SUBJECT")
+            for number in range(unqualified):
+                harris_property(f"NO-EQUITY{number:03d}", equity=False)
+            with CaptureQueriesContext(connection) as captured:
+                capabilities = adapter.capabilities("SUBJECT")
+            self.assertIn("At least three qualifying comparables", capabilities.reasons["report"])
+            return len(captured)
+
+        self.assertEqual(queries(5), queries(60))
+
     def test_single_property_readiness_does_not_scale_with_the_dataset(self):
         small = self.queries_for_one_property(5)
         PropertyRecord.objects.all().delete()

@@ -101,8 +101,8 @@ def prepare(
         evidence={"publication": "Published data unchanged"},
     )
     operation.evidence["candidate_id"] = str(candidate.pk)
-    previous = port.outcomes(None)
     try:
+        previous = port.outcomes(None)
         with staged_candidate_schema(
             county,
             candidate,
@@ -155,46 +155,56 @@ def publish(
     county = operation.county
     tables = port_for(county).tables
     operation.evidence["application_reason"] = reason
-    with fenced_write():
-        candidate = ImportCandidate.objects.select_for_update().get(pk=candidate_id, county=county)
-        if candidate.state in ("published", "superseded"):
-            operation.publication_before = operation.publication_after = published_identity(county)
-            operation.evidence["already_applied"] = str(candidate.pk)
-            operation.status = OperationStatus.ALREADY_APPLIED
-            return candidate
-        review = authorize_publication(candidate, user=user)
-        operation.publication_before = published_identity(county)
-        cutover_staged_tables(
-            candidate,
-            tables.models,
-            shared_models_scope=_county_rows(tables, county),
-            shared_models_county={model: county for model in tables.county_scoped},
-        )
-        record_publication(candidate, operation)
-        operation.publication_after = {
-            **published_identity(county),
-            "candidate_id": str(candidate.pk),
-        }
-        operation.status = OperationStatus.PUBLISHED
-        operation.evidence.update(
-            candidate_id=str(candidate.pk), qualified_publication="Observed atomic publication"
-        )
-        operation.save()
-        ImportAuditEntry.objects.create(
-            operation=candidate.operation,
-            kind="publication",
-            actor=operation.actor,
-            reason=reason or "Qualified candidate applied",
-            evidence={
-                "before": operation.publication_before,
-                "after": operation.publication_after,
-                "review_id": str(review.pk) if review else None,
-                "operation_id": str(operation.pk),
-                "source_years": candidate.sources,
-                "county": candidate.evidence.get("audit", {}),
-            },
-            result="published",
-        )
+    try:
+        with fenced_write():
+            candidate = ImportCandidate.objects.select_for_update().get(
+                pk=candidate_id, county=county
+            )
+            if candidate.state in ("published", "superseded"):
+                operation.publication_before = operation.publication_after = published_identity(
+                    county
+                )
+                operation.evidence["already_applied"] = str(candidate.pk)
+                operation.status = OperationStatus.ALREADY_APPLIED
+                return candidate
+            review = authorize_publication(candidate, user=user)
+            # Authorization verified under this lock that the baseline is still live.
+            operation.publication_before = candidate.baseline
+            cutover_staged_tables(
+                candidate,
+                tables.models,
+                shared_models_scope=_county_rows(tables, county),
+                shared_models_county={model: county for model in tables.county_scoped},
+            )
+            record_publication(candidate, operation)
+            operation.publication_after = {
+                **published_identity(county),
+                "candidate_id": str(candidate.pk),
+            }
+            operation.status = OperationStatus.PUBLISHED
+            operation.evidence.update(
+                candidate_id=str(candidate.pk), qualified_publication="Observed atomic publication"
+            )
+            operation.save()
+            ImportAuditEntry.objects.create(
+                operation=candidate.operation,
+                kind="publication",
+                actor=operation.actor,
+                reason=reason or "Qualified candidate applied",
+                evidence={
+                    "before": operation.publication_before,
+                    "after": operation.publication_after,
+                    "review_id": str(review.pk) if review else None,
+                    "operation_id": str(operation.pk),
+                    "source_years": candidate.sources,
+                    "county": candidate.evidence.get("audit", {}),
+                },
+                result="published",
+            )
+    except Exception:
+        # The cutover and its audit rolled back, so no publication was observed.
+        operation.evidence.pop("qualified_publication", None)
+        raise
     return candidate
 
 
@@ -238,15 +248,16 @@ def recover(source: ImportCandidate, *, user, reason: str, binding: str) -> Impo
             requested_year=source.operation.requested_year,
             evidence=requested_replay(request),
         ) as operation:
-            verify_replay(request, operation, published_identity(county))
-            prepare(operation, port_for(county).replay(source))
+            verified = verify_replay(request, operation, published_identity(county))
+            prepare(operation, port_for(county).replay(verified, operation))
     except Exception:
         operation = ImportOperation.objects.filter(
             county=county, evidence__recovery__request_id=str(request.id)
         ).first()
         if operation is None:
             raise
-    operation.publication_after = published_identity(county)
+    # Recovery never publishes, so the dataset it observed is still the published one.
+    operation.publication_after = operation.publication_before
     operation.save(update_fields=["publication_after"])
     evidence = {
         **operation.evidence["recovery"],

@@ -83,6 +83,10 @@ class PublicationContract:
             self.publish()
         self.assertEqual(published_identity(self.county), before)
         self.assertEqual(self.published_keys(), ["PUBLISHED"])
+        failed = ImportOperation.objects.get(intent="apply")
+        self.assertEqual(failed.status, "failed")
+        self.assertNotIn("qualified_publication", failed.evidence)
+        self.assertIsNone(failed.publication_after)
         self.candidate.refresh_from_db()
         self.assertEqual(self.candidate.state, "approved")
 

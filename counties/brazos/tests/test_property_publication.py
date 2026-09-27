@@ -23,7 +23,8 @@ from counties.brazos.property_import import (
     RefreshOptions,
 )
 from counties.brazos.tests.test_property_coverage import write_gis, write_pacs
-from counties.common.models import ImportAuditEntry, ImportCandidate
+from counties.common.candidate_ports import published_identity
+from counties.common.models import ImportAuditEntry, ImportCandidate, ImportOperation
 from counties.common.tax_models import PropertyJurisdictionExemption, TaxUnitRate
 
 
@@ -162,6 +163,11 @@ class BrazosPublicationTests(TransactionTestCase):
                 self.assertFalse(result.prepared)
                 self.assertNotEqual(result.snapshot_id, old.pk)
                 self.assertEqual(PropertyAccount.objects.get().owner_name, "Candidate owner")
+                publication = ImportOperation.objects.get(pk=result.operation_id)
+                self.assertEqual(
+                    publication.publication_after,
+                    published_identity("brazos") | {"candidate_id": str(result.candidate_id)},
+                )
                 repeated = importer.run(replace(request, candidate_id=result.candidate_id))
                 self.assertTrue(repeated.already_applied)
                 self.assertEqual(

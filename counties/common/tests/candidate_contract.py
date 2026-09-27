@@ -37,8 +37,8 @@ class CandidateContract:
     def prepare(self, root: Path) -> ImportCandidate:
         raise NotImplementedError
 
-    def candidate_load(self) -> CandidateLoad:
-        """The county's real load for a default request."""
+    def candidate_load(self, operation) -> CandidateLoad:
+        """The county's real load for a default request, set up inside ``operation``."""
         raise NotImplementedError
 
     def write_candidate_rows(self, *, ready: bool):
@@ -51,7 +51,9 @@ class CandidateContract:
     def published_keys(self) -> list[str]:
         raise NotImplementedError
 
-    def fixture_load(self, *, ready=True, failure: Exception | None = None) -> CandidateLoad:
+    def fixture_load(
+        self, operation, *, ready=True, failure: Exception | None = None
+    ) -> CandidateLoad:
         """The county's real load with only its load step replaced by a fixture writer."""
         source = self.root / "fixture-source.txt"
 
@@ -64,7 +66,7 @@ class CandidateContract:
             self.write_candidate_rows(ready=ready)
             return Loaded(complete=True, evidence={"fixture": "rows written"})
 
-        return replace(self.candidate_load(), run=write)
+        return replace(self.candidate_load(operation), run=write)
 
     def setUp(self):
         super().setUp()
@@ -99,8 +101,8 @@ class HarrisCandidateContract(CandidateContract):
         result = run_harris_import(harris_request(root, prepare=True))
         return ImportCandidate.objects.get(pk=result.candidate_id)
 
-    def candidate_load(self):
-        return harris_candidate_load(harris_request(self.root, prepare=True))
+    def candidate_load(self, operation):
+        return harris_candidate_load(harris_request(self.root, prepare=True), operation)
 
     def write_candidate_rows(self, *, ready):
         for number in range(4):
@@ -148,7 +150,7 @@ class BrazosCandidateContract(CandidateContract):
         )
         return ImportCandidate.objects.get(pk=result.candidate_id)
 
-    def candidate_load(self):
+    def candidate_load(self, operation):
         return brazos_candidate_load(
             CadRefreshStage(),
             None,

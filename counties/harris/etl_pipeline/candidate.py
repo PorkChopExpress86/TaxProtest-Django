@@ -5,7 +5,7 @@ from __future__ import annotations
 from counties.common.candidate_lifecycle import CandidateLoad
 from counties.common.candidate_ports import CandidateTables
 from counties.common.import_coverage import OutcomePopulation
-from counties.common.models import ImportCandidate
+from counties.common.models import ImportCandidate, ImportOperation
 from counties.harris.models import BuildingDetail, ExtraFeature, PropertyRecord
 from counties.harris.readiness import outcome_populations, published_year
 from counties.harris.source_catalog import HarrisImportStage
@@ -51,7 +51,7 @@ class HarrisCandidatePort:
             in HarrisImportPlan.from_legacy_scope(candidate.request["plan"]).stages,
         )
 
-    def replay(self, source: ImportCandidate) -> CandidateLoad:
+    def replay(self, source: ImportCandidate, operation: ImportOperation) -> CandidateLoad:
         # A full replay cannot substitute the current dataset's dependent facts.
         return harris_candidate_load(
             HarrisImportRequest(
@@ -63,6 +63,7 @@ class HarrisCandidatePort:
                     validate_completeness=source.request.get("validate_completeness", True)
                 ),
             ),
+            operation,
             replayed=source,
         )
 

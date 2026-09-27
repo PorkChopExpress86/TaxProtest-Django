@@ -382,4 +382,5 @@ class ImportRecoveryTests(TransactionTestCase):
                 county="harris", origin="admin_recovery", status="failed"
             ).get()
             self.assertTrue(failed.audit_entries.filter(kind="dataset_recovery").exists())
+            self.assertFalse(ImportCandidate.objects.filter(operation=failed).exists())
             self.assertTrue(PropertyRecord.objects.filter(account_number="P101").exists())
