@@ -25,6 +25,13 @@ class RecoveryRejected(RuntimeError):
     pass
 
 
+def _active_writer() -> ImportOperation:
+    operation = _CURRENT_WRITER.get()
+    if operation is None:
+        raise FencedWriter("No county writer reservation is active; mutation rejected")
+    return operation
+
+
 def _source_digests(root: Path) -> dict[str, str]:
     digests = {}
     for directory, children, files in os.walk(root):
@@ -41,9 +48,7 @@ def _source_digests(root: Path) -> dict[str, str]:
 
 def working_source_root(root: Path, *, reuse: bool = True) -> Path:
     """Isolate attempt-owned files, so a lost worker cannot overwrite another attempt."""
-    operation = _CURRENT_WRITER.get()
-    if operation is None:
-        return root
+    operation = _active_writer()
     working = root / ".imports" / str(operation.pk)
     if not working.exists() and not reuse:
         working.mkdir(parents=True)
@@ -184,18 +189,17 @@ def county_writer(operation: ImportOperation) -> Iterator[None]:
 @contextmanager
 def fenced_write() -> Iterator[None]:
     """Hold the exact reservation while mutating, including nested persistence."""
+    operation = _active_writer()
     with transaction.atomic():
-        operation = _CURRENT_WRITER.get()
-        if operation is not None:
-            writer = CountyWriter.objects.select_for_update().get(county=operation.county)
-            if writer.operation_id != operation.pk:
-                raise FencedWriter(f"Writer {operation.pk} has been fenced; mutation rejected")
-            if connection.vendor == "postgresql":
-                with connection.cursor() as cursor:
-                    cursor.execute("SELECT pg_backend_pid()")
-                    pid = cursor.fetchone()[0]
-                if pid != writer.backend_pid or not _lock_held(operation.county, pid):
-                    raise FencedWriter(f"Writer {operation.pk} lost its database session")
+        writer = CountyWriter.objects.select_for_update().get(county=operation.county)
+        if writer.operation_id != operation.pk:
+            raise FencedWriter(f"Writer {operation.pk} has been fenced; mutation rejected")
+        if connection.vendor == "postgresql":
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT pg_backend_pid()")
+                pid = cursor.fetchone()[0]
+            if pid != writer.backend_pid or not _lock_held(operation.county, pid):
+                raise FencedWriter(f"Writer {operation.pk} lost its database session")
         yield
 
 

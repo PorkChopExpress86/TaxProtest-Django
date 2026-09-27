@@ -30,7 +30,8 @@ from django.urls import reverse
 from counties.brazos.gis_refresh import GisRefreshStage
 from counties.brazos.models import BrazosPropertySnapshot, PropertyAccount, SnapshotOutcome
 from counties.brazos.property_import import RefreshOptions
-from counties.common.models import ImportCandidate
+from counties.common.import_writers import county_writer
+from counties.common.models import ImportCandidate, ImportOperation
 
 # Real page structure (see docs/research/brazos-gis-parcel-shapefile.md):
 # certified-year links, a non-year-labeled monthly variant, and unrelated
@@ -444,7 +445,8 @@ class OfflineRerunTests(TestCase):
     def test_explicit_source_year_can_differ_from_the_target_year_offline(self):
         self._stage_extracted_shapefile(2025)
 
-        with self._settings():
+        writer = ImportOperation.objects.create(county="brazos", intent="gis_source_staging")
+        with self._settings(), county_writer(writer):
             preparation = GisRefreshStage().prepare(
                 RefreshOptions(
                     tax_year=2026,

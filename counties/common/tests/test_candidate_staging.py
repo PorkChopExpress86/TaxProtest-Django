@@ -13,6 +13,7 @@ from counties.common.candidate_staging import (
     staged_candidate_schema,
     validate_schema_name,
 )
+from counties.common.import_writers import county_writer
 from counties.common.models import ImportCandidate, ImportOperation
 from counties.common.tax_models import PropertyJurisdictionExemption
 
@@ -87,11 +88,14 @@ class CandidateStagingIntegrationTests(TransactionTestCase):
             exemption_code="HS",
         )
 
-        with staged_candidate_schema(
-            "brazos",
-            candidate,
-            models,
-            shared_models_scope=shared_scope,
+        with (
+            county_writer(operation),
+            staged_candidate_schema(
+                "brazos",
+                candidate,
+                models,
+                shared_models_scope=shared_scope,
+            ),
         ):
             # Inside staged schema, update data
             staged_account = PropertyAccount.objects.get(prop_id="000000010001")

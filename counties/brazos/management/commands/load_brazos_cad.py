@@ -9,6 +9,7 @@ from counties.brazos.property_import import (
     RefreshOptions,
     build_default_property_import,
 )
+from counties.common.import_audit import audited_operation
 
 
 class Command(BaseCommand):
@@ -62,7 +63,11 @@ class Command(BaseCommand):
             keep_extracted=options["keep_extracted"],
         )
         if options["skip_ingest"]:
-            stage.prepare(refresh_options)
+            # Staged sources are retained under the operation's writer, never the shared root.
+            with audited_operation(
+                "brazos", "cad_source_staging", requested_year=options.get("year")
+            ):
+                stage.prepare(refresh_options)
             self.stdout.write("Skipped ingest (--skip-ingest).")
             return
 

@@ -19,7 +19,12 @@ from counties.brazos.property_import import (
     RefreshOptions,
 )
 from counties.brazos.tests.test_property_import import _stage_complete_pacs_export
-from counties.common.import_writers import WriterConflict
+from counties.common.import_writers import (
+    FencedWriter,
+    WriterConflict,
+    fenced_write,
+    working_source_root,
+)
 from counties.common.models import CountyWriter, ImportOperation
 from counties.harris.etl_pipeline import (
     ExtractedSourceRetention,
@@ -39,6 +44,18 @@ from counties.harris.etl_pipeline.tests.test_harris_import import (
 
 
 class ImportWriterTests(TransactionTestCase):
+    def test_mutation_outside_an_import_operation_is_rejected(self):
+        with self.assertRaises(FencedWriter), fenced_write():
+            ImportOperation.objects.create(county="harris", intent="unfenced")
+        self.assertFalse(ImportOperation.objects.filter(intent="unfenced").exists())
+
+    def test_working_sources_outside_an_import_operation_are_rejected(self):
+        with tempfile.TemporaryDirectory() as root:
+            (Path(root) / "source.txt").write_text("shared")
+            with self.assertRaises(FencedWriter):
+                working_source_root(Path(root))
+            self.assertFalse((Path(root) / ".imports").exists())
+
     def test_competing_acquisition_always_reports_a_durable_owner(self):
         acquired, release = Event(), Event()
         results, failures = [], []

@@ -26,6 +26,7 @@ from counties.brazos.property_import import (
     build_default_refresh,
 )
 from counties.brazos.stage_reporting import SilentStageReporter
+from counties.common.import_writers import county_writer
 from counties.common.models import ImportCandidate, ImportOperation
 
 
@@ -95,14 +96,16 @@ class AnnualRefreshWiringTests(SimpleTestCase):
         self.assertIsInstance(refresh._gis, GisRefreshStage)
 
 
-class AnnualRefreshOnlineDryRunTests(SimpleTestCase):
+class AnnualRefreshOnlineDryRunTests(TestCase):
     def test_discovery_selects_online_sources_without_claiming_a_validated_preview(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             cad = CadRefreshStage()
             gis = GisRefreshStage()
+            writer = ImportOperation.objects.create(county="brazos", intent="preview")
 
             with (
+                county_writer(writer),
                 self.settings(
                     BCAD_DOWNLOAD_DIR=str(root / "downloads"),
                     BCAD_EXTRACT_DIR=str(root / "extracted"),

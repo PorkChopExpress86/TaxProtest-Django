@@ -31,6 +31,7 @@ from counties.brazos.models import (
     PropertyImprovementDetail,
     PropertyLand,
 )
+from counties.common.models import ImportOperation
 from counties.common.tax_models import PropertyJurisdictionExemption
 
 
@@ -56,6 +57,9 @@ class CadCommandAdapterTests(TestCase):
                 )
 
         self.assertFalse(PropertyAccount.objects.filter(tax_year=2025).exists())
+        staging = ImportOperation.objects.get(county="brazos", intent="cad_source_staging")
+        self.assertEqual(staging.status, "completed")
+        self.assertEqual(staging.requested_year, 2025)
 
 
 def _line(length: int, fields: dict[tuple[int, int], str]) -> str:
