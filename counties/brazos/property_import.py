@@ -1,8 +1,8 @@
-"""County-owned publication of one Brazos detailed property snapshot.
+"""County-owned import of one Brazos detailed property snapshot.
 
-The module owns source-year checks, CAD preflight, candidate staging,
-coverage qualification, transactional publication, recovery staging,
-and cleanup. CAD and GIS source stages remain their own adapters.
+The module owns source-year checks, CAD preflight, the candidate load and its
+evidence, and cleanup; the shared Candidate lifecycle stages, qualifies and
+publishes the candidate. CAD and GIS source stages remain their own adapters.
 """
 
 from __future__ import annotations
@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Protocol
 from uuid import UUID
 
-from django.conf import settings
 from django.core.management.base import CommandError
 
 from counties.brazos.models import (
@@ -28,19 +27,10 @@ from counties.brazos.models import (
     SnapshotOutcome,
 )
 from counties.brazos.readiness import BrazosActiveSnapshotReadiness
-from counties.common import candidate_ports
 from counties.common.candidate_lifecycle import CandidateLoad, Loaded, prepare, publish
-from counties.common.candidate_ports import CandidateTables
 from counties.common.import_audit import OperationStatus, audited_operation
 from counties.common.import_coverage import OutcomePopulation
-from counties.common.import_recovery import (
-    ReplayRejected,
-    ReplayRequest,
-    copy_exact_source,
-    requested_replay,
-    verify_replay,
-)
-from counties.common.import_writers import fenced_write, working_source_root
+from counties.common.import_writers import fenced_write
 from counties.common.models import ImportCandidate, ImportOperation
 from counties.common.tax_models import PropertyJurisdictionExemption
 
@@ -129,13 +119,8 @@ class PropertyImportRequest:
     prepare_only: bool = False
     candidate_id: UUID | None = None
     application_reason: str = ""
-    replay: ReplayRequest | None = None
 
     def __post_init__(self):
-        if self.replay is not None and (
-            not self.prepare_only or self.candidate_id is not None or self.options.dry_run
-        ):
-            raise ValueError("Dataset recovery requires fresh candidate preparation")
         if self.candidate_id is not None and (self.options.dry_run or self.prepare_only):
             raise ValueError("Candidate application requires explicit publication intent")
 
@@ -167,34 +152,6 @@ PROPERTY_MODELS = (
     PropertyExtraFeature,
 )
 MODELS = (*PROPERTY_MODELS, PropertyJurisdictionExemption, BrazosPropertySnapshot)
-
-
-class BrazosCandidatePort:
-    """What the shared Candidate lifecycle asks Brazos."""
-
-    tables = CandidateTables(MODELS, county_scoped=frozenset({PropertyJurisdictionExemption}))
-
-    def published(self) -> dict:
-        snapshot = BrazosPropertySnapshot.objects.filter(is_active=True).first()
-        return {
-            "snapshot_id": snapshot.pk if snapshot else None,
-            "tax_year": snapshot.tax_year if snapshot else None,
-            "outcome": snapshot.outcome if snapshot else None,
-        }
-
-    def outcomes(self, candidate: ImportCandidate | None) -> dict[str, OutcomePopulation]:
-        if candidate is None:
-            return outcome_populations()
-        partial = candidate.request["mode"] == PropertyImportMode.CAD_RECOVERY.value
-        return outcome_populations(claimed_gis=not partial, deliberately_absent_gis=partial)
-
-
-def dataset_identity(schema: str = "public") -> dict:
-    return candidate_ports.dataset_identity("brazos", schema)
-
-
-def published_identity() -> dict:
-    return candidate_ports.published_identity("brazos")
 
 
 def outcome_populations(
@@ -303,7 +260,6 @@ def brazos_candidate_load(
             replace(
                 request,
                 prepare_only=False,
-                replay=None,
                 options=replace(request.options, keep_extracted=True),
             ),
             operation,
@@ -347,106 +303,6 @@ def brazos_candidate_load(
     )
 
 
-def _copy_archive(sources):
-    item = next((item for item in sources if Path(item["path"]).suffix.lower() == ".zip"), None)
-    if item is None:
-        return None
-    destination = (
-        working_source_root(Path(settings.BCAD_DOWNLOAD_DIR), reuse=False) / Path(item["path"]).name
-    )
-    copy_exact_source(item, destination)
-    return destination
-
-
-def prepare_recovery(candidate, replay, *, actor):
-    from counties.brazos.cad_refresh import ALL_FILENAMES, CadRefreshStage, _CadStagePayload
-    from counties.brazos.gis_refresh import GisRefreshStage, GisSourcePayload
-
-    class RetainedCadStage(CadRefreshStage):
-        def __init__(self, sources):
-            super().__init__()
-            self.sources = [item for item in sources if item.get("stage") == "cad"]
-
-        def prepare(self, options):
-            if not self.sources:
-                raise ReplayRejected("Retained CAD sources are unavailable")
-            year = self.sources[0]["source_year"]
-            root = working_source_root(Path(settings.BCAD_EXTRACT_DIR), reuse=False) / str(year)
-            files = {}
-            for filename in ALL_FILENAMES:
-                item = next(
-                    (
-                        item
-                        for item in self.sources
-                        if Path(item["path"]).name.upper().endswith(filename)
-                    ),
-                    None,
-                )
-                if item is None:
-                    raise ReplayRejected(f"Retained CAD input unavailable: {filename}")
-                destination = root / Path(item["path"]).name
-                copy_exact_source(item, destination)
-                files[filename] = destination
-            archive = _copy_archive(self.sources)
-            return StagePreparation(
-                "cad",
-                year,
-                options.tax_year or year,
-                _CadStagePayload(files, root, archive, self.sources[0].get("source_url") or ""),
-                (),
-            )
-
-    class RetainedGisStage(GisRefreshStage):
-        def __init__(self, sources):
-            super().__init__()
-            self.sources = [item for item in sources if item.get("stage") == "gis"]
-
-        def prepare(self, options):
-            shape = next(
-                (item for item in self.sources if Path(item["path"]).suffix.lower() == ".shp"), None
-            )
-            if shape is None:
-                raise ReplayRejected("Retained GIS layer unavailable")
-            original = Path(shape["path"])
-            year = shape["source_year"]
-            root = (
-                working_source_root(Path(settings.BCAD_EXTRACT_DIR), reuse=False)
-                / "gis"
-                / str(year)
-            )
-            for item in self.sources:
-                path = Path(item["path"])
-                if path.parent == original.parent and path.stem == original.stem:
-                    copy_exact_source(item, root / path.name)
-            archive = _copy_archive(self.sources)
-            return StagePreparation(
-                "gis",
-                year,
-                options.tax_year or year,
-                GisSourcePayload(
-                    root / original.name, root, archive, shape.get("source_url") or ""
-                ),
-                (),
-            )
-
-    partial = candidate.evidence["outcome"] == "partial"
-    return BrazosPropertyImport(
-        RetainedCadStage(candidate.sources),
-        None if partial else RetainedGisStage(candidate.sources),
-    ).run(
-        PropertyImportRequest(
-            mode=PropertyImportMode.CAD_RECOVERY if partial else PropertyImportMode.ANNUAL,
-            options=RefreshOptions(
-                tax_year=candidate.request["tax_year"], skip_download=True, skip_extract=True
-            ),
-            prepare_only=True,
-            actor=actor,
-            origin="admin_recovery",
-            replay=replay,
-        )
-    )
-
-
 class BrazosPropertyImport:
     """Prepare and publish a completed or Partial Brazos property snapshot."""
 
@@ -463,13 +319,10 @@ class BrazosPropertyImport:
             actor=request.actor,
             origin=request.origin,
             requested_year=request.options.tax_year,
-            evidence=requested_replay(request.replay),
             publication_before=(
                 {"snapshot_id": active.pk, "tax_year": active.tax_year} if active else None
             ),
         ) as operation:
-            if request.replay is not None:
-                verify_replay(request.replay, operation, published_identity())
             if request.candidate_id is not None:
                 candidate = ImportCandidate.objects.get(pk=request.candidate_id, county="brazos")
                 if candidate.request != {
@@ -864,9 +717,6 @@ __all__ = [
     "StageResult",
     "build_default_property_import",
     "build_default_refresh",
-    "dataset_identity",
     "outcome_populations",
     "brazos_candidate_load",
-    "prepare_recovery",
-    "published_identity",
 ]

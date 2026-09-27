@@ -11,7 +11,7 @@ class BrazosConfig(AppConfig):
 
     def ready(self):
         # Models are importable only once the app registry is ready.
-        from counties.brazos.property_import import BrazosCandidatePort
+        from counties.brazos.candidate import BrazosCandidatePort
         from counties.common.candidate_ports import register
 
         register("brazos", BrazosCandidatePort())

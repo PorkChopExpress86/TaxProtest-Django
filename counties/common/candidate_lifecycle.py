@@ -1,7 +1,8 @@
 """The shared Candidate lifecycle: prepare, qualify, review, publish, and recover.
 
-Every entry point runs inside an Import operation. County behaviour is reached only
-through the county candidate port registered for ``operation.county`` (ADR-0018).
+Every entry point runs inside an Import operation: ``prepare`` and ``publish`` inside
+the county runner's, ``apply`` and ``recover`` inside their own. County behaviour is
+reached only through the county candidate port registered for the county (ADR-0018).
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
 
+from django.core.exceptions import PermissionDenied
 from django.db import connection
 
 from counties.common.candidate_ports import (
@@ -20,8 +22,14 @@ from counties.common.candidate_ports import (
     published_identity,
 )
 from counties.common.candidate_staging import cutover_staged_tables, staged_candidate_schema
-from counties.common.import_audit import OperationStatus
+from counties.common.import_audit import OperationStatus, audited_operation
 from counties.common.import_coverage import compare_coverage
+from counties.common.import_recovery import (
+    ReplayRejected,
+    ReplayRequest,
+    requested_replay,
+    verify_replay,
+)
 from counties.common.import_retention import (
     baseline_sources,
     record_publication,
@@ -40,6 +48,7 @@ class Loaded:
     identity: Mapping[str, Any] = field(default_factory=dict)  # added to candidate.request
     evidence: Mapping[str, Any] = field(default_factory=dict)
     audit: Mapping[str, Any] = field(default_factory=dict)  # county facts for publication audit
+    errors: tuple[str, ...] = ()  # why an incomplete load stopped
     result: Any = None  # the county's own result, handed back to its runner
 
 
@@ -115,7 +124,11 @@ def prepare(
             candidate.state = "awaiting_review"
         else:
             candidate.state = "prepared"
-        operation.status = OperationStatus(candidate.state)
+        if loaded.complete:
+            operation.status = OperationStatus(candidate.state)
+        else:
+            operation.status = OperationStatus.FAILED
+            operation.errors.extend(loaded.errors)
     except Exception as exc:
         candidate.state = "blocked"
         candidate.evidence["error"] = str(exc)
@@ -183,3 +196,79 @@ def publish(
             result="published",
         )
     return candidate
+
+
+def apply(candidate: ImportCandidate, *, user, reason: str) -> ImportOperation:
+    """Publish a qualified candidate in its own Import operation, at an operator's request."""
+    with audited_operation(
+        candidate.county,
+        "apply",
+        actor=user.get_username(),
+        origin="admin",
+        requested_year=candidate.operation.requested_year,
+    ) as operation:
+        publish(operation, candidate.pk, user=user, reason=reason)
+    return operation
+
+
+def recover(source: ImportCandidate, *, user, reason: str, binding: str) -> ImportOperation:
+    """Prepare a new candidate by replaying a published candidate's retained sources.
+
+    Recovery follows the ordinary source, readiness and coverage rules and never
+    publishes; its candidate is reviewed and applied like any other (ADR-0016). The
+    attempt is audited on both operations, and a failed recovery raises ReplayRejected.
+    """
+    if not (
+        user.is_authenticated
+        and user.is_active
+        and user.is_staff
+        and user.has_perm("data.recover_import_dataset")
+    ):
+        raise PermissionDenied("Dataset recovery permission is required")
+    if not reason.strip():
+        raise ReplayRejected("A recovery reason is required")
+    request = ReplayRequest(source.pk, binding, reason.strip())
+    county = source.county
+    try:
+        with audited_operation(
+            county,
+            "recovery",
+            actor=user.get_username(),
+            origin="admin_recovery",
+            requested_year=source.operation.requested_year,
+            evidence=requested_replay(request),
+        ) as operation:
+            verify_replay(request, operation, published_identity(county))
+            prepare(operation, port_for(county).replay(source))
+    except Exception:
+        operation = ImportOperation.objects.filter(
+            county=county, evidence__recovery__request_id=str(request.id)
+        ).first()
+        if operation is None:
+            raise
+    operation.publication_after = published_identity(county)
+    operation.save(update_fields=["publication_after"])
+    evidence = {
+        **operation.evidence["recovery"],
+        "new_operation_id": str(operation.pk),
+        "candidate_id": operation.evidence.get("candidate_id"),
+        "before": operation.publication_before,
+        "after": operation.publication_after,
+    }
+    for target, kind in (
+        (operation, "dataset_recovery"),
+        (source.operation, "recovery_request"),
+    ):
+        ImportAuditEntry.objects.create(
+            operation=target,
+            kind=kind,
+            actor=user.get_username(),
+            reason=reason.strip(),
+            result=operation.status,
+            evidence=evidence,
+        )
+    if operation.status == OperationStatus.FAILED:
+        raise ReplayRejected(
+            f"Recovery import {operation.pk} failed: {'; '.join(operation.errors)}"
+        )
+    return operation

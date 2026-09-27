@@ -19,14 +19,13 @@ from django.db import DatabaseError
 
 from counties.common.candidate_lifecycle import CandidateLoad, Loaded, prepare, publish
 from counties.common.import_audit import OperationStatus, audited_operation
-from counties.common.import_recovery import ReplayRequest, requested_replay, verify_replay
+from counties.common.import_recovery import ReplayRejected, copy_exact_source
 from counties.common.import_writers import fenced_write, working_source_root
 from counties.common.models import ImportCandidate, ImportOperation
 from counties.harris.models import BuildingDetail, ExtraFeature, PropertyRecord
 from counties.harris.readiness import published_year
 from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG, HarrisImportStage
 
-from .candidate import published_identity, seed_sources
 from .config import DataSource, DataSourceType, ETLConfig
 from .download import DownloadManager
 from .extract import ExtractManager
@@ -225,15 +224,10 @@ class HarrisImportRequest:
     candidate_id: UUID | None = None
     property_file: HarrisPropertyFile | None = None
     application_reason: str = ""
-    replay: ReplayRequest | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.plan, HarrisImportPlan):
             raise InvalidHarrisImportRequest("plan must be a HarrisImportPlan")
-        if self.replay is not None and (
-            self.candidate_id is not None or not isinstance(self.load, HarrisPrepare)
-        ):
-            raise InvalidHarrisImportRequest("Dataset recovery requires fresh HarrisPrepare intent")
         if self.candidate_id is not None and (
             not isinstance(self.load, HarrisApply) or isinstance(self.load, HarrisPrepare)
         ):
@@ -296,6 +290,7 @@ class _HarrisImportExecution:
         logger: ETLLogger | None = None,
         reporter: HarrisImportReporter | None = None,
         operation: ImportOperation | None = None,
+        replayed: ImportCandidate | None = None,
     ):
         self.request = request
         self.operation = operation
@@ -303,13 +298,14 @@ class _HarrisImportExecution:
         self.data_year = data_year
         self.config = config or ETLConfig.from_env()
         self.config.download_dir = working_source_root(
-            self.config.download_dir, reuse=request.replay is None
+            self.config.download_dir, reuse=replayed is None
         )
         self.config.extract_dir = working_source_root(
-            self.config.extract_dir, reuse=request.replay is None
+            self.config.extract_dir, reuse=replayed is None
         )
-        if request.replay is not None:
-            seed_sources(self.config, sources, operation)
+        if replayed is not None:
+            assert operation is not None
+            seed_sources(self.config, sources, replayed, operation)
         if request.property_file is not None:
             directory = self.config.extract_dir / "Real_acct_owner"
             directory.mkdir(parents=True, exist_ok=True)
@@ -787,10 +783,7 @@ def run_harris_import(
         actor=request.actor,
         origin=request.origin,
         requested_year=data_year,
-        evidence=requested_replay(request.replay),
     ) as operation:
-        if request.replay is not None:
-            verify_replay(request.replay, operation, published_identity())
         if request.candidate_id is not None:
             candidate = ImportCandidate.objects.get(pk=request.candidate_id, county="harris")
             if {key: candidate.request[key] for key in ("plan", "data_year")} != {
@@ -872,9 +865,15 @@ def run_harris_import(
 
 
 def harris_candidate_load(
-    request: HarrisImportRequest, *, reporter: HarrisImportReporter | None = None
+    request: HarrisImportRequest,
+    *,
+    reporter: HarrisImportReporter | None = None,
+    replayed: ImportCandidate | None = None,
 ) -> CandidateLoad:
-    """Load the request's translated Harris rows into a staged candidate schema."""
+    """Load the request's translated Harris rows into a staged candidate schema.
+
+    With ``replayed``, the load reads that candidate's retained sources exactly.
+    """
     assert isinstance(request.load, HarrisApply)
     data_year = _resolve_data_year(request)
     sources = _selected_sources(request)
@@ -900,14 +899,14 @@ def harris_candidate_load(
         }
 
     def run(candidate: ImportCandidate, operation: ImportOperation) -> Loaded:
-        if request.replay is not None:
-            source_year = operation.evidence["recovery"].get("property_source_year")
+        if replayed is not None:
+            source_year = replayed.evidence.get("property_source_year")
         elif HarrisImportStage.PROPERTY not in request.plan.stages:
             source_year = published_year()
         else:
             source_year = data_year if request.property_file is None else None
         result = _HarrisImportExecution(
-            staged, sources, data_year, reporter=reporter, operation=operation
+            staged, sources, data_year, reporter=reporter, operation=operation, replayed=replayed
         ).run()
         return Loaded(
             complete=result.status is HarrisImportStatus.COMPLETED,
@@ -924,6 +923,7 @@ def harris_candidate_load(
                 "result": result.to_dict(),
             },
             audit={"data_year": data_year},
+            errors=result.errors,
             result=result,
         )
 
@@ -933,6 +933,50 @@ def harris_candidate_load(
         carries_published=not request.plan.is_full or request.property_file is not None,
         run=run,
     )
+
+
+def seed_sources(config, sources, replayed: ImportCandidate, operation: ImportOperation):
+    """Copy the replayed candidate's retained full inputs exactly into the working roots."""
+    retained = replayed.sources
+    owners = {
+        item.get("source_operation_id") or str(replayed.operation_id)
+        for item in retained
+        if item.get("source_id") == "real-account-owner"
+    }
+    for owner in ImportCandidate.objects.filter(county="harris", operation_id__in=owners):
+        options = owner.request.get("property_file", {})
+        if options.get("append") or options.get("limit") is not None:
+            raise ReplayRejected(
+                "Automatic recovery is unavailable for append or limited publications; "
+                "a reviewed county import of complete source inputs is required"
+            )
+    manager = ExtractManager(config)
+    for source in sources:
+        if source.source_id is None:
+            raise ReplayRejected("A retained Harris source must have a catalog identity")
+        selected = [item for item in retained if item.get("source_id") == source.source_id.value]
+        if not selected:
+            raise ReplayRejected(f"Retained full Harris inputs are unavailable for {source.name}")
+        copied = set()
+        root = manager.get_extract_path(source)
+        for item in selected:
+            original = Path(item["path"])
+            if original.suffix.lower() == ".zip":
+                destination = config.download_dir / source.filename
+            else:
+                parent = next(
+                    (parent for parent in original.parents if parent.name == root.name), None
+                )
+                relative = original.relative_to(parent) if parent else Path(original.name)
+                destination = root / relative
+            if destination not in copied:
+                copy_exact_source(item, destination)
+                copied.add(destination)
+                if original.suffix.lower() == ".zip":
+                    operation.evidence.setdefault("acquired_sources", {})[source.filename] = {
+                        "source_url": item.get("source_url"),
+                        "source_year": item.get("source_year"),
+                    }
 
 
 def _selected_sources(request: HarrisImportRequest) -> list[DataSource]:

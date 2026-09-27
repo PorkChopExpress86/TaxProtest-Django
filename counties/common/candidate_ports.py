@@ -15,6 +15,7 @@ from django.db.models import Model
 from counties.common.candidate_staging import compute_dataset_hash
 
 if TYPE_CHECKING:
+    from counties.common.candidate_lifecycle import CandidateLoad
     from counties.common.import_coverage import OutcomePopulation
     from counties.common.models import ImportCandidate
 
@@ -45,6 +46,10 @@ class CandidatePort(Protocol):
 
         The caller guarantees the database search path points at the measured tables.
         """
+        ...
+
+    def replay(self, source: ImportCandidate) -> CandidateLoad:
+        """A load that replays ``source``'s retained sources exactly (ADR-0016)."""
         ...
 
 

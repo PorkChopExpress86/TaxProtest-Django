@@ -4,6 +4,7 @@ import threading
 
 from django.db import close_old_connections, connection
 from django.test import TransactionTestCase
+from django.urls import reverse
 
 from counties.common.candidate_lifecycle import publish
 from counties.common.candidate_ports import published_identity
@@ -55,6 +56,18 @@ class PublicationContract:
         repeated = self.publish()
         self.assertEqual(repeated.status, "already_applied")
         self.assertEqual(repeated.evidence["already_applied"], str(self.candidate.pk))
+        self.assertEqual(ImportAuditEntry.objects.filter(kind="publication").count(), 1)
+
+    def test_admin_apply_shows_the_applied_result(self):
+        self.approve()
+        self.client.force_login(self.reviewer)
+        url = reverse("admin:data_importcandidate_apply", args=[self.candidate.pk])
+        applied = self.client.post(url, {"reason": "Apply reviewed"}, follow=True)
+        self.assertContains(applied, "Candidate publication observed. Data is applied.")
+        self.candidate.refresh_from_db()
+        self.assertEqual(self.candidate.state, "published")
+        repeated = self.client.post(url, {"reason": "Apply again"}, follow=True)
+        self.assertContains(repeated, "Candidate already applied; no new write.")
         self.assertEqual(ImportAuditEntry.objects.filter(kind="publication").count(), 1)
 
     def test_failed_publication_audit_rolls_back_the_publication(self):
