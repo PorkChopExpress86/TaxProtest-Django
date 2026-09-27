@@ -831,6 +831,20 @@ def run_harris_import(
                     ),
                 )
                 result = prepare_candidate(execution, operation)
+                if (
+                    not isinstance(request.load, HarrisPrepare)
+                    and result.status is HarrisImportStatus.PREPARED
+                ):
+                    # Publish under the reservation that prepared the candidate.
+                    operation.evidence["application_reason"] = request.application_reason
+                    publish_candidate(result.candidate_id, operation, user=reviewer)
+                    result = replace(
+                        result,
+                        status=HarrisImportStatus.COMPLETED,
+                        wrote_data="already_applied" not in operation.evidence,
+                        already_applied="already_applied" in operation.evidence,
+                        completed_at=datetime.now(),
+                    )
             else:
                 result = execution.run()
     except Exception as exc:
@@ -873,39 +887,6 @@ def run_harris_import(
     operation.errors = list(result.errors)
     operation.finished_at = timezone.now()
     operation.save()
-    if (
-        isinstance(request.load, HarrisApply)
-        and not isinstance(request.load, HarrisPrepare)
-        and request.candidate_id is None
-        and result.status is HarrisImportStatus.PREPARED
-    ):
-        candidate = ImportCandidate.objects.get(pk=result.candidate_id, county="harris")
-        operation.evidence["application_reason"] = request.application_reason
-        operation.save()
-        publish_candidate(candidate.pk, operation, user=reviewer)
-        result = replace(
-            result,
-            status=HarrisImportStatus.COMPLETED,
-            wrote_data="already_applied" not in operation.evidence,
-            already_applied="already_applied" in operation.evidence,
-            completed_at=datetime.now(),
-        )
-        operation.status = (
-            "already_applied"
-            if result.already_applied
-            else "published" if result.wrote_data else result.status.value
-        )
-        operation.evidence = {
-            **operation.evidence,
-            "result": result.to_dict(),
-            "wrote_data": result.wrote_data,
-            "qualified_publication": operation.evidence.get(
-                "qualified_publication", "Published data unchanged"
-            ),
-        }
-        operation.finished_at = timezone.now()
-        operation.save()
-        return result
     return result
 
 

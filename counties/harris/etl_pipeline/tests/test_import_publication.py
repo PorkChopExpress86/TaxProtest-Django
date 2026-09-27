@@ -15,6 +15,7 @@ from django.db import close_old_connections, connection
 from django.test import Client, TransactionTestCase
 from django.urls import reverse
 
+from counties.common.import_writers import WriterConflict, county_writer
 from counties.common.models import ImportAuditEntry, ImportCandidate, ImportOperation
 from counties.common.tax_models import PropertyJurisdictionExemption, TaxUnitRate
 from counties.harris.etl_pipeline import (
@@ -106,6 +107,55 @@ class HarrisPublicationTests(TransactionTestCase):
             self.assertEqual(
                 ImportAuditEntry.objects.filter(kind="publication", result="published").count(), 1
             )
+
+    def test_automatic_publication_holds_the_writer_reservation(self):
+        self.baseline()
+        with tempfile.TemporaryDirectory() as root, self.settings(**_runtime_settings(root)):
+            outcomes = []
+
+            def compete():
+                close_old_connections()
+                try:
+                    competing = ImportOperation.objects.create(county="harris", intent="full")
+                    with county_writer(competing):
+                        outcomes.append("acquired")
+                except WriterConflict:
+                    outcomes.append("rejected")
+                finally:
+                    connection.close()
+
+            def during_cutover(execute, sql, params, many, context):
+                if sql.startswith('INSERT INTO public."data_propertyrecord"') and not outcomes:
+                    thread = threading.Thread(target=compete)
+                    thread.start()
+                    thread.join(20)
+                return execute(sql, params, many, context)
+
+            with connection.execute_wrapper(during_cutover):
+                result = run_harris_import(harris_request(root))
+
+            self.assertEqual(result.status, HarrisImportStatus.COMPLETED)
+            self.assertEqual(outcomes, ["rejected"])
+            applied = ImportOperation.objects.get(pk=result.operation_id)
+            self.assertEqual(applied.status, "published")
+            self.assertEqual(applied.candidate.pk, result.candidate_id)
+
+    def test_failed_automatic_publication_is_recorded_as_failed(self):
+        self.baseline()
+        with tempfile.TemporaryDirectory() as root, self.settings(**_runtime_settings(root)):
+
+            def fail(execute, sql, params, many, context):
+                if sql.startswith('INSERT INTO public."data_propertyrecord"'):
+                    raise OSError("Publication connection interrupted")
+                return execute(sql, params, many, context)
+
+            with connection.execute_wrapper(fail), self.assertRaises(OSError):
+                run_harris_import(harris_request(root))
+
+            operation = ImportOperation.objects.get(county="harris", intent="full")
+            self.assertEqual(operation.status, "failed")
+            self.assertEqual(operation.errors, ["Publication connection interrupted"])
+            self.assertEqual(PropertyRecord.objects.get().address, "Old address")
 
     def test_gis_refresh_preserves_property_year_in_reports_and_exports(self):
         from decimal import Decimal
