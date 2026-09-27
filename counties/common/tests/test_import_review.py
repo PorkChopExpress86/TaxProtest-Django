@@ -191,6 +191,61 @@ class ImportReviewTests(TransactionTestCase):
             self.assertEqual(candidate.state, "approved")
             self.assertFalse(PropertyRecord.objects.exists())
 
+    def test_harris_candidate_measured_under_other_readiness_rules_is_rejected(self):
+        import geopandas as gpd
+        from shapely.geometry import Point
+
+        from counties.harris.etl_pipeline import (
+            HarrisAcquisitionMode,
+            HarrisExtractionMode,
+            HarrisImportRequest,
+            HarrisPrepare,
+            run_harris_import,
+        )
+        from counties.harris.etl_pipeline.import_plan import HarrisImportPlan
+        from counties.harris.etl_pipeline.tests.test_harris_import import _runtime_settings
+
+        self.client.force_login(self.reviewer())
+        with tempfile.TemporaryDirectory() as temp, self.settings(**_runtime_settings(temp)):
+            extracted = Path(temp) / "extracted"
+            for name in ("Real_acct_owner", "Real_building_land", "Parcels"):
+                (extracted / name).mkdir(parents=True)
+            (extracted / "Real_acct_owner/real_acct.txt").write_text(
+                "acct\tstate_class\nP100\tA1\n"
+            )
+            (extracted / "Real_building_land/building_res.txt").write_text(
+                "acct\tbld_num\theat_ar\nP100\t1\t1800\n"
+            )
+            (extracted / "Real_building_land/fixtures.txt").write_text(
+                "acct\tbld_num\ttype\tunits\nP100\t1\tRMB\t3\nP100\t1\tRMF\t2\n"
+            )
+            (extracted / "Real_building_land/extra_features.txt").write_text(
+                "acct\tbld_num\tcd\nP100\t1\tGAR\n"
+            )
+            gpd.GeoDataFrame(
+                {"ACCT": ["P100"]}, geometry=[Point(3100000, 13800000)], crs="EPSG:2278"
+            ).to_file(extracted / "Parcels/parcels.shp")
+            result = run_harris_import(
+                HarrisImportRequest(
+                    plan=HarrisImportPlan.from_legacy_scope("full"),
+                    data_year=2026,
+                    acquisition=HarrisAcquisitionMode.REUSE_DOWNLOADED,
+                    extraction=HarrisExtractionMode.REUSE_EXTRACTED,
+                    load=HarrisPrepare(validate_completeness=False),
+                )
+            )
+            candidate = ImportCandidate.objects.get(pk=result.candidate_id)
+            # Coverage recorded by earlier readiness rules differs from the current measurement.
+            candidate.evidence["coverage"]["outcomes"]["report"]["exclusion_reasons"] = {}
+            candidate.save(update_fields=["evidence"])
+            response = self.client.post(
+                self.url(candidate),
+                {"decision": "approved", "reason": "Reviewed", "binding": self.binding(candidate)},
+            )
+            self.assertContains(response, "Outcome qualification changed")
+            candidate.refresh_from_db()
+            self.assertEqual(candidate.state, "awaiting_review")
+
     def test_source_invalid_candidate_can_be_rejected_but_not_approved(self):
         self.client.force_login(self.reviewer())
         with tempfile.TemporaryDirectory() as temp:

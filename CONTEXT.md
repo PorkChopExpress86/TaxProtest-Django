@@ -200,7 +200,8 @@ The source-backed eligibility of a published Harris record for a shared outcome:
 search-ready is residential and data-ready; comparable-ready adds coordinates;
 report-ready adds positive assessed value and living area within a qualifying
 pool of at least three comparables plus the subject; tax-impact-ready adds
-matching-year jurisdiction and exemption rows for the published source year.
+matching-year jurisdiction and exemption rows for the published source year and
+an adopted rate for every applicable taxing unit.
 _Avoid_: has location, data-ready flag alone, published year recorded
 
 **Harris readiness projection**:

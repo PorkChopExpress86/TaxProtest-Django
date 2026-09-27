@@ -148,7 +148,11 @@ class HarrisCoverageTests(TransactionTestCase):
             candidate = ImportCandidate.objects.get(pk=result.candidate_id)
             report = candidate.evidence["coverage"]["outcomes"]["report"]
             self.assertEqual(report["total_ready"], 0)
-            self.assertTrue(report["supported"])
+            self.assertFalse(report["supported"])
+            self.assertEqual(
+                report["unavailable_reason"],
+                "A qualifying equity comparison population is unavailable",
+            )
             self.assertIn("three qualifying", str(report["exclusion_reasons"]))
 
     def test_unavailable_new_year_tax_inputs_do_not_block_property_coverage(self):

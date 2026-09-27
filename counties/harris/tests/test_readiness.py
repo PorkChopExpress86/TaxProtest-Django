@@ -118,6 +118,59 @@ class HarrisReadinessContractTests(TestCase):
         self.assertIsNone(response.context.get("dossier"))
 
 
+class HarrisCompleteReadinessRuleTests(TestCase):
+    def setUp(self):
+        publish_year(2026)
+        TaxUnitRate.objects.create(
+            county="harris", tax_year=2026, tax_unit_code="A", adopted_rate=Decimal("0.01")
+        )
+        for number in range(4):
+            harris_property(f"TAX{number}", exemption_year=2026)
+
+    def test_each_unready_outcome_names_its_missing_input(self):
+        harris_property("NO-EQUITY", equity=False)
+        harris_property("NO-EXEMPTION")
+        harris_property("UNRATED-UNIT", exemption_year=2026)
+        PropertyJurisdictionExemption.objects.create(
+            county="harris",
+            tax_year=2026,
+            account_number="UNRATED-UNIT",
+            tax_unit_code="B",
+            taxable_value=250000,
+        )
+        expected = {
+            "NO-EQUITY": ("report", "Positive assessed value, living area and coordinates"),
+            "NO-EXEMPTION": ("tax", "Matching-year jurisdiction and exemption rows"),
+            "UNRATED-UNIT": ("tax", "Adopted 2026 rate unavailable for taxing unit B"),
+        }
+        for key, (outcome, reason) in expected.items():
+            with self.subTest(key=key):
+                capabilities = adapter.capabilities(key)
+                self.assertFalse(getattr(capabilities, OUTCOMES[outcome]))
+                self.assertIn(reason, capabilities.reasons[outcome])
+        self.assertTrue(adapter.capabilities("TAX0").tax_impact_ready)
+
+    def test_report_support_counts_only_the_qualifying_pool(self):
+        PropertyRecord.objects.filter(account_number__in=["TAX2", "TAX3"]).update(
+            is_residential=False
+        )
+        populations = outcome_populations(2026)
+        self.assertFalse(populations["report"].supported)
+        self.assertFalse(populations["tax"].supported)
+        capabilities = adapter.capabilities("TAX0")
+        self.assertIn("At least three qualifying comparables", capabilities.reasons["report"])
+        self.assertIn("At least three qualifying comparables", capabilities.reasons["tax"])
+
+    def test_tax_becomes_ready_when_rates_arrive_after_publication(self):
+        TaxUnitRate.objects.all().delete()
+        self.assertFalse(adapter.capabilities("TAX0").tax_impact_ready)
+        TaxUnitRate.objects.create(
+            county="harris", tax_year=2026, tax_unit_code="A", adopted_rate=Decimal("0.01")
+        )
+        self.assertTrue(adapter.capabilities("TAX0").tax_impact_ready)
+        self.assertIn("TAX0", outcome_populations(2026)["tax"].eligible)
+
+
 class HarrisReadinessQueryBoundTests(TestCase):
     def queries_for_one_property(self, dataset_size):
         publish_year(2026)

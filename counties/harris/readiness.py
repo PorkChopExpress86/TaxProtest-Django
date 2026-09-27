@@ -8,7 +8,7 @@ exactly what publication coverage measured.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 
 from django.db.models import QuerySet
@@ -81,9 +81,9 @@ class HarrisDatasetFacts:
     """Facts about the published dataset that one record's readiness depends on."""
 
     year: int | None
-    equity_supported: bool
     pool_supported: bool
     tax_inputs: bool
+    rated_units: frozenset[str]
 
 
 @dataclass(frozen=True)
@@ -95,7 +95,7 @@ class HarrisReadiness:
 
 
 def readiness(
-    record: HarrisRecordFacts, dataset: HarrisDatasetFacts, *, has_exemptions: bool
+    record: HarrisRecordFacts, dataset: HarrisDatasetFacts, *, exemption_units: frozenset[str]
 ) -> HarrisReadiness:
     """The one Harris readiness rule."""
     base: list[str] = []
@@ -124,8 +124,12 @@ def readiness(
         reasons["tax"] = (YEAR_NOT_RECORDED,)
     elif not dataset.tax_inputs:
         reasons["tax"] = (NO_TAX_INPUTS,)
-    elif not has_exemptions:
+    elif not exemption_units:
         reasons["tax"] = (NO_EXEMPTIONS,)
+    elif unrated := sorted(exemption_units - dataset.rated_units):
+        reasons["tax"] = (
+            f"Adopted {dataset.year} rate unavailable for taxing unit {', '.join(unrated)}",
+        )
     return HarrisReadiness(
         frozenset(outcome for outcome in OUTCOMES if outcome not in reasons), reasons
     )
@@ -169,20 +173,41 @@ def _facts_for_chunk(rows: list[tuple]) -> Iterator[HarrisRecordFacts]:
         )
 
 
-def _tax_inputs(year: int | None, equity_supported: bool) -> bool:
-    return bool(
-        year
-        and equity_supported
-        and TaxUnitRate.objects.filter(county="harris", tax_year=year).exists()
+def _dataset_facts(year: int | None, pool_supported: bool) -> HarrisDatasetFacts:
+    rated_units = (
+        frozenset(
+            TaxUnitRate.objects.filter(
+                county="harris", tax_year=year, adopted_rate__isnull=False
+            ).values_list("tax_unit_code", flat=True)
+        )
+        if year
+        else frozenset()
+    )
+    tax_inputs = bool(
+        pool_supported
+        and rated_units
         and PropertyJurisdictionExemption.objects.filter(county="harris", tax_year=year).exists()
+    )
+    return HarrisDatasetFacts(
+        year=year, pool_supported=pool_supported, tax_inputs=tax_inputs, rated_units=rated_units
     )
 
 
-def _pool_reached(rows: QuerySet, predicate: Callable[[HarrisRecordFacts], bool]) -> bool:
-    """Whether enough records satisfy ``predicate``, reading only until they do."""
+def _exemption_units(year: int | None, **scope) -> dict[str, frozenset[str]]:
+    units: dict[str, set[str]] = {}
+    if year:
+        for account, unit in PropertyJurisdictionExemption.objects.filter(
+            county="harris", tax_year=year, **scope
+        ).values_list("account_number", "tax_unit_code"):
+            units.setdefault(account, set()).add(unit)
+    return {account: frozenset(codes) for account, codes in units.items()}
+
+
+def _report_pool_reached(rows: QuerySet) -> bool:
+    """Whether the report pool is large enough, reading only until it is."""
     found = 0
     for record in _record_facts(rows.iterator(chunk_size=_POOL_SIZE), chunk_size=_POOL_SIZE):
-        if predicate(record):
+        if record.in_report_pool:
             found += 1
             if found >= _POOL_SIZE:
                 return True
@@ -193,23 +218,15 @@ class HarrisReadinessProjection:
     """Resolve the readiness of one published Harris property with bounded queries."""
 
     def dataset_facts(self) -> HarrisDatasetFacts:
-        year = published_year()
-        records = PropertyRecord.objects.order_by("id").values_list(*_RECORD_FIELDS)
-        equity_supported = _pool_reached(records, lambda record: record.has_equity_inputs)
-        pool_supported = _pool_reached(
-            records.filter(
-                is_residential=True,
-                is_data_ready=True,
-                latitude__isnull=False,
-                longitude__isnull=False,
-            ),
-            lambda record: record.in_report_pool,
+        pool = PropertyRecord.objects.filter(
+            is_residential=True,
+            is_data_ready=True,
+            latitude__isnull=False,
+            longitude__isnull=False,
         )
-        return HarrisDatasetFacts(
-            year=year,
-            equity_supported=equity_supported,
-            pool_supported=pool_supported,
-            tax_inputs=_tax_inputs(year, equity_supported),
+        return _dataset_facts(
+            published_year(),
+            _report_pool_reached(pool.order_by("id").values_list(*_RECORD_FIELDS)),
         )
 
     def project(self, account_number: str) -> HarrisReadiness | None:
@@ -223,13 +240,8 @@ class HarrisReadinessProjection:
             return None
         (record,) = _facts_for_chunk([row])
         dataset = self.dataset_facts()
-        has_exemptions = bool(
-            dataset.year
-            and PropertyJurisdictionExemption.objects.filter(
-                county="harris", tax_year=dataset.year, account_number=account_number
-            ).exists()
-        )
-        return readiness(record, dataset, has_exemptions=has_exemptions)
+        units = _exemption_units(dataset.year, account_number=account_number)
+        return readiness(record, dataset, exemption_units=units.get(account_number, frozenset()))
 
 
 def outcome_populations(
@@ -243,26 +255,16 @@ def outcome_populations(
             .iterator(chunk_size=_CHUNK)
         )
     )
-    equity_supported = sum(record.has_equity_inputs for record in records) >= _POOL_SIZE
-    dataset = HarrisDatasetFacts(
-        year=year,
-        equity_supported=equity_supported,
-        pool_supported=sum(record.in_report_pool for record in records) >= _POOL_SIZE,
-        tax_inputs=_tax_inputs(year, equity_supported),
-    )
-    exempt = (
-        set(
-            PropertyJurisdictionExemption.objects.filter(county="harris", tax_year=year)
-            .values_list("account_number", flat=True)
-            .distinct()
-        )
-        if dataset.tax_inputs
-        else set()
-    )
+    dataset = _dataset_facts(year, sum(record.in_report_pool for record in records) >= _POOL_SIZE)
+    units = _exemption_units(year) if dataset.tax_inputs else {}
     eligible: dict[str, set[str]] = {outcome: set() for outcome in OUTCOMES}
     exclusions: dict[str, dict[str, list[str]]] = {outcome: {} for outcome in OUTCOMES}
     for record in records:
-        result = readiness(record, dataset, has_exemptions=record.account_number in exempt)
+        result = readiness(
+            record,
+            dataset,
+            exemption_units=units.get(record.account_number, frozenset()),
+        )
         for outcome in OUTCOMES:
             if outcome in result.ready:
                 eligible[outcome].add(record.account_number)
@@ -280,10 +282,10 @@ def outcome_populations(
         ),
         "report": OutcomePopulation(
             eligible["report"],
-            supported=dataset.equity_supported,
+            supported=dataset.pool_supported,
             reason=(
                 ""
-                if dataset.equity_supported
+                if dataset.pool_supported
                 else "A qualifying equity comparison population is unavailable"
             ),
             exclusions=exclusions["report"],
