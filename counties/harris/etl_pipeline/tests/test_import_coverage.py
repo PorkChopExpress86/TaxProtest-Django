@@ -2,6 +2,7 @@
 
 import tempfile
 from pathlib import Path
+from uuid import uuid4
 
 from django.db import connection
 from django.test import TransactionTestCase
@@ -153,12 +154,18 @@ class HarrisCoverageTests(TransactionTestCase):
     def test_unavailable_new_year_tax_inputs_do_not_block_property_coverage(self):
         self.baseline(4)
         PropertyRecord.objects.update(value=250000)
-        ImportOperation.objects.create(
+        ImportCandidate.objects.create(
             county="harris",
-            intent="full",
-            status="published",
-            requested_year=2025,
-            publication_after={"property_source_year": 2025},
+            operation=ImportOperation.objects.create(
+                county="harris",
+                intent="full",
+                status="published",
+                requested_year=2025,
+                publication_after={"property_source_year": 2025},
+            ),
+            state="published",
+            storage_schema=f"harris_candidate_{uuid4().hex}",
+            evidence={"property_source_year": 2025},
         )
         TaxUnitRate.objects.create(
             county="harris", tax_year=2025, tax_unit_code="C", adopted_rate="0.01"

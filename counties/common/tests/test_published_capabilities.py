@@ -4,27 +4,84 @@ import csv
 import io
 import tempfile
 from decimal import Decimal
+from uuid import uuid4
 
 from django.core.management import call_command
 from django.core.management.base import CommandError
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 
-from counties.common.models import ImportOperation
+from counties.common.models import ImportCandidate, ImportOperation
 from counties.common.tax_models import AssessmentHistory, PropertyJurisdictionExemption, TaxUnitRate
 from counties.harris.adapter import adapter
 from counties.harris.models import BuildingDetail, PropertyRecord
 
 
-class PublishedCapabilitiesTests(TestCase):
-    def setUp(self):
+def publish_harris_candidate(year, *, state="published"):
+    operation = ImportOperation.objects.create(
+        county="harris",
+        intent="full",
+        status="published",
+        requested_year=year,
+        publication_after={"property_source_year": year},
+    )
+    return ImportCandidate.objects.create(
+        county="harris",
+        operation=operation,
+        state=state,
+        storage_schema=f"harris_candidate_{uuid4().hex}",
+        evidence={"property_source_year": year},
+    )
+
+
+class HarrisPublishedYearTests(TestCase):
+    def test_published_year_is_the_published_candidates_source_year(self):
+        publish_harris_candidate(2025)
+        publish_harris_candidate(2024, state="superseded")
         ImportOperation.objects.create(
             county="harris",
             intent="full",
             status="published",
-            requested_year=2026,
             publication_after={"property_source_year": 2026},
         )
+        context = adapter.search_context({})
+        self.assertEqual(context["active_year"], 2025)
+        self.assertEqual(context["dataset_notice"], "Harris property source year: 2025")
+
+    def test_without_a_published_candidate_the_year_is_not_recorded(self):
+        ImportOperation.objects.create(
+            county="harris",
+            intent="full",
+            status="published",
+            publication_after={"property_source_year": 2026},
+        )
+        PropertyRecord.objects.create(
+            account_number="P0",
+            is_residential=True,
+            is_data_ready=True,
+            latitude=29.7,
+            longitude=-95.4,
+        )
+        context = adapter.search_context({})
+        self.assertIsNone(context["active_year"])
+        self.assertEqual(context["dataset_notice"], "Harris property source year: Not recorded")
+        capabilities = adapter.capabilities("P0")
+        self.assertFalse(capabilities.tax_impact_ready)
+        self.assertIn("source year is not recorded", capabilities.reasons["tax"])
+
+    def test_reading_the_published_year_never_hashes_the_dataset(self):
+        publish_harris_candidate(2025)
+        with CaptureQueriesContext(connection) as queries:
+            adapter.search_context({})
+        self.assertEqual(len(queries), 1)
+        self.assertNotIn("row_to_json", queries.captured_queries[0]["sql"])
+
+
+class PublishedCapabilitiesTests(TestCase):
+    def setUp(self):
+        publish_harris_candidate(2026)
         for index in range(4):
             prop = PropertyRecord.objects.create(
                 account_number=f"P{index}",
@@ -125,6 +182,7 @@ class PublishedCapabilitiesTests(TestCase):
     def test_unqualified_harris_subject_is_not_exposed_and_legacy_year_is_unknown(self):
         PropertyRecord.objects.filter(account_number="P0").update(is_data_ready=False)
         self.assertIsNone(adapter.get_subject("P0"))
+        ImportCandidate.objects.all().delete()
         ImportOperation.objects.all().delete()
         ImportOperation.objects.create(
             county="harris", intent="legacy", status="published", requested_year=2026

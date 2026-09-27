@@ -25,7 +25,7 @@ from counties.common.contracts import (
     SearchField,
     Subject,
 )
-from counties.common.models import ImportOperation
+from counties.common.models import ImportCandidate
 from counties.common.tax_impact import calculate_tax_impact, unavailable_tax_impact
 from counties.harris.models import BuildingDetail, ExtraFeature, PropertyRecord
 from counties.harris.query import build_property_search_queryset
@@ -125,9 +125,11 @@ class HarrisAdapter(CountyAdapter):
 
     @staticmethod
     def published_year():
-        operation = ImportOperation.objects.filter(county="harris", status="published").first()
+        """The source year recorded by the published Harris candidate, if any."""
         return (
-            (operation.publication_after or {}).get("property_source_year") if operation else None
+            ImportCandidate.objects.filter(county="harris", state="published")
+            .values_list("evidence__property_source_year", flat=True)
+            .first()
         )
 
     def search_context(self, params):
