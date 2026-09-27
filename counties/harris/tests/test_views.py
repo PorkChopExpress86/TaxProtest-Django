@@ -8,6 +8,7 @@ from django.urls import reverse
 
 from counties.common.tax_models import AssessmentHistory
 from counties.harris.models import BuildingDetail, ExtraFeature, PropertyRecord
+from counties.harris.tests.test_readiness import add_distant_report_pool
 
 
 class PropertySearchViewTests(TestCase):
@@ -607,6 +608,7 @@ class ProtestRecommendationTests(TestCase):
 
 class ProtestAnalysisViewTests(TestCase):
     def setUp(self):
+        add_distant_report_pool()
         self.target = PropertyRecord.objects.create(
             is_residential=True,
             is_data_ready=True,
@@ -770,17 +772,17 @@ class ProtestAnalysisViewTests(TestCase):
         )
 
     @patch("counties.harris.adapter.find_similar_properties")
-    def test_no_equity_summary_when_subject_missing_assessed_value(self, mock_find):
+    def test_report_is_refused_when_subject_missing_assessed_value(self, mock_find):
         self.target.assessed_value = None
         self.target.save()
         mock_find.return_value = []
         response = self.client.get(reverse("protest_analysis", args=[self.target.account_number]))
         self.assertEqual(response.status_code, 200)
-        equity = response.context["equity"]
-        self.assertIsNone(equity.subject_value_per_sqft)
-        self.assertIsNone(equity.equity_gap_per_sqft)
-        self.assertIsNone(equity.estimated_savings)
-        self.assertIsNone(equity.median_comp_value_per_sqft)
+        self.assertEqual(
+            response.context["error"],
+            "Positive assessed value, living area and coordinates are required",
+        )
+        self.assertNotIn("equity", response.context)
 
     @patch("counties.harris.adapter.find_similar_properties")
     def test_comp_delta_is_negative_when_comp_cheaper_than_subject(self, mock_find):
@@ -842,6 +844,7 @@ class ProtestAnalysisViewTests(TestCase):
 
 class ProtestAnalysisExportTests(TestCase):
     def setUp(self):
+        add_distant_report_pool()
         self.target = PropertyRecord.objects.create(
             is_residential=True,
             is_data_ready=True,

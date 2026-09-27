@@ -195,6 +195,20 @@ is shown as available, unavailable with its safe coverage reason, or not yet
 assessed. It never silently substitutes a shorter run of latest records.
 _Avoid_: latest five rows, collapsed history gap
 
+**Harris readiness**:
+The source-backed eligibility of a published Harris record for a shared outcome:
+search-ready is residential and data-ready; comparable-ready adds coordinates;
+report-ready adds positive assessed value and living area within a qualifying
+pool of at least three comparables plus the subject; tax-impact-ready adds
+matching-year jurisdiction and exemption rows for the published source year.
+_Avoid_: has location, data-ready flag alone, published year recorded
+
+**Harris readiness projection**:
+The county-owned rule that judges one Harris record's facts against dataset
+facts. Coverage qualification applies it to every record; the Harris web surface
+applies it to one property with bounded queries, so both give the same answer.
+_Avoid_: view-specific capability check, second readiness query
+
 ## Operational risk verification
 
 **Structural layout verification**:

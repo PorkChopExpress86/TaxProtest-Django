@@ -10,14 +10,13 @@ from uuid import uuid4
 
 from django.db import connection
 
-from counties.common.analysis import MIN_COMPS_FOR_RECOMMENDATION
 from counties.common.candidate_staging import (
     compute_dataset_hash,
     cutover_staged_tables,
     staged_candidate_schema,
     switch_search_path,
 )
-from counties.common.import_coverage import OutcomePopulation, compare_coverage
+from counties.common.import_coverage import compare_coverage
 from counties.common.import_recovery import ReplayRejected, copy_exact_source
 from counties.common.import_retention import (
     baseline_sources,
@@ -27,9 +26,8 @@ from counties.common.import_retention import (
 from counties.common.import_review import authorize_publication
 from counties.common.import_writers import fenced_write
 from counties.common.models import ImportAuditEntry, ImportCandidate, ImportOperation
-from counties.common.tax_models import PropertyJurisdictionExemption, TaxUnitRate
-from counties.harris.adapter import adapter
 from counties.harris.models import BuildingDetail, ExtraFeature, PropertyRecord
+from counties.harris.readiness import outcome_populations, published_year
 from counties.harris.source_catalog import HarrisImportStage
 
 if TYPE_CHECKING:
@@ -56,138 +54,6 @@ def candidate_tables(candidate: ImportCandidate):
     """Bind county loaders to their isolated tables and restore the caller path."""
     with switch_search_path(candidate.storage_schema):
         yield
-
-
-def outcome_populations(year: int | None, *, claimed_gis=False) -> dict[str, OutcomePopulation]:
-    buildings: dict[str, tuple[object, object, object]] = {}
-    for (
-        acct,
-        heat_area,
-        bedrooms,
-        bathrooms,
-    ) in (
-        BuildingDetail.objects.filter(is_active=True)
-        .order_by("id")
-        .values_list("account_number", "heat_area", "bedrooms", "bathrooms")
-        .iterator(chunk_size=10000)
-    ):
-        if acct not in buildings:
-            buildings[acct] = (heat_area, bedrooms, bathrooms)
-    ready, located, equity_inputs, exclusions = set(), set(), set(), {}
-    any_coordinates = False
-    for (
-        key,
-        is_residential,
-        is_data_ready,
-        latitude,
-        longitude,
-        building_area,
-        assessed_value,
-        val,
-    ) in PropertyRecord.objects.values_list(
-        "account_number",
-        "is_residential",
-        "is_data_ready",
-        "latitude",
-        "longitude",
-        "building_area",
-        "assessed_value",
-        "value",
-    ).iterator(
-        chunk_size=10000
-    ):
-        has_coords = latitude is not None and longitude is not None
-        any_coordinates |= has_coords
-        reasons = []
-        if not is_residential:
-            reasons.append("Not residential under Harris source classification")
-        if not is_data_ready:
-            b_info = buildings.get(key)
-            if not has_coords:
-                reasons.append("Coordinates unavailable")
-            if b_info is None or b_info[1] is None or b_info[2] is None:
-                reasons.append("Active bedroom/bathroom facts unavailable")
-            if not reasons:
-                reasons.append("Harris data readiness incomplete")
-        if reasons:
-            exclusions[key] = reasons
-        else:
-            ready.add(key)
-            if has_coords:
-                located.add(key)
-        b_info = buildings.get(key)
-        area = b_info[0] if (b_info and b_info[0]) else building_area
-        value = assessed_value or val
-        if area and area > 0 and value and value > 0:
-            equity_inputs.add(key)
-    report_supported = len(equity_inputs) >= MIN_COMPS_FOR_RECOMMENDATION + 1
-    report_pool = ready & equity_inputs & located
-    report_pool_supported = len(report_pool) >= MIN_COMPS_FOR_RECOMMENDATION + 1
-    report_ready = set()
-    report_exclusions = dict(exclusions)
-    for key in ready:
-        if key not in equity_inputs or key not in located:
-            report_exclusions[key] = [
-                "Positive assessed value, living area and coordinates are required"
-            ]
-        elif not report_pool_supported:
-            report_exclusions[key] = ["At least three qualifying comparables are required"]
-        else:
-            report_ready.add(key)
-    tax_prerequisites = bool(
-        year
-        and report_supported
-        and TaxUnitRate.objects.filter(county="harris", tax_year=year).exists()
-        and PropertyJurisdictionExemption.objects.filter(county="harris", tax_year=year).exists()
-    )
-    tax_ready, tax_exclusions = set(), dict(report_exclusions)
-    if tax_prerequisites and report_ready:
-        exempt_accounts = set(
-            PropertyJurisdictionExemption.objects.filter(
-                county="harris",
-                tax_year=year,
-                account_number__in=report_ready,
-            )
-            .values_list("account_number", flat=True)
-            .distinct()
-        )
-        for key in report_ready:
-            if key in exempt_accounts:
-                tax_ready.add(key)
-            else:
-                tax_exclusions[key] = [
-                    "Matching-year jurisdiction and exemption rows are unavailable"
-                ]
-    tax_supported = bool(tax_ready)
-    return {
-        "search": OutcomePopulation(ready, exclusions=exclusions),
-        "comparable": OutcomePopulation(
-            located,
-            supported=claimed_gis or any_coordinates,
-            reason="" if claimed_gis or any_coordinates else "GIS coordinates unavailable",
-            exclusions=exclusions,
-        ),
-        "report": OutcomePopulation(
-            report_ready,
-            supported=report_supported,
-            reason=(
-                ""
-                if report_supported
-                else "A qualifying equity comparison population is unavailable"
-            ),
-            exclusions=report_exclusions,
-        ),
-        "tax": OutcomePopulation(
-            tax_ready,
-            supported=tax_supported,
-            reason=(
-                ""
-                if tax_supported
-                else "Matching-year report, jurisdiction and rate prerequisites unavailable"
-            ),
-            exclusions=tax_exclusions,
-        ),
-    }
 
 
 def publish_candidate(candidate_id, operation, *, user=None):
@@ -328,7 +194,7 @@ def prepare_candidate(execution: _HarrisImportExecution, operation: ImportOperat
         if HarrisImportStage.PROPERTY in execution.request.plan.stages
         and execution.request.property_file is None
         else (
-            adapter.published_year()
+            published_year()
             if HarrisImportStage.PROPERTY not in execution.request.plan.stages
             else None
         )
@@ -348,7 +214,7 @@ def prepare_candidate(execution: _HarrisImportExecution, operation: ImportOperat
             "limit": source.limit,
             "batch_size": source.batch_size,
         }
-    previous = outcome_populations(adapter.published_year())
+    previous = outcome_populations(published_year())
     try:
         foreign_keys = [
             (BuildingDetail, "property_id", PropertyRecord, "id"),

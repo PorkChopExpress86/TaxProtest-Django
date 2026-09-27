@@ -57,13 +57,16 @@ class HarrisPublishedYearTests(TestCase):
             status="published",
             publication_after={"property_source_year": 2026},
         )
-        PropertyRecord.objects.create(
-            account_number="P0",
-            is_residential=True,
-            is_data_ready=True,
-            latitude=29.7,
-            longitude=-95.4,
-        )
+        for index in range(4):
+            PropertyRecord.objects.create(
+                account_number=f"P{index}",
+                is_residential=True,
+                is_data_ready=True,
+                latitude=29.7,
+                longitude=-95.4,
+                assessed_value=250000,
+                building_area=1800,
+            )
         context = adapter.search_context({})
         self.assertIsNone(context["active_year"])
         self.assertEqual(context["dataset_notice"], "Harris property source year: Not recorded")

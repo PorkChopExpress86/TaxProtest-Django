@@ -25,6 +25,7 @@ from counties.common.contracts import Comp, Subject
 from counties.common.urls import _ROUTES
 from counties.harris.adapter import adapter as harris_adapter
 from counties.harris.models import BuildingDetail, PropertyRecord
+from counties.harris.tests.test_readiness import add_distant_report_pool
 
 ADAPTERS = (harris_adapter, brazos_adapter)
 
@@ -247,6 +248,7 @@ class HarrisPagesStillUseTheirOwnLabelsTests(TestCase):
     """Sharing the templates must not flatten each county's own vocabulary."""
 
     def setUp(self):
+        add_distant_report_pool()
         prop = PropertyRecord.objects.create(
             address="1 Shared St",
             city="Houston",

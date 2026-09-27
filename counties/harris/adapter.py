@@ -25,10 +25,11 @@ from counties.common.contracts import (
     SearchField,
     Subject,
 )
-from counties.common.models import ImportCandidate
 from counties.common.tax_impact import calculate_tax_impact, unavailable_tax_impact
 from counties.harris.models import BuildingDetail, ExtraFeature, PropertyRecord
 from counties.harris.query import build_property_search_queryset
+from counties.harris.readiness import HarrisReadinessProjection
+from counties.harris.readiness import published_year as harris_published_year
 from counties.harris.similarity import (
     find_similar_properties,
     format_feature_list,
@@ -125,12 +126,7 @@ class HarrisAdapter(CountyAdapter):
 
     @staticmethod
     def published_year():
-        """The source year recorded by the published Harris candidate, if any."""
-        return (
-            ImportCandidate.objects.filter(county="harris", state="published")
-            .values_list("evidence__property_source_year", flat=True)
-            .first()
-        )
+        return harris_published_year()
 
     def search_context(self, params):
         year = self.published_year()
@@ -298,8 +294,8 @@ class HarrisAdapter(CountyAdapter):
         )
 
     def capabilities(self, key: str) -> PropertyCapabilities:
-        subject = self.get_subject(key)
-        if subject is None:
+        readiness = HarrisReadinessProjection().project(key)
+        if readiness is None:
             reason = "Property not found"
             return PropertyCapabilities(
                 search_ready=False,
@@ -313,29 +309,12 @@ class HarrisAdapter(CountyAdapter):
                     "tax": reason,
                 },
             )
-        reasons: dict[str, str] = {}
-        comparable_ready = True
-        report_ready = True
-        tax_impact_ready = True
-
-        if not subject.has_location:
-            reason = "This property does not have location data required for similarity search."
-            reasons["comparable"] = reason
-            reasons["report"] = reason
-            comparable_ready = False
-            report_ready = False
-
-        if self.published_year() is None:
-            reason = "Published property source year is not recorded; matching-year tax impact is unavailable."
-            reasons["tax"] = reason
-            tax_impact_ready = False
-
         return PropertyCapabilities(
-            search_ready=True,
-            comparable_ready=comparable_ready,
-            report_ready=report_ready,
-            tax_impact_ready=tax_impact_ready,
-            reasons=reasons,
+            search_ready="search" in readiness.ready,
+            comparable_ready="comparable" in readiness.ready,
+            report_ready="report" in readiness.ready,
+            tax_impact_ready="tax" in readiness.ready,
+            reasons={outcome: "; ".join(reasons) for outcome, reasons in readiness.reasons.items()},
         )
 
     def unavailable_reason(self, key: str, capability: str) -> str | None:
