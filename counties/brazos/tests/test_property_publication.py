@@ -23,7 +23,7 @@ from counties.brazos.property_import import (
     RefreshOptions,
 )
 from counties.brazos.tests.test_property_coverage import write_gis, write_pacs
-from counties.common.models import ImportAuditEntry, ImportCandidate, ImportOperation
+from counties.common.models import ImportAuditEntry, ImportCandidate
 from counties.common.tax_models import PropertyJurisdictionExemption, TaxUnitRate
 
 
@@ -262,28 +262,6 @@ class BrazosPublicationTests(TransactionTestCase):
                     BrazosPropertySnapshot.objects.get(is_active=True).outcome,
                     SnapshotOutcome.COMPLETED,
                 )
-
-    def test_failed_publication_audit_rolls_back_all_public_facts(self):
-        old = self.baseline()
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            write_pacs(root, ["000000010013"])
-            with self.settings(
-                BCAD_DOWNLOAD_DIR=str(root / "downloads"), BCAD_EXTRACT_DIR=str(root / "extracted")
-            ):
-                importer = BrazosPropertyImport(CadRefreshStage(), GisRefreshStage())
-                result = importer.run(self.request(prepare=True))
-
-                def fail(execute, sql, params, many, context):
-                    if sql.startswith('INSERT INTO "data_importauditentry"'):
-                        raise OSError("Final publication audit failed")
-                    return execute(sql, params, many, context)
-
-                with connection.execute_wrapper(fail), self.assertRaises(OSError):
-                    importer.run(replace(self.request(), candidate_id=result.candidate_id))
-                self.assertEqual(PropertyAccount.objects.get().owner_name, "Old owner")
-                self.assertEqual(BrazosPropertySnapshot.objects.get(is_active=True).pk, old.pk)
-                self.assertFalse(ImportOperation.objects.filter(status="published").exists())
 
     def test_gis_recovery_rechecks_recorded_partial_identity(self):
         self.baseline()

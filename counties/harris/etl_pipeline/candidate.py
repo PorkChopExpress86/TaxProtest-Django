@@ -12,19 +12,15 @@ from django.db import connection
 from counties.common import candidate_ports
 from counties.common.candidate_ports import CandidateTables
 from counties.common.candidate_staging import (
-    cutover_staged_tables,
     staged_candidate_schema,
 )
 from counties.common.import_coverage import OutcomePopulation, compare_coverage
 from counties.common.import_recovery import ReplayRejected, copy_exact_source
 from counties.common.import_retention import (
     baseline_sources,
-    record_publication,
     retain_baseline_sources,
 )
-from counties.common.import_review import authorize_publication
-from counties.common.import_writers import fenced_write
-from counties.common.models import ImportAuditEntry, ImportCandidate, ImportOperation
+from counties.common.models import ImportCandidate, ImportOperation
 from counties.harris.models import BuildingDetail, ExtraFeature, PropertyRecord
 from counties.harris.readiness import outcome_populations, published_year
 from counties.harris.source_catalog import HarrisImportStage
@@ -67,45 +63,6 @@ def dataset_identity(schema: str = "public") -> dict:
 
 def published_identity() -> dict:
     return candidate_ports.published_identity("harris")
-
-
-def publish_candidate(candidate_id, operation, *, user=None):
-    with fenced_write():
-        candidate = ImportCandidate.objects.select_for_update().get(
-            pk=candidate_id, county="harris"
-        )
-        if candidate.state in ("published", "superseded"):
-            operation.publication_before = operation.publication_after = published_identity()
-            operation.evidence["already_applied"] = str(candidate.pk)
-            return candidate
-        review = authorize_publication(candidate, user=user)
-        operation.publication_before = published_identity()
-        cutover_staged_tables(candidate, MODELS, drop_staged=False)
-        record_publication(candidate, operation)
-        operation.publication_after = {
-            **published_identity(),
-            "candidate_id": str(candidate.pk),
-            "data_year": candidate.request["data_year"],
-            "property_source_year": candidate.evidence.get("property_source_year"),
-        }
-        operation.status = "published"
-        operation.evidence["qualified_publication"] = "Observed atomic publication"
-        operation.evidence["candidate_id"] = str(candidate.pk)
-        operation.save()
-        ImportAuditEntry.objects.create(
-            operation=candidate.operation,
-            kind="publication",
-            actor=operation.actor,
-            reason=operation.evidence.get("application_reason") or "Qualified candidate applied",
-            evidence={
-                "before": operation.publication_before,
-                "after": operation.publication_after,
-                "review_id": str(review.pk) if review else None,
-                "operation_id": str(operation.pk),
-            },
-            result="published",
-        )
-    return candidate
 
 
 def seed_sources(config, sources, operation):
@@ -200,7 +157,10 @@ def prepare_candidate(execution: _HarrisImportExecution, operation: ImportOperat
             "plan": execution.request.plan.legacy_scope,
             "data_year": execution.data_year,
         },
-        evidence={"publication": "Published data unchanged"},
+        evidence={
+            "publication": "Published data unchanged",
+            "audit": {"data_year": execution.data_year},
+        },
     )
     candidate.evidence["property_source_year"] = (
         execution.data_year
@@ -295,7 +255,6 @@ __all__ = [
     "outcome_populations",
     "prepare_candidate",
     "prepare_recovery",
-    "publish_candidate",
     "published_identity",
     "seed_sources",
 ]

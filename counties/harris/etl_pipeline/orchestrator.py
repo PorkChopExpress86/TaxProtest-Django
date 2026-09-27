@@ -17,13 +17,14 @@ from django.core.management import call_command
 from django.core.management.base import CommandError as DjangoCommandError
 from django.db import DatabaseError
 
+from counties.common.candidate_lifecycle import publish
 from counties.common.import_audit import OperationStatus, audited_operation
 from counties.common.import_recovery import ReplayRequest, requested_replay, verify_replay
 from counties.common.import_writers import fenced_write, working_source_root
 from counties.common.models import ImportCandidate, ImportOperation
 from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG
 
-from .candidate import prepare_candidate, publish_candidate, published_identity, seed_sources
+from .candidate import prepare_candidate, published_identity, seed_sources
 from .config import DataSource, DataSourceType, ETLConfig
 from .download import DownloadManager
 from .extract import ExtractManager
@@ -797,8 +798,6 @@ def run_harris_import(
                 request, sources, data_year, reporter=reporter, operation=operation
             )
         if request.candidate_id is not None:
-            operation.evidence["application_reason"] = request.application_reason
-
             candidate = ImportCandidate.objects.get(pk=request.candidate_id, county="harris")
             if {key: candidate.request[key] for key in ("plan", "data_year")} != {
                 "plan": request.plan.legacy_scope,
@@ -807,7 +806,7 @@ def run_harris_import(
                 raise InvalidHarrisImportRequest(
                     "Candidate request identity differs from application"
                 )
-            publish_candidate(candidate.pk, operation, user=reviewer)
+            publish(operation, candidate.pk, user=reviewer, reason=request.application_reason)
             completed = HarrisImportResult(
                 status=HarrisImportStatus.COMPLETED,
                 started_at=datetime.now(),
@@ -831,8 +830,12 @@ def run_harris_import(
                 and completed.status is HarrisImportStatus.PREPARED
             ):
                 # Publish under the reservation that prepared the candidate.
-                operation.evidence["application_reason"] = request.application_reason
-                publish_candidate(completed.candidate_id, operation, user=reviewer)
+                publish(
+                    operation,
+                    completed.candidate_id,
+                    user=reviewer,
+                    reason=request.application_reason,
+                )
                 completed = replace(
                     completed,
                     status=HarrisImportStatus.COMPLETED,

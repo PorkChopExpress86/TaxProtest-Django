@@ -30,9 +30,9 @@ from counties.brazos.models import (
 )
 from counties.brazos.readiness import BrazosActiveSnapshotReadiness
 from counties.common import candidate_ports
+from counties.common.candidate_lifecycle import publish
 from counties.common.candidate_ports import CandidateTables
 from counties.common.candidate_staging import (
-    cutover_staged_tables,
     staged_candidate_schema,
 )
 from counties.common.import_audit import OperationStatus, audited_operation
@@ -46,12 +46,10 @@ from counties.common.import_recovery import (
 )
 from counties.common.import_retention import (
     baseline_sources,
-    record_publication,
     retain_baseline_sources,
 )
-from counties.common.import_review import ImportReviewRejected, authorize_publication
 from counties.common.import_writers import fenced_write, working_source_root
-from counties.common.models import ImportAuditEntry, ImportCandidate, ImportOperation
+from counties.common.models import ImportCandidate, ImportOperation
 from counties.common.tax_models import PropertyJurisdictionExemption
 
 
@@ -277,58 +275,6 @@ def outcome_populations(
     }
 
 
-def publish_candidate(candidate_id, operation, *, user=None):
-    with fenced_write():
-        candidate = ImportCandidate.objects.select_for_update().get(
-            pk=candidate_id, county="brazos"
-        )
-        if candidate.state in ("published", "superseded"):
-            operation.publication_before = operation.publication_after = published_identity()
-            operation.evidence["already_applied"] = str(candidate.pk)
-            return candidate
-        review = authorize_publication(candidate, user=user)
-        active = BrazosPropertySnapshot.objects.filter(is_active=True).first()
-        if candidate.request["mode"] == "gis_recovery" and (
-            active is None
-            or active.pk != candidate.baseline["snapshot_id"]
-            or active.outcome != SnapshotOutcome.PARTIAL
-            or active.tax_year != candidate.request["tax_year"]
-        ):
-            raise ImportReviewRejected(
-                "GIS recovery no longer targets the recorded active Partial snapshot"
-            )
-        operation.publication_before = published_identity()
-        cutover_staged_tables(
-            candidate,
-            MODELS,
-            shared_models_scope={PropertyJurisdictionExemption: " WHERE county = 'brazos'"},
-            shared_models_county={PropertyJurisdictionExemption: "brazos"},
-        )
-        record_publication(candidate, operation)
-        operation.publication_after = {**published_identity(), "candidate_id": str(candidate.pk)}
-        operation.status = "published"
-        operation.evidence.update(
-            candidate_id=str(candidate.pk), qualified_publication="Observed atomic publication"
-        )
-        operation.save()
-        ImportAuditEntry.objects.create(
-            operation=candidate.operation,
-            kind="publication",
-            actor=operation.actor,
-            reason=operation.evidence.get("application_reason") or "Qualified candidate applied",
-            evidence={
-                "before": operation.publication_before,
-                "after": operation.publication_after,
-                "review_id": str(review.pk) if review else None,
-                "operation_id": str(operation.pk),
-                "source_years": candidate.sources,
-                "capabilities": candidate.evidence["capabilities"],
-            },
-            result="published",
-        )
-    return candidate
-
-
 class _CandidateSource:
     """Keep actual county source inspection beside candidate-only persistence."""
 
@@ -412,11 +358,13 @@ def prepare_candidate(cad, gis, request: PropertyImportRequest, operation: Impor
                 "tax_year": result.tax_year,
                 "cad": dict(result.cad.metrics) if result.cad else None,
                 "gis": dict(result.gis.metrics) if result.gis else None,
-                "capabilities": (
-                    "GIS capabilities unavailable"
-                    if result.gis is None
-                    else "Year-matched GIS inspected"
-                ),
+                "audit": {
+                    "capabilities": (
+                        "GIS capabilities unavailable"
+                        if result.gis is None
+                        else "Year-matched GIS inspected"
+                    )
+                },
                 "inspection": operation.evidence.get("inspection", {}),
             }
         )
@@ -576,8 +524,7 @@ class BrazosPropertyImport:
                 }:
                     raise ValueError("Candidate request identity differs from application")
                 operation.requested_year = candidate.request["tax_year"]
-                operation.evidence["application_reason"] = request.application_reason
-                publish_candidate(candidate.pk, operation, user=reviewer)
+                publish(operation, candidate.pk, user=reviewer, reason=request.application_reason)
                 active = BrazosPropertySnapshot.objects.get(is_active=True)
                 already = "already_applied" in operation.evidence
                 completed = PropertyImportResult(
@@ -610,8 +557,9 @@ class BrazosPropertyImport:
                         pk=completed.candidate_id, county="brazos"
                     )
                     operation.requested_year = candidate.request["tax_year"]
-                    operation.evidence["application_reason"] = request.application_reason
-                    publish_candidate(candidate.pk, operation, user=reviewer)
+                    publish(
+                        operation, candidate.pk, user=reviewer, reason=request.application_reason
+                    )
                     active = BrazosPropertySnapshot.objects.get(is_active=True)
                     completed = PropertyImportResult(
                         tax_year=active.tax_year,
@@ -973,6 +921,5 @@ __all__ = [
     "outcome_populations",
     "prepare_candidate",
     "prepare_recovery",
-    "publish_candidate",
     "published_identity",
 ]

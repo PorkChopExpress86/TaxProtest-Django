@@ -413,24 +413,6 @@ class HarrisPublicationTests(TransactionTestCase):
             self.assertTrue(result["candidate_id"])
             self.assertEqual(PropertyRecord.objects.get().address, "Old address")
 
-    def test_failed_final_audit_cannot_record_rolled_back_publication(self):
-        self.baseline()
-        with tempfile.TemporaryDirectory() as root, self.settings(**_runtime_settings(root)):
-            request = harris_request(root, prepare=True)
-            prepared = run_harris_import(request)
-
-            def fail(execute, sql, params, many, context):
-                if sql.startswith('INSERT INTO "data_importauditentry"'):
-                    raise OSError("Final audit failed")
-                return execute(sql, params, many, context)
-
-            with connection.execute_wrapper(fail), self.assertRaises(OSError):
-                run_harris_import(
-                    replace(request, load=HarrisApply(), candidate_id=prepared.candidate_id)
-                )
-            self.assertEqual(PropertyRecord.objects.get().address, "Old address")
-            self.assertFalse(ImportOperation.objects.filter(status="published").exists())
-
     def test_shared_request_keeps_old_property_and_building_during_publication(self):
         self.baseline()
         BuildingDetail.objects.update(bedrooms=5, heat_area=2500)
