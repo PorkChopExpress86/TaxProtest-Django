@@ -7,6 +7,7 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Permission
 from django.core.management.base import CommandError
 from django.db import connection
+from django.db.migrations.executor import MigrationExecutor
 from django.test import TransactionTestCase
 from django.urls import reverse
 
@@ -19,7 +20,8 @@ from counties.brazos.property_import import (
     RefreshOptions,
 )
 from counties.brazos.tests.test_property_coverage import write_pacs
-from counties.common.models import ImportAuditEntry, ImportCandidate
+from counties.common.import_review import authorize_publication
+from counties.common.models import ImportAuditEntry, ImportCandidate, ImportOperation
 
 
 class ImportReviewTests(TransactionTestCase):
@@ -245,6 +247,34 @@ class ImportReviewTests(TransactionTestCase):
             self.assertContains(response, "Outcome qualification changed")
             candidate.refresh_from_db()
             self.assertEqual(candidate.state, "awaiting_review")
+
+    def test_brazos_validation_key_rename_keeps_recorded_review_binding(self):
+        with tempfile.TemporaryDirectory() as temp:
+            candidate = self.prepare(Path(temp))
+            evidence = candidate.operation.evidence
+            self.assertTrue(evidence["validation"]["valid"])
+            self.assertNotIn("source_validation", evidence)
+            reviewer = self.reviewer()
+            self.client.force_login(reviewer)
+            response = self.client.post(
+                self.url(candidate),
+                {"decision": "approved", "reason": "Reviewed", "binding": self.binding(candidate)},
+            )
+            self.assertEqual(response.status_code, 302)
+            executor = MigrationExecutor(connection)
+            latest = executor.loader.graph.leaf_nodes()
+            try:
+                executor.migrate([("data", "0024_import_dataset_recovery_permission")])
+                legacy = ImportOperation.objects.get(pk=candidate.operation_id).evidence
+                self.assertEqual(legacy["source_validation"], evidence["validation"])
+                self.assertNotIn("validation", legacy)
+            finally:
+                MigrationExecutor(connection).migrate(latest)
+            candidate.refresh_from_db()
+            self.assertEqual(
+                ImportOperation.objects.get(pk=candidate.operation_id).evidence, evidence
+            )
+            self.assertEqual(authorize_publication(candidate, user=reviewer).result, "approved")
 
     def test_source_invalid_candidate_can_be_rejected_but_not_approved(self):
         self.client.force_login(self.reviewer())

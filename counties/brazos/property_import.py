@@ -358,7 +358,7 @@ def prepare_candidate(cad, gis, request: PropertyImportRequest, operation: Impor
     )
     operation.evidence["candidate_id"] = str(candidate.pk)
     previous = outcome_populations()
-    operation.evidence["source_validation"] = {
+    operation.evidence["validation"] = {
         "valid": False,
         "database_publication": "Database publication untested",
     }
@@ -397,7 +397,7 @@ def prepare_candidate(cad, gis, request: PropertyImportRequest, operation: Impor
                 .exclude(coordinate_source="")
                 .values("prop_id", "coordinate_source", "coordinate_source_year")
             )
-        operation.evidence["source_validation"]["valid"] = True
+        operation.evidence["validation"]["valid"] = True
         candidate.request["tax_year"] = result.tax_year
         operation.requested_year = result.tax_year
         candidate.evidence.update(
@@ -683,7 +683,7 @@ class BrazosPropertyImport:
         # Source preparation actually acquires/extracts the selected bytes. Only
         # persistence and cleanup are suppressed by a property preview.
         options = replace(request.options, dry_run=False)
-        operation.evidence["source_validation"] = {
+        operation.evidence["validation"] = {
             "valid": False,
             "database_publication": "Database publication untested",
         }
@@ -711,7 +711,7 @@ class BrazosPropertyImport:
             )
             gis = inspect_gis(operation, preparation)
             self._validate_source_year(target_year, preparation, "GIS")
-        operation.evidence["source_validation"]["valid"] = True
+        operation.evidence["validation"]["valid"] = True
         operation.evidence["capabilities"] = (
             "GIS capabilities unavailable" if gis is None else "Year-matched GIS inspected"
         )

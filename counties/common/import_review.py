@@ -66,9 +66,7 @@ def current_coverage(candidate):
 
 def checked_binding(candidate: ImportCandidate) -> str:
     operation = candidate.operation
-    validation = operation.evidence.get(
-        "validation" if candidate.county == "harris" else "source_validation", {}
-    )
+    validation = operation.evidence.get("validation", {})
     if not validation.get("valid"):
         raise ImportReviewRejected("Source integrity qualification failed; prepare fresh evidence")
     coverage = candidate.evidence.get("coverage")
