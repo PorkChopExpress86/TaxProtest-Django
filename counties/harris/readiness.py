@@ -16,8 +16,10 @@ from django.db.models import Exists, OuterRef, Q, QuerySet
 from counties.common.analysis import MIN_COMPS_FOR_RECOMMENDATION
 from counties.common.import_coverage import OutcomePopulation
 from counties.common.models import ImportCandidate
+from counties.common.tax_impact import taxing_units
 from counties.common.tax_models import PropertyJurisdictionExemption, TaxUnitRate
 from counties.harris.models import BuildingDetail, PropertyRecord
+from counties.harris.tax_units import NON_LEVYING_UNITS
 
 OUTCOMES = ("search", "comparable", "report", "tax")
 _POOL_SIZE = MIN_COMPS_FOR_RECOMMENDATION + 1
@@ -40,11 +42,11 @@ READINESS_INCOMPLETE = "Harris data readiness incomplete"
 NO_LOCATION = "This property does not have location data required for similarity search."
 NO_EQUITY_INPUTS = "Positive assessed value, living area and coordinates are required"
 POOL_TOO_SMALL = "At least three qualifying comparables are required"
+NO_REPORT_POPULATION = "A qualifying equity comparison population is unavailable"
 YEAR_NOT_RECORDED = (
     "Published property source year is not recorded; matching-year tax impact is unavailable."
 )
-NO_TAX_INPUTS = "Matching-year report, jurisdiction and rate prerequisites unavailable"
-NO_EXEMPTIONS = "Matching-year jurisdiction and exemption rows are unavailable"
+NO_TAX_READY_PROPERTY = "No property has complete matching-year tax inputs"
 
 
 def published_year() -> int | None:
@@ -82,8 +84,12 @@ class HarrisDatasetFacts:
 
     year: int | None
     pool_supported: bool
-    tax_inputs: bool
+    tax_gaps: tuple[str, ...]
     rated_units: frozenset[str]
+
+    @property
+    def tax_inputs(self) -> bool:
+        return self.pool_supported and not self.tax_gaps
 
 
 @dataclass(frozen=True)
@@ -99,12 +105,13 @@ def readiness(
     dataset: HarrisDatasetFacts,
     *,
     has_exemptions: bool,
-    unrated_units: frozenset[str],
+    unrated_units: Mapping[str, str],
 ) -> HarrisReadiness:
     """The one Harris readiness rule.
 
     ``has_exemptions`` says whether the record has matching-year jurisdiction and
-    exemption rows; ``unrated_units`` names its taxing units without an adopted rate.
+    exemption rows; ``unrated_units`` maps its levying taxing units without an
+    adopted rate to their names.
     """
     base: list[str] = []
     if not record.is_residential:
@@ -128,16 +135,13 @@ def readiness(
         reasons["report"] = (POOL_TOO_SMALL,)
     if "report" in reasons:
         reasons["tax"] = reasons["report"]
-    elif dataset.year is None:
-        reasons["tax"] = (YEAR_NOT_RECORDED,)
-    elif not dataset.tax_inputs:
-        reasons["tax"] = (NO_TAX_INPUTS,)
+    elif dataset.tax_gaps:
+        reasons["tax"] = dataset.tax_gaps
     elif not has_exemptions:
-        reasons["tax"] = (NO_EXEMPTIONS,)
+        reasons["tax"] = (f"No {dataset.year} jurisdiction and exemption rows for this property",)
     elif unrated_units:
         reasons["tax"] = (
-            f"Adopted {dataset.year} rate unavailable for taxing unit "
-            f"{', '.join(sorted(unrated_units))}",
+            f"Adopted {dataset.year} rate unavailable for {taxing_units(unrated_units)}",
         )
     return HarrisReadiness(
         frozenset(outcome for outcome in OUTCOMES if outcome not in reasons), reasons
@@ -183,31 +187,35 @@ def _facts_for_chunk(rows: list[tuple]) -> Iterator[HarrisRecordFacts]:
 
 
 def _dataset_facts(year: int | None, pool_supported: bool) -> HarrisDatasetFacts:
-    rated_units = (
-        frozenset(
-            TaxUnitRate.objects.filter(
-                county="harris", tax_year=year, adopted_rate__isnull=False
-            ).values_list("tax_unit_code", flat=True)
+    if year is None:
+        return HarrisDatasetFacts(
+            year=None,
+            pool_supported=pool_supported,
+            tax_gaps=(YEAR_NOT_RECORDED,),
+            rated_units=frozenset(),
         )
-        if year
-        else frozenset()
+    rated_units = frozenset(
+        TaxUnitRate.objects.filter(
+            county="harris", tax_year=year, adopted_rate__isnull=False
+        ).values_list("tax_unit_code", flat=True)
     )
-    tax_inputs = bool(
-        pool_supported
-        and rated_units
-        and PropertyJurisdictionExemption.objects.filter(county="harris", tax_year=year).exists()
-    )
+    gaps = []
+    if not rated_units:
+        gaps.append(f"No adopted {year} tax rates have been imported")
+    if not PropertyJurisdictionExemption.objects.filter(county="harris", tax_year=year).exists():
+        gaps.append(f"No {year} jurisdiction and exemption rows have been imported")
     return HarrisDatasetFacts(
-        year=year, pool_supported=pool_supported, tax_inputs=tax_inputs, rated_units=rated_units
+        year=year, pool_supported=pool_supported, tax_gaps=tuple(gaps), rated_units=rated_units
     )
 
 
 def _exemption_facts(
     dataset: HarrisDatasetFacts, **scope
-) -> tuple[set[str], dict[str, frozenset[str]]]:
+) -> tuple[set[str], dict[str, dict[str, str]]]:
     """Accounts with matching-year exemption rows, and each account's unrated units.
 
-    Only unrated (account, unit) pairs are loaded; they are normally few.
+    Only unrated (account, unit) pairs of levying units are loaded; they are
+    normally few. Units that levy no tax need no rate (ADR-0019).
     """
     if not dataset.tax_inputs:
         return set(), {}
@@ -217,15 +225,17 @@ def _exemption_facts(
     accounts = set(
         rows.values_list("account_number", flat=True).distinct().iterator(chunk_size=_CHUNK)
     )
-    unrated: dict[str, set[str]] = {}
-    for account, unit in (
+    unrated: dict[str, dict[str, str]] = {}
+    for account, unit, name in (
         rows.exclude(tax_unit_code__in=dataset.rated_units)
-        .values_list("account_number", "tax_unit_code")
+        .exclude(tax_unit_code__in=NON_LEVYING_UNITS.keys())
+        .values_list("account_number", "tax_unit_code", "tax_unit_name")
         .distinct()
         .iterator(chunk_size=_CHUNK)
     ):
-        unrated.setdefault(account, set()).add(unit)
-    return accounts, {account: frozenset(units) for account, units in unrated.items()}
+        names = unrated.setdefault(account, {})
+        names[unit] = names.get(unit) or name
+    return accounts, unrated
 
 
 def _report_pool_reached(rows: QuerySet) -> bool:
@@ -279,7 +289,7 @@ class HarrisReadinessProjection:
             record,
             dataset,
             has_exemptions=account_number in exempt,
-            unrated_units=unrated.get(account_number, frozenset()),
+            unrated_units=unrated.get(account_number, {}),
         )
 
 
@@ -303,7 +313,7 @@ def outcome_populations(
             record,
             dataset,
             has_exemptions=record.account_number in exempt,
-            unrated_units=unrated.get(record.account_number, frozenset()),
+            unrated_units=unrated.get(record.account_number, {}),
         )
         for outcome in OUTCOMES:
             if outcome in result.ready:
@@ -312,6 +322,12 @@ def outcome_populations(
                 exclusions[outcome][record.account_number] = list(result.reasons[outcome])
     comparable_supported = claimed_gis or any(record.has_coordinates for record in records)
     tax_supported = bool(eligible["tax"])
+    if tax_supported:
+        tax_reason = ""
+    elif not dataset.pool_supported:
+        tax_reason = NO_REPORT_POPULATION
+    else:
+        tax_reason = "; ".join(dataset.tax_gaps) or NO_TAX_READY_PROPERTY
     return {
         "search": OutcomePopulation(eligible["search"], exclusions=exclusions["search"]),
         "comparable": OutcomePopulation(
@@ -323,17 +339,13 @@ def outcome_populations(
         "report": OutcomePopulation(
             eligible["report"],
             supported=dataset.pool_supported,
-            reason=(
-                ""
-                if dataset.pool_supported
-                else "A qualifying equity comparison population is unavailable"
-            ),
+            reason="" if dataset.pool_supported else NO_REPORT_POPULATION,
             exclusions=exclusions["report"],
         ),
         "tax": OutcomePopulation(
             eligible["tax"],
             supported=tax_supported,
-            reason="" if tax_supported else NO_TAX_INPUTS,
+            reason=tax_reason,
             exclusions=exclusions["tax"],
         ),
     }

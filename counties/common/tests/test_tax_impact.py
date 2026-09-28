@@ -96,6 +96,61 @@ class TaxImpactCalculatorTests(TestCase):
         self.assertTrue(result.warnings)
         self.assertEqual(len(result.per_unit_breakdown), 2)
 
+    def rated_unit(self, code="U1", rate="0.020000"):
+        TaxUnitRate.objects.create(
+            tax_year=2026, tax_unit_code=code, tax_unit_name=f"Unit {code}", adopted_rate=rate
+        )
+        PropertyJurisdictionExemption.objects.create(
+            account_number="TAX001",
+            tax_year=2026,
+            tax_unit_code=code,
+            tax_unit_name=f"Unit {code}",
+            taxable_value=Decimal("300000"),
+            exemption_code="",
+        )
+
+    def test_missing_median_is_partial_and_claims_no_savings(self):
+        self.rated_unit()
+        for median in (None, Decimal("-1")):
+            with self.subTest(median=median):
+                result = calculate_tax_impact("TAX001", 2026, median)
+                self.assertEqual(result.completeness, "partial")
+                self.assertEqual(result.current_tax_owed, Decimal("6000.00"))
+                self.assertEqual(result.estimated_savings, Decimal("0"))
+                self.assertIsNone(result.per_unit_breakdown[0]["median_tax_amount"])
+                self.assertIsNone(result.per_unit_breakdown[0]["median_taxable_value"])
+                self.assertIn("Median assessed value is missing", " ".join(result.warnings))
+
+    def test_effective_rate_is_the_total_of_levied_unit_rates(self):
+        self.rated_unit("U1", "0.020000")
+        self.rated_unit("U2", "0.010000")
+        result = calculate_tax_impact("TAX001", 2026, Decimal("250000"))
+        self.assertEqual(result.effective_rate, Decimal("0.030000"))
+
+    def test_non_levying_units_need_no_rate_and_say_why(self):
+        self.rated_unit()
+        PropertyJurisdictionExemption.objects.create(
+            account_number="TAX001",
+            tax_year=2026,
+            tax_unit_code="TZ",
+            tax_unit_name="Reinvestment zone",
+            taxable_value=Decimal("300000"),
+            exemption_code="",
+        )
+        result = calculate_tax_impact(
+            "TAX001",
+            2026,
+            Decimal("250000"),
+            non_levying={"TZ": "Tax increment reinvestment zone; it levies no tax"},
+        )
+        self.assertEqual(result.completeness, "complete")
+        self.assertEqual(result.current_tax_owed, Decimal("6000.00"))
+        self.assertFalse(result.warnings)
+        zone = next(row for row in result.per_unit_breakdown if row["tax_unit_code"] == "TZ")
+        self.assertIsNone(zone["rate"])
+        self.assertIsNone(zone["current_tax_amount"])
+        self.assertEqual(zone["warning"], "Tax increment reinvestment zone; it levies no tax")
+
     def test_exemption_precedence_fixed_then_percent(self):
         TaxUnitRate.objects.create(
             tax_year=2026,
@@ -155,7 +210,9 @@ class TaxYearFallbackTests(TestCase):
         )
 
     def test_year_falls_back_to_the_jurisdiction_rows(self):
-        result = calculate_tax_impact("ACCTFALLBACK", tax_year=None, median_assessed_value=None)
+        result = calculate_tax_impact(
+            "ACCTFALLBACK", tax_year=None, median_assessed_value=Decimal("100000")
+        )
 
         self.assertEqual(result.tax_year, 2025)
         self.assertEqual(result.completeness, "complete")
@@ -172,7 +229,9 @@ class TaxYearFallbackTests(TestCase):
             assessed_value=Decimal("120000"),
         )
 
-        result = calculate_tax_impact("ACCTFALLBACK", tax_year=None, median_assessed_value=None)
+        result = calculate_tax_impact(
+            "ACCTFALLBACK", tax_year=None, median_assessed_value=Decimal("100000")
+        )
 
         self.assertEqual(result.tax_year, 2025)
         self.assertEqual(result.completeness, "complete")

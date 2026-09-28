@@ -233,7 +233,8 @@ class Command(BaseCommand):
             if code in rates:
                 continue
             published = _decimal_or_none(row.get(rate_column))
-            if published is not None:
+            # HCAD publishes 0.000000 until a unit adopts the rate: that is missing, not 0%.
+            if published is not None and published > 0:
                 # Published per $100; calculate_tax_impact multiplies directly.
                 rates[code] = published / RATE_DIVISOR
 

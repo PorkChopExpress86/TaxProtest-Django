@@ -184,9 +184,16 @@ _Avoid_: report template render, one-comparable estimate, tax impact
 
 **Tax-impact-ready**:
 An active report-ready Brazos property with matching-year jurisdiction and
-exemption rows plus an adopted rate for every applicable unit. Its tax impact
-never borrows another year or presents a partial dollar total.
+exemption rows plus an adopted rate for every applicable levying unit. Its tax
+impact never borrows another year or presents a partial dollar total.
 _Avoid_: newest costable year, partial tax total, equity result
+
+**Non-levying unit**:
+A taxing unit on a county's jurisdiction rows that levies no ad valorem tax, such
+as a tax increment reinvestment zone or the appraisal district. It needs no
+adopted rate and adds no tax. Only the county's evidence-backed list makes a unit
+non-levying (ADR-0019).
+_Avoid_: zero-rate unit, unit whose rate is missing
 
 **Brazos historical coverage**:
 The durable county-owned record of assessment-history years that independently
@@ -207,7 +214,7 @@ search-ready is residential and data-ready; comparable-ready adds coordinates;
 report-ready adds positive assessed value and living area within a qualifying
 pool of at least three comparables plus the subject; tax-impact-ready adds
 matching-year jurisdiction and exemption rows for the published source year and
-an adopted rate for every applicable taxing unit.
+an adopted rate for every applicable levying unit.
 _Avoid_: has location, data-ready flag alone, published year recorded
 
 **Harris readiness projection**:

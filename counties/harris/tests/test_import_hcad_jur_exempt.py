@@ -138,6 +138,24 @@ class ImportHcadJurExemptTests(TestCase):
         rate = TaxUnitRate.objects.get(tax_year=2025, tax_unit_code="001", county="harris")
         self.assertEqual(rate.adopted_rate, Decimal("0.00868300"))
 
+    def test_a_zero_published_rate_is_not_stored_as_adopted(self):
+        # HCAD publishes 0.000000 until a unit adopts its current-year rate.
+        self._write(
+            "jur_tax_dist_exempt_value_rate.txt",
+            RATE_HEADER,
+            [
+                "Real\t001\tHOUSTON ISD\tRES\t0.868300\t0.000000\t65000\t0.000000",
+                "Real\t040\tHARRIS COUNTY\tRES\t0.370000\t0.380960\t0\t0.000000",
+            ],
+        )
+        self._run()
+        self.assertEqual(
+            list(
+                TaxUnitRate.objects.filter(county="harris").values_list("tax_unit_code", flat=True)
+            ),
+            ["040"],
+        )
+
     def test_rates_do_not_touch_another_county(self):
         TaxUnitRate.objects.create(
             tax_year=2025, county="brazos", tax_unit_code="001", adopted_rate=Decimal("0.01")
@@ -403,7 +421,8 @@ class TaxImpactEndToEndTests(TestCase):
             account_number="0000000000002", tax_year=2025, median_assessed_value=None
         )
 
-        self.assertEqual(result.completeness, "complete")
+        # Without a median the savings scenario is incomplete; the current tax is not.
+        self.assertEqual(result.completeness, "partial")
         # HCAD's own net taxable (505,330) x 0.008783 -- recomputed from gross
         # minus the exemption, not read back from a stored net figure.
         self.assertEqual(result.current_tax_owed, Decimal("4438.31"))

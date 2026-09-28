@@ -26,6 +26,7 @@ from counties.brazos.similarity import (
     _primary_improvement,
     get_similarity_label,
 )
+from counties.brazos.tax_units import NON_LEVYING_UNITS
 from counties.common.contracts import (
     Column,
     Comp,
@@ -301,6 +302,7 @@ class BrazosAdapter(CountyAdapter):
             tax_year=readiness.tax_year,
             median_assessed_value=median_assessed_value,
             county=COUNTY_SLUG,
+            non_levying=NON_LEVYING_UNITS,
         )
 
     def unavailable_reason(self, key: str, capability: str) -> str | None:

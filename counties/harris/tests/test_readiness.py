@@ -140,7 +140,7 @@ class HarrisCompleteReadinessRuleTests(TestCase):
         )
         expected = {
             "NO-EQUITY": ("report", "Positive assessed value, living area and coordinates"),
-            "NO-EXEMPTION": ("tax", "Matching-year jurisdiction and exemption rows"),
+            "NO-EXEMPTION": ("tax", "No 2026 jurisdiction and exemption rows for this property"),
             "UNRATED-UNIT": ("tax", "Adopted 2026 rate unavailable for taxing unit B"),
         }
         for key, (outcome, reason) in expected.items():
@@ -161,9 +161,62 @@ class HarrisCompleteReadinessRuleTests(TestCase):
         self.assertIn("At least three qualifying comparables", capabilities.reasons["report"])
         self.assertIn("At least three qualifying comparables", capabilities.reasons["tax"])
 
+    def test_a_non_levying_unit_needs_no_rate(self):
+        PropertyJurisdictionExemption.objects.create(
+            county="harris",
+            tax_year=2026,
+            account_number="TAX0",
+            tax_unit_code="010",
+            tax_unit_name="TIRZ 1",
+            taxable_value=250000,
+        )
+        self.assertTrue(adapter.capabilities("TAX0").tax_impact_ready)
+        self.assertIn("TAX0", outcome_populations(2026)["tax"].eligible)
+        tax = adapter.tax_impact("TAX0", 2026, Decimal("250000"))
+        self.assertEqual(tax.completeness, "complete")
+        self.assertEqual(tax.current_tax_owed, Decimal("2500.00"))
+        zone = next(row for row in tax.per_unit_breakdown if row["tax_unit_code"] == "010")
+        self.assertIn("levies no tax", zone["warning"])
+        response = self.client.get(reverse("protest_analysis", args=["TAX0"]))
+        self.assertContains(response, "Tax increment reinvestment zone: it levies no tax")
+        self.assertContains(response, "Total rate 0.010000")
+
+    def test_unready_tax_impact_names_the_gap_instead_of_pricing(self):
+        for code, name in (("B", "HC MUD 999"), ("C", "")):
+            PropertyJurisdictionExemption.objects.create(
+                county="harris",
+                tax_year=2026,
+                account_number="TAX0",
+                tax_unit_code=code,
+                tax_unit_name=name,
+                taxable_value=250000,
+            )
+        gap = "Adopted 2026 rate unavailable for taxing units B (HC MUD 999), C"
+        self.assertEqual(adapter.capabilities("TAX0").reasons["tax"], gap)
+        tax = adapter.tax_impact("TAX0", 2026, Decimal("250000"))
+        self.assertEqual(tax.completeness, "missing")
+        self.assertEqual(tax.current_tax_owed, Decimal("0"))
+        self.assertEqual(tax.warnings, [gap])
+        response = self.client.get(reverse("protest_analysis", args=["TAX0"]))
+        self.assertContains(response, gap)
+
+    def test_dataset_gaps_name_what_has_not_been_imported(self):
+        TaxUnitRate.objects.all().delete()
+        PropertyJurisdictionExemption.objects.all().delete()
+        gaps = (
+            "No adopted 2026 tax rates have been imported; "
+            "No 2026 jurisdiction and exemption rows have been imported"
+        )
+        self.assertEqual(adapter.capabilities("TAX0").reasons["tax"], gaps)
+        self.assertEqual(outcome_populations(2026)["tax"].reason, gaps)
+
     def test_tax_becomes_ready_when_rates_arrive_after_publication(self):
         TaxUnitRate.objects.all().delete()
-        self.assertFalse(adapter.capabilities("TAX0").tax_impact_ready)
+        capabilities = adapter.capabilities("TAX0")
+        self.assertFalse(capabilities.tax_impact_ready)
+        self.assertEqual(
+            capabilities.reasons["tax"], "No adopted 2026 tax rates have been imported"
+        )
         TaxUnitRate.objects.create(
             county="harris", tax_year=2026, tax_unit_code="A", adopted_rate=Decimal("0.01")
         )

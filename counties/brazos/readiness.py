@@ -19,7 +19,9 @@ from counties.brazos.models import (
     PropertyLand,
 )
 from counties.brazos.similarity import find_similar_properties
+from counties.brazos.tax_units import NON_LEVYING_UNITS
 from counties.common.analysis import assessment_history_rows
+from counties.common.tax_impact import taxing_units
 from counties.common.tax_models import AssessmentHistory, PropertyJurisdictionExemption, TaxUnitRate
 
 
@@ -284,33 +286,47 @@ class BrazosActiveSnapshotReadiness:
                 county="brazos",
             )
         )
-        unit_codes = {row.tax_unit_code for row in rows if row.tax_unit_code}
-        if not unit_codes:
-            return "Matching-year jurisdiction and exemption rows are unavailable."
+        year = projection.tax_year
+        names: dict[str, str] = {}
+        for row in rows:
+            if row.tax_unit_code:
+                names[row.tax_unit_code] = names.get(row.tax_unit_code) or row.tax_unit_name
+        if not names:
+            return f"No {year} jurisdiction and exemption rows for this property"
+
+        def units(codes: set[str]) -> str:
+            return taxing_units({code: names[code] for code in codes})
+
+        gaps = []
         bases = [row for row in rows if not row.exemption_code]
-        if any(
-            row.exemption_code and row.exemption_amount is None and row.exemption_percent is None
+        unverified = {
+            row.tax_unit_code
             for row in rows
-        ):
-            return "One or more matching-year exemption inputs are unverified."
-        if {row.tax_unit_code for row in bases} != unit_codes:
-            return "One or more matching-year gross jurisdiction bases are unavailable."
-        rate_codes = set(
+            if row.exemption_code and row.exemption_amount is None and row.exemption_percent is None
+        }
+        if unverified:
+            gaps.append(f"{year} exemption amounts are unverified for {units(unverified)}")
+        unbased = names.keys() - {row.tax_unit_code for row in bases}
+        if unbased:
+            gaps.append(f"{year} gross jurisdiction base unavailable for {units(unbased)}")
+        # Units that levy no tax need no rate (ADR-0019).
+        levying = names.keys() - NON_LEVYING_UNITS.keys()
+        unrated = levying - set(
             TaxUnitRate.objects.filter(
-                county="brazos", tax_year=projection.tax_year, tax_unit_code__in=unit_codes
+                county="brazos", tax_year=year, tax_unit_code__in=levying
             ).values_list("tax_unit_code", flat=True)
         )
-        if rate_codes != unit_codes:
-            return "One or more matching-year tax-unit rates are unavailable."
+        if unrated:
+            gaps.append(f"Adopted {year} rate unavailable for {units(unrated)}")
         has_assessment = AssessmentHistory.objects.filter(
             account_number=account.prop_id,
-            tax_year=projection.tax_year,
+            tax_year=year,
             county="brazos",
             assessed_value__isnull=False,
         ).exists()
         if any(row.taxable_value is None for row in bases) and not has_assessment:
-            return "Matching-year taxable or assessed value is unavailable."
-        return None
+            gaps.append(f"{year} taxable or assessed value unavailable")
+        return "; ".join(gaps) or None
 
     @staticmethod
     def _positive(value: Decimal | None) -> bool:

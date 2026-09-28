@@ -150,8 +150,9 @@ class PublishedCapabilitiesTests(TestCase):
             county="harris", account_number="P0", tax_year=2024, assessed_value=230000
         )
         report = self.client.get(reverse("protest_analysis", args=["P0"]))
-        self.assertEqual(report.context["tax_impact"].completeness, "partial")
+        self.assertEqual(report.context["tax_impact"].completeness, "missing")
         self.assertContains(report, "Tax totals unavailable")
+        self.assertContains(report, "Adopted 2026 rate unavailable for taxing unit B")
         self.assertContains(report, "2025")
         self.assertContains(report, "Assessment history gaps")
         self.assertIsNone(report.context["assessment_history"][0]["increase_percent"])
@@ -195,4 +196,5 @@ class PublishedCapabilitiesTests(TestCase):
         self.assertIsNone(subject.tax_year)
         result = adapter.tax_impact("P0", None, None)
         self.assertEqual(result.completeness, "missing")
-        self.assertIn("source year", " ".join(result.warnings))
+        self.assertIsNone(result.tax_year)
+        self.assertEqual(result.warnings, ["Harris data readiness incomplete"])

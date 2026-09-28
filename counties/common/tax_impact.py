@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 
@@ -73,11 +74,17 @@ def _dedupe_units(rows: list[PropertyJurisdictionExemption]) -> list[PropertyJur
     return out
 
 
-def unavailable_tax_impact(tax_year: int | None, warning: str) -> TaxImpactResult:
-    """Shared shape for the two "nothing to compute" early returns.
+def taxing_units(names: Mapping[str, str]) -> str:
+    """Name taxing units for a readiness reason, e.g. ``taxing units B (HC MUD 9), C``."""
+    labels = [f"{code} ({name})" if name else code for code, name in sorted(names.items())]
+    return f"taxing unit{'s' if len(labels) > 1 else ''} {', '.join(labels)}"
 
-    Both callers stop before any unit has been priced, so every totals field
-    is zero/empty save the single warning explaining why.
+
+def unavailable_tax_impact(tax_year: int | None, *warnings: str) -> TaxImpactResult:
+    """Shared shape for a tax impact that prices nothing.
+
+    Every caller stops before any unit has been priced, so every totals field
+    is zero/empty save the warnings explaining why.
     """
     return TaxImpactResult(
         tax_year=tax_year,
@@ -88,7 +95,7 @@ def unavailable_tax_impact(tax_year: int | None, warning: str) -> TaxImpactResul
         current_assessed_value=None,
         taxable_value_used=None,
         completeness="missing",
-        warnings=[warning],
+        warnings=list(warnings),
         exemptions_summary=[],
         per_unit_breakdown=[],
     )
@@ -154,6 +161,7 @@ def calculate_tax_impact(
     tax_year: int | None,
     median_assessed_value: Decimal | float | int | None,
     county: str = "harris",
+    non_levying: Mapping[str, str] | None = None,
 ) -> TaxImpactResult:
     """Compute current-vs-median annual tax impact from imported tax data.
 
@@ -161,7 +169,12 @@ def calculate_tax_impact(
     AssessmentHistory/TaxUnitRate/PropertyJurisdictionExemption tables (see
     wayfinder ticket #9) — required because tax_unit_code alone isn't
     guaranteed unique across counties.
+
+    ``non_levying`` maps the county's units that levy no ad valorem tax to the
+    reason shown for them (ADR-0019); they need no rate and add no tax.
+    Without a median assessed value the result is partial and claims no savings.
     """
+    non_levying = non_levying or {}
 
     resolved_year = tax_year or _latest_assessment_year(account_number, county)
     warnings: list[str] = []
@@ -173,6 +186,7 @@ def calculate_tax_impact(
 
     median_value = _to_decimal(median_assessed_value)
     if median_value is None or median_value < ZERO:
+        median_value = None
         warnings.append("Median assessed value is missing; median tax scenario was not computed.")
 
     unit_rows = list(
@@ -208,7 +222,10 @@ def calculate_tax_impact(
 
     unit_bases = _dedupe_units(unit_rows)
 
-    if len(rate_map) < len(unit_bases):
+    if any(
+        unit.tax_unit_code not in rate_map and unit.tax_unit_code not in non_levying
+        for unit in unit_bases
+    ):
         warnings.append("One or more jurisdiction rates are missing for this tax year.")
 
     known_units = 0
@@ -230,6 +247,20 @@ def calculate_tax_impact(
         if unit.exemption_code:
             missing_units += 1
             warnings.append(f"Gross jurisdiction base is missing for {unit.tax_unit_code}.")
+            continue
+        if unit.tax_unit_code in non_levying:
+            breakdown.append(
+                {
+                    "tax_unit_code": unit.tax_unit_code,
+                    "tax_unit_name": unit.tax_unit_name,
+                    "rate": None,
+                    "current_taxable_value": None,
+                    "median_taxable_value": None,
+                    "current_tax_amount": None,
+                    "median_tax_amount": None,
+                    "warning": non_levying[unit.tax_unit_code],
+                }
+            )
             continue
         rate_row = rate_map.get(unit.tax_unit_code)
         rate = _to_decimal(rate_row.adopted_rate if rate_row else None)
@@ -276,15 +307,16 @@ def calculate_tax_impact(
         # Apply fixed + percent exemptions if present for each unit in deterministic order.
         current_taxable, median_taxable, exemptions_applied = _apply_exemptions(
             taxable_base,
-            median_value if median_value is not None else None,
+            median_value,
             unit_records,
         )
 
         current_tax = current_taxable * rate
-        median_tax = median_taxable * rate if median_taxable is not None else ZERO
+        median_tax = median_taxable * rate if median_taxable is not None else None
 
         current_total += current_tax
-        median_total += median_tax
+        if median_tax is not None:
+            median_total += median_tax
         total_taxable_used += current_taxable
 
         breakdown.append(
@@ -297,7 +329,7 @@ def calculate_tax_impact(
                     _money(median_taxable) if median_taxable is not None else None
                 ),
                 "current_tax_amount": _money(current_tax),
-                "median_tax_amount": _money(median_tax),
+                "median_tax_amount": _money(median_tax) if median_tax is not None else None,
                 "warning": None,
             }
         )
@@ -305,7 +337,7 @@ def calculate_tax_impact(
 
     if known_units == 0:
         completeness = "missing"
-    elif missing_units > 0 or len(rate_map) < len(unit_bases):
+    elif missing_units > 0 or median_value is None:
         completeness = "partial"
     else:
         completeness = "complete"
@@ -315,10 +347,9 @@ def calculate_tax_impact(
 
     current_total = _money(current_total)
     median_total = _money(median_total)
-    savings = _money(max(ZERO, current_total - median_total))
-    effective_rate = (total_rate / Decimal(max(known_units, 1))).quantize(
-        Decimal("0.000001"), rounding=ROUND_HALF_UP
-    )
+    savings = ZERO if median_value is None else _money(max(ZERO, current_total - median_total))
+    # The combined rate of every levying unit that was priced.
+    effective_rate = total_rate.quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
 
     return TaxImpactResult(
         tax_year=resolved_year,

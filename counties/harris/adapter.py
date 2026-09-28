@@ -35,6 +35,7 @@ from counties.harris.similarity import (
     format_feature_list,
     get_similarity_label,
 )
+from counties.harris.tax_units import NON_LEVYING_UNITS
 
 COUNTY_SLUG = "harris"
 
@@ -281,16 +282,16 @@ class HarrisAdapter(CountyAdapter):
 
     def tax_impact(self, key: str, tax_year: int | None, median_assessed_value: Decimal | None):
         year = tax_year or self.published_year()
-        if year is None:
-            return unavailable_tax_impact(
-                None,
-                "Published property source year is not recorded; matching-year tax impact is unavailable.",
-            )
+        readiness = HarrisReadinessProjection().project(key)
+        if readiness is None or "tax" not in readiness.ready:
+            reasons = readiness.reasons["tax"] if readiness else ("Property not found",)
+            return unavailable_tax_impact(year, *reasons)
         return calculate_tax_impact(
             account_number=key,
             tax_year=year,
             median_assessed_value=median_assessed_value,
             county=COUNTY_SLUG,
+            non_levying=NON_LEVYING_UNITS,
         )
 
     def capabilities(self, key: str) -> PropertyCapabilities:
