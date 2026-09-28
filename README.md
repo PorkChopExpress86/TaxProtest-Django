@@ -198,7 +198,6 @@ docker compose exec web python manage.py test
 ## AI workflows & Skills
 
 - `docs/ai-workflows.md` — practical guide for AI development workflows in this repo
-- `.agent/skills/security-review/` — security review skill, history purging, and Bitwarden secret management runbook
 
 ## Security
 

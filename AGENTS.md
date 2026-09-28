@@ -109,3 +109,11 @@ Use the default triage labels mapped in `docs/agents/triage-labels.md` when tria
 
 Single-context layout: root `CONTEXT.md` and `docs/adr/`. Follow `docs/agents/domain.md`
 when exploring domain terminology or architectural decisions.
+
+<!-- vault-memory:start -->
+## Shared Project Memory
+
+Project memory ID: `taxprotest-django`.
+
+For substantial work, use the user-level `vault-memory` workflow when available. If this checkout is not mapped to the project ID above, ask once before registering it. At completion, record a concise handoff and update current state. If the workflow is unavailable, continue normally.
+<!-- vault-memory:end -->
