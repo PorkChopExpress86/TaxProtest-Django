@@ -39,9 +39,13 @@ preserve unrelated work, runtime data, databases, and secrets.
 ## Data invariants
 
 - Harris queryable records satisfy both `is_residential=True` and `is_data_ready=True`.
-- Harris imports cross `run_harris_import(HarrisImportRequest)` in
+- Fresh Harris imports cross `run_harris_import(HarrisImportRequest)` in
   `counties/harris/etl_pipeline/`; management commands and Celery tasks are adapters. Keep Celery
   task names and `beat_schedule` synchronized when moving task code.
+- Candidate preparation, publication, admin apply, and recovery run through the shared Candidate
+  lifecycle (ADR-0018). Shared lifecycle, review, recovery, and admin code reach county behavior
+  only through the registered county candidate port: never branch on a county name or import
+  county modules there.
 - `refresh_brazos_annual` is the only year-matched certified CAD-plus-GIS publication path.
   `enrich_brazos_coordinates` is a separately thresholded, coordinate-only fallback that preserves
   the actual GIS source year.
