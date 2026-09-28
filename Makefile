@@ -1,4 +1,4 @@
-.PHONY: help build up dev down test lint fmt type ingest refresh shell logs clean
+.PHONY: help build up dev down test lint fmt type check migrations-check ingest refresh shell logs clean
 
 help:
 	@echo "Docker-first commands:"
@@ -10,6 +10,7 @@ help:
 	@echo "  make lint      - run ruff + black check inside dev container"
 	@echo "  make fmt       - auto-format inside dev container"
 	@echo "  make type      - run mypy inside dev container"
+	@echo "  make check     - run all quality gates (lint, type, migrations)"
 	@echo "  make ingest    - run Postgres ingestion container"
 	@echo "  make refresh   - run refresh container"
 	@echo "  make shell     - open shell in dev container"
@@ -40,6 +41,11 @@ fmt:
 
 type:
 	docker compose run --rm taxprotest-dev mypy taxprotest counties
+
+migrations-check:
+	docker compose run --rm taxprotest-dev python manage.py makemigrations --check --dry-run
+
+check: lint type migrations-check
 
 ingest:
 	docker compose up -d postgres

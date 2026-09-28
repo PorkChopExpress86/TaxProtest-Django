@@ -71,7 +71,10 @@ the host Python environment for project execution.
 docker compose run --rm taxprotest-dev pytest path/to/test_module.py -q
 docker compose run --rm taxprotest-dev pytest -q
 
-# Quality gates
+# Quality gates (or `make check` on systems with make)
+make check  # runs ruff, black, mypy, and makemigrations checks
+
+# Or run individual quality gates via Docker Compose
 docker compose run --rm taxprotest-dev ruff check .
 docker compose run --rm taxprotest-dev black --check .
 docker compose run --rm taxprotest-dev mypy taxprotest counties

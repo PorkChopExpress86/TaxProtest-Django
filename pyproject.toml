@@ -1,10 +1,12 @@
 [tool.black]
 line-length = 100
+# Target syntax baseline (conservative minimum; Docker runtime is Python 3.14)
 target-version = ["py311"]
 extend-exclude = "/migrations/"
 
 [tool.ruff]
 line-length = 100
+# Target syntax baseline (conservative minimum; Docker runtime is Python 3.14)
 target-version = "py311"
 extend-exclude = ["migrations"]
 

@@ -1,4 +1,5 @@
 # Use Python 3.14 slim image
+# Keep mypy.ini python_version equal to this; ruff/black targets must not exceed it.
 FROM python:3.14-slim
 
 # Set environment variables

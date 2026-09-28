@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality-gates:
+    name: Quality gates & test suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      POSTGRES_USER: taxprotest
+      POSTGRES_PASSWORD: taxprotest
+      POSTGRES_DB: taxprotest
+      DJANGO_SECRET_KEY: ci-test-secret-key-not-for-production
+      SKIP_DATA_DOWNLOAD: "1"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build development image
+        run: docker compose build taxprotest-dev
+
+      - name: Lint with Ruff
+        run: docker compose run --rm taxprotest-dev ruff check .
+
+      - name: Format check with Black
+        run: docker compose run --rm taxprotest-dev black --check .
+
+      - name: Type check with Mypy
+        run: docker compose run --rm taxprotest-dev mypy taxprotest counties
+
+      - name: Check for unapplied migrations
+        run: docker compose run --rm taxprotest-dev python manage.py makemigrations --check --dry-run
+
+      - name: Run test suite
+        run: docker compose run --rm taxprotest-dev pytest -q
+
+      - name: Clean up compose stack
+        if: always()
+        run: docker compose down -v --remove-orphans
