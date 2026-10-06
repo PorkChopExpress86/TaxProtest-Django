@@ -10,6 +10,8 @@ from counties.brazos.property_import import (
     build_default_property_import,
 )
 from counties.common.import_audit import audited_operation
+from counties.common.import_disposition import ImportDispositionKind, import_disposition
+from counties.common.models import ImportOperation
 
 
 class Command(BaseCommand):
@@ -74,17 +76,18 @@ class Command(BaseCommand):
         result = build_default_property_import(self).run(
             PropertyImportRequest(mode=PropertyImportMode.CAD_RECOVERY, options=refresh_options)
         )
-        if result.dry_run:
+        disposition = import_disposition(
+            ImportOperation.objects.get(pk=result.operation_id), subject="Brazos CAD import"
+        )
+        if disposition.kind is ImportDispositionKind.PREVIEWED:
             self.stdout.write(
                 self.style.SUCCESS(
                     f"[dry-run] Brazos CAD recovery validated for tax_year={result.tax_year}."
                 )
             )
             return
-        if result.prepared:
-            self.stdout.write(
-                f"Brazos CAD import {result.workflow_state}; published data unchanged. Candidate {result.candidate_id}; operation {result.operation_id}. Review in Django admin /admin/data/importcandidate/."
-            )
+        if disposition.kind is ImportDispositionKind.HELD:
+            self.stdout.write(self.style.WARNING(disposition.notice))
             return
         self.stdout.write(
             self.style.WARNING(

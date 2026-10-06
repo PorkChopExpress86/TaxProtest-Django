@@ -3,6 +3,8 @@
 from django.core.management.base import BaseCommand
 
 from counties.brazos.property_import import RefreshOptions, build_default_refresh
+from counties.common.import_disposition import ImportDispositionKind, import_disposition
+from counties.common.models import ImportOperation
 
 
 class Command(BaseCommand):
@@ -56,18 +58,18 @@ class Command(BaseCommand):
                 keep_extracted=options["keep_extracted"],
             )
         )
-        if result.dry_run:
+        disposition = import_disposition(
+            ImportOperation.objects.get(pk=result.operation_id), subject="Brazos annual import"
+        )
+        if disposition.kind is ImportDispositionKind.PREVIEWED:
             self.stdout.write(
                 self.style.SUCCESS(
                     f"[dry-run] Brazos annual refresh validated for tax_year={result.tax_year}."
                 )
             )
             return
-
-        if result.workflow_state in ("prepared", "awaiting_review", "blocked"):
-            self.stdout.write(
-                f"Brazos annual import {result.workflow_state}; published data unchanged. Candidate {result.candidate_id}; operation {result.operation_id}. Review in Django admin /admin/data/importcandidate/."
-            )
+        if disposition.kind is ImportDispositionKind.HELD:
+            self.stdout.write(self.style.WARNING(disposition.notice))
             return
         self.stdout.write(
             self.style.SUCCESS(
