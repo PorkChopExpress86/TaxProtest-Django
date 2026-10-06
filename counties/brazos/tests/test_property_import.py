@@ -10,10 +10,9 @@ from django.core.management.base import CommandError
 from django.test import TestCase
 from django.urls import reverse
 
+from counties.brazos.benchmark import write_complete_pacs_export as _stage_complete_pacs_export
 from counties.brazos.cad_refresh import (
-    ENTITY_INFO_FILENAME,
     IMPROVEMENT_DETAIL_ATTR_FILENAME,
-    IMPROVEMENT_DETAIL_FILENAME,
     CadRefreshStage,
 )
 from counties.brazos.gis_refresh import GisRefreshStage
@@ -26,43 +25,6 @@ from counties.brazos.property_import import (
     RefreshOptions,
 )
 from counties.common.models import ImportCandidate
-
-
-def _line(length: int, fields: dict[tuple[int, int], str]) -> str:
-    chars = [" "] * length
-    for (start, end), value in fields.items():
-        chars[start : start + len(value[: end - start])] = value[: end - start]
-    return "".join(chars)
-
-
-def _stage_complete_pacs_export(root: Path, year: int) -> None:
-    """Write one keyed record for every PACS layout the preflight consumes."""
-    prop_id = "000000010013"
-    extract_dir = root / "extracted" / str(year)
-    extract_dir.mkdir(parents=True)
-    files = {
-        "APPRAISAL_INFO.TXT": _line(987, {(0, 12): prop_id, (17, 22): f"0{year}"}),
-        "APPRAISAL_LAND_DETAIL.TXT": _line(184, {(0, 12): prop_id, (12, 16): str(year)}),
-        "APPRAISAL_IMPROVEMENT_INFO.TXT": _line(
-            49, {(0, 12): prop_id, (12, 16): str(year), (16, 28): "000000000001"}
-        ),
-        IMPROVEMENT_DETAIL_FILENAME: _line(
-            622, {(0, 12): prop_id, (12, 16): str(year), (16, 28): "000000000001"}
-        ),
-        IMPROVEMENT_DETAIL_ATTR_FILENAME: _line(
-            87, {(0, 12): prop_id, (12, 16): str(year), (16, 28): "000000000001"}
-        ),
-        ENTITY_INFO_FILENAME: _line(
-            418,
-            {
-                (0, 12): prop_id,
-                (12, 17): f"0{year}",
-                (53, 63): "G1",
-            },
-        ),
-    }
-    for filename, contents in files.items():
-        (extract_dir / filename).write_text(contents + "\n", encoding="utf-8")
 
 
 class PropertyImportPublicationTests(TestCase):
