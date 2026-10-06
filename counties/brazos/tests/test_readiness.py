@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from unittest.mock import patch
 
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 
 from counties.brazos.adapter import adapter
 from counties.brazos.models import (
     BrazosPropertySnapshot,
     PropertyAccount,
+    PropertyBuildingCharacteristic,
+    PropertyExtraFeature,
+    PropertyImprovement,
     PropertyLand,
     SnapshotOutcome,
 )
@@ -90,15 +94,187 @@ class ActiveSnapshotReadTests(TestCase):
             tax_year=2025,
             owner_name="Owner",
         )
-        readiness = BrazosActiveSnapshotReadiness()
+        table = BrazosPropertySnapshot._meta.db_table
 
-        with patch.object(
-            readiness, "active_snapshot", wraps=readiness.active_snapshot
-        ) as active_snapshot:
-            projection = readiness.project("000000010013")
+        with CaptureQueriesContext(connection) as queries:
+            projection = BrazosActiveSnapshotReadiness().project("000000010013")
 
-        self.assertEqual(active_snapshot.call_count, 1)
+        snapshot_reads = [query for query in queries if table in query["sql"]]
+        self.assertEqual(len(snapshot_reads), 1)
         self.assertEqual(projection.snapshot_id, snapshot.id)
+
+
+NO_FACTS = "The active property lacks enough comparable facts."
+NO_COORDINATES = "Coordinates with source provenance are unavailable."
+NO_OWNER = "The active property record has no owner or address."
+REPORT = "At least three same-mode comparable-ready properties are required."
+TAX = "Report-ready evidence and matching-year tax inputs are required."
+
+
+class BrazosRecordFactsTests(TestCase):
+    """Per-record readiness facts, pinned literally before they were gathered in bulk."""
+
+    def setUp(self):
+        BrazosPropertySnapshot.objects.create(
+            tax_year=2025, outcome=SnapshotOutcome.PARTIAL, cad_source_year=2025
+        )
+
+    def account(self, prop_id, **overrides):
+        fields = {
+            "prop_id": prop_id,
+            "tax_year": 2025,
+            "owner_name": f"Owner {prop_id}",
+            "latitude": Decimal("30.6700000"),
+            "longitude": Decimal("-96.3700000"),
+            "coordinate_source": "bcad-certified-gis",
+            "coordinate_source_year": 2025,
+            "living_area": Decimal("2000"),
+            "class_code": "RV3",
+            **overrides,
+        }
+        return PropertyAccount.objects.create(**fields)
+
+    def improvement(self, prop_id, imp_id, *, kind="R", year_built=None, tax_year=2025):
+        PropertyImprovement.objects.create(
+            prop_id=prop_id,
+            imp_id=imp_id,
+            tax_year=tax_year,
+            improvement_type=kind,
+            year_built=year_built,
+        )
+
+    def building(self, prop_id, imp_id, *, bedrooms=None, bathrooms=None, tax_year=2025):
+        PropertyBuildingCharacteristic.objects.create(
+            prop_id=prop_id,
+            imp_id=imp_id,
+            tax_year=tax_year,
+            bedrooms=bedrooms,
+            bathrooms=bathrooms,
+        )
+
+    def build_matrix(self):
+        """Each residential-area account has the class fact; one more fact decides its mode."""
+        self.account("class-only")
+        # "10" sorts before "9": the first residential improvement has no year built.
+        self.account("first-imp-by-id")
+        self.improvement("first-imp-by-id", "9", year_built=1990)
+        self.improvement("first-imp-by-id", "10")
+        # A non-residential improvement never supplies residential facts.
+        self.account("non-residential-imp")
+        self.improvement("non-residential-imp", "1", kind="C", year_built=2000)
+        self.improvement("non-residential-imp", "5")
+        # Two properties share one improvement id; only one has room facts.
+        self.account("shared-imp-bare")
+        self.improvement("shared-imp-bare", "77")
+        self.building("shared-imp-bare", "77", bedrooms=4, tax_year=2024)
+        self.account("shared-imp-rooms")
+        self.improvement("shared-imp-rooms", "77")
+        self.building("shared-imp-rooms", "77", bedrooms=3)
+        self.account("null-rooms")
+        self.improvement("null-rooms", "1")
+        self.building("null-rooms", "1")
+        self.account("baths-only")
+        self.improvement("baths-only", "1")
+        self.building("baths-only", "1", bathrooms=Decimal("2.00"))
+        self.account("imp-year-built")
+        self.improvement("imp-year-built", "1", year_built=1975)
+        self.account("account-year-built", year_built=1980)
+        self.account("land-fact")
+        PropertyLand.objects.create(
+            prop_id="land-fact", tax_year=2025, land_seq=1, acreage=Decimal("0.2500")
+        )
+        PropertyLand.objects.create(
+            prop_id="prior-year-land", tax_year=2024, land_seq=1, acreage=Decimal("1.0000")
+        )
+        self.account("prior-year-land")
+        self.account("features")
+        PropertyExtraFeature.objects.create(
+            prop_id="features", imp_id="1", tax_year=2025, feature_type="POOL"
+        )
+        self.account("land-only", living_area=None, class_code="")
+        PropertyLand.objects.create(
+            prop_id="land-only", tax_year=2025, land_seq=1, acreage=Decimal("1.0000")
+        )
+        PropertyLand.objects.create(prop_id="land-only", tax_year=2025, land_seq=2, acreage=None)
+        self.account("null-acreage", living_area=None)
+        PropertyLand.objects.create(prop_id="null-acreage", tax_year=2025, land_seq=1, acreage=None)
+        self.account("no-coordinates", latitude=None, year_built=1980)
+        self.account("no-provenance", coordinate_source="", year_built=1980)
+        self.account("blank-owner", owner_name="  ", year_built=1980)
+
+    expected = {
+        "class-only": (True, None, (NO_FACTS,)),
+        "first-imp-by-id": (True, None, (NO_FACTS,)),
+        "non-residential-imp": (True, None, (NO_FACTS,)),
+        "shared-imp-bare": (True, None, (NO_FACTS,)),
+        "shared-imp-rooms": (True, "residential", ()),
+        "null-rooms": (True, None, (NO_FACTS,)),
+        "baths-only": (True, "residential", ()),
+        "imp-year-built": (True, "residential", ()),
+        "account-year-built": (True, "residential", ()),
+        "land-fact": (True, "residential", ()),
+        "prior-year-land": (True, None, (NO_FACTS,)),
+        "features": (True, "residential", ()),
+        "land-only": (True, "land", ()),
+        "null-acreage": (True, None, (NO_FACTS,)),
+        "no-coordinates": (True, None, (NO_COORDINATES,)),
+        "no-provenance": (True, None, (NO_COORDINATES,)),
+        "blank-owner": (False, "residential", ()),
+    }
+
+    def assert_matches_expected(self, projection):
+        search_ready, mode, comparable_reason = self.expected[projection.prop_id]
+        reasons = []
+        if not search_ready:
+            reasons.append(("search", NO_OWNER))
+        reasons += [("comparable", reason) for reason in comparable_reason]
+        reasons += [("report", REPORT), ("tax", TAX)]
+        self.assertEqual(
+            (
+                projection.search_ready,
+                projection.comparison_mode,
+                projection.comparable_ready,
+                projection.report_ready,
+                projection.tax_impact_ready,
+                projection.reasons,
+            ),
+            (search_ready, mode, mode is not None, False, False, tuple(reasons)),
+            projection.prop_id,
+        )
+
+    def test_static_projection_judges_each_record_from_its_own_facts(self):
+        self.build_matrix()
+        readiness = BrazosActiveSnapshotReadiness()
+        for prop_id in self.expected:
+            self.assert_matches_expected(readiness.project_static(prop_id))
+
+    def test_chunked_projections_equal_each_single_projection(self):
+        self.build_matrix()
+        readiness = BrazosActiveSnapshotReadiness()
+        accounts = list(PropertyAccount.objects.order_by("prop_id"))
+        singles = [readiness.project_static(account.prop_id) for account in accounts]
+
+        for chunk_size in (1, 2, len(accounts)):
+            with self.subTest(chunk_size=chunk_size):
+                chunked = list(readiness.static_projections(accounts, chunk_size=chunk_size))
+                self.assertEqual(chunked, singles)
+        for projection in singles:
+            self.assert_matches_expected(projection)
+
+    def test_a_chunk_costs_the_same_queries_for_one_record_or_many(self):
+        self.build_matrix()
+        bare = self.account("bare", class_code="")
+        readiness = BrazosActiveSnapshotReadiness()
+        snapshot = readiness.active_snapshot()
+        accounts = list(PropertyAccount.objects.order_by("prop_id"))
+
+        with CaptureQueriesContext(connection) as one:
+            list(readiness.static_projections([bare], snapshot=snapshot))
+        with CaptureQueriesContext(connection) as many:
+            list(readiness.static_projections(accounts, snapshot=snapshot))
+
+        self.assertGreater(len(one), 0)
+        self.assertEqual(len(many), len(one))
 
 
 class BrazosTaxReadinessTests(TestCase):
