@@ -1,0 +1,28 @@
+{
+  "base_sources": {
+    "{root}/downloads": {},
+    "{root}/extracted": {
+      "2026/APPRAISAL_ENTITY_INFO.TXT": "9e3907444befcff39e4768d63e725a27c2f9480261ad07ed986eea74400e1e24",
+      "2026/APPRAISAL_IMPROVEMENT_DETAIL.TXT": "ae77ba6c4ed374e1e6df2cc35ef9882f554971eb5b428cac4656c962fee5883d",
+      "2026/APPRAISAL_IMPROVEMENT_DETAIL_ATTR.TXT": "1418c854fde8d16d3f9205cc947df4f1cde4bb222ffc3a52ad8cdb35eb11d353",
+      "2026/APPRAISAL_IMPROVEMENT_INFO.TXT": "59437f01a515415fdf0f3dc288c3729ce10de4755d3db6b4c41cc2f66656d4c4",
+      "2026/APPRAISAL_INFO.TXT": "ee1bb2d9cb298906a36d48ef192a315ba626b2f75bbb82a73414796b7c577f9c",
+      "2026/APPRAISAL_LAND_DETAIL.TXT": "3646826665a0efc68e4260a7812f6b767a42d878111f91dabce555dde99e74af"
+    }
+  },
+  "retained_source_digests": {
+    "{root}/downloads/.imports/{operation}": {},
+    "{root}/extracted/.imports/{operation}": {
+      "2026/APPRAISAL_ENTITY_INFO.TXT": "9e3907444befcff39e4768d63e725a27c2f9480261ad07ed986eea74400e1e24",
+      "2026/APPRAISAL_IMPROVEMENT_DETAIL.TXT": "ae77ba6c4ed374e1e6df2cc35ef9882f554971eb5b428cac4656c962fee5883d",
+      "2026/APPRAISAL_IMPROVEMENT_DETAIL_ATTR.TXT": "1418c854fde8d16d3f9205cc947df4f1cde4bb222ffc3a52ad8cdb35eb11d353",
+      "2026/APPRAISAL_IMPROVEMENT_INFO.TXT": "59437f01a515415fdf0f3dc288c3729ce10de4755d3db6b4c41cc2f66656d4c4",
+      "2026/APPRAISAL_INFO.TXT": "ee1bb2d9cb298906a36d48ef192a315ba626b2f75bbb82a73414796b7c577f9c",
+      "2026/APPRAISAL_LAND_DETAIL.TXT": "3646826665a0efc68e4260a7812f6b767a42d878111f91dabce555dde99e74af"
+    }
+  },
+  "working_sources": [
+    "{root}/downloads/.imports/{operation}",
+    "{root}/extracted/.imports/{operation}"
+  ]
+}
