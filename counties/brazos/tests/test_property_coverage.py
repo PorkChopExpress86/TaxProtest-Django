@@ -1,19 +1,29 @@
 """Source-aware coverage through real Brazos candidate preparation."""
 
 import tempfile
+import time
+from decimal import Decimal
 from pathlib import Path
+from unittest.mock import patch
 
 from django.db import connection
-from django.test import TransactionTestCase
+from django.test import TestCase, TransactionTestCase
+from django.test.utils import CaptureQueriesContext
 
 from counties.brazos.cad_refresh import CadRefreshStage
 from counties.brazos.gis_refresh import GisRefreshStage
-from counties.brazos.models import BrazosPropertySnapshot, PropertyAccount, SnapshotOutcome
+from counties.brazos.models import (
+    BrazosPropertySnapshot,
+    PropertyAccount,
+    PropertyLand,
+    SnapshotOutcome,
+)
 from counties.brazos.property_import import (
     BrazosPropertyImport,
     PropertyImportMode,
     PropertyImportRequest,
     RefreshOptions,
+    outcome_populations,
 )
 from counties.brazos.tests.test_property_import import _stage_complete_pacs_export
 from counties.common.models import ImportCandidate
@@ -56,6 +66,81 @@ def write_gis(root, identities, *, equity=True):
         geometry=[Point(3556000 + i, 10120000) for i in range(len(identities))],
         crs="EPSG:2277",
     ).to_file(shape)
+
+
+class BrazosCoverageSurveyStressTests(TestCase):
+    """Coverage qualification surveys a full snapshot within fixed query and time caps."""
+
+    def build_snapshot(self, count):
+        BrazosPropertySnapshot.objects.create(
+            tax_year=2026,
+            outcome=SnapshotOutcome.COMPLETED,
+            cad_source_year=2026,
+            gis_source_year=2026,
+        )
+        accounts, lands = [], []
+        for index in range(count):
+            prop_id = str(index + 10000).zfill(12)
+            # Even accounts compare as residential; odd ones by land area alone.
+            residential = index % 2 == 0
+            accounts.append(
+                PropertyAccount(
+                    prop_id=prop_id,
+                    tax_year=2026,
+                    owner_name=f"Owner {index}",
+                    latitude=Decimal("30.6") + Decimal(index) / Decimal("1000"),
+                    longitude=Decimal("-96.3"),
+                    coordinate_source="bcad-certified-gis",
+                    coordinate_source_year=2026,
+                    living_area=Decimal("1800"),
+                    assessed_value=Decimal("250000"),
+                    class_code="RV3" if residential else "",
+                    year_built=1980 if residential else None,
+                )
+            )
+            if not residential:
+                lands.append(
+                    PropertyLand(prop_id=prop_id, tax_year=2026, land_seq=1, acreage=Decimal("0.5"))
+                )
+        PropertyAccount.objects.bulk_create(accounts)
+        PropertyLand.objects.bulk_create(lands)
+
+    def survey_cost(self):
+        forbidden = AssertionError("coverage must not run a comparables search")
+        with (
+            patch("counties.brazos.similarity.find_similar_properties", side_effect=forbidden),
+            patch("counties.brazos.adapter.find_similar_properties", side_effect=forbidden),
+            CaptureQueriesContext(connection) as queries,
+        ):
+            start = time.monotonic()
+            populations = outcome_populations(claimed_gis=True)
+            duration = time.monotonic() - start
+        return populations, len(queries), duration
+
+    def test_a_few_thousand_accounts_qualify_within_query_and_time_caps(self):
+        count = 4000
+        self.build_snapshot(count)
+
+        populations, queries, duration = self.survey_cost()
+
+        self.assertEqual(len(populations["report"].eligible), count)
+        self.assertEqual(len(populations["comparable"].eligible), count)
+        self.assertFalse(populations["tax"].eligible)
+        # Two chunks of 2,000: a fixed number of reads per chunk, never per account.
+        self.assertLessEqual(queries, 40)
+        self.assertLess(duration, 30.0, f"Coverage took {duration:.1f}s for {count} accounts")
+
+    def test_coverage_queries_grow_only_with_chunks(self):
+        self.build_snapshot(8)
+        _, few, _ = self.survey_cost()
+        PropertyLand.objects.all().delete()
+        PropertyAccount.objects.all().delete()
+        BrazosPropertySnapshot.objects.all().delete()
+        self.build_snapshot(1500)
+
+        _, many, _ = self.survey_cost()
+
+        self.assertEqual(many, few)
 
 
 class BrazosCoverageTests(TransactionTestCase):

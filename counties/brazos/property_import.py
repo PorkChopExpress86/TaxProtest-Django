@@ -162,11 +162,14 @@ def outcome_populations(
     names = ("search", "comparable", "report", "tax")
     eligible = {name: set() for name in names}
     exclusions = {name: {} for name in names}
-    accounts = list(PropertyAccount.objects.filter(tax_year=snapshot.tax_year)) if snapshot else []
-    for account in accounts:
-        projection = reader.project(account.prop_id)
-        if projection is None:
-            continue
+    # One readiness rule surveys the whole snapshot; coverage never searches.
+    projections = reader.survey(snapshot=snapshot) if snapshot else {}
+    accounts = (
+        PropertyAccount.objects.filter(tax_year=snapshot.tax_year)
+        if snapshot
+        else PropertyAccount.objects.none()
+    )
+    for prop_id, projection in projections.items():
         for name, ready in (
             ("search", projection.search_ready),
             ("comparable", projection.comparable_ready),
@@ -174,28 +177,27 @@ def outcome_populations(
             ("tax", projection.tax_impact_ready),
         ):
             if ready and not (deliberately_absent_gis and name != "search"):
-                eligible[name].add(account.prop_id)
+                eligible[name].add(prop_id)
             else:
-                exclusions[name][account.prop_id] = [
+                exclusions[name][prop_id] = [
                     projection.reason_for(name)
                     or "GIS deliberately absent from explicit Partial candidate"
                 ]
-    structural_inputs = any(account.living_area is not None for account in accounts) or bool(
+    structural_inputs = accounts.filter(living_area__isnull=False).exists() or bool(
         snapshot
         and PropertyLand.objects.filter(tax_year=snapshot.tax_year, acreage__isnull=False).exists()
     )
-    has_gis = claimed_gis or any(
-        account.coordinate_source and account.coordinate_source_year is not None
-        for account in accounts
+    has_gis = (
+        claimed_gis
+        or accounts.exclude(coordinate_source="")
+        .filter(coordinate_source_year__isnull=False)
+        .exists()
     )
     comparable_supported = has_gis and structural_inputs and not deliberately_absent_gis
     report_supported = (
         comparable_supported
-        and len(accounts) >= 4
-        and any(
-            account.assessed_value is not None and account.living_area is not None
-            for account in accounts
-        )
+        and len(projections) >= 4
+        and accounts.filter(assessed_value__isnull=False, living_area__isnull=False).exists()
     )
     # A tax gap is independently unavailable. The authoritative projection
     # requires complete matching-year rates and values before claiming it.
