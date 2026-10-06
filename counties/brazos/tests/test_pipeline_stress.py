@@ -9,6 +9,7 @@ from pathlib import Path
 from django.db import connection
 from django.test import TransactionTestCase
 
+from counties.brazos.benchmark import write_synthetic_pacs
 from counties.brazos.cad_refresh import CadRefreshStage
 from counties.brazos.property_import import (
     BrazosPropertyImport,
@@ -16,25 +17,7 @@ from counties.brazos.property_import import (
     PropertyImportRequest,
     RefreshOptions,
 )
-from counties.brazos.tests.test_property_import import _stage_complete_pacs_export
 from counties.common.models import ImportCandidate
-
-
-def _fast_write_pacs(root: Path, count: int = 5000, year: int = 2026) -> None:
-    _stage_complete_pacs_export(root, year)
-    identities = [str(i + 10000).zfill(12) for i in range(count)]
-    extract_dir = root / "extracted" / str(year)
-    for source in extract_dir.glob("*.TXT"):
-        original = source.read_text().rstrip("\n")
-        suffix = original[12:]
-        if source.name == "APPRAISAL_INFO.TXT":
-            prefix_to_owner = original[12:608]
-            owner = "Candidate owner"
-            after_owner = original[623:]
-            lines = [f"{key}{prefix_to_owner}{owner}{after_owner}" for key in identities]
-        else:
-            lines = [f"{key}{suffix}" for key in identities]
-        source.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 class BrazosPipelineStressTests(TransactionTestCase):
@@ -50,7 +33,7 @@ class BrazosPipelineStressTests(TransactionTestCase):
 
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            _fast_write_pacs(root, count=record_count, year=year)
+            write_synthetic_pacs(root, count=record_count, year=year)
 
             start_time = time.monotonic()
             with self.settings(
