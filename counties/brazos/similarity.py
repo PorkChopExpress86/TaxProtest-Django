@@ -32,10 +32,6 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
-from math import cos, radians
-
-from django.db.models import ExpressionWrapper, F, FloatField, Value
-from django.db.models.functions import ACos, Cos, Greatest, Least, Radians, Sin
 
 from counties.common.similarity_math import (
     AGE_CURVE,
@@ -51,6 +47,7 @@ from counties.common.similarity_math import (
     difference_similarity,
     distance_similarity,
     interpolate_curve,
+    nearby_properties,
     normalized_code,
     percentage_similarity,
     score_from_components,
@@ -362,12 +359,10 @@ def find_similar_properties(
     max_results: int = 50,
     min_score: float = 30.0,
 ) -> list[dict]:
-    """Find Brazos properties similar to the given prop_id. Mirrors
-    data/similarity.py::find_similar_properties's DB-side haversine
-    bounding-box approach (that part of Harris's implementation has no
-    model coupling at all -- it's a pure lat/long query pattern, safe to
-    replicate structurally against PropertyAccount instead of
-    PropertyRecord)."""
+    """Find Brazos properties similar to the given prop_id.
+
+    Candidates come from the shared nearest-properties query, pre-filtered
+    here to the same tax year."""
     target = PropertyAccount.objects.filter(prop_id=prop_id, tax_year=tax_year).first()
     if not target or not target.latitude or not target.longitude:
         return []
@@ -378,45 +373,11 @@ def find_similar_properties(
     target_features = list(PropertyExtraFeature.objects.filter(prop_id=prop_id, tax_year=tax_year))
     target_acreage = _total_acreage(prop_id, tax_year)
 
-    lat_range = max_distance_miles / 69.0
-    lon_range = max_distance_miles / (69.0 * cos(radians(target_lat)))
-    min_lat, max_lat = target_lat - lat_range, target_lat + lat_range
-    min_lon, max_lon = target_lon - lon_range, target_lon + lon_range
-
-    candidates = PropertyAccount.objects.filter(
-        tax_year=tax_year,
-        latitude__gte=min_lat,
-        latitude__lte=max_lat,
-        longitude__gte=min_lon,
-        longitude__lte=max_lon,
-        latitude__isnull=False,
-        longitude__isnull=False,
-    ).exclude(prop_id=prop_id)
-
-    target_lat_rad = radians(target_lat)
-    target_lon_rad = radians(target_lon)
-
-    candidates = (
-        candidates.annotate(
-            distance=ExpressionWrapper(
-                3959.0
-                * ACos(
-                    Least(
-                        1.0,
-                        Greatest(
-                            -1.0,
-                            Cos(Value(target_lat_rad))
-                            * Cos(Radians(F("latitude")))
-                            * Cos(Radians(F("longitude")) - Value(target_lon_rad))
-                            + Sin(Value(target_lat_rad)) * Sin(Radians(F("latitude"))),
-                        ),
-                    )
-                ),
-                output_field=FloatField(),
-            )
-        )
-        .filter(distance__lte=max_distance_miles)
-        .order_by("distance")[:2000]
+    candidates = nearby_properties(
+        PropertyAccount.objects.filter(tax_year=tax_year).exclude(prop_id=prop_id),
+        latitude=target_lat,
+        longitude=target_lon,
+        max_distance_miles=max_distance_miles,
     )
 
     candidate_list = list(candidates)

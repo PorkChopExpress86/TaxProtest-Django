@@ -26,6 +26,7 @@ from counties.brazos.readiness import (
     BrazosSnapshotFacts,
     readiness,
 )
+from counties.common.tax_impact import unavailable_tax_impact
 from counties.common.tax_models import (
     AssessmentHistory,
     PropertyJurisdictionExemption,
@@ -718,3 +719,17 @@ class BrazosTaxReadinessTests(TestCase):
         self.assertEqual(response.context["tax_impact"].completeness, "missing")
         self.assertContains(response, "COLLEGE STATION ISD")
         self.assertEqual(response.context["tax_impact"].warnings, [gaps])
+
+    def test_unavailable_tax_impact_has_the_shared_unavailable_shape(self):
+        gap = "No 2025 jurisdiction and exemption rows for this property"
+        self.assertEqual(
+            adapter.tax_impact(TARGET, 2025, Decimal("250000")),
+            unavailable_tax_impact(2025, gap),
+        )
+
+    def test_without_an_active_snapshot_tax_impact_says_so(self):
+        BrazosPropertySnapshot.objects.update(is_active=False)
+        self.assertEqual(
+            adapter.tax_impact(TARGET, 2025, Decimal("250000")),
+            unavailable_tax_impact(None, "No active Brazos property snapshot is available."),
+        )

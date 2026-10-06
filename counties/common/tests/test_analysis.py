@@ -192,18 +192,27 @@ class BuildProtestDossierTests(SimpleTestCase):
         self.assertEqual(outcome.error, "Need 3 comps")
         self.assertEqual(outcome.subject, subject)
 
-    def test_missing_location_returns_unavailable(self):
-        subject = Subject(
-            key="1",
-            address_line="123 Main",
-            has_location=False,
-        )
-        adapter = FakeAdapter(subject=subject)
+    def test_report_capability_alone_gates_the_dossier(self):
+        # Location is asked once, through capabilities; the subject's own
+        # location flag is not a second gate.
+        subject = Subject(key="1", address_line="123 Main", has_location=False)
+        adapter = FakeAdapter(subject=subject, caps=PropertyCapabilities(report_ready=True))
+
+        outcome = build_protest_dossier(adapter, "1")
+
+        self.assertTrue(outcome.is_ready)
+
+    def test_not_report_ready_without_reason_falls_back_to_location_message(self):
+        subject = Subject(key="1", address_line="123 Main")
+        adapter = FakeAdapter(subject=subject, caps=PropertyCapabilities(report_ready=False))
 
         outcome = build_protest_dossier(adapter, "1")
 
         self.assertFalse(outcome.is_ready)
-        self.assertIn("location data", outcome.error)
+        self.assertEqual(
+            outcome.error,
+            "This property does not have location data required for similarity search.",
+        )
         self.assertEqual(outcome.subject, subject)
 
     def test_ready_subject_builds_complete_dossier(self):

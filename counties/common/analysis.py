@@ -437,13 +437,6 @@ def build_protest_dossier(
             or "This property does not have location data required for similarity search.",
         )
 
-    if not subject.has_location:
-        return ProtestDossierOutcome(
-            status="unavailable",
-            subject=subject,
-            error="This property does not have location data required for similarity search.",
-        )
-
     effective_min_score = clamped_float(
         min_score,
         PROTEST_DEFAULT_MIN_SCORE,

@@ -74,6 +74,20 @@ class BrazosSnapshotFacts:
 
     report_pool: Mapping[str, int]
 
+    @classmethod
+    def surveyed(cls, records: Iterable[BrazosReadinessProjection]) -> BrazosSnapshotFacts:
+        """The report pool counted over every property of one snapshot."""
+        return cls(
+            report_pool=Counter(
+                record.comparison_mode for record in records if record.in_report_pool
+            )
+        )
+
+    @property
+    def report_pool_reached(self) -> bool:
+        """Whether any comparison mode holds a subject plus three other pool members."""
+        return any(mode and count >= REPORT_POOL_SIZE for mode, count in self.report_pool.items())
+
 
 def report_reason(record: BrazosReadinessProjection, snapshot: BrazosSnapshotFacts) -> str | None:
     """Why one record is not report-ready, judged with no distance or similarity score."""
@@ -156,11 +170,7 @@ class BrazosActiveSnapshotReadiness:
                 chunk_size=chunk_size,
             )
         )
-        facts = BrazosSnapshotFacts(
-            report_pool=Counter(
-                record.comparison_mode for record in records if record.in_report_pool
-            )
-        )
+        facts = BrazosSnapshotFacts.surveyed(records)
         gaps = self.tax_input_gaps(
             [record.prop_id for record in records if report_reason(record, facts) is None],
             tax_year=snapshot.tax_year,
