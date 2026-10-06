@@ -319,6 +319,44 @@ class FindSimilarPropertiesTests(TestCase):
         self.assertEqual(results[0]["property"].prop_id, "000000010002")
         self.assertGreater(results[0]["similarity_score"], 70.0)
 
+    def test_candidate_does_not_inherit_another_propertys_building_facts(self):
+        # Brazos improvement identifiers repeat across properties, so a shared
+        # imp_id must never carry one property's characteristics onto another.
+        shared_imp_id = "SHARED-1"
+        for prop_id, lat, building in (
+            ("000000020001", "30.6700000", True),
+            ("000000020002", "30.6705000", True),
+            ("000000020003", "30.6710000", False),
+        ):
+            PropertyAccount.objects.create(
+                prop_id=prop_id,
+                tax_year=TAX_YEAR,
+                living_area=Decimal("2200"),
+                latitude=Decimal(lat),
+                longitude=Decimal("-96.3700000"),
+                class_code="RV3",
+                year_built=2005,
+            )
+            PropertyImprovement.objects.create(
+                prop_id=prop_id, imp_id=shared_imp_id, tax_year=TAX_YEAR, improvement_type="R"
+            )
+            if building:
+                PropertyBuildingCharacteristic.objects.create(
+                    prop_id=prop_id,
+                    imp_id=shared_imp_id,
+                    tax_year=TAX_YEAR,
+                    bedrooms=4,
+                    bathrooms=Decimal("2.5"),
+                    exterior_wall="BV",
+                )
+
+        results = find_similar_properties("000000020001", tax_year=TAX_YEAR)
+
+        by_prop = {r["property"].prop_id: r for r in results}
+        self.assertEqual(set(by_prop), {"000000020002", "000000020003"})
+        self.assertEqual(by_prop["000000020002"]["building"].prop_id, "000000020002")
+        self.assertIsNone(by_prop["000000020003"]["building"])
+
     def test_target_without_coordinates_returns_empty(self):
         PropertyAccount.objects.create(prop_id="000000010001", tax_year=TAX_YEAR)
         self.assertEqual(find_similar_properties("000000010001", tax_year=TAX_YEAR), [])
