@@ -8,6 +8,7 @@ from pathlib import Path
 
 from django.utils import timezone
 
+from counties.common.county_registry import registration_for
 from counties.common.import_logging import import_warnings
 from counties.common.import_writers import county_writer
 from counties.common.models import ImportOperation
@@ -40,9 +41,6 @@ class OperationStatus(StrEnum):
     FAILED = "failed"
 
 
-_WARNING_LOGGERS = {"harris": "etl_orchestrator", "brazos": "brazos_cad"}
-
-
 @contextmanager
 def audited_operation(
     county: str,
@@ -61,6 +59,7 @@ def audited_operation(
     not raised, because the published dataset is live. Any other failure fails the
     operation and is raised.
     """
+    registration = registration_for(county)  # an unknown county records no operation
     operation = ImportOperation.objects.create(
         county=county,
         intent=intent,
@@ -73,7 +72,9 @@ def audited_operation(
     warnings: list[str] = []
     try:
         with (
-            import_warnings(_WARNING_LOGGERS[county], operation_id=str(operation.pk)) as warnings,
+            import_warnings(
+                registration.warning_logger, operation_id=str(operation.pk)
+            ) as warnings,
             county_writer(operation),
         ):
             yield operation
