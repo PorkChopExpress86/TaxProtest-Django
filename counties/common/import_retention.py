@@ -3,9 +3,9 @@
 from datetime import timedelta
 from pathlib import Path
 
-from django.conf import settings
 from django.utils import timezone
 
+from counties.common.county_registry import registration_for
 from counties.common.import_audit import audited_operation
 from counties.common.import_writers import fenced_write
 from counties.common.models import ImportAuditEntry, ImportCandidate, ImportOperation
@@ -82,9 +82,8 @@ def _eligible(candidate, now):
 
 
 def _managed_path(candidate, path):
-    prefix = "BCAD" if candidate.county == "brazos" else "HCAD"
-    for setting in (f"{prefix}_DOWNLOAD_DIR", f"{prefix}_EXTRACT_DIR"):
-        root = Path(getattr(settings, setting)).resolve()
+    for source_root in registration_for(candidate.county).source_roots():
+        root = source_root.resolve()
         try:
             relative = path.relative_to(root)
         except ValueError:

@@ -11,9 +11,9 @@ from uuid import UUID
 
 from django.db import DatabaseError, connection, transaction
 
+from counties.common.county_registry import registration_for
 from counties.common.models import CountyWriter, ImportAuditEntry, ImportOperation
 
-_LOCK_KEYS = {"harris": 742101, "brazos": 742102}
 _CURRENT_WRITER: ContextVar[ImportOperation | None] = ContextVar("county_writer", default=None)
 
 
@@ -121,7 +121,7 @@ def _lock_held(county: str, pid: int | None) -> bool:
         cursor.execute(
             "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' "
             "AND pid = %s AND classid = 0 AND objid = %s AND objsubid = 1 AND granted)",
-            [pid, _LOCK_KEYS[county]],
+            [pid, registration_for(county).writer_lock_key],
         )
         return bool(cursor.fetchone()[0])
 
@@ -129,7 +129,7 @@ def _lock_held(county: str, pid: int | None) -> bool:
 @contextmanager
 def county_writer(operation: ImportOperation) -> Iterator[None]:
     county = operation.county
-    key = _LOCK_KEYS[county]
+    key = registration_for(county).writer_lock_key
     locked = False
     pid = None
     if connection.vendor == "postgresql":
@@ -209,7 +209,7 @@ def recover_writer(operation: ImportOperation, *, actor: str, reason: str) -> No
         raise RecoveryRejected("A recovery reason is required")
     if connection.vendor != "postgresql":
         raise RecoveryRejected("Unable to verify writer ownership without PostgreSQL")
-    key = _LOCK_KEYS[operation.county]
+    key = registration_for(operation.county).writer_lock_key
     evidence: dict = {}
     locked = False
     try:

@@ -1,5 +1,7 @@
 """County registration: the one declaration each county makes for shared Import code (ADR-0022)."""
 
+import ast
+import re
 from pathlib import Path
 
 from django.test import SimpleTestCase
@@ -117,3 +119,28 @@ class MalformedRegistrationTests(SimpleTestCase):
     def test_only_a_registration_can_be_registered(self):
         with isolated_registrations(), self.assertRaises(InvalidRegistration):
             register(registration_for("harris").port)
+
+
+COMMON = Path(__file__).resolve().parents[1]
+LIFECYCLE_MODULES = (
+    *sorted(COMMON.glob("import_*.py")),
+    *sorted(COMMON.glob("candidate_*.py")),
+    COMMON / "county_registry.py",
+    COMMON / "admin.py",
+    COMMON / "management" / "commands" / "cleanup_import_sources.py",
+)
+
+
+class SharedLifecycleCountyNameTests(SimpleTestCase):
+    def test_shared_lifecycle_modules_hold_no_county_name_literals(self):
+        county_name = re.compile(r"harris|brazos|hcad|bcad", re.IGNORECASE)
+        for module in LIFECYCLE_MODULES:
+            with self.subTest(module=module.name):
+                literals = [
+                    node.value
+                    for node in ast.walk(ast.parse(module.read_text(encoding="utf-8")))
+                    if isinstance(node, ast.Constant)
+                    and isinstance(node.value, str)
+                    and county_name.search(node.value)
+                ]
+                self.assertEqual(literals, [])
