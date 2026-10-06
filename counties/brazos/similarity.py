@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
-from math import asin, cos, radians, sin, sqrt
+from math import cos, radians
 
 from django.db.models import ExpressionWrapper, F, FloatField, Value
 from django.db.models.functions import ACos, Cos, Greatest, Least, Radians, Sin
@@ -179,16 +179,6 @@ def get_similarity_label(score: float) -> str:
     if score >= 36:
         return "OK match"
     return "Broad match"
-
-
-def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Great-circle distance between two points in miles."""
-    lon1, lat1, lon2, lat2 = map(radians, [lon1, lat1, lon2, lat2])
-    dlon = lon2 - lon1
-    dlat = lat2 - lat1
-    a = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2
-    c = 2 * asin(sqrt(a))
-    return 3959 * c
 
 
 def _component(name: str, weight: float, similarity: float | None) -> dict[str, object]:
@@ -566,8 +556,9 @@ def find_similar_properties(
     ).order_by("imp_id"):
         improvements_by_prop[imp.prop_id].append(imp)
 
-    characteristics_by_imp: dict[str, PropertyBuildingCharacteristic] = {
-        c.imp_id: c
+    # Keyed by (prop_id, imp_id): imp_id alone repeats across properties.
+    characteristics_by_imp: dict[tuple[str, str], PropertyBuildingCharacteristic] = {
+        (c.prop_id, c.imp_id): c
         for c in PropertyBuildingCharacteristic.objects.filter(
             prop_id__in=candidate_prop_ids, tax_year=tax_year
         )
@@ -594,7 +585,7 @@ def find_similar_properties(
         c_improvement = None
         c_building = None
         for imp in c_improvements:
-            characteristic = characteristics_by_imp.get(imp.imp_id)
+            characteristic = characteristics_by_imp.get((imp.prop_id, imp.imp_id))
             if characteristic is not None:
                 c_improvement, c_building = imp, characteristic
                 break

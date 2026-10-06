@@ -18,10 +18,10 @@ from django.db import connection
 from counties.common.candidate_ports import (
     CandidateTables,
     dataset_identity,
-    port_for,
     published_identity,
 )
 from counties.common.candidate_staging import cutover_staged_tables, staged_candidate_schema
+from counties.common.county_registry import registration_for
 from counties.common.import_audit import OperationStatus, audited_operation
 from counties.common.import_coverage import compare_coverage
 from counties.common.import_recovery import (
@@ -90,7 +90,7 @@ def prepare(
     if connection.vendor != "postgresql":
         raise ValueError("Durable candidate preparation requires PostgreSQL")
     county = operation.county
-    port = port_for(county)
+    port = registration_for(county).port
     inherited = baseline_sources(county) if load.carries_published else []
     candidate = ImportCandidate.objects.create(
         county=county,
@@ -153,7 +153,7 @@ def publish(
     candidate that is already published is reported as already applied.
     """
     county = operation.county
-    tables = port_for(county).tables
+    tables = registration_for(county).port.tables
     operation.evidence["application_reason"] = reason
     try:
         with fenced_write():
@@ -249,7 +249,7 @@ def recover(source: ImportCandidate, *, user, reason: str, binding: str) -> Impo
             evidence=requested_replay(request),
         ) as operation:
             verified = verify_replay(request, operation, published_identity(county))
-            prepare(operation, port_for(county).replay(verified, operation))
+            prepare(operation, registration_for(county).port.replay(verified, operation))
     except Exception:
         operation = ImportOperation.objects.filter(
             county=county, evidence__recovery__request_id=str(request.id)

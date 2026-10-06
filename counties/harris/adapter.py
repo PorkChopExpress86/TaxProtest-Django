@@ -25,16 +25,13 @@ from counties.common.contracts import (
     SearchField,
     Subject,
 )
+from counties.common.similarity_math import get_similarity_label
 from counties.common.tax_impact import calculate_tax_impact, unavailable_tax_impact
 from counties.harris.models import BuildingDetail, ExtraFeature, PropertyRecord
 from counties.harris.query import build_property_search_queryset
 from counties.harris.readiness import HarrisReadinessProjection
 from counties.harris.readiness import published_year as harris_published_year
-from counties.harris.similarity import (
-    find_similar_properties,
-    format_feature_list,
-    get_similarity_label,
-)
+from counties.harris.similarity import find_similar_properties, format_feature_list
 from counties.harris.tax_units import NON_LEVYING_UNITS
 
 COUNTY_SLUG = "harris"
