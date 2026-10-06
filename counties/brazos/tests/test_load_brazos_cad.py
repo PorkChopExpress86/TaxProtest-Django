@@ -287,6 +287,44 @@ class LoadImprovementDetailRollupTests(TestCase):
         improvement = PropertyImprovement.objects.get(imp_id="000000100000", tax_year=2025)
         self.assertEqual(improvement.year_built, 1998)
 
+    def test_year_built_rollup_keeps_properties_sharing_an_imp_id_apart(self):
+        improvement_spec = next(
+            s for s in INGEST_SPECS if s.filename == "APPRAISAL_IMPROVEMENT_INFO.TXT"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            info_path = root / improvement_spec.filename
+            info_path.write_text(
+                _improvement_info_line("000000010002", "2025", "000000100000")
+                + "\r\n"
+                + _improvement_info_line("000000010003", "2025", "000000100000")
+                + "\r\n",
+                encoding="utf-8",
+            )
+            CadRefreshStage()._load_file(improvement_spec, info_path, 2025, dry_run=False)
+
+            detail_path = root / IMPROVEMENT_DETAIL_FILENAME
+            lines = [
+                _improvement_detail_line(
+                    "000000010002", "2025", "000000100000", "000000000001", "1980", "0005000.000000"
+                ),
+                # Same imp_id on another property, with a smaller detail_value:
+                # it must keep its own year rather than lose to the first property.
+                _improvement_detail_line(
+                    "000000010003", "2025", "000000100000", "000000000001", "2010", "0001000.000000"
+                ),
+            ]
+            detail_path.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
+
+            CadRefreshStage()._load_improvement_detail(detail_path, 2025, dry_run=False)
+
+        years = dict(
+            PropertyImprovement.objects.filter(imp_id="000000100000", tax_year=2025).values_list(
+                "prop_id", "year_built"
+            )
+        )
+        self.assertEqual(years, {"000000010002": 1980, "000000010003": 2010})
+
     def test_zero_year_built_rows_excluded_from_rollup(self):
         improvement_spec = next(
             s for s in INGEST_SPECS if s.filename == "APPRAISAL_IMPROVEMENT_INFO.TXT"

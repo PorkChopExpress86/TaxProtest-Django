@@ -11,6 +11,7 @@ from typing import Any, Literal
 from django.http import HttpResponse
 
 from counties.common.analysis import (
+    ComparableShortfall,
     EquitySummary,
     ProtestEvidenceDossier,
     history_availability_notice,
@@ -116,6 +117,7 @@ def _build_protest_csv_doc(
     equity: EquitySummary,
     tax_impact: Any,
     history_warning: str = "",
+    comparable_shortfall: ComparableShortfall | None = None,
 ) -> ExportDocument:
     buffer = io.StringIO()
     writer = csv.writer(buffer)
@@ -144,8 +146,9 @@ def _build_protest_csv_doc(
             "estimated_tax_savings",
             "tax_impact_warnings",
         ]
-    header += ["property_source_year", "assessment_history_availability"]
+    header += ["property_source_year", "assessment_history_availability", "comparable_shortfall"]
     writer.writerow(header)
+    shortfall_text = comparable_shortfall.message if comparable_shortfall else ""
 
     subject_ppsf = equity.subject_value_per_sqft
     for comp in comps:
@@ -187,8 +190,15 @@ def _build_protest_csv_doc(
                 ),
                 " | ".join(tax_impact.warnings),
             ]
-        row += [subject.tax_year or "Not recorded", csv_safe_text(history_warning)]
+        row += [
+            subject.tax_year or "Not recorded",
+            csv_safe_text(history_warning),
+            shortfall_text,
+        ]
         writer.writerow(row)
+    if not comps and comparable_shortfall:
+        # One notice-only row, so a file with no comparables still states the shortfall.
+        writer.writerow([""] * (len(header) - 1) + [shortfall_text])
 
     safe_key = str(subject.key).replace('"', "").replace("\\", "")
     return ExportDocument(
@@ -206,6 +216,7 @@ def render_protest_csv(dossier: ProtestEvidenceDossier) -> ExportDocument:
         equity=dossier.equity,
         tax_impact=dossier.tax_impact,
         history_warning=dossier.history_notice,
+        comparable_shortfall=dossier.comparable_shortfall,
     )
 
 
@@ -312,6 +323,7 @@ def _build_protest_pdf_doc(
     history_rows: Sequence[Mapping[str, Any]],
     tax_impact: Any,
     max_comps: int = 10,
+    comparable_shortfall: ComparableShortfall | None = None,
 ) -> ExportDocument:
     assessed = subject.assessed_value
     lines = [
@@ -342,9 +354,11 @@ def _build_protest_pdf_doc(
             cap_status = row["cap_status"]["label"] if row.get("cap_status") else "Needs review"
             lines.append(f"{row['tax_year']}: {assessed_text}, YoY {change_text}, {cap_status}")
 
-    if comps:
+    if comps or comparable_shortfall:
         lines.append("")
         lines.append("Comparable Evidence")
+        if comparable_shortfall:
+            lines.extend([comparable_shortfall.headline, comparable_shortfall.guidance])
         for comp in comps[:max_comps]:
             ppsf = comp.value_per_sqft
             ppsf_text = f", ${ppsf:,.2f}/sqft" if ppsf is not None else ""
@@ -393,6 +407,7 @@ def render_protest_pdf(
         history_rows=dossier.history,
         tax_impact=dossier.tax_impact,
         max_comps=max_comps,
+        comparable_shortfall=dossier.comparable_shortfall,
     )
 
 
