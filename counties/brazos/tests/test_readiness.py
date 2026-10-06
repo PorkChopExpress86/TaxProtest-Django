@@ -6,7 +6,7 @@ from decimal import Decimal
 from unittest.mock import patch
 
 from django.db import connection
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 
@@ -20,7 +20,12 @@ from counties.brazos.models import (
     PropertyLand,
     SnapshotOutcome,
 )
-from counties.brazos.readiness import BrazosActiveSnapshotReadiness
+from counties.brazos.readiness import (
+    BrazosActiveSnapshotReadiness,
+    BrazosReadinessProjection,
+    BrazosSnapshotFacts,
+    readiness,
+)
 from counties.common.tax_models import (
     AssessmentHistory,
     PropertyJurisdictionExemption,
@@ -146,7 +151,6 @@ class AdapterComparableReadingTests(TestCase):
         with (
             patch("counties.brazos.similarity.find_similar_properties", side_effect=forbidden),
             patch("counties.brazos.adapter.find_similar_properties", side_effect=forbidden),
-            patch("counties.brazos.readiness.find_similar_properties", side_effect=forbidden),
         ):
             response = self.client.get(reverse("brazos_index"), {"owner_name": "OWNER"})
             found = adapter.get_subject(subject)
@@ -327,6 +331,218 @@ class BrazosRecordFactsTests(TestCase):
 
         self.assertGreater(len(one), 0)
         self.assertEqual(len(many), len(one))
+
+
+NO_EQUITY = "Positive assessed value and living area are required for a report."
+POOL_TOO_SMALL = (
+    "At least three same-mode comparable-ready properties with equity facts are required."
+)
+
+
+def record(prop_id="subject", *, mode="residential", equity=True):
+    """A per-record reading as the static projection yields it."""
+    reasons = [] if mode else [("comparable", NO_FACTS)]
+    return BrazosReadinessProjection(
+        snapshot_id=1,
+        tax_year=2025,
+        prop_id=prop_id,
+        owner_name="Owner",
+        search_ready=True,
+        comparable_ready=mode is not None,
+        has_equity_facts=equity,
+        report_ready=False,
+        tax_impact_ready=False,
+        comparison_mode=mode,
+        coordinate_source="bcad-certified-gis",
+        coordinate_source_year=2025,
+        reasons=(*reasons, ("report", REPORT), ("tax", TAX)),
+    )
+
+
+class BrazosReadinessRuleTests(SimpleTestCase):
+    """The one report rule: a dataset pool of same-mode equity peers, no distance or score."""
+
+    def judge(self, subject, pool, tax_gap=None):
+        result = readiness(subject, BrazosSnapshotFacts(report_pool=pool), tax_gap=tax_gap)
+        return result.report_ready, result.tax_impact_ready, dict(result.reasons)
+
+    def test_three_other_same_mode_pool_members_make_the_subject_report_ready(self):
+        self.assertEqual(self.judge(record(), {"residential": 4}), (True, True, {}))
+
+    def test_two_other_pool_members_are_too_few(self):
+        self.assertEqual(
+            self.judge(record(), {"residential": 3}),
+            (False, False, {"report": POOL_TOO_SMALL, "tax": POOL_TOO_SMALL}),
+        )
+
+    def test_only_same_mode_members_count(self):
+        self.assertEqual(self.judge(record(), {"residential": 3, "land": 40})[0], False)
+        self.assertEqual(self.judge(record(mode="land"), {"residential": 40, "land": 4})[0], True)
+
+    def test_a_subject_without_equity_facts_is_not_report_ready(self):
+        self.assertEqual(
+            self.judge(record(equity=False), {"residential": 40}),
+            (False, False, {"report": NO_EQUITY, "tax": NO_EQUITY}),
+        )
+
+    def test_a_subject_that_is_not_comparable_ready_keeps_its_comparable_reason(self):
+        self.assertEqual(
+            self.judge(record(mode=None), {"residential": 40}),
+            (
+                False,
+                False,
+                {"comparable": NO_FACTS, "report": NO_FACTS, "tax": NO_FACTS},
+            ),
+        )
+
+    def test_a_report_ready_subject_is_tax_ready_only_without_a_tax_gap(self):
+        gap = "Adopted 2025 rate unavailable for taxing unit G1"
+        self.assertEqual(
+            self.judge(record(), {"residential": 4}, tax_gap=gap),
+            (True, False, {"tax": gap}),
+        )
+
+
+class BrazosReportPoolTests(TestCase):
+    """Report-ready is a dataset pool: one property and the whole snapshot agree."""
+
+    def setUp(self):
+        BrazosPropertySnapshot.objects.create(
+            tax_year=2025, outcome=SnapshotOutcome.COMPLETED, cad_source_year=2025
+        )
+        self.reader = BrazosActiveSnapshotReadiness()
+
+    def account(self, prop_id, *, latitude="30.6700000", land=None, **overrides):
+        fields = {
+            "prop_id": prop_id,
+            "tax_year": 2025,
+            "owner_name": f"Owner {prop_id}",
+            "latitude": Decimal(latitude),
+            "longitude": Decimal("-96.3700000"),
+            "coordinate_source": "bcad-certified-gis",
+            "coordinate_source_year": 2025,
+            "living_area": Decimal("2000"),
+            "assessed_value": Decimal("250000"),
+            "class_code": "RV3",
+            "year_built": 1980,
+            **overrides,
+        }
+        account = PropertyAccount.objects.create(**fields)
+        if land is not None:
+            PropertyLand.objects.create(
+                prop_id=prop_id, tax_year=2025, land_seq=1, acreage=Decimal(land)
+            )
+        return account
+
+    def residential_pool(self, count, *, prefix="res"):
+        # Each peer sits about 69 miles further north: far beyond any search radius.
+        for index in range(count):
+            self.account(f"{prefix}-{index}", latitude=f"{30 + index}.0000000")
+
+    def test_distant_same_mode_peers_make_a_property_report_ready(self):
+        self.residential_pool(4)
+
+        projection = self.reader.project("res-0")
+
+        self.assertTrue(projection.report_ready, projection.reason_for("report"))
+        self.assertEqual(
+            projection.reason_for("tax"),
+            "No 2025 jurisdiction and exemption rows for this property",
+        )
+
+    def test_readiness_never_runs_a_comparables_search(self):
+        self.residential_pool(4)
+        forbidden = AssertionError("comparables search must not run")
+
+        with (
+            patch("counties.brazos.similarity.find_similar_properties", side_effect=forbidden),
+            patch("counties.brazos.adapter.find_similar_properties", side_effect=forbidden),
+        ):
+            single = self.reader.project("res-0")
+            survey = self.reader.survey()
+            capabilities = adapter.capabilities("res-0")
+
+        self.assertTrue(single.report_ready)
+        self.assertTrue(survey["res-0"].report_ready)
+        self.assertTrue(capabilities.report_ready)
+
+    def test_the_answer_is_recomputed_on_every_read(self):
+        self.residential_pool(3)
+        self.assertFalse(adapter.capabilities("res-0").report_ready)
+
+        self.residential_pool(1, prefix="late")
+
+        self.assertTrue(adapter.capabilities("res-0").report_ready)
+
+    def build_mixed_snapshot(self):
+        self.residential_pool(4)
+        # Equity facts are required of the subject and of every pool member.
+        self.account("no-assessed", assessed_value=None)
+        self.account("zero-area", living_area=Decimal("0"), land="0.5000")
+        self.account("no-coordinates", latitude="0", longitude=None)
+        self.account("no-provenance", coordinate_source="")
+        self.account("bare", class_code="", year_built=None)
+        # Land-mode members never count toward the residential pool, and only
+        # three land-mode members are too few for one another.
+        for index in range(3):
+            self.account(f"land-{index}", class_code="", year_built=None, land="1.0000")
+        self.account("land-no-area", class_code="", year_built=None, living_area=None, land="2")
+        PropertyJurisdictionExemption.objects.create(
+            county="brazos",
+            tax_year=2025,
+            account_number="res-1",
+            tax_unit_code="S1",
+            tax_unit_name="BRYAN ISD",
+            taxable_value=Decimal("250000"),
+        )
+        TaxUnitRate.objects.create(
+            county="brazos", tax_year=2025, tax_unit_code="S1", adopted_rate=Decimal("0.011")
+        )
+
+    def test_one_property_and_the_snapshot_survey_agree_for_every_property(self):
+        self.build_mixed_snapshot()
+        singles = {
+            prop_id: self.reader.project(prop_id)
+            for prop_id in PropertyAccount.objects.values_list("prop_id", flat=True)
+        }
+
+        for chunk_size in (1, 3, len(singles)):
+            with self.subTest(chunk_size=chunk_size):
+                self.assertEqual(self.reader.survey(chunk_size=chunk_size), singles)
+        self.assertEqual(
+            {prop_id for prop_id, projection in singles.items() if projection.report_ready},
+            {"res-0", "res-1", "res-2", "res-3"},
+        )
+        self.assertEqual(
+            {prop_id for prop_id, projection in singles.items() if projection.tax_impact_ready},
+            {"res-1"},
+        )
+        self.assertEqual(
+            {prop_id: projection.reason_for("report") for prop_id, projection in singles.items()},
+            {
+                "res-0": None,
+                "res-1": None,
+                "res-2": None,
+                "res-3": None,
+                "no-assessed": NO_EQUITY,
+                "zero-area": NO_EQUITY,
+                "no-coordinates": NO_COORDINATES,
+                "no-provenance": NO_COORDINATES,
+                "bare": NO_FACTS,
+                "land-0": POOL_TOO_SMALL,
+                "land-1": POOL_TOO_SMALL,
+                "land-2": POOL_TOO_SMALL,
+                "land-no-area": NO_EQUITY,
+            },
+        )
+
+    def test_a_fourth_land_member_completes_the_land_pool(self):
+        self.build_mixed_snapshot()
+        self.account("land-3", class_code="", year_built=None, land="1.0000")
+
+        self.assertTrue(self.reader.project("land-0").report_ready)
+        self.assertTrue(self.reader.survey()["land-3"].report_ready)
+        self.assertFalse(self.reader.project("bare").report_ready)
 
 
 class BrazosTaxReadinessTests(TestCase):
