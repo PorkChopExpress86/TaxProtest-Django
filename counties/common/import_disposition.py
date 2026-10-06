@@ -51,6 +51,12 @@ def _named_candidate(value: object) -> UUID | None:
         return None
 
 
+def _candidate_and_operation(candidate_id: UUID | None, operation_id: UUID) -> str:
+    if candidate_id is None:
+        return f"Operation {operation_id}"
+    return f"Candidate {candidate_id}; operation {operation_id}"
+
+
 def _review_link() -> str:
     meta = ImportCandidate._meta
     return reverse(f"admin:{meta.app_label}_{meta.model_name}_changelist")
@@ -72,14 +78,14 @@ def import_disposition(operation: ImportOperation, *, subject: str) -> ImportDis
         )
     if status == OperationStatus.ALREADY_APPLIED:
         # An idempotent apply names its candidate under its own persisted evidence key.
-        candidate_id = UUID(operation.evidence["already_applied"])
+        candidate_id = _named_candidate(operation.evidence.get("already_applied"))
         return ImportDisposition(
             ImportDispositionKind.ALREADY_APPLIED,
             operation.pk,
             candidate_id,
             notice=(
                 f"{subject} already applied earlier; no new write. "
-                f"Candidate {candidate_id}; operation {operation.pk}."
+                f"{_candidate_and_operation(candidate_id, operation.pk)}."
             ),
         )
     if operation.intent == PREVIEW_INTENT and status in (
@@ -98,7 +104,7 @@ def import_disposition(operation: ImportOperation, *, subject: str) -> ImportDis
         # A best-effort run that loaded only some sources always blocks its candidate.
         incomplete = status == OperationStatus.PARTIAL
         held = CandidateState.BLOCKED if incomplete else _HELD_STATE[OperationStatus(status)]
-        candidate_id = UUID(operation.evidence["candidate_id"])
+        candidate_id = _named_candidate(operation.evidence.get("candidate_id"))
         return ImportDisposition(
             ImportDispositionKind.HELD,
             operation.pk,
@@ -106,7 +112,7 @@ def import_disposition(operation: ImportOperation, *, subject: str) -> ImportDis
             incomplete=incomplete,
             notice=(
                 f"{subject} {held}{' (incomplete)' if incomplete else ''}; "
-                f"published data unchanged. Candidate {candidate_id}; operation {operation.pk}. "
+                f"published data unchanged. {_candidate_and_operation(candidate_id, operation.pk)}. "
                 f"Review in Django admin {_review_link()}."
             ),
         )

@@ -49,6 +49,48 @@ class PublishedDispositionTests(TestCase):
                 self.assertIsNone(disposition.candidate_id)
 
 
+class MissingCandidateIdTests(TestCase):
+    """A finished import whose evidence lacks a usable candidate id still classifies."""
+
+    def test_a_held_operation_without_a_candidate_id_is_held_and_names_none(self):
+        for status, held in (
+            ("prepared", "prepared"),
+            ("awaiting_review", "awaiting_review"),
+            ("blocked", "blocked"),
+            ("partial", "blocked (incomplete)"),
+        ):
+            for evidence in ({}, {"candidate_id": "not-a-uuid"}):
+                with self.subTest(status=status, evidence=evidence):
+                    operation = ImportOperation.objects.create(
+                        county="harris", intent="full", status=status, evidence=evidence
+                    )
+
+                    disposition = import_disposition(operation, subject="Harris import")
+
+                    self.assertIs(disposition.kind, ImportDispositionKind.HELD)
+                    self.assertIsNone(disposition.candidate_id)
+                    self.assertEqual(
+                        disposition.notice,
+                        f"Harris import {held}; published data unchanged. "
+                        f"Operation {operation.pk}. "
+                        "Review in Django admin /admin/data/importcandidate/.",
+                    )
+
+    def test_an_already_applied_operation_without_a_candidate_id_names_none(self):
+        operation = ImportOperation.objects.create(
+            county="harris", intent="full", status="already_applied", evidence={}
+        )
+
+        disposition = import_disposition(operation, subject="Harris import")
+
+        self.assertIs(disposition.kind, ImportDispositionKind.ALREADY_APPLIED)
+        self.assertIsNone(disposition.candidate_id)
+        self.assertEqual(
+            disposition.notice,
+            f"Harris import already applied earlier; no new write. Operation {operation.pk}.",
+        )
+
+
 class UnsettledOperationTests(TestCase):
     def test_an_unfinished_or_non_import_operation_has_no_disposition(self):
         for intent, status in (
