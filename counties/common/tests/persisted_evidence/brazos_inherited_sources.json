@@ -1,0 +1,62 @@
+[
+  {
+    "path": "{root}/extracted/.imports/{operation}/2026/APPRAISAL_INFO.TXT",
+    "reference": "inherited",
+    "sha256": "ee1bb2d9cb298906a36d48ef192a315ba626b2f75bbb82a73414796b7c577f9c",
+    "source_operation_id": "{operation}",
+    "source_url": null,
+    "source_year": 2026,
+    "stage": "cad",
+    "target_year": 2026
+  },
+  {
+    "path": "{root}/extracted/.imports/{operation}/2026/APPRAISAL_LAND_DETAIL.TXT",
+    "reference": "inherited",
+    "sha256": "3646826665a0efc68e4260a7812f6b767a42d878111f91dabce555dde99e74af",
+    "source_operation_id": "{operation}",
+    "source_url": null,
+    "source_year": 2026,
+    "stage": "cad",
+    "target_year": 2026
+  },
+  {
+    "path": "{root}/extracted/.imports/{operation}/2026/APPRAISAL_IMPROVEMENT_INFO.TXT",
+    "reference": "inherited",
+    "sha256": "59437f01a515415fdf0f3dc288c3729ce10de4755d3db6b4c41cc2f66656d4c4",
+    "source_operation_id": "{operation}",
+    "source_url": null,
+    "source_year": 2026,
+    "stage": "cad",
+    "target_year": 2026
+  },
+  {
+    "path": "{root}/extracted/.imports/{operation}/2026/APPRAISAL_IMPROVEMENT_DETAIL.TXT",
+    "reference": "inherited",
+    "sha256": "ae77ba6c4ed374e1e6df2cc35ef9882f554971eb5b428cac4656c962fee5883d",
+    "source_operation_id": "{operation}",
+    "source_url": null,
+    "source_year": 2026,
+    "stage": "cad",
+    "target_year": 2026
+  },
+  {
+    "path": "{root}/extracted/.imports/{operation}/2026/APPRAISAL_ENTITY_INFO.TXT",
+    "reference": "inherited",
+    "sha256": "9e3907444befcff39e4768d63e725a27c2f9480261ad07ed986eea74400e1e24",
+    "source_operation_id": "{operation}",
+    "source_url": null,
+    "source_year": 2026,
+    "stage": "cad",
+    "target_year": 2026
+  },
+  {
+    "path": "{root}/extracted/.imports/{operation}/2026/APPRAISAL_IMPROVEMENT_DETAIL_ATTR.TXT",
+    "reference": "inherited",
+    "sha256": "1418c854fde8d16d3f9205cc947df4f1cde4bb222ffc3a52ad8cdb35eb11d353",
+    "source_operation_id": "{operation}",
+    "source_url": null,
+    "source_year": 2026,
+    "stage": "cad",
+    "target_year": 2026
+  }
+]

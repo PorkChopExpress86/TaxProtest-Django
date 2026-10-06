@@ -1,0 +1,34 @@
+{
+  "base_sources": {
+    "{root}/downloads": {},
+    "{root}/extracted": {
+      "Parcels/parcels.cpg": "3ad3031f5503a4404af825262ee8232cc04d4ea6683d42c5dd0a2f2a27ac9824",
+      "Parcels/parcels.dbf": "{gis_dbf}",
+      "Parcels/parcels.prj": "2f5e65421e4e2990523632226a49accdca24e72cb438c912e120a115a0f7d301",
+      "Parcels/parcels.shp": "2e8136460b203f6a44b89a0954529531564bef1d8951851c5c85d557ac407ef1",
+      "Parcels/parcels.shx": "d1ebce51d596b640dbf6f85376d928fc3182f81c5d4d6dfffefedd5afbe3f594",
+      "Real_acct_owner/real_acct.txt": "ac65c5b17318045c37c2d70af0e959e56e8d8896c0157e9c9dab136c1f18e9df",
+      "Real_building_land/building_res.txt": "796a5734c8ad04b7df7c8529a290cb112bcd0212796b3d65d8277dca02f85d55",
+      "Real_building_land/extra_features.txt": "6b3ed222dde4a6118fefbaba874f9118453af65da7d792418b59ec6cda23c2e2",
+      "Real_building_land/fixtures.txt": "0c8f784cad848c2e6a7f1b223b4a37755e75d16dcd940fa10968ba7e8febc54c"
+    }
+  },
+  "retained_source_digests": {
+    "{root}/downloads/.imports/{operation}": {},
+    "{root}/extracted/.imports/{operation}": {
+      "Parcels/parcels.cpg": "3ad3031f5503a4404af825262ee8232cc04d4ea6683d42c5dd0a2f2a27ac9824",
+      "Parcels/parcels.dbf": "{gis_dbf}",
+      "Parcels/parcels.prj": "2f5e65421e4e2990523632226a49accdca24e72cb438c912e120a115a0f7d301",
+      "Parcels/parcels.shp": "2e8136460b203f6a44b89a0954529531564bef1d8951851c5c85d557ac407ef1",
+      "Parcels/parcels.shx": "d1ebce51d596b640dbf6f85376d928fc3182f81c5d4d6dfffefedd5afbe3f594",
+      "Real_acct_owner/real_acct.txt": "ac65c5b17318045c37c2d70af0e959e56e8d8896c0157e9c9dab136c1f18e9df",
+      "Real_building_land/building_res.txt": "796a5734c8ad04b7df7c8529a290cb112bcd0212796b3d65d8277dca02f85d55",
+      "Real_building_land/extra_features.txt": "6b3ed222dde4a6118fefbaba874f9118453af65da7d792418b59ec6cda23c2e2",
+      "Real_building_land/fixtures.txt": "0c8f784cad848c2e6a7f1b223b4a37755e75d16dcd940fa10968ba7e8febc54c"
+    }
+  },
+  "working_sources": [
+    "{root}/downloads/.imports/{operation}",
+    "{root}/extracted/.imports/{operation}"
+  ]
+}
