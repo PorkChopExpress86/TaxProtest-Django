@@ -119,6 +119,13 @@
     </div>
     {% endif %}
 
+    {% if comparable_shortfall %}
+    <div class="rounded-xl p-4 mb-6 bg-orange-50 border border-orange-300">
+      <p class="text-sm font-semibold text-orange-900">{{ comparable_shortfall.headline }}</p>
+      <p class="mt-1 text-sm text-orange-800">{{ comparable_shortfall.guidance }}</p>
+    </div>
+    {% endif %}
+
     <!-- ── Equity Summary Banner ── -->
     {% if equity.subject_value_per_sqft and equity.median_comp_value_per_sqft %}
       {% if equity.equity_gap_per_sqft > 0 %}

@@ -241,6 +241,7 @@ def protest_analysis(request, key, *, adapter: CountyAdapter):
         "assessment_history_chart": dossier.assessment_history_chart,
         "ppsf_distribution_chart": dossier.ppsf_distribution_chart,
         "tax_impact": dossier.tax_impact,
+        "comparable_shortfall": dossier.comparable_shortfall,
         "min_score": dossier.min_score,
         "min_score_floor": int(PROTEST_MIN_MIN_SCORE),
         "min_score_ceiling": int(PROTEST_MAX_MIN_SCORE),

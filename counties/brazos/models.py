@@ -291,7 +291,7 @@ class PropertyImprovement(models.Model):
     improvement_value = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     # Not present in APPRAISAL_IMPROVEMENT_INFO.TXT — populated via a
     # post-ingest rollup from PropertyImprovementDetail.year_built (the detail
-    # row with the largest detail_value per imp_id), not sourced directly.
+    # row with the largest detail_value per (prop_id, imp_id)), not sourced directly.
     year_built = models.PositiveIntegerField(null=True, blank=True, db_index=True)
     # Not populated — semantics of the source field are unconfirmed (some
     # implausible outlier values observed).
