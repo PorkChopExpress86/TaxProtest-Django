@@ -17,13 +17,15 @@ from django.db.models import Sum
 from django.urls import reverse
 
 from counties.brazos.models import (
+    BrazosPropertySnapshot,
     PropertyAccount,
     PropertyExtraFeature,
     PropertyLand,
 )
-from counties.brazos.readiness import BrazosActiveSnapshotReadiness
+from counties.brazos.readiness import BrazosActiveSnapshotReadiness, BrazosReadinessProjection
 from counties.brazos.similarity import (
     _primary_improvement,
+    find_similar_properties,
     get_similarity_label,
 )
 from counties.brazos.tax_units import NON_LEVYING_UNITS
@@ -164,11 +166,17 @@ class BrazosAdapter(CountyAdapter):
             .annotate(total_land_value=Sum("land_value"), total_acreage=Sum("acreage"))
         }
 
+        # One bulk comparable-only reading for the page; no comparables search.
+        comparable_ready = {
+            projection.prop_id
+            for projection in self._readiness.static_projections(records)
+            if projection.comparable_ready
+        }
+
         rows = []
         for account in records:
             land = land_by_prop.get(account.prop_id, {})
-            readiness = self._readiness.project_static(account.prop_id)
-            has_location = bool(readiness and readiness.comparable_ready)
+            has_location = account.prop_id in comparable_ready
             rows.append(
                 {
                     "prop_id": account.prop_id,
@@ -194,12 +202,24 @@ class BrazosAdapter(CountyAdapter):
 
     # -- subject and comparables -------------------------------------------
 
-    def get_subject(self, key: str) -> Subject | None:
-        account = self._readiness.account(key)
+    def _comparable_reading(
+        self, key: str
+    ) -> tuple[BrazosPropertySnapshot, PropertyAccount, BrazosReadinessProjection] | None:
+        """The active snapshot, the subject's account and its comparable-only reading."""
+        snapshot = self._readiness.active_snapshot()
+        if snapshot is None:
+            return None
+        account = self._readiness.account(key, snapshot=snapshot)
         if account is None:
             return None
+        (reading,) = self._readiness.static_projections([account], snapshot=snapshot)
+        return snapshot, account, reading
 
-        readiness = self._readiness.project_static(key)
+    def get_subject(self, key: str) -> Subject | None:
+        subject = self._comparable_reading(key)
+        if subject is None:
+            return None
+        _, account, readiness = subject
 
         year = account.tax_year
         improvement, building = _primary_improvement(key, year)
@@ -228,7 +248,7 @@ class BrazosAdapter(CountyAdapter):
             bathrooms=building.bathrooms if building else None,
             year_built=year_built,
             features=_format_feature_list(features),
-            has_location=bool(readiness and readiness.comparable_ready),
+            has_location=readiness.comparable_ready,
             tax_year=year,
             detail_rows=detail_rows,
         )
@@ -236,12 +256,28 @@ class BrazosAdapter(CountyAdapter):
     def find_comps(
         self, key: str, *, max_distance_miles: float, max_results: int, min_score: float
     ) -> list[Comp]:
-        results = self._readiness.comparable_results(
+        subject = self._comparable_reading(key)
+        if subject is None or not subject[2].comparable_ready:
+            return []
+        snapshot, _, reading = subject
+        found = find_similar_properties(
             key,
+            tax_year=snapshot.tax_year,
             max_distance_miles=max_distance_miles,
             max_results=max_results,
             min_score=min_score,
         )
+        # Truncate-then-filter: the search already capped the results, so
+        # dropping ineligible peers here can return fewer than max_results.
+        peers = self._readiness.static_projections(
+            [result["property"] for result in found], snapshot=snapshot
+        )
+        results = []
+        for result, peer in zip(found, peers, strict=True):
+            if peer.snapshot_id != reading.snapshot_id:
+                raise RuntimeError("Subject and peer readings came from different snapshots.")
+            if peer.comparable_ready and peer.comparison_mode == reading.comparison_mode:
+                results.append(result)
 
         comps = []
         for result in results:

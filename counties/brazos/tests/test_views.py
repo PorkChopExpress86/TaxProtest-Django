@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 
 from counties.brazos.models import (
@@ -92,6 +94,67 @@ class BrazosIndexViewTests(TestCase):
         self.assertIsNone(results[0]["protest_url"])
         self.assertIsNone(results[0]["similar_url"])
         self.assertNotContains(response, "/brazos/protest/000000010003/")
+
+
+class BrazosSearchRowLinksTests(TestCase):
+    """Search rows link comparables and reports from one bulk readiness reading."""
+
+    def setUp(self):
+        BrazosPropertySnapshot.objects.create(
+            tax_year=2025, outcome=SnapshotOutcome.PARTIAL, cad_source_year=2025
+        )
+
+    def owner(self, prop_id, *, located=True):
+        PropertyAccount.objects.create(
+            prop_id=prop_id,
+            tax_year=2025,
+            owner_name=f"LINKS OWNER {prop_id}",
+            latitude=Decimal("30.6700000") if located else None,
+            longitude=Decimal("-96.3700000"),
+            coordinate_source="bcad-certified-gis",
+            coordinate_source_year=2025,
+            living_area=None,
+        )
+        PropertyLand.objects.create(
+            prop_id=prop_id, tax_year=2025, land_seq=1, acreage=Decimal("1.0000")
+        )
+
+    def search(self):
+        with CaptureQueriesContext(connection) as queries:
+            response = self.client.get(reverse("brazos_index"), {"owner_name": "LINKS"})
+        return response, len(queries)
+
+    def test_links_follow_each_rows_comparable_readiness(self):
+        self.owner("P1")
+        self.owner("P2", located=False)
+
+        response, _ = self.search()
+
+        links = {
+            row["prop_id"]: (row["similar_url"], row["protest_url"])
+            for row in response.context["results"]
+        }
+        self.assertEqual(
+            links,
+            {
+                "P1": (
+                    reverse("brazos_similar_properties", args=["P1"]),
+                    reverse("brazos_protest_analysis", args=["P1"]),
+                ),
+                "P2": (None, None),
+            },
+        )
+
+    def test_a_page_of_rows_costs_the_same_queries_as_one_row(self):
+        self.owner("P1")
+        _, one = self.search()
+        for index in range(2, 7):
+            self.owner(f"P{index}", located=index % 2 == 0)
+
+        response, many = self.search()
+
+        self.assertEqual(len(response.context["results"]), 6)
+        self.assertEqual(many, one)
 
 
 class BrazosIndexNoDataLoadedTests(TestCase):
