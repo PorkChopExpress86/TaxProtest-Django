@@ -31,7 +31,6 @@ from counties.brazos.similarity import (
     _quality_similarity,
     calculate_similarity_details,
     find_similar_properties,
-    get_similarity_label,
 )
 
 TAX_YEAR = 2025
@@ -244,15 +243,6 @@ class CalculateSimilarityDetailsTests(TestCase):
 
     def test_component_weights_sum_to_100(self):
         self.assertEqual(sum(RESIDENTIAL_WEIGHTS.values()), 100.0)
-
-
-class GetSimilarityLabelTests(TestCase):
-    def test_bands(self):
-        self.assertEqual(get_similarity_label(90), "Best match")
-        self.assertEqual(get_similarity_label(75), "Highly similar")
-        self.assertEqual(get_similarity_label(60), "Good match")
-        self.assertEqual(get_similarity_label(40), "OK match")
-        self.assertEqual(get_similarity_label(10), "Broad match")
 
 
 class FindSimilarPropertiesTests(TestCase):
