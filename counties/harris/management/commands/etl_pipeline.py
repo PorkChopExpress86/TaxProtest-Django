@@ -338,11 +338,13 @@ class Command(BaseCommand):
         disposition = import_disposition(
             ImportOperation.objects.get(pk=result.operation_id), subject="Harris import"
         )
+        # A strict run never ends incomplete, so it keeps failing if one ever does.
+        strict = options.get("strict", True)
+        if disposition.kind is ImportDispositionKind.FAILED or (strict and disposition.incomplete):
+            raise CommandError("Pipeline execution failed")
         if disposition.kind is ImportDispositionKind.HELD:
             self.stdout.write(self.style.WARNING(disposition.notice))
             return
-        if disposition.kind is ImportDispositionKind.FAILED:
-            raise CommandError("Pipeline execution failed")
 
         self.stdout.write("")
         if disposition.incomplete:

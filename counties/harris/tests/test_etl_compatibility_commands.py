@@ -1,11 +1,13 @@
 """Compatibility command contracts for the authoritative Harris ETL path."""
 
 import tempfile
+from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.test import TestCase
 
 from counties.common.models import ImportOperation
@@ -99,6 +101,53 @@ class ETLPipelineCommandTests(TestCase):
         self.assertIs(request.extraction, HarrisExtractionMode.REUSE_EXTRACTED)
         self.assertIsInstance(request.load, HarrisPreview)
         self.assertIs(request.failure_policy, HarrisFailurePolicy.BEST_EFFORT)
+
+
+class StrictIncompleteRunTests(TestCase):
+    """A strict run that somehow ends held and incomplete still fails, never exits zero.
+
+    A real strict run ends failed rather than partial, so the partial outcome is simulated.
+    """
+
+    def incomplete_result(self):
+        operation = ImportOperation.objects.create(
+            county="harris",
+            intent="full",
+            status="partial",
+            evidence={"candidate_id": "11111111-2222-3333-4444-555555555555"},
+        )
+        return SimpleNamespace(
+            success=False,
+            status=SimpleNamespace(value="partial"),
+            duration=0.1,
+            stages={},
+            errors=(),
+            operation_id=operation.pk,
+        )
+
+    def assert_fails_without_a_held_notice(self, message, *args):
+        output = StringIO()
+        with self.assertRaisesMessage(CommandError, message):
+            call_command(*args, stdout=output)
+        self.assertNotIn("published data unchanged", output.getvalue())
+
+    def test_import_all_data_fails(self):
+        with patch(
+            "counties.harris.management.commands.import_all_data.run_harris_import",
+            return_value=self.incomplete_result(),
+        ):
+            self.assert_fails_without_a_held_notice(
+                "Authoritative modern ETL import failed", "import_all_data", "--skip-download"
+            )
+
+    def test_strict_etl_pipeline_run_fails(self):
+        with patch(
+            "counties.harris.management.commands.etl_pipeline.run_harris_import",
+            return_value=self.incomplete_result(),
+        ):
+            self.assert_fails_without_a_held_notice(
+                "Pipeline execution failed", "etl_pipeline", "run", "--skip-download"
+            )
 
 
 class LoadHcadRealAcctCommandTests(TestCase):

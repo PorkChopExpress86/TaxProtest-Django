@@ -126,11 +126,12 @@ class Command(BaseCommand):
         disposition = import_disposition(
             ImportOperation.objects.get(pk=result.operation_id), subject="Harris import"
         )
+        # A strict run never ends incomplete, so it keeps failing if one ever does.
+        if disposition.kind is ImportDispositionKind.FAILED or disposition.incomplete:
+            raise CommandError("Authoritative modern ETL import failed")
         if disposition.kind is ImportDispositionKind.HELD:
             self.stdout.write(self.style.WARNING(disposition.notice))
             return
-        if disposition.kind is ImportDispositionKind.FAILED:
-            raise CommandError("Authoritative modern ETL import failed")
 
         self.stdout.write("")
         self.stdout.write(
