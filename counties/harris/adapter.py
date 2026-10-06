@@ -315,9 +315,5 @@ class HarrisAdapter(CountyAdapter):
             reasons={outcome: "; ".join(reasons) for outcome, reasons in readiness.reasons.items()},
         )
 
-    def unavailable_reason(self, key: str, capability: str) -> str | None:
-        caps = self.capabilities(key)
-        return caps.reason_for(capability)
-
 
 adapter = HarrisAdapter()

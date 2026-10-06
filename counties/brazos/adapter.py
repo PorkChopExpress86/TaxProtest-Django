@@ -37,7 +37,7 @@ from counties.common.contracts import (
     Subject,
 )
 from counties.common.similarity_math import get_similarity_label
-from counties.common.tax_impact import TaxImpactResult, calculate_tax_impact
+from counties.common.tax_impact import calculate_tax_impact, unavailable_tax_impact
 
 COUNTY_SLUG = "brazos"
 
@@ -317,18 +317,9 @@ class BrazosAdapter(CountyAdapter):
                 if readiness is not None
                 else "No active Brazos property snapshot is available."
             )
-            return TaxImpactResult(
-                tax_year=readiness.tax_year if readiness else None,
-                current_tax_owed=Decimal("0"),
-                median_tax_owed=Decimal("0"),
-                estimated_savings=Decimal("0"),
-                effective_rate=Decimal("0"),
-                current_assessed_value=None,
-                taxable_value_used=None,
-                completeness="missing",
-                warnings=[reason or "Tax impact is unavailable."],
-                exemptions_summary=[],
-                per_unit_breakdown=[],
+            return unavailable_tax_impact(
+                readiness.tax_year if readiness else None,
+                reason or "Tax impact is unavailable.",
             )
         return calculate_tax_impact(
             account_number=key,
@@ -337,16 +328,6 @@ class BrazosAdapter(CountyAdapter):
             county=COUNTY_SLUG,
             non_levying=NON_LEVYING_UNITS,
         )
-
-    def unavailable_reason(self, key: str, capability: str) -> str | None:
-        readiness = self._readiness.project(key)
-        if readiness is None:
-            return "No active detailed Brazos property record is available for this property."
-        if capability == "comparable" and not readiness.comparable_ready:
-            return readiness.reason_for("comparable")
-        if capability == "report" and not readiness.report_ready:
-            return readiness.reason_for("report")
-        return None
 
     def capabilities(self, key: str) -> PropertyCapabilities:
         readiness = self._readiness.project(key)

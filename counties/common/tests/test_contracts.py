@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from django.test import SimpleTestCase
 
-from counties.common.contracts import ScoreComponent
+from counties.brazos.adapter import adapter as brazos_adapter
+from counties.common.contracts import CountyAdapter, ScoreComponent
+from counties.harris.adapter import adapter as harris_adapter
 
 
 class ScoreComponentFromMappingTests(SimpleTestCase):
@@ -57,3 +59,16 @@ class ScoreComponentFromMappingTests(SimpleTestCase):
         )
 
         self.assertFalse(hasattr(component, "available"))
+
+
+class CountyAdapterCapabilityQuestionTests(SimpleTestCase):
+    """A county answers "can this property do X, and why not?" one way: capabilities()."""
+
+    def test_capabilities_is_the_only_capability_question(self):
+        self.assertIn("capabilities", CountyAdapter.__abstractmethods__)
+        self.assertFalse(hasattr(CountyAdapter, "unavailable_reason"))
+
+    def test_both_counties_answer_through_capabilities_alone(self):
+        for adapter in (harris_adapter, brazos_adapter):
+            with self.subTest(county=adapter.profile.slug):
+                self.assertFalse(hasattr(adapter, "unavailable_reason"))
