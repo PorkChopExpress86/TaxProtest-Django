@@ -215,6 +215,7 @@ class BrazosRecordFactsTests(TestCase):
         # "10" sorts before "9": the first residential improvement has no year built.
         self.account("first-imp-by-id")
         self.improvement("first-imp-by-id", "9", year_built=1990)
+        self.building("first-imp-by-id", "9", bedrooms=3)
         self.improvement("first-imp-by-id", "10")
         # A non-residential improvement never supplies residential facts.
         self.account("non-residential-imp")
@@ -236,6 +237,13 @@ class BrazosRecordFactsTests(TestCase):
         self.account("imp-year-built")
         self.improvement("imp-year-built", "1", year_built=1975)
         self.account("account-year-built", year_built=1980)
+        # A zero year built is no year built.
+        self.account("zero-year-built", year_built=0)
+        # A whitespace-only class code is no class; the land alone makes it land mode.
+        self.account("blank-class-land", class_code="\t")
+        PropertyLand.objects.create(
+            prop_id="blank-class-land", tax_year=2025, land_seq=1, acreage=Decimal("1.0000")
+        )
         self.account("land-fact")
         PropertyLand.objects.create(
             prop_id="land-fact", tax_year=2025, land_seq=1, acreage=Decimal("0.2500")
@@ -269,6 +277,8 @@ class BrazosRecordFactsTests(TestCase):
         "baths-only": (True, "residential", ()),
         "imp-year-built": (True, "residential", ()),
         "account-year-built": (True, "residential", ()),
+        "zero-year-built": (True, None, (NO_FACTS,)),
+        "blank-class-land": (True, "land", ()),
         "land-fact": (True, "residential", ()),
         "prior-year-land": (True, None, (NO_FACTS,)),
         "features": (True, "residential", ()),
@@ -318,6 +328,31 @@ class BrazosRecordFactsTests(TestCase):
         for projection in singles:
             self.assert_matches_expected(projection)
 
+    def test_one_property_counts_its_mode_pool_as_the_survey_does(self):
+        """Three plain peers per mode: each matrix record alone decides whether a pool is reached."""
+        self.build_matrix()
+        for index in range(3):
+            self.account(f"peer-res-{index}", year_built=1980, assessed_value=Decimal("250000"))
+            self.account(f"peer-land-{index}", class_code="", assessed_value=Decimal("250000"))
+            PropertyLand.objects.create(
+                prop_id=f"peer-land-{index}", tax_year=2025, land_seq=1, acreage=Decimal("1")
+            )
+        readiness = BrazosActiveSnapshotReadiness()
+        no_living_area = {"land-only", "null-acreage"}
+
+        matrix = PropertyAccount.objects.filter(prop_id__in=self.expected)
+        for prop_id, (_, mode, _) in self.expected.items():
+            with self.subTest(prop_id):
+                matrix.update(assessed_value=None)
+                matrix.filter(prop_id=prop_id).update(assessed_value=Decimal("250000"))
+                survey = readiness.survey()
+
+                self.assertEqual({key: readiness.project(key) for key in survey}, survey)
+                self.assertEqual(
+                    (survey["peer-res-0"].report_ready, survey["peer-land-0"].report_ready),
+                    (mode == "residential", mode == "land" and prop_id not in no_living_area),
+                )
+
     def test_a_chunk_costs_the_same_queries_for_one_record_or_many(self):
         self.build_matrix()
         bare = self.account("bare", class_code="")
@@ -364,7 +399,14 @@ class BrazosReadinessRuleTests(SimpleTestCase):
     """The one report rule: a dataset pool of same-mode equity peers, no distance or score."""
 
     def judge(self, subject, pool, tax_gap=None):
-        result = readiness(subject, BrazosSnapshotFacts(report_pool=pool), tax_gap=tax_gap)
+        """``pool`` counts the report-pool members of each mode, the subject's included."""
+        members = [
+            record(f"{mode}-{index}", mode=mode)
+            for mode, count in pool.items()
+            for index in range(count)
+        ]
+        facts = BrazosSnapshotFacts.surveyed(members)
+        result = readiness(subject, facts, tax_gap=tax_gap)
         return result.report_ready, result.tax_impact_ready, dict(result.reasons)
 
     def test_three_other_same_mode_pool_members_make_the_subject_report_ready(self):
@@ -474,6 +516,37 @@ class BrazosReportPoolTests(TestCase):
         self.residential_pool(1, prefix="late")
 
         self.assertTrue(adapter.capabilities("res-0").report_ready)
+
+    def test_a_sparse_mode_pool_costs_the_same_queries_at_any_snapshot_size(self):
+        for index in range(3):
+            self.account(f"land-{index}", class_code="", year_built=None, land="1.0000")
+        self.residential_pool(3)
+
+        def project():
+            with CaptureQueriesContext(connection) as queries:
+                self.assertFalse(self.reader.project("land-0").report_ready)
+            return len(queries)
+
+        small = project()
+        # Far more report-pool members of the other mode than one scan chunk holds.
+        PropertyAccount.objects.bulk_create(
+            PropertyAccount(
+                prop_id=f"more-{index}",
+                tax_year=2025,
+                owner_name="Owner",
+                latitude=Decimal("31.0000000"),
+                longitude=Decimal("-96.3700000"),
+                coordinate_source="bcad-certified-gis",
+                coordinate_source_year=2025,
+                living_area=Decimal("2000"),
+                assessed_value=Decimal("250000"),
+                class_code="RV3",
+                year_built=1980,
+            )
+            for index in range(450)
+        )
+
+        self.assertEqual(project(), small)
 
     def build_mixed_snapshot(self):
         self.residential_pool(4)

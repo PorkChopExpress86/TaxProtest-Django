@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, replace
 from decimal import Decimal
 from typing import NamedTuple
 
-from django.db.models import Q, Sum
+from django.db.models import Case, Exists, IntegerField, OuterRef, Q, Subquery, Sum, Value, When
 from django.db.models.functions import Trim
 
 from counties.brazos.models import (
@@ -27,8 +27,6 @@ from counties.common.tax_impact import taxing_units
 from counties.common.tax_models import AssessmentHistory, PropertyJurisdictionExemption, TaxUnitRate
 
 _CHUNK = 2000
-# Chunk for the one-property pool scan, which stops as soon as the pool is reached.
-_POOL_CHUNK = 100
 # The subject plus at least three other same-mode report-pool members (ADR-0020).
 REPORT_POOL_SIZE = MIN_COMPS_FOR_RECOMMENDATION + 1
 
@@ -69,24 +67,26 @@ class BrazosReadinessProjection:
 class BrazosSnapshotFacts:
     """Facts about the active snapshot that one property's report readiness depends on.
 
-    ``report_pool`` counts the report-pool members of each comparison mode.
+    ``reached_modes`` names the comparison modes whose report pool holds a subject plus
+    three other members. A one-property reading checks only that property's own mode.
     """
 
-    report_pool: Mapping[str, int]
+    reached_modes: frozenset[str]
 
     @classmethod
     def surveyed(cls, records: Iterable[BrazosReadinessProjection]) -> BrazosSnapshotFacts:
         """The report pool counted over every property of one snapshot."""
+        pool = Counter(record.comparison_mode for record in records if record.in_report_pool)
         return cls(
-            report_pool=Counter(
-                record.comparison_mode for record in records if record.in_report_pool
+            reached_modes=frozenset(
+                mode for mode, count in pool.items() if mode and count >= REPORT_POOL_SIZE
             )
         )
 
     @property
     def report_pool_reached(self) -> bool:
         """Whether any comparison mode holds a subject plus three other pool members."""
-        return any(mode and count >= REPORT_POOL_SIZE for mode, count in self.report_pool.items())
+        return bool(self.reached_modes)
 
 
 def report_reason(record: BrazosReadinessProjection, snapshot: BrazosSnapshotFacts) -> str | None:
@@ -95,7 +95,7 @@ def report_reason(record: BrazosReadinessProjection, snapshot: BrazosSnapshotFac
         return record.reason_for("comparable")
     if not record.has_equity_facts:
         return NO_EQUITY_FACTS
-    if snapshot.report_pool.get(record.comparison_mode or "", 0) < REPORT_POOL_SIZE:
+    if record.comparison_mode not in snapshot.reached_modes:
         return POOL_TOO_SMALL
     return None
 
@@ -143,12 +143,14 @@ class BrazosActiveSnapshotReadiness:
         if account is None:
             return None
         (record,) = self._project_chunk(snapshot, [account])
-        pool: dict[str, int] = {}
-        if record.in_report_pool and record.comparison_mode:
-            pool[record.comparison_mode] = self._report_pool_reached(
-                snapshot, record.comparison_mode
-            )
-        facts = BrazosSnapshotFacts(report_pool=pool)
+        reached: frozenset[str] = frozenset()
+        if (
+            record.in_report_pool
+            and record.comparison_mode
+            and self._report_pool_count(snapshot, record.comparison_mode) >= REPORT_POOL_SIZE
+        ):
+            reached = frozenset({record.comparison_mode})
+        facts = BrazosSnapshotFacts(reached_modes=reached)
         tax_gap = None
         if report_reason(record, facts) is None:
             tax_gap = self.tax_input_gaps([prop_id], tax_year=snapshot.tax_year)[prop_id]
@@ -181,12 +183,19 @@ class BrazosActiveSnapshotReadiness:
             for record in records
         }
 
-    def _report_pool_reached(self, snapshot: BrazosPropertySnapshot, mode: str) -> int:
-        """Count same-mode report-pool members, reading only until the pool is reached."""
-        # Necessary conditions keep the scan to likely members; the rule decides.
-        candidates = (
+    def _report_pool_count(self, snapshot: BrazosPropertySnapshot, mode: str) -> int:
+        """Same-mode report-pool members, up to ``REPORT_POOL_SIZE``, in one query.
+
+        The SQL restates ``_project_chunk`` and ``_projection`` for report-pool members;
+        the one-property and survey parity tests hold the two to one answer.
+        """
+        year = snapshot.tax_year
+        first_improvement = PropertyImprovement.objects.filter(
+            prop_id=OuterRef("prop_id"), tax_year=year, improvement_type="R"
+        ).order_by("imp_id")
+        members = (
             PropertyAccount.objects.filter(
-                tax_year=snapshot.tax_year,
+                tax_year=year,
                 assessed_value__gt=0,
                 living_area__gt=0,
                 latitude__isnull=False,
@@ -194,17 +203,44 @@ class BrazosActiveSnapshotReadiness:
                 coordinate_source_year__isnull=False,
             )
             .exclude(coordinate_source="")
-            .order_by("pk")
+            .annotate(
+                _imp_id=Subquery(first_improvement.values("imp_id")[:1]),
+                _imp_year_built=Subquery(first_improvement.values("year_built")[:1]),
+                _land_area=Subquery(
+                    PropertyLand.objects.filter(prop_id=OuterRef("prop_id"), tax_year=year)
+                    .values("prop_id")
+                    .annotate(area=Sum("acreage"))
+                    .values("area")
+                ),
+            )
+            .annotate(
+                _facts=_fact(Q(class_code__regex=r"\S"))
+                + _fact(Q(year_built__gt=0) | Q(year_built__lt=0) | Q(_imp_year_built__gt=0))
+                + _fact(
+                    Exists(
+                        PropertyBuildingCharacteristic.objects.filter(
+                            Q(bedrooms__isnull=False) | Q(bathrooms__isnull=False),
+                            prop_id=OuterRef("prop_id"),
+                            tax_year=year,
+                            imp_id=OuterRef("_imp_id"),
+                        )
+                    )
+                )
+                + _fact(Q(_land_area__gt=0))
+                + _fact(
+                    Exists(
+                        PropertyExtraFeature.objects.filter(
+                            prop_id=OuterRef("prop_id"), tax_year=year
+                        )
+                    )
+                )
+            )
         )
-        found = 0
-        for record in self.static_projections(
-            candidates.iterator(chunk_size=_POOL_CHUNK), snapshot=snapshot, chunk_size=_POOL_CHUNK
-        ):
-            if record.in_report_pool and record.comparison_mode == mode:
-                found += 1
-                if found >= REPORT_POOL_SIZE:
-                    break
-        return found
+        if mode == "residential":
+            members = members.filter(_facts__gte=2)
+        else:
+            members = members.filter(_facts__lt=2, _land_area__gt=0)
+        return members.values("pk")[:REPORT_POOL_SIZE].count()
 
     def project_static(
         self, prop_id: str, *, snapshot: BrazosPropertySnapshot | None = None
@@ -488,6 +524,11 @@ class BrazosActiveSnapshotReadiness:
     @staticmethod
     def _positive(value: Decimal | None) -> bool:
         return value is not None and value > 0
+
+
+def _fact(condition: Q | Exists) -> Case:
+    """One comparable fact as 1 or 0, for counting facts in SQL."""
+    return Case(When(condition, then=Value(1)), default=Value(0), output_field=IntegerField())
 
 
 class _TaxRow(NamedTuple):
