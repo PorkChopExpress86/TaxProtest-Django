@@ -3,6 +3,8 @@ from pathlib import Path
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
+from counties.common.import_disposition import ImportDispositionKind, import_disposition
+from counties.common.models import ImportOperation
 from counties.harris.etl_pipeline import (
     HarrisAcquisitionMode,
     HarrisApply,
@@ -73,8 +75,18 @@ class Command(BaseCommand):
                 origin="command",
             )
         )
-        self.stdout.write(
-            f"Status: {result.status.value}; applied: {result.wrote_data}; operation: {result.operation_id}; candidate: {result.candidate_id}. Review in Django admin /admin/data/importcandidate/."
+        disposition = import_disposition(
+            ImportOperation.objects.get(pk=result.operation_id), subject="Harris import"
         )
-        if result.status.value in ("failed", "partial"):
+        # A strict run never ends incomplete, so it keeps failing if one ever does.
+        if disposition.kind is ImportDispositionKind.HELD and not disposition.incomplete:
+            self.stdout.write(self.style.WARNING(disposition.notice))
+            return
+        summary = (
+            f"Status: {result.status.value}; applied: {result.wrote_data}; "
+            f"operation: {result.operation_id}; candidate: {result.candidate_id}."
+        )
+        if disposition.kind is ImportDispositionKind.FAILED or disposition.incomplete:
+            self.stdout.write(f"{summary} Review in Django admin /admin/data/importcandidate/.")
             raise CommandError("Property source import failed: " + "; ".join(result.errors))
+        self.stdout.write(summary)

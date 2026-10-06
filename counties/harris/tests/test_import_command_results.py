@@ -241,13 +241,13 @@ class LoadHcadRealAcctResultTests(HarrisImportResultTestCase):
             f"candidate: {candidate.pk}. Review in Django admin /admin/data/importcandidate/."
         )
 
-    def test_blocked_candidate_is_held_and_exits_zero(self):
+    def test_blocked_candidate_prints_only_the_held_notice_and_exits_zero(self):
         source = self.write_property_source()
 
         lines = self.call("load_hcad_real_acct", source)
 
         operation, candidate = self.finished("blocked", "blocked")
-        self.assertEqual(lines, [self.summary("blocked", False, operation, candidate)])
+        self.assertEqual(lines, [warning(self.held("blocked", operation, candidate))])
 
     def test_failed_import_prints_the_summary_then_fails_with_exit_code_one(self):
         source = self.write_property_source(state_class="F1")
@@ -264,14 +264,20 @@ class LoadHcadRealAcctResultTests(HarrisImportResultTestCase):
         operation, candidate = self.finished("failed", "blocked")
         self.assertEqual(lines, [self.summary("failed", False, operation, candidate)])
 
-    def test_publication_still_prints_the_review_prompt(self):
+    def test_publication_prints_its_status_line_without_a_review_prompt(self):
         self.publish_baseline("P100", "P200")
         source = self.write_property_source()
 
         lines = self.call("load_hcad_real_acct", source, "--no-truncate")
 
         operation, candidate = self.finished("published", "published")
-        self.assertEqual(lines, [self.summary("completed", True, operation, candidate)])
+        self.assertEqual(
+            lines,
+            [
+                f"Status: completed; applied: True; operation: {operation.pk}; "
+                f"candidate: {candidate.pk}."
+            ],
+        )
 
 
 class ImportBuildingDataResultTests(HarrisImportResultTestCase):
