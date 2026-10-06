@@ -6,7 +6,8 @@ from django.db import connection
 from django.test import TransactionTestCase
 
 from counties.common.county_registry import UnknownCounty
-from counties.common.import_audit import OperationStatus, audited_operation
+from counties.common.import_audit import audited_operation
+from counties.common.import_states import OperationStatus
 from counties.common.import_writers import WriterConflict, county_writer, fenced_write
 from counties.common.models import ImportOperation
 from counties.common.tests.fake_county import (

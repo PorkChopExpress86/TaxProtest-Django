@@ -12,6 +12,7 @@ from uuid import UUID
 from django.db import DatabaseError, connection, transaction
 
 from counties.common.county_registry import registration_for
+from counties.common.import_states import CandidateState, LegacyOperationStatus, OperationStatus
 from counties.common.models import CountyWriter, ImportAuditEntry, ImportOperation
 
 _CURRENT_WRITER: ContextVar[ImportOperation | None] = ContextVar("county_writer", default=None)
@@ -61,17 +62,17 @@ def working_source_root(root: Path, *, reuse: bool = True) -> Path:
             ImportOperation.objects.filter(
                 county=operation.county,
                 status__in=(
-                    "completed",
-                    "completed_with_warnings",
-                    "partial",
-                    "published",
-                    "validated",
-                    "prepared",
-                    "awaiting_review",
+                    OperationStatus.COMPLETED,
+                    OperationStatus.COMPLETED_WITH_WARNINGS,
+                    OperationStatus.PARTIAL,
+                    OperationStatus.PUBLISHED,
+                    LegacyOperationStatus.VALIDATED,
+                    OperationStatus.PREPARED,
+                    OperationStatus.AWAITING_REVIEW,
                 ),
             )
             .exclude(pk=operation.pk)
-            .exclude(candidate__state__in=("rejected", "superseded"))
+            .exclude(candidate__state__in=(CandidateState.REJECTED, CandidateState.SUPERSEDED))
         ):
             retained = root / ".imports" / str(prior.pk)
             if str(retained) not in prior.evidence.get("working_sources", []):
