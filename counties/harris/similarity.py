@@ -256,30 +256,6 @@ def calculate_similarity_details(
     return score_from_components(components, is_land_only=is_land_only)
 
 
-def calculate_similarity_score(
-    target_prop: PropertyRecord,
-    candidate_prop: PropertyRecord,
-    target_building: BuildingDetail | None = None,
-    candidate_building: BuildingDetail | None = None,
-    target_features: list[ExtraFeature] | None = None,
-    candidate_features: list[ExtraFeature] | None = None,
-    distance: float = 0.0,
-    max_distance_miles: float = 10.0,
-) -> float:
-    """Calculate a similarity score between two properties (0-100)."""
-    details = calculate_similarity_details(
-        target_prop,
-        candidate_prop,
-        target_building,
-        candidate_building,
-        target_features,
-        candidate_features,
-        distance,
-        max_distance_miles,
-    )
-    return float(details["score"])
-
-
 def find_similar_properties(
     account_number: str,
     max_distance_miles: float = 10.0,
@@ -405,21 +381,6 @@ def find_similar_properties(
         )
     )
     return results[:max_results]
-
-
-def get_feature_summary(features: list[ExtraFeature]) -> dict[str, int]:
-    """
-    Get a summary of features by category.
-
-    Returns:
-        Dictionary with feature counts: {'POOL': 1, 'DETGAR': 2, ...}
-    """
-    summary = {}
-    for feature in features:
-        code = feature.feature_code
-        if code:
-            summary[code] = summary.get(code, 0) + 1
-    return summary
 
 
 def format_feature_list(features: list[ExtraFeature], max_features: int = 10) -> str:

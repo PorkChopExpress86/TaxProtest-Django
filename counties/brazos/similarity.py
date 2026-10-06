@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
+from dataclasses import dataclass
 
 from counties.common.similarity_math import (
     AGE_CURVE,
@@ -182,18 +183,6 @@ def primary_improvement(
     return _select_primary_improvement(improvements, characteristics_by_imp)
 
 
-def _has_second_floor(prop_id: str, imp_id: str, tax_year: int) -> bool:
-    return PropertyImprovementDetail.objects.filter(
-        prop_id=prop_id, imp_id=imp_id, tax_year=tax_year, detail_description="SECOND FLOOR"
-    ).exists()
-
-
-def _stories_value(prop_id: str, imp_id: str | None, tax_year: int) -> float | None:
-    if imp_id is None:
-        return None
-    return 2.0 if _has_second_floor(prop_id, imp_id, tax_year) else 1.0
-
-
 def _effective_year(
     improvement: PropertyImprovement | None, account: PropertyAccount
 ) -> int | None:
@@ -204,54 +193,100 @@ def _effective_year(
     return None
 
 
-def _total_acreage(prop_id: str, tax_year: int) -> float | None:
-    rows = PropertyLand.objects.filter(prop_id=prop_id, tax_year=tax_year).values_list(
-        "acreage", flat=True
-    )
-    values = [float(a) for a in rows if a is not None]
-    return sum(values) if values else None
-
-
 # ---------------------------------------------------------------- scoring
 
 
-def calculate_similarity_details(
-    target_account: PropertyAccount,
-    candidate_account: PropertyAccount,
-    target_improvement: PropertyImprovement | None = None,
-    candidate_improvement: PropertyImprovement | None = None,
-    target_building: PropertyBuildingCharacteristic | None = None,
-    candidate_building: PropertyBuildingCharacteristic | None = None,
-    target_features: list[PropertyExtraFeature] | None = None,
-    candidate_features: list[PropertyExtraFeature] | None = None,
-    target_acreage: float | None = None,
-    candidate_acreage: float | None = None,
-    distance: float = 0.0,
-    max_distance_miles: float = 10.0,
+@dataclass(frozen=True)
+class ScoringFacts:
+    """Everything pair scoring reads about one property, loaded in bulk."""
+
+    account: PropertyAccount
+    improvement: PropertyImprovement | None
+    building: PropertyBuildingCharacteristic | None
+    features: list[PropertyExtraFeature]
+    acreage: float | None
+    stories: float | None
+
+
+def load_scoring_facts(accounts: list[PropertyAccount], tax_year: int) -> dict[str, ScoringFacts]:
+    """Load scoring facts for many properties with a fixed number of queries.
+
+    Improvement facts are keyed by (prop_id, imp_id): imp_id alone repeats
+    across properties."""
+    prop_ids = [account.prop_id for account in accounts]
+
+    improvements_by_prop: dict[str, list[PropertyImprovement]] = defaultdict(list)
+    for imp in PropertyImprovement.objects.filter(
+        prop_id__in=prop_ids, tax_year=tax_year, improvement_type="R"
+    ).order_by("imp_id"):
+        improvements_by_prop[imp.prop_id].append(imp)
+
+    characteristics_by_prop: dict[str, dict[str, PropertyBuildingCharacteristic]] = defaultdict(
+        dict
+    )
+    for c in PropertyBuildingCharacteristic.objects.filter(prop_id__in=prop_ids, tax_year=tax_year):
+        characteristics_by_prop[c.prop_id][c.imp_id] = c
+
+    features_by_prop: dict[str, list[PropertyExtraFeature]] = defaultdict(list)
+    for f in PropertyExtraFeature.objects.filter(prop_id__in=prop_ids, tax_year=tax_year):
+        features_by_prop[f.prop_id].append(f)
+
+    acreage_by_prop: dict[str, float] = {}
+    for land_prop_id, acreage in PropertyLand.objects.filter(
+        prop_id__in=prop_ids, tax_year=tax_year
+    ).values_list("prop_id", "acreage"):
+        if acreage is not None:
+            acreage_by_prop[land_prop_id] = acreage_by_prop.get(land_prop_id, 0.0) + float(acreage)
+
+    second_floors = set(
+        PropertyImprovementDetail.objects.filter(
+            prop_id__in=prop_ids, tax_year=tax_year, detail_description="SECOND FLOOR"
+        ).values_list("prop_id", "imp_id")
+    )
+
+    facts = {}
+    for account in accounts:
+        improvement, building = _select_primary_improvement(
+            improvements_by_prop.get(account.prop_id, []),
+            characteristics_by_prop.get(account.prop_id, {}),
+        )
+        stories = None
+        if improvement is not None:
+            stories = 2.0 if (account.prop_id, improvement.imp_id) in second_floors else 1.0
+        facts[account.prop_id] = ScoringFacts(
+            account=account,
+            improvement=improvement,
+            building=building,
+            features=features_by_prop.get(account.prop_id, []),
+            acreage=acreage_by_prop.get(account.prop_id),
+            stories=stories,
+        )
+    return facts
+
+
+def score_pair(
+    target: ScoringFacts,
+    candidate: ScoringFacts,
+    *,
+    distance: float,
+    max_distance_miles: float,
 ) -> dict[str, object]:
-    """Calculate an explainable similarity score and component breakdown."""
+    """Explainable similarity score and breakdown for one pair; never queries."""
     components: list[dict[str, object]] = []
-    is_land_only = target_building is None and candidate_building is None
+    is_land_only = target.building is None and candidate.building is None
+    weights = LAND_ONLY_WEIGHTS if is_land_only else RESIDENTIAL_WEIGHTS
+    target_building = target.building
+    candidate_building = candidate.building
 
     if not is_land_only:
-        target_stories = _stories_value(
-            target_account.prop_id,
-            target_improvement.imp_id if target_improvement else None,
-            target_account.tax_year,
-        )
-        candidate_stories = _stories_value(
-            candidate_account.prop_id,
-            candidate_improvement.imp_id if candidate_improvement else None,
-            candidate_account.tax_year,
-        )
         components.extend(
             [
                 component(
                     "living_area",
                     RESIDENTIAL_WEIGHTS["living_area"],
                     percentage_similarity(
-                        target_account.living_area,
-                        candidate_account.living_area,
+                        target.account.living_area,
+                        candidate.account.living_area,
                         LIVING_AREA_CURVE,
                     ),
                     labels=COMPONENT_LABELS,
@@ -279,15 +314,15 @@ def calculate_similarity_details(
                 component(
                     "quality",
                     RESIDENTIAL_WEIGHTS["quality"],
-                    _quality_similarity(target_account.class_code, candidate_account.class_code),
+                    _quality_similarity(target.account.class_code, candidate.account.class_code),
                     labels=COMPONENT_LABELS,
                 ),
                 component(
                     "age",
                     RESIDENTIAL_WEIGHTS["age"],
                     difference_similarity(
-                        _effective_year(target_improvement, target_account),
-                        _effective_year(candidate_improvement, candidate_account),
+                        _effective_year(target.improvement, target.account),
+                        _effective_year(candidate.improvement, candidate.account),
                         AGE_CURVE,
                     ),
                     labels=COMPONENT_LABELS,
@@ -295,11 +330,7 @@ def calculate_similarity_details(
                 component(
                     "stories",
                     RESIDENTIAL_WEIGHTS["stories"],
-                    difference_similarity(
-                        target_stories,
-                        candidate_stories,
-                        STORIES_CURVE,
-                    ),
+                    difference_similarity(target.stories, candidate.stories, STORIES_CURVE),
                     labels=COMPONENT_LABELS,
                 ),
                 component(
@@ -311,37 +342,23 @@ def calculate_similarity_details(
             ]
         )
 
-    land_weight = (
-        LAND_ONLY_WEIGHTS["land_size"] if is_land_only else RESIDENTIAL_WEIGHTS["land_size"]
-    )
-    feature_weight = (
-        LAND_ONLY_WEIGHTS["features"] if is_land_only else RESIDENTIAL_WEIGHTS["features"]
-    )
-    distance_weight = (
-        LAND_ONLY_WEIGHTS["distance"] if is_land_only else RESIDENTIAL_WEIGHTS["distance"]
-    )
-
     components.extend(
         [
             component(
                 "land_size",
-                land_weight,
-                percentage_similarity(
-                    target_acreage,
-                    candidate_acreage,
-                    LAND_SIZE_CURVE,
-                ),
+                weights["land_size"],
+                percentage_similarity(target.acreage, candidate.acreage, LAND_SIZE_CURVE),
                 labels=COMPONENT_LABELS,
             ),
             component(
                 "features",
-                feature_weight,
-                _feature_similarity(target_features, candidate_features),
+                weights["features"],
+                _feature_similarity(target.features, candidate.features),
                 labels=COMPONENT_LABELS,
             ),
             component(
                 "distance",
-                distance_weight,
+                weights["distance"],
                 distance_similarity(distance, max_distance_miles),
                 labels=COMPONENT_LABELS,
             ),
@@ -362,85 +379,32 @@ def find_similar_properties(
     """Find Brazos properties similar to the given prop_id.
 
     Candidates come from the shared nearest-properties query, pre-filtered
-    here to the same tax year."""
+    here to the same tax year. Facts for the target and every candidate are
+    loaded in bulk, so the query count does not grow with the candidates."""
     target = PropertyAccount.objects.filter(prop_id=prop_id, tax_year=tax_year).first()
     if not target or not target.latitude or not target.longitude:
         return []
-    target_lat = float(target.latitude)
-    target_lon = float(target.longitude)
 
-    target_improvement, target_building = primary_improvement(prop_id, tax_year)
-    target_features = list(PropertyExtraFeature.objects.filter(prop_id=prop_id, tax_year=tax_year))
-    target_acreage = _total_acreage(prop_id, tax_year)
-
-    candidates = nearby_properties(
-        PropertyAccount.objects.filter(tax_year=tax_year).exclude(prop_id=prop_id),
-        latitude=target_lat,
-        longitude=target_lon,
-        max_distance_miles=max_distance_miles,
+    candidate_list = list(
+        nearby_properties(
+            PropertyAccount.objects.filter(tax_year=tax_year).exclude(prop_id=prop_id),
+            latitude=float(target.latitude),
+            longitude=float(target.longitude),
+            max_distance_miles=max_distance_miles,
+        )
     )
-
-    candidate_list = list(candidates)
     if not candidate_list:
         return []
 
-    candidate_prop_ids = [c.prop_id for c in candidate_list]
-
-    improvements_by_prop: dict[str, list[PropertyImprovement]] = defaultdict(list)
-    for imp in PropertyImprovement.objects.filter(
-        prop_id__in=candidate_prop_ids, tax_year=tax_year, improvement_type="R"
-    ).order_by("imp_id"):
-        improvements_by_prop[imp.prop_id].append(imp)
-
-    # Keyed by prop_id, then imp_id: imp_id alone repeats across properties.
-    characteristics_by_prop: dict[str, dict[str, PropertyBuildingCharacteristic]] = defaultdict(
-        dict
-    )
-    for c in PropertyBuildingCharacteristic.objects.filter(
-        prop_id__in=candidate_prop_ids, tax_year=tax_year
-    ):
-        characteristics_by_prop[c.prop_id][c.imp_id] = c
-
-    features_by_prop: dict[str, list[PropertyExtraFeature]] = defaultdict(list)
-    for f in PropertyExtraFeature.objects.filter(prop_id__in=candidate_prop_ids, tax_year=tax_year):
-        features_by_prop[f.prop_id].append(f)
-
-    acreage_by_prop: dict[str, float] = defaultdict(float)
-    has_land = set()
-    for land_prop_id, acreage in PropertyLand.objects.filter(
-        prop_id__in=candidate_prop_ids, tax_year=tax_year
-    ).values_list("prop_id", "acreage"):
-        if acreage is not None:
-            acreage_by_prop[land_prop_id] += float(acreage)
-            has_land.add(land_prop_id)
+    facts = load_scoring_facts([target, *candidate_list], tax_year)
+    target_facts = facts[target.prop_id]
 
     results = []
     for candidate in candidate_list:
         dist = getattr(candidate, "distance", 0.0)
-
-        c_improvement, c_building = _select_primary_improvement(
-            improvements_by_prop.get(candidate.prop_id, []),
-            characteristics_by_prop.get(candidate.prop_id, {}),
-        )
-
-        c_features = features_by_prop.get(candidate.prop_id, [])
-        c_acreage = (
-            acreage_by_prop.get(candidate.prop_id) if candidate.prop_id in has_land else None
-        )
-
-        details = calculate_similarity_details(
-            target,
-            candidate,
-            target_improvement,
-            c_improvement,
-            target_building,
-            c_building,
-            target_features,
-            c_features,
-            target_acreage,
-            c_acreage,
-            dist,
-            max_distance_miles=max_distance_miles,
+        candidate_facts = facts[candidate.prop_id]
+        details = score_pair(
+            target_facts, candidate_facts, distance=dist, max_distance_miles=max_distance_miles
         )
         score = float(details["score"])
 
@@ -448,9 +412,9 @@ def find_similar_properties(
             results.append(
                 {
                     "property": candidate,
-                    "building": c_building,
-                    "features": c_features,
-                    "acreage": c_acreage,
+                    "building": candidate_facts.building,
+                    "features": candidate_facts.features,
+                    "acreage": candidate_facts.acreage,
                     "distance": round(dist, 2),
                     "similarity_score": score,
                     "score_breakdown": details["components"],

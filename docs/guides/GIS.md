@@ -23,9 +23,8 @@ Guide to Geographic Information System (GIS) features, location data, coordinate
 The TaxProtest-Django application uses GIS data to:
 - Store property geographic coordinates (`latitude`, `longitude`).
 - Enable radius bounding box candidate pre-filtering.
-- Calculate accurate Haversine distances between target properties and comparables.
-- Break ties among otherwise physically identical properties.
-- Render maps and location-aware comparisons across Harris and Brazos counties.
+- Compute great-circle distances between a subject property and its comparables in the database.
+- Score distance as a small similarity component that separates otherwise similar comparables.
 
 ---
 
@@ -117,16 +116,17 @@ properties = PropertyRecord.objects.filter(
 
 ### Distance Calculation
 
-Exact distances are computed in the database: each county's `find_similar_properties` annotates
-bounding-box candidates with a great-circle distance in miles (spherical law of cosines), keeps
-those within the search radius, and orders them nearest first. There is no Python-side distance
-helper.
+Exact distances are computed in the database by the shared `nearby_properties` query in
+`counties/common/similarity_math.py`. After each county's `find_similar_properties` applies its own
+pre-filters, the query adds a bounding box, annotates each candidate with a great-circle distance in
+miles (spherical law of cosines), keeps those within the search radius, orders them nearest first,
+and caps them at 2,000. There is no Python-side distance helper. See `docs/guides/SIMILARITY.md`.
 
 ---
 
 ## 6. Scheduled Updates
 
-Configured in [`taxprotest/celery.py`](file:///home/specter/dev/TaxProtest-Django/taxprotest/celery.py):
+Configured in [`taxprotest/celery.py`](../../taxprotest/celery.py):
 
 - **Schedule:** January 15th at 3:00 AM Central
 - **Task:** `counties.harris.tasks_new.run_etl_pipeline` with `scope="gis-only"` and `strict=True`
