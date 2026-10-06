@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from django.core.management.base import BaseCommand, CommandError
 
+from counties.common.import_disposition import ImportDispositionKind, import_disposition
+from counties.common.models import ImportOperation
 from counties.harris.etl_pipeline import (
     ExtractedSourceRetention,
     HarrisAcquisitionMode,
@@ -121,14 +123,13 @@ class Command(BaseCommand):
             for error in result.errors[:10]:
                 self.stdout.write(self.style.ERROR(f"  - {error}"))
 
-        if result.status.value in ("prepared", "awaiting_review", "blocked"):
-            self.stdout.write(
-                self.style.WARNING(
-                    f"Published data unchanged. Candidate {result.candidate_id}; operation {result.operation_id}. Review in Django admin /admin/data/importcandidate/."
-                )
-            )
+        disposition = import_disposition(
+            ImportOperation.objects.get(pk=result.operation_id), subject="Harris import"
+        )
+        if disposition.kind is ImportDispositionKind.HELD:
+            self.stdout.write(self.style.WARNING(disposition.notice))
             return
-        if not result.success:
+        if disposition.kind is ImportDispositionKind.FAILED:
             raise CommandError("Authoritative modern ETL import failed")
 
         self.stdout.write("")

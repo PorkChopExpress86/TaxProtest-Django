@@ -6,8 +6,9 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from django.core.management import call_command
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, TestCase
 
+from counties.common.models import ImportOperation
 from counties.harris.etl_pipeline import (
     HarrisAcquisitionMode,
     HarrisApply,
@@ -61,7 +62,7 @@ class ImportBuildingDataCommandTests(SimpleTestCase):
         )
 
 
-class ETLPipelineCommandTests(SimpleTestCase):
+class ETLPipelineCommandTests(TestCase):
     @patch("counties.harris.management.commands.etl_pipeline.run_harris_import")
     def test_run_translates_legacy_flags_at_the_cli_boundary(self, mocked_import):
         mocked_import.return_value = SimpleNamespace(
@@ -70,6 +71,9 @@ class ETLPipelineCommandTests(SimpleTestCase):
             duration=0.1,
             stages={},
             errors=(),
+            operation_id=ImportOperation.objects.create(
+                county="harris", intent="preview", status="completed"
+            ).pk,
         )
 
         call_command(

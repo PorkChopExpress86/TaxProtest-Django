@@ -112,11 +112,15 @@ class HarrisImportResultTestCase(TransactionTestCase):
         return operation, candidate
 
     @staticmethod
-    def held(operation, candidate):
+    def held(held_as, operation, candidate):
         return (
-            f"Published data unchanged. Candidate {candidate.pk}; operation {operation.pk}. "
+            f"Harris import {held_as}; published data unchanged. "
+            f"Candidate {candidate.pk}; operation {operation.pk}. "
             "Review in Django admin /admin/data/importcandidate/."
         )
+
+    def assert_no_held_notice(self, lines):
+        self.assertFalse([line for line in lines if "published data unchanged" in line.lower()])
 
 
 class ImportAllDataResultTests(HarrisImportResultTestCase):
@@ -127,7 +131,7 @@ class ImportAllDataResultTests(HarrisImportResultTestCase):
 
         operation, candidate = self.finished("awaiting_review", "awaiting_review")
         self.assertIn("  Status: awaiting_review", lines)
-        self.assertEqual(lines[-1], warning(self.held(operation, candidate)))
+        self.assertEqual(lines[-1], warning(self.held("awaiting_review", operation, candidate)))
 
     def test_blocked_candidate_is_held_and_exits_zero(self):
         self.write_property_source()
@@ -136,7 +140,7 @@ class ImportAllDataResultTests(HarrisImportResultTestCase):
 
         operation, candidate = self.finished("blocked", "blocked")
         self.assertIn("  Status: blocked", lines)
-        self.assertEqual(lines[-1], warning(self.held(operation, candidate)))
+        self.assertEqual(lines[-1], warning(self.held("blocked", operation, candidate)))
 
     def test_strict_incomplete_import_fails_with_exit_code_one(self):
         self.write_full_sources()
@@ -146,10 +150,10 @@ class ImportAllDataResultTests(HarrisImportResultTestCase):
         )
 
         self.assertEqual(raised.returncode, 1)
-        operation, candidate = self.finished("failed", "blocked")
+        self.finished("failed", "blocked")
         self.assertIn("  Status: failed", lines)
         self.assertEqual(lines[-2:], [error("Errors:"), error(f"  - {VALIDATION_GAP}")])
-        self.assertNotIn(warning(self.held(operation, candidate)), lines)
+        self.assert_no_held_notice(lines)
 
     def test_qualified_import_publishes_and_reports_success(self):
         self.publish_baseline("P100")
@@ -172,7 +176,7 @@ class ETLPipelineRunResultTests(HarrisImportResultTestCase):
 
         operation, candidate = self.finished("blocked", "blocked")
         self.assertIn("  Status: blocked", lines)
-        self.assertEqual(lines[-1], warning(self.held(operation, candidate)))
+        self.assertEqual(lines[-1], warning(self.held("blocked", operation, candidate)))
 
     def test_strict_incomplete_run_fails_with_exit_code_one(self):
         self.write_full_sources()
@@ -182,22 +186,51 @@ class ETLPipelineRunResultTests(HarrisImportResultTestCase):
         )
 
         self.assertEqual(raised.returncode, 1)
-        operation, candidate = self.finished("failed", "blocked")
+        self.finished("failed", "blocked")
         self.assertIn("  Status: failed", lines)
         self.assertEqual(lines[-1], error(f"  - {VALIDATION_GAP}"))
-        self.assertNotIn(warning(self.held(operation, candidate)), lines)
+        self.assert_no_held_notice(lines)
 
-    def test_best_effort_partial_run_reports_partial_results_and_exits_zero(self):
+    def test_best_effort_partial_run_is_held_and_incomplete_and_exits_zero(self):
         self.write_full_sources()
 
         lines = self.call("etl_pipeline", "run", *REUSE, "--allow-partial")
 
-        # The run left a blocked candidate, yet prints no held-import sentence.
         operation, candidate = self.finished("partial", "blocked")
         self.assertIn("  Status: partial", lines)
         self.assertIn(error(f"  - {VALIDATION_GAP}"), lines)
+        self.assertEqual(
+            lines[-1], warning(self.held("blocked (incomplete)", operation, candidate))
+        )
+        self.assertNotIn(warning("Pipeline completed with partial results."), lines)
+
+    def test_best_effort_partial_preview_reports_partial_results_and_exits_zero(self):
+        # Extraction fails without archives, yet the preview still validates the sources it has.
+        self.write_property_source()
+
+        lines = self.call(
+            "etl_pipeline",
+            "run",
+            "--skip-download",
+            "--scope",
+            "property-only",
+            "--dry-run",
+            "--allow-partial",
+        )
+
+        operation = ImportOperation.objects.get()
+        self.assertEqual((operation.intent, operation.status), ("preview", "partial"))
         self.assertEqual(lines[-1], warning("Pipeline completed with partial results."))
-        self.assertNotIn(warning(self.held(operation, candidate)), lines)
+        self.assert_no_held_notice(lines)
+
+    def test_preview_reports_success(self):
+        self.write_property_source()
+
+        lines = self.call("etl_pipeline", "run", *REUSE, "--scope", "property-only", "--dry-run")
+
+        operation = ImportOperation.objects.get()
+        self.assertEqual((operation.intent, operation.status), ("preview", "completed"))
+        self.assertEqual(lines[-1], success("Pipeline completed successfully!"))
 
 
 class LoadHcadRealAcctResultTests(HarrisImportResultTestCase):
