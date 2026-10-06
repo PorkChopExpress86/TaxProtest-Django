@@ -276,17 +276,11 @@ def _run_authoritative_pipeline(
         wrote_data=result.wrote_data,
         already_applied=result.already_applied,
     )
-    if task_instance is None:
-        held = result.status.value in ("prepared", "awaiting_review", "blocked")
-    else:
-        disposition = import_disposition(
-            ImportOperation.objects.get(pk=result.operation_id), subject="Harris import"
-        )
-        # A strict run never ends incomplete, so it keeps failing if one ever does.
-        held = disposition.kind is ImportDispositionKind.HELD and not (
-            strict and disposition.incomplete
-        )
-    if held:
+    disposition = import_disposition(
+        ImportOperation.objects.get(pk=result.operation_id), subject="Harris import"
+    )
+    # A strict run never ends incomplete, so it keeps failing if one ever does.
+    if disposition.kind is ImportDispositionKind.HELD and not (strict and disposition.incomplete):
         # A held import succeeds: a county's first import is always held (ADR-0023).
         if task_instance is not None:
             task_instance.update_state(

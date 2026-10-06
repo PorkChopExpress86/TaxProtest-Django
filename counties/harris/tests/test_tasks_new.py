@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 import requests
 from django.test import TestCase, override_settings
 
+from counties.common.models import ImportOperation
 from counties.harris.etl_pipeline import (
     HarrisAcquisitionMode,
     HarrisExtractionMode,
@@ -136,7 +137,9 @@ class AuthoritativeTaskDelegationTests(TestCase):
             success=True,
             status=HarrisImportStatus.COMPLETED,
             errors=(),
-            operation_id="operation-123",
+            operation_id=ImportOperation.objects.create(
+                county="harris", intent="preview", status="completed"
+            ).pk,
             candidate_id="candidate-123",
             wrote_data=False,
             already_applied=False,
