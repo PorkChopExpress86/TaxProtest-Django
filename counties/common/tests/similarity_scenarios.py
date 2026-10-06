@@ -8,9 +8,8 @@ building-free scoring, and (for Brazos) the comparables lookup's
 eligibility filtering after truncation.
 
 Every Brazos property gets its own improvement identifiers. BCAD repeats
-``imp_id`` values across properties in real data, and today's bulk search keys
-building facts by ``imp_id`` alone, so a fixture that shares identifiers would
-silently bake that defect into the goldens.
+``imp_id`` values across properties in real data, so a fixture that shares
+identifiers would hide any scorer that keys building facts by ``imp_id`` alone.
 """
 
 from __future__ import annotations
@@ -41,7 +40,7 @@ BRAZOS_LON = Decimal("-96.3700000")
 # ---------------------------------------------------------------- Harris
 
 
-def _harris_property(
+def harris_property(
     account_number: str,
     *,
     lat_offset: str = "0",
@@ -102,17 +101,17 @@ def _harris_property(
 
 def build_harris_residential_scenario() -> str:
     """A residential Harris subject with ranked, tied and filtered-out candidates."""
-    _harris_property("HT0000000001", building={}, features=("POOL", "DETGAR"))
+    harris_property("HT0000000001", building={}, features=("POOL", "DETGAR"))
 
     # Near-identical, closest.
-    _harris_property(
+    harris_property(
         "HC0000000001",
         lat_offset="0.002",
         building={"heat_area": Decimal("2150")},
         features=("POOL",),
     )
     # Moderate differences on every residential factor, between curve knots.
-    _harris_property(
+    harris_property(
         "HC0000000002",
         lat_offset="0.010",
         lon_offset="0.010",
@@ -132,7 +131,7 @@ def build_harris_residential_scenario() -> str:
     )
     # Two twins at the same distance and score: the account key breaks the tie.
     for account_number, lat_offset in (("HC0000000004", "0.005"), ("HC0000000003", "-0.005")):
-        _harris_property(
+        harris_property(
             account_number,
             lat_offset=lat_offset,
             building={
@@ -145,7 +144,7 @@ def build_harris_residential_scenario() -> str:
             },
         )
     # Condition codes outside the quality rank fall back to categorical matching.
-    _harris_property(
+    harris_property(
         "HC0000000005",
         lat_offset="0.030",
         lon_offset="-0.020",
@@ -160,7 +159,7 @@ def build_harris_residential_scenario() -> str:
         features=("POOL", "DETGAR"),
     )
     # Very different, still inside the living-area window: below the minimum score.
-    _harris_property(
+    harris_property(
         "HC0000000006",
         lat_offset="0.130",
         land_area=Decimal("30000"),
@@ -180,30 +179,30 @@ def build_harris_residential_scenario() -> str:
         features=("BARN",),
     )
     # Outside the living-area window (50%-150% of the subject's heated area).
-    _harris_property("HX0000000001", lat_offset="0.001", building={"heat_area": Decimal("1000")})
+    harris_property("HX0000000001", lat_offset="0.001", building={"heat_area": Decimal("1000")})
     # Not data-ready, and not residential.
-    _harris_property("HX0000000002", lat_offset="0.001", is_data_ready=False, building={})
-    _harris_property("HX0000000003", lat_offset="0.001", is_residential=False, building={})
+    harris_property("HX0000000002", lat_offset="0.001", is_data_ready=False, building={})
+    harris_property("HX0000000003", lat_offset="0.001", is_residential=False, building={})
     # Outside the ten-mile radius.
-    _harris_property("HX0000000004", lat_offset="0.200", building={})
+    harris_property("HX0000000004", lat_offset="0.200", building={})
     return "HT0000000001"
 
 
 def build_harris_land_subject_scenario() -> str:
     """A Harris subject without a building: half-building and land-only scoring."""
-    _harris_property("HL0000000001", building=None, land_area=Decimal("8000"), features=("POOL",))
+    harris_property("HL0000000001", building=None, land_area=Decimal("8000"), features=("POOL",))
 
     # Candidate with a building against a building-less subject (half-building).
-    _harris_property("HL0000000002", lat_offset="0.004", land_area=Decimal("8800"), building={})
+    harris_property("HL0000000002", lat_offset="0.004", land_area=Decimal("8800"), building={})
     # Neither side has a building: land-only weights.
-    _harris_property(
+    harris_property(
         "HL0000000003",
         lat_offset="-0.015",
         land_area=Decimal("6500"),
         building=None,
         features=("POOL", "SHED"),
     )
-    _harris_property("HL0000000004", lat_offset="0.060", land_area=Decimal("8100"), building=None)
+    harris_property("HL0000000004", lat_offset="0.060", land_area=Decimal("8100"), building=None)
     return "HL0000000001"
 
 
@@ -219,7 +218,7 @@ def _brazos_snapshot() -> None:
     )
 
 
-def _brazos_property(
+def brazos_property(
     prop_id: str,
     *,
     lat_offset: str = "0",
@@ -323,7 +322,7 @@ def assert_brazos_improvement_ids_distinct() -> None:
 def build_brazos_residential_scenario() -> str:
     """A residential Brazos subject with ranked, ineligible and filtered-out candidates."""
     _brazos_snapshot()
-    _brazos_property(
+    brazos_property(
         "BT0000000001",
         improvements=({"year_built": 2006, "building": {}, "second_floor": True},),
         acreage=("0.25",),
@@ -331,7 +330,7 @@ def build_brazos_residential_scenario() -> str:
     )
 
     # Near-identical, closest.
-    _brazos_property(
+    brazos_property(
         "BC0000000001",
         lat_offset="0.002",
         living_area=Decimal("2150"),
@@ -340,7 +339,7 @@ def build_brazos_residential_scenario() -> str:
         features=("Fireplace",),
     )
     # Moderate differences; improvement has no year, so the account year applies.
-    _brazos_property(
+    brazos_property(
         "BC0000000002",
         lat_offset="0.010",
         lon_offset="0.010",
@@ -354,7 +353,7 @@ def build_brazos_residential_scenario() -> str:
         features=("Carport", "Shed"),
     )
     # Several improvements: the first residential one with characteristics wins.
-    _brazos_property(
+    brazos_property(
         "BC0000000003",
         lat_offset="-0.005",
         living_area=Decimal("1900"),
@@ -376,7 +375,7 @@ def build_brazos_residential_scenario() -> str:
         acreage=("0.22",),
     )
     # High-ranking but lacks coordinate provenance: searched, not comparable-ready.
-    _brazos_property(
+    brazos_property(
         "BC0000000004",
         lat_offset="0.003",
         coordinate_source="",
@@ -385,14 +384,14 @@ def build_brazos_residential_scenario() -> str:
         features=("Fireplace", "Carport"),
     )
     # Land mode (no living area): searched, but a different comparison mode.
-    _brazos_property(
+    brazos_property(
         "BC0000000005",
         lat_offset="0.006",
         living_area=None,
         acreage=("0.26",),
     )
     # Residential with no land rows and no characteristics row.
-    _brazos_property(
+    brazos_property(
         "BC0000000006",
         lat_offset="0.020",
         lon_offset="-0.015",
@@ -400,7 +399,7 @@ def build_brazos_residential_scenario() -> str:
         improvements=({"year_built": 2010},),
     )
     # Very different: below the minimum score.
-    _brazos_property(
+    brazos_property(
         "BC0000000007",
         lat_offset="0.130",
         living_area=Decimal("4500"),
@@ -420,14 +419,14 @@ def build_brazos_residential_scenario() -> str:
         features=("Barn",),
     )
     # Outside the ten-mile radius.
-    _brazos_property(
+    brazos_property(
         "BX0000000001",
         lat_offset="0.200",
         improvements=({"building": {}},),
         acreage=("0.25",),
     )
     # A different tax year is never searched.
-    _brazos_property(
+    brazos_property(
         "BX0000000002",
         lat_offset="0.001",
         tax_year=BRAZOS_TAX_YEAR - 1,
@@ -439,14 +438,14 @@ def build_brazos_residential_scenario() -> str:
 def build_brazos_building_free_scenario() -> str:
     """A Brazos subject without a characteristics row: building-free scoring."""
     _brazos_snapshot()
-    _brazos_property(
+    brazos_property(
         "BF0000000001",
         improvements=({"year_built": 2006},),
         acreage=("0.25",),
         features=("Fireplace",),
     )
     # Neither side has a characteristics row: land-only weights despite living area.
-    _brazos_property(
+    brazos_property(
         "BF0000000002",
         lat_offset="0.004",
         living_area=Decimal("3100"),
@@ -455,13 +454,13 @@ def build_brazos_building_free_scenario() -> str:
         acreage=("0.31",),
         features=("Fireplace", "Carport"),
     )
-    _brazos_property(
+    brazos_property(
         "BF0000000003",
         lat_offset="-0.012",
         acreage=("0.25",),
     )
     # The candidate has a characteristics row and the subject does not.
-    _brazos_property(
+    brazos_property(
         "BF0000000004",
         lat_offset="0.008",
         living_area=Decimal("2300"),
