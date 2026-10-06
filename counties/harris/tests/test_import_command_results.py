@@ -283,16 +283,14 @@ class LoadHcadRealAcctResultTests(HarrisImportResultTestCase):
 class ImportBuildingDataResultTests(HarrisImportResultTestCase):
     START = success("Starting authoritative building data import...")
 
-    def test_blocked_candidate_is_reported_as_completed_success(self):
+    def test_blocked_candidate_is_held_and_exits_zero(self):
         PropertyRecord.objects.create(account_number="P100", is_residential=True)
         self.write_full_sources()
 
         lines = self.call("import_building_data", "--skip-download", "--no-refresh-readiness")
 
-        self.finished("blocked", "blocked")
-        self.assertEqual(
-            lines, [self.START, success("Authoritative building import completed (blocked).")]
-        )
+        operation, candidate = self.finished("blocked", "blocked")
+        self.assertEqual(lines, [self.START, warning(self.held("blocked", operation, candidate))])
 
     def test_strict_incomplete_import_raises_runtime_error_not_command_error(self):
         PropertyRecord.objects.create(account_number="P100", is_residential=True, state_class="A1")

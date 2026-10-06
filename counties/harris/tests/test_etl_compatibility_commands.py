@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from django.core.management import call_command
-from django.test import SimpleTestCase, TestCase
+from django.test import TestCase
 
 from counties.common.models import ImportOperation
 from counties.harris.etl_pipeline import (
@@ -19,10 +19,13 @@ from counties.harris.etl_pipeline import (
 from counties.harris.etl_pipeline.import_plan import HarrisImportPlan
 
 
-class ImportBuildingDataCommandTests(SimpleTestCase):
+class ImportBuildingDataCommandTests(TestCase):
     @patch("counties.harris.management.commands.import_building_data._run_authoritative_pipeline")
     def test_sync_command_builds_one_plan_and_preserves_skip_flags(self, mocked_run):
-        mocked_run.return_value = {"status": "completed"}
+        operation = ImportOperation.objects.create(
+            county="harris", intent="building-only", status="published"
+        )
+        mocked_run.return_value = {"status": "completed", "operation_id": str(operation.pk)}
 
         call_command(
             "import_building_data",
@@ -98,13 +101,15 @@ class ETLPipelineCommandTests(TestCase):
         self.assertIs(request.failure_policy, HarrisFailurePolicy.BEST_EFFORT)
 
 
-class LoadHcadRealAcctCommandTests(SimpleTestCase):
+class LoadHcadRealAcctCommandTests(TestCase):
     @patch("counties.harris.management.commands.load_hcad_real_acct.run_harris_import")
     def test_command_delegates_property_file_to_authoritative_import(self, mocked_import):
         mocked_import.return_value = SimpleNamespace(
             status=SimpleNamespace(value="completed"),
             wrote_data=True,
-            operation_id="operation-123",
+            operation_id=ImportOperation.objects.create(
+                county="harris", intent="property-only", status="published"
+            ).pk,
             candidate_id="candidate-123",
         )
 

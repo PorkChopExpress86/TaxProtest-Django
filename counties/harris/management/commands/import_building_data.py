@@ -2,6 +2,8 @@
 
 from django.core.management.base import BaseCommand
 
+from counties.common.import_disposition import ImportDispositionKind, import_disposition
+from counties.common.models import ImportOperation
 from counties.harris.etl_pipeline import HarrisImportPlan
 from counties.harris.tasks_new import _run_authoritative_pipeline, run_etl_pipeline
 
@@ -67,6 +69,12 @@ class Command(BaseCommand):
             refresh_readiness=refresh_readiness,
             validate_contract=refresh_readiness,
         )
+        disposition = import_disposition(
+            ImportOperation.objects.get(pk=result["operation_id"]), subject="Harris import"
+        )
+        if disposition.kind is ImportDispositionKind.HELD:
+            self.stdout.write(self.style.WARNING(disposition.notice))
+            return
         self.stdout.write(
             self.style.SUCCESS(f"Authoritative building import completed ({result['status']}).")
         )
