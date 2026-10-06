@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator
+from collections import Counter
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, replace
 from decimal import Decimal
 from typing import NamedTuple
@@ -20,13 +21,21 @@ from counties.brazos.models import (
     PropertyImprovement,
     PropertyLand,
 )
-from counties.brazos.similarity import find_similar_properties
 from counties.brazos.tax_units import NON_LEVYING_UNITS
-from counties.common.analysis import assessment_history_rows
+from counties.common.analysis import MIN_COMPS_FOR_RECOMMENDATION, assessment_history_rows
 from counties.common.tax_impact import taxing_units
 from counties.common.tax_models import AssessmentHistory, PropertyJurisdictionExemption, TaxUnitRate
 
 _CHUNK = 2000
+# Chunk for the one-property pool scan, which stops as soon as the pool is reached.
+_POOL_CHUNK = 100
+# The subject plus at least three other same-mode report-pool members (ADR-0020).
+REPORT_POOL_SIZE = MIN_COMPS_FOR_RECOMMENDATION + 1
+
+NO_EQUITY_FACTS = "Positive assessed value and living area are required for a report."
+POOL_TOO_SMALL = (
+    "At least three same-mode comparable-ready properties with equity facts are required."
+)
 
 
 @dataclass(frozen=True)
@@ -39,6 +48,7 @@ class BrazosReadinessProjection:
     owner_name: str
     search_ready: bool
     comparable_ready: bool
+    has_equity_facts: bool
     report_ready: bool
     tax_impact_ready: bool
     comparison_mode: str | None
@@ -49,27 +59,142 @@ class BrazosReadinessProjection:
     def reason_for(self, capability: str) -> str | None:
         return dict(self.reasons).get(capability)
 
+    @property
+    def in_report_pool(self) -> bool:
+        """Comparable-ready with positive assessed value and living area."""
+        return self.comparable_ready and self.has_equity_facts
+
+
+@dataclass(frozen=True)
+class BrazosSnapshotFacts:
+    """Facts about the active snapshot that one property's report readiness depends on.
+
+    ``report_pool`` counts the report-pool members of each comparison mode.
+    """
+
+    report_pool: Mapping[str, int]
+
+
+def report_reason(record: BrazosReadinessProjection, snapshot: BrazosSnapshotFacts) -> str | None:
+    """Why one record is not report-ready, judged with no distance or similarity score."""
+    if not record.comparable_ready:
+        return record.reason_for("comparable")
+    if not record.has_equity_facts:
+        return NO_EQUITY_FACTS
+    if snapshot.report_pool.get(record.comparison_mode or "", 0) < REPORT_POOL_SIZE:
+        return POOL_TOO_SMALL
+    return None
+
+
+def readiness(
+    record: BrazosReadinessProjection, snapshot: BrazosSnapshotFacts, *, tax_gap: str | None
+) -> BrazosReadinessProjection:
+    """The one Brazos readiness rule over a record's facts and its snapshot's facts.
+
+    ``tax_gap`` names the record's missing matching-year tax inputs, if any; it is
+    consulted only for a report-ready record.
+    """
+    report = report_reason(record, snapshot)
+    tax = report or tax_gap
+    reasons = dict(record.reasons)
+    for capability, reason in (("report", report), ("tax", tax)):
+        if reason:
+            reasons[capability] = reason
+        else:
+            reasons.pop(capability, None)
+    return replace(
+        record,
+        report_ready=report is None,
+        tax_impact_ready=tax is None,
+        reasons=tuple(reasons.items()),
+    )
+
 
 class BrazosActiveSnapshotReadiness:
-    """Resolve active Brazos records and their source-backed capabilities."""
+    """Resolve active Brazos records and their source-backed capabilities.
+
+    It keeps no memo or cache: candidate measurement switches the database search
+    path, and the adapter holding it is a long-lived singleton.
+    """
 
     def active_snapshot(self) -> BrazosPropertySnapshot | None:
         return BrazosPropertySnapshot.objects.filter(is_active=True).first()
 
     def project(self, prop_id: str) -> BrazosReadinessProjection | None:
+        """One property's readiness under the same rule ``survey`` applies to every property."""
         snapshot = self.active_snapshot()
         if snapshot is None:
             return None
-        projection = self.project_static(prop_id, snapshot=snapshot)
         account = self.account(prop_id, snapshot=snapshot)
-        if projection is None or account is None:
+        if account is None:
             return None
-        report_reason = self._report_reason(snapshot, account, projection)
-        projection = self._with_capability(
-            projection, "report", ready=report_reason is None, reason=report_reason
+        (record,) = self._project_chunk(snapshot, [account])
+        pool: dict[str, int] = {}
+        if record.in_report_pool and record.comparison_mode:
+            pool[record.comparison_mode] = self._report_pool_reached(
+                snapshot, record.comparison_mode
+            )
+        facts = BrazosSnapshotFacts(report_pool=pool)
+        tax_gap = None
+        if report_reason(record, facts) is None:
+            tax_gap = self.tax_input_gaps([prop_id], tax_year=snapshot.tax_year)[prop_id]
+        return readiness(record, facts, tax_gap=tax_gap)
+
+    def survey(
+        self, *, snapshot: BrazosPropertySnapshot | None = None, chunk_size: int = _CHUNK
+    ) -> dict[str, BrazosReadinessProjection]:
+        """Every active-snapshot property's readiness, a fixed query count per chunk."""
+        snapshot = snapshot or self.active_snapshot()
+        if snapshot is None:
+            return {}
+        records = list(
+            self.static_projections(
+                PropertyAccount.objects.filter(tax_year=snapshot.tax_year)
+                .order_by("pk")
+                .iterator(chunk_size=chunk_size),
+                snapshot=snapshot,
+                chunk_size=chunk_size,
+            )
         )
-        tax_reason = self._tax_reason(account, projection)
-        return self._with_capability(projection, "tax", ready=tax_reason is None, reason=tax_reason)
+        facts = BrazosSnapshotFacts(
+            report_pool=Counter(
+                record.comparison_mode for record in records if record.in_report_pool
+            )
+        )
+        gaps = self.tax_input_gaps(
+            [record.prop_id for record in records if report_reason(record, facts) is None],
+            tax_year=snapshot.tax_year,
+            chunk_size=chunk_size,
+        )
+        return {
+            record.prop_id: readiness(record, facts, tax_gap=gaps.get(record.prop_id))
+            for record in records
+        }
+
+    def _report_pool_reached(self, snapshot: BrazosPropertySnapshot, mode: str) -> int:
+        """Count same-mode report-pool members, reading only until the pool is reached."""
+        # Necessary conditions keep the scan to likely members; the rule decides.
+        candidates = (
+            PropertyAccount.objects.filter(
+                tax_year=snapshot.tax_year,
+                assessed_value__gt=0,
+                living_area__gt=0,
+                latitude__isnull=False,
+                longitude__isnull=False,
+                coordinate_source_year__isnull=False,
+            )
+            .exclude(coordinate_source="")
+            .order_by("pk")
+        )
+        found = 0
+        for record in self.static_projections(
+            candidates.iterator(chunk_size=_POOL_CHUNK), snapshot=snapshot, chunk_size=_POOL_CHUNK
+        ):
+            if record.in_report_pool and record.comparison_mode == mode:
+                found += 1
+                if found >= REPORT_POOL_SIZE:
+                    break
+        return found
 
     def project_static(
         self, prop_id: str, *, snapshot: BrazosPropertySnapshot | None = None
@@ -110,44 +235,6 @@ class BrazosActiveSnapshotReadiness:
                 | Q(_ready_mailing_address__gt="")
             )
         )
-
-    def _legacy_report_comparables(
-        self,
-        prop_id: str,
-        *,
-        max_distance_miles: float,
-        max_results: int,
-        min_score: float,
-        snapshot: BrazosPropertySnapshot | None = None,
-    ) -> list[dict]:
-        """The searched report pool, kept only until report-ready stops searching (#80).
-
-        The comparables lookup composes its own search in the Brazos adapter.
-        """
-        snapshot = snapshot or self.active_snapshot()
-        if snapshot is None:
-            return []
-        account = self.account(prop_id, snapshot=snapshot)
-        if account is None:
-            return []
-        (subject,) = self._project_chunk(snapshot, [account])
-        if not subject.comparable_ready:
-            return []
-        results = find_similar_properties(
-            prop_id,
-            tax_year=snapshot.tax_year,
-            max_distance_miles=max_distance_miles,
-            max_results=max_results,
-            min_score=min_score,
-        )
-        candidates = self.static_projections(
-            [result["property"] for result in results], snapshot=snapshot
-        )
-        return [
-            result
-            for result, candidate in zip(results, candidates, strict=True)
-            if candidate.comparable_ready and candidate.comparison_mode == subject.comparison_mode
-        ]
 
     def history_view(self, prop_id: str) -> list[dict]:
         """Return the active-year five-year window without collapsing gaps."""
@@ -315,6 +402,8 @@ class BrazosActiveSnapshotReadiness:
             owner_name=account.owner_name,
             search_ready=search_ready,
             comparable_ready=comparable_ready,
+            has_equity_facts=self._positive(account.assessed_value)
+            and self._positive(account.living_area),
             report_ready=False,
             tax_impact_ready=False,
             comparison_mode=mode,
@@ -322,58 +411,6 @@ class BrazosActiveSnapshotReadiness:
             coordinate_source_year=account.coordinate_source_year,
             reasons=tuple(reasons.items()),
         )
-
-    def _report_reason(
-        self,
-        snapshot: BrazosPropertySnapshot,
-        account: PropertyAccount,
-        projection: BrazosReadinessProjection,
-    ) -> str | None:
-        if not projection.comparable_ready:
-            return projection.reason_for("comparable")
-        if not self._positive(account.assessed_value) or not self._positive(account.living_area):
-            return "Positive assessed value and living area are required for a report."
-        comps = self._legacy_report_comparables(
-            account.prop_id,
-            max_distance_miles=10.0,
-            max_results=50,
-            min_score=30.0,
-            snapshot=snapshot,
-        )
-        qualifying = [
-            result
-            for result in comps
-            if self._positive(result["property"].assessed_value)
-            and self._positive(result["property"].living_area)
-        ]
-        if len(qualifying) < 3:
-            return "At least three same-mode comparable-ready properties with equity facts are required."
-        return None
-
-    @staticmethod
-    def _with_capability(
-        projection: BrazosReadinessProjection,
-        capability: str,
-        *,
-        ready: bool,
-        reason: str | None,
-    ) -> BrazosReadinessProjection:
-        reasons = dict(projection.reasons)
-        if reason:
-            reasons[capability] = reason
-        else:
-            reasons.pop(capability, None)
-        if capability == "report":
-            return replace(projection, report_ready=ready, reasons=tuple(reasons.items()))
-        return replace(projection, tax_impact_ready=ready, reasons=tuple(reasons.items()))
-
-    @classmethod
-    def _tax_reason(
-        cls, account: PropertyAccount, projection: BrazosReadinessProjection
-    ) -> str | None:
-        if not projection.report_ready:
-            return projection.reason_for("report")
-        return cls.tax_input_gaps([account.prop_id], tax_year=projection.tax_year)[account.prop_id]
 
     @classmethod
     def tax_input_gaps(

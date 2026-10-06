@@ -24,8 +24,8 @@ from counties.brazos.property_import import (
     RefreshOptions,
 )
 from counties.brazos.tests.test_property_coverage import write_pacs
-from counties.common.county_registry import isolated_registrations, register, registration_for
 from counties.common.models import ImportAuditEntry, ImportCandidate, ImportOperation
+from counties.common.tests.fake_county import FAKE_COUNTY, registered_fake_county
 
 
 class SourceRetentionTests(TransactionTestCase):
@@ -317,16 +317,9 @@ class RegisteredCountyRetentionTests(TransactionTestCase):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
-        registrations = isolated_registrations()
-        registrations.__enter__()
-        self.addCleanup(registrations.__exit__, None, None, None)
-        register(
-            replace(
-                registration_for("harris"),
-                slug="travis",
-                writer_lock_key=742199,
-                warning_logger="travis_cad",
-                source_roots=lambda: (self.root / "downloads", self.root / "extracted"),
+        self.enterContext(
+            registered_fake_county(
+                source_roots=lambda: (self.root / "downloads", self.root / "extracted")
             )
         )
 
@@ -338,7 +331,7 @@ class RegisteredCountyRetentionTests(TransactionTestCase):
 
     def test_only_attempt_owned_sources_under_registered_roots_are_removed(self):
         operation = ImportOperation.objects.create(
-            county="travis", intent="annual", status="published"
+            county=FAKE_COUNTY, intent="annual", status="published"
         )
         attempt = str(operation.pk)
         removed = [
@@ -352,7 +345,7 @@ class RegisteredCountyRetentionTests(TransactionTestCase):
         ]
         ImportCandidate.objects.create(
             operation=operation,
-            county="travis",
+            county=FAKE_COUNTY,
             state="superseded",
             storage_schema="travis_candidate_retention",
             superseded_at=timezone.now() - timedelta(days=91),
@@ -360,7 +353,7 @@ class RegisteredCountyRetentionTests(TransactionTestCase):
         )
 
         call_command(
-            "cleanup_import_sources", county="travis", reason="Expired", stdout=io.StringIO()
+            "cleanup_import_sources", county=FAKE_COUNTY, reason="Expired", stdout=io.StringIO()
         )
 
         self.assertFalse(any(path.exists() for path in removed))
