@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import tempfile
 import time
-from pathlib import Path
 
 from django.db import connection
 from django.test import TransactionTestCase
 
 from counties.common.models import ImportCandidate
+from counties.harris.benchmark import write_synthetic_real_acct
 from counties.harris.etl_pipeline import (
     HarrisAcquisitionMode,
     HarrisExtractionMode,
@@ -29,17 +29,6 @@ class HarrisPipelineStressTests(TransactionTestCase):
                 cursor.execute(f'DROP SCHEMA IF EXISTS "{candidate.storage_schema}" CASCADE')
         super().tearDown()
 
-    def _write_large_property_source(self, root: str, count: int = 5000) -> Path:
-        source_dir = Path(root) / "extracted" / "Real_acct_owner"
-        source_dir.mkdir(parents=True, exist_ok=True)
-        source = source_dir / "real_acct.txt"
-        lines = ["acct\tsite_addr_1\tsite_addr_3\tstate_class\ttot_appr_val"]
-        for i in range(count):
-            acct = f"P{i:07d}"
-            lines.append(f"{acct}\t{i} MAIN ST\t77001\tA1\t{250000 + (i % 50000)}")
-        source.write_text("\n".join(lines) + "\n", encoding="latin-1")
-        return source
-
     def test_harris_candidate_staging_under_synthetic_stress(self):
         record_count = 5000
         request = HarrisImportRequest(
@@ -51,7 +40,7 @@ class HarrisPipelineStressTests(TransactionTestCase):
         )
 
         with tempfile.TemporaryDirectory() as root, self.settings(**_runtime_settings(root)):
-            self._write_large_property_source(root, count=record_count)
+            write_synthetic_real_acct(root, record_count)
             start_time = time.monotonic()
             result = run_harris_import(request)
             duration = time.monotonic() - start_time
