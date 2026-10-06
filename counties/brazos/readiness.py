@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, replace
 from decimal import Decimal
 
@@ -23,6 +24,8 @@ from counties.brazos.tax_units import NON_LEVYING_UNITS
 from counties.common.analysis import assessment_history_rows
 from counties.common.tax_impact import taxing_units
 from counties.common.tax_models import AssessmentHistory, PropertyJurisdictionExemption, TaxUnitRate
+
+_CHUNK = 2000
 
 
 @dataclass(frozen=True)
@@ -77,7 +80,8 @@ class BrazosActiveSnapshotReadiness:
         account = self.account(prop_id, snapshot=snapshot)
         if account is None:
             return None
-        return self._project_account(snapshot, account)
+        (projection,) = self._project_chunk(snapshot, [account])
+        return projection
 
     def account(
         self, prop_id: str, *, snapshot: BrazosPropertySnapshot | None = None
@@ -121,7 +125,7 @@ class BrazosActiveSnapshotReadiness:
         account = self.account(prop_id, snapshot=snapshot)
         if account is None:
             return []
-        subject = self._project_account(snapshot, account)
+        (subject,) = self._project_chunk(snapshot, [account])
         if not subject.comparable_ready:
             return []
         results = find_similar_properties(
@@ -131,13 +135,13 @@ class BrazosActiveSnapshotReadiness:
             max_results=max_results,
             min_score=min_score,
         )
+        candidates = self.static_projections(
+            [result["property"] for result in results], snapshot=snapshot
+        )
         return [
             result
-            for result in results
-            if (
-                (candidate := self._project_account(snapshot, result["property"])).comparable_ready
-                and candidate.comparison_mode == subject.comparison_mode
-            )
+            for result, candidate in zip(results, candidates, strict=True)
+            if candidate.comparable_ready and candidate.comparison_mode == subject.comparison_mode
         ]
 
     def history_view(self, prop_id: str) -> list[dict]:
@@ -181,14 +185,101 @@ class BrazosActiveSnapshotReadiness:
                 )
         return rows
 
-    def _project_account(
-        self, snapshot: BrazosPropertySnapshot, account: PropertyAccount
-    ) -> BrazosReadinessProjection:
-        reasons: dict[str, str] = {}
+    def static_projections(
+        self,
+        accounts: Iterable[PropertyAccount],
+        *,
+        snapshot: BrazosPropertySnapshot | None = None,
+        chunk_size: int = _CHUNK,
+    ) -> Iterator[BrazosReadinessProjection]:
+        """Project per-record facts for many accounts, in order, a fixed query count per chunk."""
+        snapshot = snapshot or self.active_snapshot()
+        if snapshot is None:
+            return
+        chunk: list[PropertyAccount] = []
+        for account in accounts:
+            chunk.append(account)
+            if len(chunk) == chunk_size:
+                yield from self._project_chunk(snapshot, chunk)
+                chunk = []
+        if chunk:
+            yield from self._project_chunk(snapshot, chunk)
+
+    def _project_chunk(
+        self, snapshot: BrazosPropertySnapshot, accounts: list[PropertyAccount]
+    ) -> Iterator[BrazosReadinessProjection]:
+        year = snapshot.tax_year
+        prop_ids = {account.prop_id for account in accounts}
         # Keep the immutable projection and the queryset on the same trimmed
         # predicate. This avoids returning whitespace-only names or addresses
         # from search while marking them unavailable to the subject surface.
-        search_ready = self.search_queryset(snapshot=snapshot).filter(pk=account.pk).exists()
+        searchable = set(
+            self.search_queryset(snapshot=snapshot)
+            .filter(pk__in=[account.pk for account in accounts])
+            .values_list("pk", flat=True)
+        )
+        land_areas = dict(
+            PropertyLand.objects.filter(prop_id__in=prop_ids, tax_year=year)
+            .values("prop_id")
+            .annotate(area=Sum("acreage"))
+            .values_list("prop_id", "area")
+        )
+        # The first residential improvement by imp_id, ordered by the database.
+        improvements: dict[str, tuple[str, int | None]] = {}
+        for prop_id, imp_id, year_built in (
+            PropertyImprovement.objects.filter(
+                prop_id__in=prop_ids, tax_year=year, improvement_type="R"
+            )
+            .order_by("prop_id", "imp_id")
+            .values_list("prop_id", "imp_id", "year_built")
+        ):
+            improvements.setdefault(prop_id, (imp_id, year_built))
+        # imp_id repeats across properties: building facts pair by both keys.
+        room_facts = {
+            (prop_id, imp_id): bedrooms is not None or bathrooms is not None
+            for prop_id, imp_id, bedrooms, bathrooms in (
+                PropertyBuildingCharacteristic.objects.filter(
+                    prop_id__in=prop_ids, tax_year=year
+                ).values_list("prop_id", "imp_id", "bedrooms", "bathrooms")
+            )
+        }
+        featured = set(
+            PropertyExtraFeature.objects.filter(prop_id__in=prop_ids, tax_year=year)
+            .values_list("prop_id", flat=True)
+            .distinct()
+        )
+        for account in accounts:
+            improvement = improvements.get(account.prop_id)
+            land_area = land_areas.get(account.prop_id)
+            facts: set[str] = set()
+            if account.class_code.strip():
+                facts.add("class")
+            if account.year_built or (improvement and improvement[1]):
+                facts.add("effective_age")
+            if improvement is not None and room_facts.get((account.prop_id, improvement[0])):
+                facts.add("beds_baths")
+            if self._positive(land_area):
+                facts.add("land_area")
+            if account.prop_id in featured:
+                facts.add("features")
+            yield self._projection(
+                snapshot,
+                account,
+                search_ready=account.pk in searchable,
+                land_area=land_area,
+                facts=facts,
+            )
+
+    def _projection(
+        self,
+        snapshot: BrazosPropertySnapshot,
+        account: PropertyAccount,
+        *,
+        search_ready: bool,
+        land_area: Decimal | None,
+        facts: set[str],
+    ) -> BrazosReadinessProjection:
+        reasons: dict[str, str] = {}
         if not search_ready:
             reasons["search"] = "The active property record has no owner or address."
 
@@ -198,8 +289,6 @@ class BrazosActiveSnapshotReadiness:
             and account.coordinate_source
             and account.coordinate_source_year is not None
         )
-        land_area = self._land_area(account)
-        facts = self._comparison_facts(account)
         if not has_coordinates:
             mode = None
             reasons["comparable"] = "Coordinates with source provenance are unavailable."
@@ -331,41 +420,3 @@ class BrazosActiveSnapshotReadiness:
     @staticmethod
     def _positive(value: Decimal | None) -> bool:
         return value is not None and value > 0
-
-    @staticmethod
-    def _land_area(account: PropertyAccount) -> Decimal | None:
-        return PropertyLand.objects.filter(
-            prop_id=account.prop_id, tax_year=account.tax_year
-        ).aggregate(area=Sum("acreage"))["area"]
-
-    @staticmethod
-    def _comparison_facts(account: PropertyAccount) -> set[str]:
-        facts: set[str] = set()
-        if account.class_code.strip():
-            facts.add("class")
-        improvement = (
-            PropertyImprovement.objects.filter(
-                prop_id=account.prop_id, tax_year=account.tax_year, improvement_type="R"
-            )
-            .order_by("imp_id")
-            .first()
-        )
-        if account.year_built or (improvement and improvement.year_built):
-            facts.add("effective_age")
-        if improvement is not None:
-            building = PropertyBuildingCharacteristic.objects.filter(
-                prop_id=account.prop_id, tax_year=account.tax_year, imp_id=improvement.imp_id
-            ).first()
-            if building is not None and (
-                building.bedrooms is not None or building.bathrooms is not None
-            ):
-                facts.add("beds_baths")
-        if BrazosActiveSnapshotReadiness._positive(
-            BrazosActiveSnapshotReadiness._land_area(account)
-        ):
-            facts.add("land_area")
-        if PropertyExtraFeature.objects.filter(
-            prop_id=account.prop_id, tax_year=account.tax_year
-        ).exists():
-            facts.add("features")
-        return facts
