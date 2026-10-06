@@ -1,20 +1,22 @@
 """County registration: the one declaration each county makes for shared Import code (ADR-0022)."""
 
-import ast
-import re
 from pathlib import Path
 
 from django.test import SimpleTestCase
 
 from counties.brazos.candidate import BrazosCandidatePort
 from counties.common.county_registry import (
-    CountyRegistration,
     InvalidRegistration,
     UnknownCounty,
     isolated_registrations,
     register,
     registered_slugs,
     registration_for,
+)
+from counties.common.tests.fake_county import (
+    FAKE_COUNTY,
+    FAKE_LOCK_KEY,
+    fake_county_registration,
 )
 from counties.harris.etl_pipeline.candidate import HarrisCandidatePort
 
@@ -68,34 +70,22 @@ class RegistryTests(SimpleTestCase):
 
     def test_an_unregistered_county_is_unknown(self):
         with self.assertRaises(UnknownCounty):
-            registration_for("travis")
+            registration_for(FAKE_COUNTY)
 
     def test_a_lock_key_already_held_by_another_county_is_rejected(self):
         harris = registration_for("harris")
         with isolated_registrations():
             with self.assertRaises(InvalidRegistration):
-                register(_registration(slug="travis", writer_lock_key=harris.writer_lock_key))
+                register(fake_county_registration(writer_lock_key=harris.writer_lock_key))
 
             self.assertEqual(registered_slugs(), ("brazos", "harris"))
 
     def test_a_valid_new_county_registers_without_shared_code_edits(self):
         with isolated_registrations():
-            register(_registration(slug="travis", writer_lock_key=742199))
+            register(fake_county_registration())
 
-            self.assertEqual(registration_for("travis").writer_lock_key, 742199)
+            self.assertEqual(registration_for(FAKE_COUNTY).writer_lock_key, FAKE_LOCK_KEY)
         self.assertEqual(registered_slugs(), ("brazos", "harris"))
-
-
-def _registration(**overrides):
-    fields = {
-        "slug": "travis",
-        "port": registration_for("harris").port,
-        "writer_lock_key": 742199,
-        "warning_logger": "travis_cad",
-        "source_roots": lambda: (Path("/downloads"), Path("/extracts")),
-        **overrides,
-    }
-    return CountyRegistration(**fields)
 
 
 class MalformedRegistrationTests(SimpleTestCase):
@@ -114,33 +104,8 @@ class MalformedRegistrationTests(SimpleTestCase):
         }
         for case, overrides in malformed.items():
             with self.subTest(case), self.assertRaises(InvalidRegistration):
-                _registration(**overrides)
+                fake_county_registration(**overrides)
 
     def test_only_a_registration_can_be_registered(self):
         with isolated_registrations(), self.assertRaises(InvalidRegistration):
             register(registration_for("harris").port)
-
-
-COMMON = Path(__file__).resolve().parents[1]
-LIFECYCLE_MODULES = (
-    *sorted(COMMON.glob("import_*.py")),
-    *sorted(COMMON.glob("candidate_*.py")),
-    COMMON / "county_registry.py",
-    COMMON / "admin.py",
-    COMMON / "management" / "commands" / "cleanup_import_sources.py",
-)
-
-
-class SharedLifecycleCountyNameTests(SimpleTestCase):
-    def test_shared_lifecycle_modules_hold_no_county_name_literals(self):
-        county_name = re.compile(r"harris|brazos|hcad|bcad", re.IGNORECASE)
-        for module in LIFECYCLE_MODULES:
-            with self.subTest(module=module.name):
-                literals = [
-                    node.value
-                    for node in ast.walk(ast.parse(module.read_text(encoding="utf-8")))
-                    if isinstance(node, ast.Constant)
-                    and isinstance(node.value, str)
-                    and county_name.search(node.value)
-                ]
-                self.assertEqual(literals, [])

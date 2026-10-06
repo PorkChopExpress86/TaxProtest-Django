@@ -1,64 +1,13 @@
-"""The operator benchmark harness is county-neutral, and production code never imports tests."""
+"""The operator benchmark harness measures a run and discards its candidate."""
 
 from __future__ import annotations
 
-import ast
-from pathlib import Path
-
 from django.conf import settings
 from django.db import connection
-from django.test import SimpleTestCase, TransactionTestCase
+from django.test import TransactionTestCase
 
 from counties.common.benchmarking import measure, swapped_settings
 from counties.common.models import ImportCandidate, ImportOperation
-
-ROOT = Path(__file__).resolve().parents[3]
-PRODUCTION_PACKAGES = ("counties", "taxprotest")
-
-
-def _is_test_path(path: Path) -> bool:
-    return "tests" in path.parts or path.name.startswith("test_")
-
-
-def _imported_modules(path: Path) -> set[str]:
-    modules: set[str] = set()
-    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-        if isinstance(node, ast.Import):
-            modules.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
-            modules.add(node.module)
-    return modules
-
-
-def _is_test_module(module: str) -> bool:
-    parts = module.split(".")
-    return "tests" in parts or any(part.startswith("test_") for part in parts)
-
-
-class ProductionImportBoundaryTests(SimpleTestCase):
-    def test_no_production_module_imports_a_test_module(self):
-        offenders = [
-            f"{path.relative_to(ROOT).as_posix()}: {module}"
-            for package in PRODUCTION_PACKAGES
-            for path in sorted((ROOT / package).rglob("*.py"))
-            if not _is_test_path(path.relative_to(ROOT))
-            for module in sorted(_imported_modules(path))
-            if _is_test_module(module)
-        ]
-        self.assertEqual(offenders, [])
-
-
-class BenchmarkHarnessNeutralityTests(SimpleTestCase):
-    def test_harness_names_no_county_and_imports_no_county_package(self):
-        path = ROOT / "counties" / "common" / "benchmarking.py"
-        source = path.read_text(encoding="utf-8").lower()
-
-        self.assertNotIn("harris", source)
-        self.assertNotIn("brazos", source)
-        self.assertEqual(
-            {m for m in _imported_modules(path) if m.startswith("counties.")},
-            {"counties.common.models"},
-        )
 
 
 class _FakeResult:

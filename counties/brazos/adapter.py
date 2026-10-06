@@ -23,7 +23,7 @@ from counties.brazos.models import (
     PropertyLand,
 )
 from counties.brazos.readiness import BrazosActiveSnapshotReadiness, BrazosReadinessProjection
-from counties.brazos.similarity import _primary_improvement, find_similar_properties
+from counties.brazos.similarity import find_similar_properties, primary_improvement
 from counties.brazos.tax_units import NON_LEVYING_UNITS
 from counties.common.contracts import (
     Column,
@@ -219,7 +219,7 @@ class BrazosAdapter(CountyAdapter):
         _, account, readiness = subject
 
         year = account.tax_year
-        improvement, building = _primary_improvement(key, year)
+        improvement, building = primary_improvement(key, year)
         year_built = (
             improvement.year_built if improvement and improvement.year_built else account.year_built
         )

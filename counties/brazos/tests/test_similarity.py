@@ -9,9 +9,11 @@ docstring for why condition isn't a separate component here).
 
 from __future__ import annotations
 
+import ast
 from decimal import Decimal
+from pathlib import Path
 
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 
 from counties.brazos.models import (
     PropertyAccount,
@@ -26,11 +28,11 @@ from counties.brazos.similarity import (
     _building_character_similarity,
     _feature_similarity,
     _has_second_floor,
-    _primary_improvement,
     _quality_digit,
     _quality_similarity,
     calculate_similarity_details,
     find_similar_properties,
+    primary_improvement,
 )
 
 TAX_YEAR = 2025
@@ -94,7 +96,7 @@ class PrimaryImprovementSelectionTests(TestCase):
             prop_id="P1", imp_id="I2", tax_year=TAX_YEAR, bedrooms=3
         )
 
-        improvement, characteristic = _primary_improvement("P1", TAX_YEAR)
+        improvement, characteristic = primary_improvement("P1", TAX_YEAR)
 
         self.assertEqual(improvement.imp_id, "I2")
         self.assertEqual(characteristic.bedrooms, 3)
@@ -112,13 +114,34 @@ class PrimaryImprovementSelectionTests(TestCase):
             prop_id="P2", imp_id="I2", tax_year=TAX_YEAR, bedrooms=4
         )
 
-        improvement, characteristic = _primary_improvement("P2", TAX_YEAR)
+        improvement, characteristic = primary_improvement("P2", TAX_YEAR)
 
         self.assertEqual(improvement.imp_id, "I2")
         self.assertEqual(characteristic.bedrooms, 4)
 
     def test_no_improvements_returns_none_none(self):
-        self.assertEqual(_primary_improvement("NOPE", TAX_YEAR), (None, None))
+        self.assertEqual(primary_improvement("NOPE", TAX_YEAR), (None, None))
+
+
+class SimilarityPrivateNameBoundaryTests(SimpleTestCase):
+    def test_no_production_module_imports_a_private_similarity_name(self):
+        root = Path(__file__).resolve().parents[3]
+        offenders = []
+        for package in ("counties", "taxprotest"):
+            for path in (root / package).rglob("*.py"):
+                if "tests" in path.parts or path.name.startswith("test_"):
+                    continue
+                for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+                    if (
+                        isinstance(node, ast.ImportFrom)
+                        and node.module == "counties.brazos.similarity"
+                    ):
+                        offenders.extend(
+                            f"{path.relative_to(root)}: {alias.name}"
+                            for alias in node.names
+                            if alias.name.startswith("_")
+                        )
+        self.assertEqual(offenders, [])
 
 
 class SecondFloorStoriesTests(TestCase):
