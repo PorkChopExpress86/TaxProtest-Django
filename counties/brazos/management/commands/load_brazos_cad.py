@@ -10,8 +10,7 @@ from counties.brazos.property_import import (
     build_default_property_import,
 )
 from counties.common.import_audit import audited_operation
-from counties.common.import_disposition import ImportDispositionKind, import_disposition
-from counties.common.models import ImportOperation
+from counties.common.import_disposition import ImportDispositionKind, disposition_for
 
 
 class Command(BaseCommand):
@@ -76,9 +75,7 @@ class Command(BaseCommand):
         result = build_default_property_import(self).run(
             PropertyImportRequest(mode=PropertyImportMode.CAD_RECOVERY, options=refresh_options)
         )
-        disposition = import_disposition(
-            ImportOperation.objects.get(pk=result.operation_id), subject="Brazos CAD import"
-        )
+        disposition = disposition_for(result.operation_id, subject="Brazos CAD import")
         if disposition.kind is ImportDispositionKind.PREVIEWED:
             self.stdout.write(
                 self.style.SUCCESS(

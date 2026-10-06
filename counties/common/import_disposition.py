@@ -62,6 +62,11 @@ def _review_link() -> str:
     return reverse(f"admin:{meta.app_label}_{meta.model_name}_changelist")
 
 
+def disposition_for(operation_id: UUID | str, *, subject: str) -> ImportDisposition:
+    """Classify the finished Import operation with this id; see ``import_disposition``."""
+    return import_disposition(ImportOperation.objects.get(pk=operation_id), subject=subject)
+
+
 def import_disposition(operation: ImportOperation, *, subject: str) -> ImportDisposition:
     """Classify a finished Import operation; ``subject`` names it in the operator notice.
 

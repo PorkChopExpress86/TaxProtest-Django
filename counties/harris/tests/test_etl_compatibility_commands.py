@@ -10,6 +10,7 @@ from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import TestCase
 
+from counties.common.import_disposition import import_disposition
 from counties.common.models import ImportOperation
 from counties.harris.etl_pipeline import (
     HarrisAcquisitionMode,
@@ -22,12 +23,15 @@ from counties.harris.etl_pipeline.import_plan import HarrisImportPlan
 
 
 class ImportBuildingDataCommandTests(TestCase):
-    @patch("counties.harris.management.commands.import_building_data._run_authoritative_pipeline")
+    @patch("counties.harris.management.commands.import_building_data._run_authoritative_import")
     def test_sync_command_builds_one_plan_and_preserves_skip_flags(self, mocked_run):
         operation = ImportOperation.objects.create(
             county="harris", intent="building-only", status="published"
         )
-        mocked_run.return_value = {"status": "completed", "operation_id": str(operation.pk)}
+        mocked_run.return_value = (
+            {"status": "completed", "operation_id": str(operation.pk)},
+            import_disposition(operation, subject="Harris import"),
+        )
 
         call_command(
             "import_building_data",

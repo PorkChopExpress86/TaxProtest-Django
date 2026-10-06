@@ -3,8 +3,7 @@
 from django.core.management.base import BaseCommand
 
 from counties.brazos.property_import import RefreshOptions, build_default_refresh
-from counties.common.import_disposition import ImportDispositionKind, import_disposition
-from counties.common.models import ImportOperation
+from counties.common.import_disposition import ImportDispositionKind, disposition_for
 
 
 class Command(BaseCommand):
@@ -58,9 +57,7 @@ class Command(BaseCommand):
                 keep_extracted=options["keep_extracted"],
             )
         )
-        disposition = import_disposition(
-            ImportOperation.objects.get(pk=result.operation_id), subject="Brazos annual import"
-        )
+        disposition = disposition_for(result.operation_id, subject="Brazos annual import")
         if disposition.kind is ImportDispositionKind.PREVIEWED:
             self.stdout.write(
                 self.style.SUCCESS(

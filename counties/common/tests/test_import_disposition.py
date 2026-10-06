@@ -9,7 +9,11 @@ from uuid import UUID
 
 from django.test import TestCase
 
-from counties.common.import_disposition import ImportDispositionKind, import_disposition
+from counties.common.import_disposition import (
+    ImportDispositionKind,
+    disposition_for,
+    import_disposition,
+)
 from counties.common.models import ImportOperation
 
 CANDIDATE = UUID("11111111-2222-3333-4444-555555555555")
@@ -47,6 +51,23 @@ class PublishedDispositionTests(TestCase):
 
                 self.assertIs(disposition.kind, ImportDispositionKind.PUBLISHED)
                 self.assertIsNone(disposition.candidate_id)
+
+
+class DispositionForTests(TestCase):
+    def test_an_operation_id_classifies_the_operation_it_names(self):
+        operation = ImportOperation.objects.create(
+            county="harris",
+            intent="full",
+            status="blocked",
+            evidence={"candidate_id": str(CANDIDATE)},
+        )
+
+        for operation_id in (operation.pk, str(operation.pk)):
+            with self.subTest(operation_id=operation_id):
+                self.assertEqual(
+                    disposition_for(operation_id, subject="Harris import"),
+                    import_disposition(operation, subject="Harris import"),
+                )
 
 
 class MissingCandidateIdTests(TestCase):

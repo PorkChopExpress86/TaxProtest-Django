@@ -3,8 +3,7 @@ from pathlib import Path
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
-from counties.common.import_disposition import ImportDispositionKind, import_disposition
-from counties.common.models import ImportOperation
+from counties.common.import_disposition import ImportDispositionKind, disposition_for
 from counties.harris.etl_pipeline import (
     HarrisAcquisitionMode,
     HarrisApply,
@@ -75,9 +74,7 @@ class Command(BaseCommand):
                 origin="command",
             )
         )
-        disposition = import_disposition(
-            ImportOperation.objects.get(pk=result.operation_id), subject="Harris import"
-        )
+        disposition = disposition_for(result.operation_id, subject="Harris import")
         # A strict run never ends incomplete, so it keeps failing if one ever does.
         if disposition.kind is ImportDispositionKind.HELD and not disposition.incomplete:
             self.stdout.write(self.style.WARNING(disposition.notice))

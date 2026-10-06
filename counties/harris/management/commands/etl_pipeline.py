@@ -15,8 +15,7 @@ from datetime import datetime
 
 from django.core.management.base import BaseCommand, CommandError
 
-from counties.common.import_disposition import ImportDispositionKind, import_disposition
-from counties.common.models import ImportOperation
+from counties.common.import_disposition import ImportDispositionKind, disposition_for
 from counties.harris.etl_pipeline import (
     DownloadManager,
     ETLConfig,
@@ -335,9 +334,7 @@ class Command(BaseCommand):
             for error in result.errors[:5]:
                 self.stdout.write(self.style.ERROR(f"  - {error}"))
 
-        disposition = import_disposition(
-            ImportOperation.objects.get(pk=result.operation_id), subject="Harris import"
-        )
+        disposition = disposition_for(result.operation_id, subject="Harris import")
         # A strict run never ends incomplete, so it keeps failing if one ever does.
         strict = options.get("strict", True)
         if disposition.kind is ImportDispositionKind.FAILED or (strict and disposition.incomplete):
