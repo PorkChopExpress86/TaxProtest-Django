@@ -3,13 +3,13 @@
 import hashlib
 from collections.abc import Iterator
 from contextlib import contextmanager
-from enum import StrEnum
 from pathlib import Path
 
 from django.utils import timezone
 
 from counties.common.county_registry import registration_for
 from counties.common.import_logging import import_warnings
+from counties.common.import_states import OperationStatus
 from counties.common.import_writers import county_writer
 from counties.common.models import ImportOperation
 
@@ -24,21 +24,6 @@ def record_sources(operation: ImportOperation, paths: list[Path], **identity) ->
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                 digest.update(chunk)
         sources.append({"path": str(path), "sha256": digest.hexdigest(), **identity})
-
-
-class OperationStatus(StrEnum):
-    """The one status vocabulary of an Import operation."""
-
-    RUNNING = "running"
-    COMPLETED = "completed"
-    COMPLETED_WITH_WARNINGS = "completed_with_warnings"
-    PARTIAL = "partial"
-    PREPARED = "prepared"
-    BLOCKED = "blocked"
-    AWAITING_REVIEW = "awaiting_review"
-    PUBLISHED = "published"
-    ALREADY_APPLIED = "already_applied"
-    FAILED = "failed"
 
 
 @contextmanager

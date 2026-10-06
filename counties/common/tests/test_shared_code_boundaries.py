@@ -16,7 +16,7 @@ from pathlib import Path
 from django.test import SimpleTestCase
 
 from counties.common.county_registry import registered_slugs
-from counties.common.import_audit import OperationStatus
+from counties.common.import_states import CandidateState, LegacyOperationStatus, OperationStatus
 from counties.common.tests.fake_county import FAKE_COUNTY
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -38,68 +38,29 @@ SHARED_MODULES = (
 # included so no shared file can be edited to make the fake county work.
 COUNTY_ALIASES = ("hcad", "bcad")
 
-# Candidate state has no shared definition yet; #94 defines it beside OperationStatus
-# and this tuple should then be read from that vocabulary.
-CANDIDATE_STATES = (
-    "preparing",
-    "prepared",
-    "blocked",
-    "awaiting_review",
-    "approved",
-    "rejected",
-    "published",
-    "superseded",
-    "failed",
-)
-# A legacy stored operation status, still matched by source reuse.
-LEGACY_OPERATION_STATUSES = ("validated",)
-STATUS_VOCABULARY = frozenset(
-    {status.value for status in OperationStatus}
-    | set(CANDIDATE_STATES)
-    | set(LEGACY_OPERATION_STATUSES)
-)
+VOCABULARIES = (OperationStatus, LegacyOperationStatus, CandidateState)
+STATUS_VOCABULARY = frozenset(member.value for vocabulary in VOCABULARIES for member in vocabulary)
+VOCABULARY_CLASSES = frozenset(vocabulary.__name__ for vocabulary in VOCABULARIES)
 
 # The one allow-list: (module, literal) -> occurrences. It must match exactly, so a new
 # leak fails and so does a stale entry once its literal is removed.
 ALLOWED: dict[tuple[str, str], int] = {
     # Not statuses: the candidate port's question names.
     ("county_registry.py", "published"): 1,
-    # Bare candidate-state and operation-status spellings that remain until #94 moves
-    # this code onto the shared vocabulary; remove each entry as its literal goes. Some
-    # counts include an audit-entry result or evidence key with the same spelling, which
-    # #94 classifies.
-    ("admin.py", "approved"): 1,
-    ("admin.py", "rejected"): 1,
+    # Not statuses: a persisted evidence key (ADR-0024).
     ("candidate_lifecycle.py", "already_applied"): 1,
-    ("candidate_lifecycle.py", "awaiting_review"): 1,
-    ("candidate_lifecycle.py", "blocked"): 2,
-    ("candidate_lifecycle.py", "prepared"): 2,
-    ("candidate_lifecycle.py", "published"): 2,
-    ("candidate_lifecycle.py", "superseded"): 1,
-    ("import_recovery.py", "published"): 2,
-    ("import_recovery.py", "superseded"): 1,
+    # Not statuses: ImportAuditEntry.result values of publication, supersession, a
+    # rejected review attempt, writer recovery and source cleanup, a separate vocabulary.
+    ("candidate_lifecycle.py", "published"): 1,
+    ("import_recovery.py", "published"): 1,
+    ("import_retention.py", "superseded"): 1,
+    ("import_retention.py", "running"): 1,
     ("import_retention.py", "completed"): 1,
     ("import_retention.py", "completed_with_warnings"): 1,
+    ("import_review.py", "rejected"): 1,
+    ("import_writers.py", "rejected"): 1,
+    # Not statuses: a per-source cleanup result.
     ("import_retention.py", "failed"): 2,
-    ("import_retention.py", "published"): 3,
-    ("import_retention.py", "rejected"): 1,
-    ("import_retention.py", "running"): 1,
-    ("import_retention.py", "superseded"): 3,
-    ("import_review.py", "approved"): 5,
-    ("import_review.py", "blocked"): 1,
-    ("import_review.py", "preparing"): 1,
-    ("import_review.py", "published"): 1,
-    ("import_review.py", "rejected"): 5,
-    ("import_review.py", "superseded"): 1,
-    ("import_writers.py", "awaiting_review"): 1,
-    ("import_writers.py", "completed"): 1,
-    ("import_writers.py", "completed_with_warnings"): 1,
-    ("import_writers.py", "partial"): 1,
-    ("import_writers.py", "prepared"): 1,
-    ("import_writers.py", "published"): 1,
-    ("import_writers.py", "rejected"): 2,
-    ("import_writers.py", "superseded"): 1,
-    ("import_writers.py", "validated"): 1,
 }
 
 
@@ -137,12 +98,12 @@ def county_imports(source: str) -> list[str]:
 
 
 def bare_status_strings(source: str) -> list[str]:
-    """String literals spelling a status, outside the ``OperationStatus`` definition itself."""
+    """String literals spelling a status, outside the shared vocabulary definitions."""
     tree = ast.parse(source)
     vocabulary_definition = {
         id(node)
         for cls in ast.walk(tree)
-        if isinstance(cls, ast.ClassDef) and cls.name == "OperationStatus"
+        if isinstance(cls, ast.ClassDef) and cls.name in VOCABULARY_CLASSES
         for node in ast.walk(cls)
     }
     return [
@@ -188,6 +149,10 @@ class BoundaryScannerTests(SimpleTestCase):
         source = (
             "class OperationStatus(StrEnum):\n"
             '    FAILED = "failed"\n'
+            "class CandidateState(StrEnum):\n"
+            '    PREPARED = "prepared"\n'
+            "class LegacyOperationStatus(StrEnum):\n"
+            '    VALIDATED = "validated"\n'
             'candidate.state = "awaiting_review"\n'
             'filter(status__in=("validated", OperationStatus.FAILED))\n'
             'reason = "awaiting review is fine as prose"\n'

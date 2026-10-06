@@ -22,7 +22,7 @@ from counties.common.candidate_ports import (
 )
 from counties.common.candidate_staging import cutover_staged_tables, staged_candidate_schema
 from counties.common.county_registry import registration_for
-from counties.common.import_audit import OperationStatus, audited_operation
+from counties.common.import_audit import audited_operation
 from counties.common.import_coverage import compare_coverage
 from counties.common.import_recovery import (
     ReplayRejected,
@@ -36,6 +36,7 @@ from counties.common.import_retention import (
     retain_baseline_sources,
 )
 from counties.common.import_review import authorize_publication
+from counties.common.import_states import CandidateState, OperationStatus, operation_status_for
 from counties.common.import_writers import fenced_write
 from counties.common.models import ImportAuditEntry, ImportCandidate, ImportOperation
 
@@ -119,18 +120,18 @@ def prepare(
                 candidate.evidence["coverage"] = coverage
         candidate.evidence["content_identity"] = dataset_identity(county, candidate.storage_schema)
         if coverage is None or coverage["hard_failures"]:
-            candidate.state = "blocked"
+            candidate.state = CandidateState.BLOCKED
         elif coverage["requires_review"]:
-            candidate.state = "awaiting_review"
+            candidate.state = CandidateState.AWAITING_REVIEW
         else:
-            candidate.state = "prepared"
+            candidate.state = CandidateState.PREPARED
         if loaded.complete:
-            operation.status = OperationStatus(candidate.state)
+            operation.status = operation_status_for(candidate.state)
         else:
             operation.status = OperationStatus.FAILED
             operation.errors.extend(loaded.errors)
     except Exception as exc:
-        candidate.state = "blocked"
+        candidate.state = CandidateState.BLOCKED
         candidate.evidence["error"] = str(exc)
         raise
     finally:
@@ -138,7 +139,7 @@ def prepare(
         candidate.sources = operation.evidence.get("sources", [])
         operation.save()
         candidate.save()
-    if automatic_publication and candidate.state == "prepared":
+    if automatic_publication and candidate.state == CandidateState.PREPARED:
         candidate = publish(operation, candidate.pk, user=user, reason=reason)
     return Prepared(candidate, loaded.result)
 
@@ -160,7 +161,7 @@ def publish(
             candidate = ImportCandidate.objects.select_for_update().get(
                 pk=candidate_id, county=county
             )
-            if candidate.state in ("published", "superseded"):
+            if candidate.state in (CandidateState.PUBLISHED, CandidateState.SUPERSEDED):
                 operation.publication_before = operation.publication_after = published_identity(
                     county
                 )
