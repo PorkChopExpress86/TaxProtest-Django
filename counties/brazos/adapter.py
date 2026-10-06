@@ -271,8 +271,6 @@ class BrazosAdapter(CountyAdapter):
         )
         results = []
         for result, peer in zip(found, peers, strict=True):
-            if peer.snapshot_id != reading.snapshot_id:
-                raise RuntimeError("Subject and peer readings came from different snapshots.")
             if peer.comparable_ready and peer.comparison_mode == reading.comparison_mode:
                 results.append(result)
 
