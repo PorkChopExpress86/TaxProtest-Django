@@ -18,5 +18,6 @@ The shared Django admin import area displays each county's persisted writer
 status, active operation identity, and a visible recovery-required state. It
 provides access to the operator recovery action and its audit evidence.
 
-Implementation of county-wide coordination is pending; Harris persistence
-documents one authoritative writer but does not itself coordinate writers.
+County writers are coordinated by one PostgreSQL advisory lock per county,
+taken inside each Import operation. The lock key is declared by the County
+registration and is frozen (ADR-0022, ADR-0024).

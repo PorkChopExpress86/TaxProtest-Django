@@ -70,6 +70,13 @@ tax impact estimates, and assessment-history availability notices required for
 an ARB hearing on one subject property.
 _Avoid_: report context, view data, protest tuple
 
+**Comparable shortfall**:
+A Protest evidence dossier for a report-ready property that finds fewer than
+three comparables at the chosen minimum score. The dossier states the shortfall
+and points to lowering the minimum score instead of presenting a thin estimate
+as complete.
+_Avoid_: not report-ready, empty report, one-comparable estimate
+
 ## County ETL parity
 
 **Outcome readiness**:
@@ -111,11 +118,45 @@ a single classified status. Every county data mutation happens inside one; a
 failure after its publication commits is a warning, never a failed import.
 _Avoid_: job, task, run
 
+**Import disposition**:
+What a finished Import operation did to its county's published data, read from
+the operation's own classified status: published, already applied, held for an
+operator, or failed, and whether the import was incomplete. Derived, never
+stored.
+_Avoid_: outcome, import success, result status, workflow state
+
+**Candidate state**:
+The persisted position of a candidate in the Candidate lifecycle: preparing,
+prepared, awaiting review, blocked, approved, rejected, published, or
+superseded. It is a separate vocabulary from an Import operation's status.
+_Avoid_: candidate status, workflow state, import status
+
+**Held candidate**:
+A prepared, awaiting-review, or blocked candidate that an Import operation left
+unpublished for an operator; published data is unchanged. A county's first
+import is always held for review, so holding is an expected result, not a
+failure.
+_Avoid_: failed import, stuck import, pending import
+
+**Incomplete import**:
+A best-effort Harris import that loaded some sources but not others. Its
+candidate is held as blocked and nothing is published. It is not a Partial
+property import.
+_Avoid_: partial success, partial publication
+
 **Candidate lifecycle**:
 The shared preparation, qualification, review, publication, and recovery of a
 county property candidate inside an Import operation. It asks each county only
 through its registered county candidate port and never interprets county sources.
 _Avoid_: import framework, shared ETL, cross-county importer
+
+**County registration**:
+The one declaration a county makes so shared Import operation code can reach
+the county facts it cannot derive: its county candidate port, writer
+reservation identity, warning source, and managed source locations. It declares
+facts only, never sources, parsing, readiness, or a runner. An unregistered
+county is rejected before any Import operation is recorded.
+_Avoid_: county config, county plugin, ETL registry
 
 **Candidate staging**:
 The county-neutral database isolation mechanism that provisions a temporary
@@ -166,7 +207,8 @@ _Avoid_: data ready, residential flag, annual refresh
 The immutable county-owned read result for an active snapshot: per-property
 capabilities and reasons, coordinate provenance, and the fixed history view.
 Shared search, subject, comparable, report, and tax reads consume it rather
-than choosing years or eligibility independently.
+than choosing years or eligibility independently. Coverage qualification and
+the web surface apply the same rule, so both give the same answer.
 _Avoid_: view-specific year selection, duplicated readiness query
 
 **Comparable-ready**:
@@ -178,9 +220,12 @@ _Avoid_: location-only record, similarity score cutoff, residential flag
 
 **Report-ready**:
 An active comparable-ready Brazos property with positive assessed value and
-living area plus at least three comparable-ready candidates with those values,
-enough for actionable equity evidence.
-_Avoid_: report template render, one-comparable estimate, tax impact
+living area in a snapshot holding at least three other same-mode
+comparable-ready properties with those values, judged from source facts with no
+distance or similarity score. It promises that enough equity evidence exists,
+not how many comparables a dossier finds at a chosen minimum score.
+_Avoid_: report template render, one-comparable estimate, tax impact,
+similarity score cutoff, search result count
 
 **Tax-impact-ready**:
 An active report-ready Brazos property with matching-year jurisdiction and

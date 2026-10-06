@@ -16,7 +16,9 @@ without violating repository architecture boundaries or bloating execution envir
 2. **ETL stress verification**: County ETL pipelines must use a two-tiered testing model:
    fast synthetic multi-stage candidate generators (thousands of records) inside CI pytest
    to guard memory bounds, chunking, and qualification logic, accompanied by an on-demand
-   operator management command for benchmarking throughput against multi-gigabyte files.
+   operator management command for benchmarking throughput with high-volume synthetic
+   rows. The command takes the real county writer lock and records an Import operation;
+   its county bodies and data builders live in the county packages (ADR-0022).
 
 3. **Deployment readiness verification**: Deployments must verify migration currency,
    database schema accessibility across all county tables, and Celery beat schedule bindings

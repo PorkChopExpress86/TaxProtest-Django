@@ -93,8 +93,7 @@ was not actually run.
   `counties/common/tests/test_shared_pages.py`.
 - Use environment variables and the existing runtime-path helpers for configuration. Never hardcode
   credentials or production data.
-- Keep edits scoped. Commit, push, close issues, or change external state only when the request
-  explicitly includes that action.
+- Keep edits scoped.
 - Finish by reporting the files changed, checks run with observed results, and anything still
   unverified.
 
