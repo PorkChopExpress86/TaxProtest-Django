@@ -47,8 +47,9 @@ VOCABULARY_CLASSES = frozenset(vocabulary.__name__ for vocabulary in VOCABULARIE
 ALLOWED: dict[tuple[str, str], int] = {
     # Not statuses: the candidate port's question names.
     ("county_registry.py", "published"): 1,
-    # Not statuses: a persisted evidence key (ADR-0024).
+    # Not statuses: a persisted evidence key (ADR-0024), written and read.
     ("candidate_lifecycle.py", "already_applied"): 1,
+    ("import_disposition.py", "already_applied"): 1,
     # Not statuses: ImportAuditEntry.result values of publication, supersession, a
     # rejected review attempt, writer recovery and source cleanup, a separate vocabulary.
     ("candidate_lifecycle.py", "published"): 1,
