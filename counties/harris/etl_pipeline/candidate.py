@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+from django.conf import settings
+
 from counties.common.candidate_lifecycle import CandidateLoad
 from counties.common.candidate_ports import CandidateTables
 from counties.common.import_coverage import OutcomePopulation
@@ -20,6 +24,11 @@ from .orchestrator import (
 )
 
 MODELS = (PropertyRecord, BuildingDetail, ExtraFeature)
+
+
+def source_roots() -> tuple[Path, ...]:
+    """The roots under which Harris imports keep managed sources, read on every call."""
+    return (Path(settings.HCAD_DOWNLOAD_DIR), Path(settings.HCAD_EXTRACT_DIR))
 
 
 class HarrisCandidatePort:

@@ -12,7 +12,15 @@ class HarrisConfig(AppConfig):
 
     def ready(self):
         # Models are importable only once the app registry is ready.
-        from counties.common.candidate_ports import register
-        from counties.harris.etl_pipeline.candidate import HarrisCandidatePort
+        from counties.common.county_registry import CountyRegistration, register
+        from counties.harris.etl_pipeline.candidate import HarrisCandidatePort, source_roots
 
-        register("harris", HarrisCandidatePort())
+        register(
+            CountyRegistration(
+                slug="harris",
+                port=HarrisCandidatePort(),
+                writer_lock_key=742101,  # every running process must agree; never change
+                warning_logger="etl_orchestrator",
+                source_roots=source_roots,
+            )
+        )
