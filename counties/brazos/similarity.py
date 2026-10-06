@@ -566,8 +566,9 @@ def find_similar_properties(
     ).order_by("imp_id"):
         improvements_by_prop[imp.prop_id].append(imp)
 
-    characteristics_by_imp: dict[str, PropertyBuildingCharacteristic] = {
-        c.imp_id: c
+    # Keyed by (prop_id, imp_id): imp_id alone repeats across properties.
+    characteristics_by_imp: dict[tuple[str, str], PropertyBuildingCharacteristic] = {
+        (c.prop_id, c.imp_id): c
         for c in PropertyBuildingCharacteristic.objects.filter(
             prop_id__in=candidate_prop_ids, tax_year=tax_year
         )
@@ -594,7 +595,7 @@ def find_similar_properties(
         c_improvement = None
         c_building = None
         for imp in c_improvements:
-            characteristic = characteristics_by_imp.get(imp.imp_id)
+            characteristic = characteristics_by_imp.get((imp.prop_id, imp.imp_id))
             if characteristic is not None:
                 c_improvement, c_building = imp, characteristic
                 break
