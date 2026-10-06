@@ -148,12 +148,26 @@ def _feature_similarity(
     return intersection / union
 
 
-def _primary_improvement(
+def _select_primary_improvement(
+    improvements: list[PropertyImprovement],
+    characteristics_by_imp: dict[str, PropertyBuildingCharacteristic],
+) -> tuple[PropertyImprovement | None, PropertyBuildingCharacteristic | None]:
+    """Scoring's primary-improvement rule over one property's 'R' improvements
+    (ordered by imp_id) and that property's characteristics rows by imp_id."""
+    for improvement in improvements:
+        characteristic = characteristics_by_imp.get(improvement.imp_id)
+        if characteristic is not None:
+            return improvement, characteristic
+    return (improvements[0] if improvements else None), None
+
+
+def primary_improvement(
     prop_id: str, tax_year: int
 ) -> tuple[PropertyImprovement | None, PropertyBuildingCharacteristic | None]:
-    """Pick the residential improvement + its characteristics row to
-    represent this property. See module docstring for why 'R'/first-match
-    is the tiebreak for the 20.4% of properties with multiple improvements."""
+    """Pick the residential improvement + its characteristics row that scoring
+    uses to represent this property. See module docstring for why 'R'/first-match
+    is the tiebreak for the 20.4% of properties with multiple improvements.
+    Readiness keeps its own primary-improvement rule (ADR-0020)."""
     improvements = list(
         PropertyImprovement.objects.filter(
             prop_id=prop_id, tax_year=tax_year, improvement_type="R"
@@ -168,11 +182,7 @@ def _primary_improvement(
             prop_id=prop_id, tax_year=tax_year, imp_id__in=[i.imp_id for i in improvements]
         )
     }
-    for improvement in improvements:
-        characteristic = characteristics_by_imp.get(improvement.imp_id)
-        if characteristic is not None:
-            return improvement, characteristic
-    return improvements[0], None
+    return _select_primary_improvement(improvements, characteristics_by_imp)
 
 
 def _has_second_floor(prop_id: str, imp_id: str, tax_year: int) -> bool:
@@ -364,7 +374,7 @@ def find_similar_properties(
     target_lat = float(target.latitude)
     target_lon = float(target.longitude)
 
-    target_improvement, target_building = _primary_improvement(prop_id, tax_year)
+    target_improvement, target_building = primary_improvement(prop_id, tax_year)
     target_features = list(PropertyExtraFeature.objects.filter(prop_id=prop_id, tax_year=tax_year))
     target_acreage = _total_acreage(prop_id, tax_year)
 
@@ -421,13 +431,14 @@ def find_similar_properties(
     ).order_by("imp_id"):
         improvements_by_prop[imp.prop_id].append(imp)
 
-    # Keyed by (prop_id, imp_id): imp_id alone repeats across properties.
-    characteristics_by_imp: dict[tuple[str, str], PropertyBuildingCharacteristic] = {
-        (c.prop_id, c.imp_id): c
-        for c in PropertyBuildingCharacteristic.objects.filter(
-            prop_id__in=candidate_prop_ids, tax_year=tax_year
-        )
-    }
+    # Keyed by prop_id, then imp_id: imp_id alone repeats across properties.
+    characteristics_by_prop: dict[str, dict[str, PropertyBuildingCharacteristic]] = defaultdict(
+        dict
+    )
+    for c in PropertyBuildingCharacteristic.objects.filter(
+        prop_id__in=candidate_prop_ids, tax_year=tax_year
+    ):
+        characteristics_by_prop[c.prop_id][c.imp_id] = c
 
     features_by_prop: dict[str, list[PropertyExtraFeature]] = defaultdict(list)
     for f in PropertyExtraFeature.objects.filter(prop_id__in=candidate_prop_ids, tax_year=tax_year):
@@ -446,16 +457,10 @@ def find_similar_properties(
     for candidate in candidate_list:
         dist = getattr(candidate, "distance", 0.0)
 
-        c_improvements = improvements_by_prop.get(candidate.prop_id, [])
-        c_improvement = None
-        c_building = None
-        for imp in c_improvements:
-            characteristic = characteristics_by_imp.get((imp.prop_id, imp.imp_id))
-            if characteristic is not None:
-                c_improvement, c_building = imp, characteristic
-                break
-        if c_improvement is None and c_improvements:
-            c_improvement = c_improvements[0]
+        c_improvement, c_building = _select_primary_improvement(
+            improvements_by_prop.get(candidate.prop_id, []),
+            characteristics_by_prop.get(candidate.prop_id, {}),
+        )
 
         c_features = features_by_prop.get(candidate.prop_id, [])
         c_acreage = (
