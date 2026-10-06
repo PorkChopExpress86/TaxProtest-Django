@@ -2,12 +2,13 @@
 
 from django.core.management.base import BaseCommand
 
+from counties.common.county_registry import registered_slugs
 from counties.common.import_retention import cleanup_sources
 
 
 class Command(BaseCommand):
     def add_arguments(self, parser):
-        parser.add_argument("--county", choices=("harris", "brazos"), required=True)
+        parser.add_argument("--county", choices=registered_slugs(), required=True)
         parser.add_argument("--actor", default="")
         parser.add_argument("--reason", required=True)
 
