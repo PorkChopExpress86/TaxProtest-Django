@@ -1,15 +1,11 @@
 """Similarity search for comparable Brazos properties.
 
-Deliberately NOT a generalization of data/similarity.py (wayfinder ticket
-#9): that module's model-coupled functions (find_similar_properties,
-calculate_similarity_details, _building_character_similarity,
-_feature_similarity) take PropertyRecord/BuildingDetail/ExtraFeature
-instances directly with no dict/protocol abstraction layer, so adapting them
-would be a real rewrite, not a parameterization. The small handful of pure
-math/curve helpers below (_clamp, _interpolate_curve, _percentage_similarity,
-etc.) have zero model coupling and are intentionally duplicated rather than
-imported, so this module stays self-contained -- see data/similarity.py if
-those two copies ever need to double-check each other.
+The pure similarity math (numeric helpers, tuning curves, per-factor
+similarity functions, label bands and score assembly) is shared with Harris
+in counties/common/similarity_math.py (ADR-0021). This module owns what is
+Brazos-specific: the factor list and weights, the class-code quality tier,
+the SECOND-FLOOR stories proxy, primary-improvement selection, candidate
+pre-filters, and the pair scorer.
 
 Weighting differs from Harris's RESIDENTIAL_WEIGHTS in one structural way:
 Brazos has no confirmed whole-building *condition* rating separate from
@@ -40,6 +36,25 @@ from math import cos, radians
 
 from django.db.models import ExpressionWrapper, F, FloatField, Value
 from django.db.models.functions import ACos, Cos, Greatest, Least, Radians, Sin
+
+from counties.common.similarity_math import (
+    AGE_CURVE,
+    BATHROOMS_CURVE,
+    BEDROOMS_CURVE,
+    LAND_SIZE_CURVE,
+    LIVING_AREA_CURVE,
+    RANK_DIFFERENCE_CURVE,
+    STORIES_CURVE,
+    categorical_similarity,
+    clamp,
+    component,
+    difference_similarity,
+    distance_similarity,
+    interpolate_curve,
+    normalized_code,
+    percentage_similarity,
+    score_from_components,
+)
 
 from .models import (
     PropertyAccount,
@@ -85,144 +100,11 @@ COMPONENT_LABELS = {
 CLASS_CODE_DIGIT_RE = re.compile(r"(\d)")
 
 
-# ---------------------------------------------------------------- pure math helpers
-
-
-def _clamp(value: float, lower: float = 0.0, upper: float = 1.0) -> float:
-    return max(lower, min(upper, value))
-
-
-def _interpolate_curve(value: float, curve: list[tuple[float, float]]) -> float:
-    if not curve:
-        return 0.0
-    if value <= curve[0][0]:
-        return curve[0][1]
-    for (start_x, start_y), (end_x, end_y) in zip(curve, curve[1:]):
-        if value <= end_x:
-            if end_x == start_x:
-                return end_y
-            ratio = (value - start_x) / (end_x - start_x)
-            return start_y + ((end_y - start_y) * ratio)
-    return curve[-1][1]
-
-
-def _safe_float(value: object) -> float | None:
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _normalized_code(value: object) -> str:
-    return str(value or "").strip().upper()
-
-
-def _percentage_similarity(
-    target_value: object, candidate_value: object, curve: list[tuple[float, float]]
-) -> float | None:
-    target_num = _safe_float(target_value)
-    candidate_num = _safe_float(candidate_value)
-    if target_num is None or candidate_num is None or target_num <= 0:
-        return None
-    diff_pct = abs(target_num - candidate_num) / target_num
-    return _clamp(_interpolate_curve(diff_pct, curve))
-
-
-def _difference_similarity(
-    target_value: object, candidate_value: object, curve: list[tuple[float, float]]
-) -> float | None:
-    target_num = _safe_float(target_value)
-    candidate_num = _safe_float(candidate_value)
-    if target_num is None or candidate_num is None:
-        return None
-    return _clamp(_interpolate_curve(abs(target_num - candidate_num), curve))
-
-
-def _categorical_similarity(target_code: object, candidate_code: object) -> float | None:
-    normalized_target = _normalized_code(target_code)
-    normalized_candidate = _normalized_code(candidate_code)
-    if not normalized_target or not normalized_candidate:
-        return None
-    if normalized_target == normalized_candidate:
-        return 1.0
-    if len(normalized_target) >= 2 and len(normalized_candidate) >= 2:
-        if normalized_target[:2] == normalized_candidate[:2]:
-            return 0.65
-    if normalized_target[0] == normalized_candidate[0]:
-        return 0.4
-    return 0.0
-
-
-def _distance_similarity(distance: float, max_distance_miles: float) -> float | None:
-    if max_distance_miles <= 0:
-        return None
-    ratio = _clamp(distance / max_distance_miles)
-    return _clamp(
-        _interpolate_curve(
-            ratio, [(0.0, 1.0), (0.1, 0.93), (0.25, 0.78), (0.5, 0.52), (0.75, 0.24), (1.0, 0.05)]
-        )
-    )
-
-
-def get_similarity_label(score: float) -> str:
-    """Return a user-facing label for a 0-100 match score. Same bands as
-    Harris's (see CLAUDE.md's Similarity Algorithm section) -- the labels
-    describe the score itself, not anything Harris-specific."""
-    if score >= 84:
-        return "Best match"
-    if score >= 70:
-        return "Highly similar"
-    if score >= 52:
-        return "Good match"
-    if score >= 36:
-        return "OK match"
-    return "Broad match"
-
-
-def _component(name: str, weight: float, similarity: float | None) -> dict[str, object]:
-    return {
-        "name": name,
-        "label": COMPONENT_LABELS.get(name, name.replace("_", " ").title()),
-        "weight": weight,
-        "similarity": None if similarity is None else round(similarity, 3),
-        "points": None if similarity is None else round(weight * similarity, 1),
-        "available": similarity is not None,
-    }
-
-
-def _score_from_components(
-    components: list[dict[str, object]], *, is_land_only: bool
-) -> dict[str, object]:
-    total_possible_weight = sum(float(c["weight"]) for c in components)
-    available_components = [
-        (float(c["weight"]), float(c["similarity"]))
-        for c in components
-        if c["similarity"] is not None
-    ]
-    if not available_components or total_possible_weight <= 0:
-        return {"score": 0.0, "components": components, "available_weight": 0.0}
-
-    available_weight = sum(weight for weight, _ in available_components)
-    weighted_sum = sum(weight * similarity for weight, similarity in available_components)
-    base_score = weighted_sum / available_weight
-    coverage_ratio = 1.0 if is_land_only else (available_weight / total_possible_weight)
-    completeness_multiplier = 1.0 if is_land_only else (0.8 + (0.2 * coverage_ratio))
-    final_score = base_score * completeness_multiplier * 100.0
-
-    return {
-        "score": round(_clamp(final_score, lower=0.0, upper=100.0), 1),
-        "components": components,
-        "available_weight": round(available_weight, 1),
-    }
-
-
 # ---------------------------------------------------------------- Brazos-specific helpers
 
 
 def _quality_digit(class_code: object) -> int | None:
-    match = CLASS_CODE_DIGIT_RE.search(_normalized_code(class_code))
+    match = CLASS_CODE_DIGIT_RE.search(normalized_code(class_code))
     return int(match.group(1)) if match else None
 
 
@@ -231,12 +113,7 @@ def _quality_similarity(target_class_code: object, candidate_class_code: object)
     candidate_digit = _quality_digit(candidate_class_code)
     if target_digit is None or candidate_digit is None:
         return None
-    return _clamp(
-        _interpolate_curve(
-            abs(target_digit - candidate_digit),
-            [(0.0, 1.0), (1.0, 0.72), (2.0, 0.42), (3.0, 0.18), (5.0, 0.0)],
-        )
-    )
+    return clamp(interpolate_curve(abs(target_digit - candidate_digit), RANK_DIFFERENCE_CURVE))
 
 
 def _building_character_similarity(
@@ -246,7 +123,7 @@ def _building_character_similarity(
     if target_building is None or candidate_building is None:
         return None
     for attr_name in ("exterior_wall", "construction_style", "foundation"):
-        similarity = _categorical_similarity(
+        similarity = categorical_similarity(
             getattr(target_building, attr_name, None), getattr(candidate_building, attr_name, None)
         )
         if similarity is not None:
@@ -362,78 +239,67 @@ def calculate_similarity_details(
         )
         components.extend(
             [
-                _component(
+                component(
                     "living_area",
                     RESIDENTIAL_WEIGHTS["living_area"],
-                    _percentage_similarity(
+                    percentage_similarity(
                         target_account.living_area,
                         candidate_account.living_area,
-                        [
-                            (0.0, 1.0),
-                            (0.03, 0.96),
-                            (0.05, 0.90),
-                            (0.10, 0.78),
-                            (0.20, 0.55),
-                            (0.30, 0.32),
-                            (0.40, 0.16),
-                            (0.50, 0.06),
-                            (0.75, 0.0),
-                        ],
+                        LIVING_AREA_CURVE,
                     ),
+                    labels=COMPONENT_LABELS,
                 ),
-                _component(
+                component(
                     "bedrooms",
                     RESIDENTIAL_WEIGHTS["bedrooms"],
-                    _difference_similarity(
+                    difference_similarity(
                         target_building.bedrooms if target_building else None,
                         candidate_building.bedrooms if candidate_building else None,
-                        [(0.0, 1.0), (1.0, 0.62), (2.0, 0.22), (3.0, 0.06), (4.0, 0.0)],
+                        BEDROOMS_CURVE,
                     ),
+                    labels=COMPONENT_LABELS,
                 ),
-                _component(
+                component(
                     "bathrooms",
                     RESIDENTIAL_WEIGHTS["bathrooms"],
-                    _difference_similarity(
+                    difference_similarity(
                         target_building.bathrooms if target_building else None,
                         candidate_building.bathrooms if candidate_building else None,
-                        [(0.0, 1.0), (0.5, 0.76), (1.0, 0.40), (1.5, 0.14), (2.5, 0.0)],
+                        BATHROOMS_CURVE,
                     ),
+                    labels=COMPONENT_LABELS,
                 ),
-                _component(
+                component(
                     "quality",
                     RESIDENTIAL_WEIGHTS["quality"],
                     _quality_similarity(target_account.class_code, candidate_account.class_code),
+                    labels=COMPONENT_LABELS,
                 ),
-                _component(
+                component(
                     "age",
                     RESIDENTIAL_WEIGHTS["age"],
-                    _difference_similarity(
+                    difference_similarity(
                         _effective_year(target_improvement, target_account),
                         _effective_year(candidate_improvement, candidate_account),
-                        [
-                            (0.0, 1.0),
-                            (2.0, 0.90),
-                            (5.0, 0.76),
-                            (10.0, 0.42),
-                            (15.0, 0.22),
-                            (25.0, 0.08),
-                            (40.0, 0.0),
-                        ],
+                        AGE_CURVE,
                     ),
+                    labels=COMPONENT_LABELS,
                 ),
-                _component(
+                component(
                     "stories",
                     RESIDENTIAL_WEIGHTS["stories"],
-                    _difference_similarity(
+                    difference_similarity(
                         target_stories,
                         candidate_stories,
-                        [(0.0, 1.0), (0.5, 0.70), (1.0, 0.35), (2.0, 0.0)],
+                        STORIES_CURVE,
                     ),
+                    labels=COMPONENT_LABELS,
                 ),
-                _component(
+                component(
                     "building_character",
                     RESIDENTIAL_WEIGHTS["building_character"],
                     _building_character_similarity(target_building, candidate_building),
+                    labels=COMPONENT_LABELS,
                 ),
             ]
         )
@@ -450,33 +316,32 @@ def calculate_similarity_details(
 
     components.extend(
         [
-            _component(
+            component(
                 "land_size",
                 land_weight,
-                _percentage_similarity(
+                percentage_similarity(
                     target_acreage,
                     candidate_acreage,
-                    [
-                        (0.0, 1.0),
-                        (0.05, 0.90),
-                        (0.10, 0.76),
-                        (0.20, 0.54),
-                        (0.35, 0.28),
-                        (0.50, 0.12),
-                        (0.80, 0.0),
-                    ],
+                    LAND_SIZE_CURVE,
                 ),
+                labels=COMPONENT_LABELS,
             ),
-            _component(
-                "features", feature_weight, _feature_similarity(target_features, candidate_features)
+            component(
+                "features",
+                feature_weight,
+                _feature_similarity(target_features, candidate_features),
+                labels=COMPONENT_LABELS,
             ),
-            _component(
-                "distance", distance_weight, _distance_similarity(distance, max_distance_miles)
+            component(
+                "distance",
+                distance_weight,
+                distance_similarity(distance, max_distance_miles),
+                labels=COMPONENT_LABELS,
             ),
         ]
     )
 
-    return _score_from_components(components, is_land_only=is_land_only)
+    return score_from_components(components, is_land_only=is_land_only)
 
 
 def find_similar_properties(

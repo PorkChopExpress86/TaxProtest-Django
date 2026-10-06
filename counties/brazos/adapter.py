@@ -23,11 +23,7 @@ from counties.brazos.models import (
     PropertyLand,
 )
 from counties.brazos.readiness import BrazosActiveSnapshotReadiness, BrazosReadinessProjection
-from counties.brazos.similarity import (
-    _primary_improvement,
-    find_similar_properties,
-    get_similarity_label,
-)
+from counties.brazos.similarity import _primary_improvement, find_similar_properties
 from counties.brazos.tax_units import NON_LEVYING_UNITS
 from counties.common.contracts import (
     Column,
@@ -40,6 +36,7 @@ from counties.common.contracts import (
     SearchField,
     Subject,
 )
+from counties.common.similarity_math import get_similarity_label
 from counties.common.tax_impact import TaxImpactResult, calculate_tax_impact
 
 COUNTY_SLUG = "brazos"
