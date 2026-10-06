@@ -26,6 +26,7 @@ from counties.brazos.property_import import (
     outcome_populations,
 )
 from counties.brazos.tests.test_property_import import _stage_complete_pacs_export
+from counties.common.import_coverage import OutcomePopulation, compare_coverage
 from counties.common.models import ImportCandidate
 from counties.common.tax_models import PropertyJurisdictionExemption, TaxUnitRate
 
@@ -129,6 +130,32 @@ class BrazosCoverageSurveyStressTests(TestCase):
         # Two chunks of 2,000: a fixed number of reads per chunk, never per account.
         self.assertLessEqual(queries, 40)
         self.assertLess(duration, 30.0, f"Coverage took {duration:.1f}s for {count} accounts")
+
+    def test_report_is_unsupported_when_no_comparison_mode_reaches_the_report_pool(self):
+        # Four comparable-ready properties with equity facts, but split two per
+        # comparison mode: neither mode holds a subject plus three others.
+        self.build_snapshot(4)
+
+        populations, _, _ = self.survey_cost()
+
+        self.assertEqual(len(populations["comparable"].eligible), 4)
+        self.assertFalse(populations["report"].eligible)
+        self.assertFalse(populations["report"].supported)
+        self.assertEqual(
+            populations["report"].reason,
+            "Equity facts and at least three qualifying comparables are required",
+        )
+        previous = {name: OutcomePopulation(set()) for name in populations}
+        failures = compare_coverage(previous, populations)["hard_failures"]
+        self.assertNotIn("report: zero eligible records for a supported outcome", failures)
+
+    def test_report_is_supported_once_one_comparison_mode_reaches_the_report_pool(self):
+        self.build_snapshot(7)
+
+        populations, _, _ = self.survey_cost()
+
+        self.assertEqual(len(populations["report"].eligible), 4)
+        self.assertTrue(populations["report"].supported)
 
     def test_coverage_queries_grow_only_with_chunks(self):
         self.build_snapshot(8)

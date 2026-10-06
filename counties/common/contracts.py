@@ -312,21 +312,12 @@ class CountyAdapter(ABC):
         """Estimated tax impact, or ``None`` when the county cannot compute one."""
         return None
 
-    def unavailable_reason(self, key: str, capability: str) -> str | None:
-        """Reason a shared capability is unavailable for one county record."""
-        return None
+    # -- capabilities ---------------------------------------------------------
 
+    @abstractmethod
     def capabilities(self, key: str) -> PropertyCapabilities:
-        """Declared capabilities and unavailability reasons for one county record."""
-        reason_comp = self.unavailable_reason(key, "comparable")
-        reason_report = self.unavailable_reason(key, "report")
-        reasons: dict[str, str] = {}
-        if reason_comp:
-            reasons["comparable"] = reason_comp
-        if reason_report:
-            reasons["report"] = reason_report
-        return PropertyCapabilities(
-            comparable_ready=reason_comp is None,
-            report_ready=reason_report is None,
-            reasons=reasons,
-        )
+        """Declared capabilities and unavailability reasons for one county record.
+
+        The one way shared code asks whether a property can search, compare,
+        report or price tax, and why not.
+        """
