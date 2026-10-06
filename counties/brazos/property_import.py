@@ -28,8 +28,9 @@ from counties.brazos.models import (
 )
 from counties.brazos.readiness import BrazosActiveSnapshotReadiness, BrazosSnapshotFacts
 from counties.common.candidate_lifecycle import CandidateLoad, Loaded, prepare, publish
-from counties.common.import_audit import OperationStatus, audited_operation
+from counties.common.import_audit import audited_operation
 from counties.common.import_coverage import OutcomePopulation
+from counties.common.import_states import CandidateState, OperationStatus, operation_status_for
 from counties.common.import_writers import fenced_write
 from counties.common.models import ImportCandidate, ImportOperation
 from counties.common.tax_models import PropertyJurisdictionExemption
@@ -75,7 +76,7 @@ class AnnualRefreshResult:
     cad: StageResult
     gis: StageResult
     dry_run: bool
-    workflow_state: str = "published"
+    workflow_state: str = CandidateState.PUBLISHED
     candidate_id: str | None = None
     operation_id: str | None = None
 
@@ -139,7 +140,7 @@ class PropertyImportResult:
     operation_id: UUID | None = None
     candidate_id: UUID | None = None
     prepared: bool = False
-    workflow_state: str = "published"
+    workflow_state: str = CandidateState.PUBLISHED
     already_applied: bool = False
 
 
@@ -336,6 +337,7 @@ class BrazosPropertyImport:
                 publish(operation, candidate.pk, user=reviewer, reason=request.application_reason)
                 active = BrazosPropertySnapshot.objects.get(is_active=True)
                 already = "already_applied" in operation.evidence
+                status = OperationStatus.ALREADY_APPLIED if already else OperationStatus.PUBLISHED
                 completed = PropertyImportResult(
                     tax_year=active.tax_year,
                     outcome=PropertyImportOutcome(active.outcome),
@@ -352,11 +354,12 @@ class BrazosPropertyImport:
                     snapshot_id=active.pk,
                     dry_run=False,
                     candidate_id=candidate.pk,
-                    workflow_state="already_applied" if already else "published",
+                    workflow_state=status,
                     already_applied=already,
                 )
             elif request.options.dry_run:
                 completed = self._preview(request, operation)
+                status = OperationStatus.COMPLETED
             else:
                 # An automatic publication runs under the reservation that prepared it.
                 prepared = prepare(
@@ -366,14 +369,16 @@ class BrazosPropertyImport:
                     user=reviewer,
                     reason=request.application_reason,
                 )
+                state = CandidateState(prepared.candidate.state)
+                status = operation_status_for(state)
                 completed = replace(
                     prepared.result,
                     snapshot_id=None,
                     prepared=True,
                     candidate_id=prepared.candidate.pk,
-                    workflow_state=prepared.candidate.state,
+                    workflow_state=state,
                 )
-                if prepared.candidate.state == "published":
+                if state is CandidateState.PUBLISHED:
                     active = BrazosPropertySnapshot.objects.get(is_active=True)
                     completed = replace(
                         completed,
@@ -383,11 +388,7 @@ class BrazosPropertyImport:
                         prepared=False,
                     )
             result = replace(completed, operation_id=operation.pk)
-            operation.status = (
-                OperationStatus.COMPLETED
-                if result.dry_run and not result.prepared
-                else OperationStatus(result.workflow_state)
-            )
+            operation.status = status
             if result.snapshot_id is None:
                 # Publication, when it happens, records the published identity itself.
                 operation.publication_after = operation.publication_before

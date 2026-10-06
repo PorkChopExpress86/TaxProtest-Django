@@ -9,6 +9,7 @@ from django.conf import settings
 from counties.common.candidate_lifecycle import CandidateLoad
 from counties.common.candidate_ports import CandidateTables
 from counties.common.import_coverage import OutcomePopulation
+from counties.common.import_states import CandidateState
 from counties.common.models import ImportCandidate, ImportOperation
 from counties.harris.models import BuildingDetail, ExtraFeature, PropertyRecord
 from counties.harris.readiness import outcome_populations, published_year
@@ -43,7 +44,9 @@ class HarrisCandidatePort:
     )
 
     def published(self) -> dict:
-        current = ImportCandidate.objects.filter(county="harris", state="published").first()
+        current = ImportCandidate.objects.filter(
+            county="harris", state=CandidateState.PUBLISHED
+        ).first()
         return {
             "candidate_id": str(current.pk) if current else None,
             "property_source_year": (

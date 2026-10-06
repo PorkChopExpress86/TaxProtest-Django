@@ -18,8 +18,9 @@ from django.core.management.base import CommandError as DjangoCommandError
 from django.db import DatabaseError
 
 from counties.common.candidate_lifecycle import CandidateLoad, Loaded, prepare, publish
-from counties.common.import_audit import OperationStatus, audited_operation
+from counties.common.import_audit import audited_operation
 from counties.common.import_recovery import ReplayRejected, copy_exact_source
+from counties.common.import_states import CandidateState, OperationStatus
 from counties.common.import_writers import fenced_write, working_source_root
 from counties.common.models import ImportCandidate, ImportOperation
 from counties.harris.models import BuildingDetail, ExtraFeature, PropertyRecord
@@ -53,6 +54,26 @@ class HarrisImportStatus(Enum):
     PREPARED = "prepared"
     AWAITING_REVIEW = "awaiting_review"
     BLOCKED = "blocked"
+
+
+# Explicit pairings with the shared vocabulary, never by matching spelling (ADR-0023).
+OPERATION_STATUS_FOR_HARRIS_STATUS = MappingProxyType(
+    {
+        HarrisImportStatus.COMPLETED: OperationStatus.COMPLETED,
+        HarrisImportStatus.FAILED: OperationStatus.FAILED,
+        HarrisImportStatus.PARTIAL: OperationStatus.PARTIAL,
+        HarrisImportStatus.PREPARED: OperationStatus.PREPARED,
+        HarrisImportStatus.AWAITING_REVIEW: OperationStatus.AWAITING_REVIEW,
+        HarrisImportStatus.BLOCKED: OperationStatus.BLOCKED,
+    }
+)
+HARRIS_STATUS_FOR_HELD_CANDIDATE = MappingProxyType(
+    {
+        CandidateState.PREPARED: HarrisImportStatus.PREPARED,
+        CandidateState.AWAITING_REVIEW: HarrisImportStatus.AWAITING_REVIEW,
+        CandidateState.BLOCKED: HarrisImportStatus.BLOCKED,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -815,13 +836,14 @@ def run_harris_import(
             )
             completed = replace(prepared.result, candidate_id=prepared.candidate.pk)
             if completed.status is HarrisImportStatus.COMPLETED:
-                published = prepared.candidate.state == "published"
+                state = CandidateState(prepared.candidate.state)
+                published = state is CandidateState.PUBLISHED
                 completed = replace(
                     completed,
                     status=(
                         HarrisImportStatus.COMPLETED
                         if published
-                        else HarrisImportStatus(prepared.candidate.state)
+                        else HARRIS_STATUS_FOR_HELD_CANDIDATE[state]
                     ),
                     wrote_data=published,
                     completed_at=datetime.now(),
@@ -839,7 +861,7 @@ def run_harris_import(
             else (
                 OperationStatus.PUBLISHED
                 if result.wrote_data
-                else OperationStatus(result.status.value)
+                else OPERATION_STATUS_FOR_HARRIS_STATUS[result.status]
             )
         )
         operation.evidence = {

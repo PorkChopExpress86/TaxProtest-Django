@@ -88,6 +88,16 @@ def imported_modules(source: str) -> set[str]:
     return modules
 
 
+def names_imported_from(source: str, module: str) -> set[str]:
+    """Names a ``from <module> import ...`` statement brings in, wherever it appears."""
+    return {
+        alias.name
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.ImportFrom) and node.module == module
+        for alias in node.names
+    }
+
+
 def county_imports(source: str) -> list[str]:
     """Imports of any ``counties`` package other than ``counties.common``."""
     return sorted(

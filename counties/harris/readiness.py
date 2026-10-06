@@ -15,6 +15,7 @@ from django.db.models import Exists, OuterRef, Q, QuerySet
 
 from counties.common.analysis import MIN_COMPS_FOR_RECOMMENDATION
 from counties.common.import_coverage import OutcomePopulation
+from counties.common.import_states import CandidateState
 from counties.common.models import ImportCandidate
 from counties.common.tax_impact import taxing_units
 from counties.common.tax_models import PropertyJurisdictionExemption, TaxUnitRate
@@ -52,7 +53,7 @@ NO_TAX_READY_PROPERTY = "No property has complete matching-year tax inputs"
 def published_year() -> int | None:
     """The source year recorded by the published Harris candidate, if any."""
     return (
-        ImportCandidate.objects.filter(county="harris", state="published")
+        ImportCandidate.objects.filter(county="harris", state=CandidateState.PUBLISHED)
         .values_list("evidence__property_source_year", flat=True)
         .first()
     )
