@@ -1,8 +1,8 @@
 """County candidate ports: what the shared Candidate lifecycle asks each county.
 
-Each county registers one port from its ``AppConfig.ready()``. Common code resolves
-ports only by county slug and never imports county modules; the port never parses
-sources or decides readiness criteria for another county (ADR-0018).
+Each county declares its port in its County registration (``county_registry``).
+Common code resolves ports only by county slug and never imports county modules; the
+port never parses sources or decides readiness criteria for another county (ADR-0018).
 """
 
 from __future__ import annotations
@@ -13,15 +13,12 @@ from typing import TYPE_CHECKING, Protocol
 from django.db.models import Model
 
 from counties.common.candidate_staging import compute_dataset_hash
+from counties.common.county_registry import registration_for
 
 if TYPE_CHECKING:
     from counties.common.candidate_lifecycle import CandidateLoad
     from counties.common.import_coverage import OutcomePopulation
     from counties.common.models import ImportCandidate, ImportOperation
-
-
-class UnknownCountyCandidate(LookupError):
-    """No candidate port is registered for the county."""
 
 
 @dataclass(frozen=True)
@@ -54,23 +51,9 @@ class CandidatePort(Protocol):
         ...
 
 
-_PORTS: dict[str, CandidatePort] = {}
-
-
-def register(county: str, port: CandidatePort) -> None:
-    _PORTS[county] = port
-
-
-def port_for(county: str) -> CandidatePort:
-    try:
-        return _PORTS[county]
-    except KeyError:
-        raise UnknownCountyCandidate(f"Unknown county candidate: {county}") from None
-
-
 def dataset_identity(county: str, schema: str = "public") -> dict:
     """The content digest of one county's declared tables in ``schema``."""
-    tables = port_for(county).tables
+    tables = registration_for(county).port.tables
     return compute_dataset_hash(
         tables.models,
         schema=schema,
@@ -80,4 +63,4 @@ def dataset_identity(county: str, schema: str = "public") -> dict:
 
 def published_identity(county: str) -> dict:
     """The identity of the county's live dataset: its content digest plus county facts."""
-    return {**dataset_identity(county), **port_for(county).published()}
+    return {**dataset_identity(county), **registration_for(county).port.published()}

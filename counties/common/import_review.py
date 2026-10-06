@@ -7,8 +7,9 @@ from pathlib import Path
 from django.core.exceptions import PermissionDenied
 from django.utils import timezone
 
-from counties.common.candidate_ports import dataset_identity, port_for, published_identity
+from counties.common.candidate_ports import dataset_identity, published_identity
 from counties.common.candidate_staging import switch_search_path
+from counties.common.county_registry import registration_for
 from counties.common.import_audit import audited_operation
 from counties.common.import_coverage import compare_coverage
 from counties.common.import_writers import fenced_write
@@ -34,7 +35,7 @@ def captured_binding(candidate) -> str:
 
 def current_coverage(candidate):
     """Measure the candidate against the published data with the county's own rules."""
-    port = port_for(candidate.county)
+    port = registration_for(candidate.county).port
     previous = port.outcomes(None)
     with switch_search_path(candidate.storage_schema):
         current = port.outcomes(candidate)
