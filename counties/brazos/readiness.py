@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, replace
 from decimal import Decimal
+from typing import NamedTuple
 
 from django.db.models import Q, Sum
 from django.db.models.functions import Trim
@@ -368,55 +369,115 @@ class BrazosActiveSnapshotReadiness:
     ) -> str | None:
         if not projection.report_ready:
             return projection.reason_for("report")
-        rows = list(
+        return cls.tax_input_gaps([account.prop_id], tax_year=projection.tax_year)[account.prop_id]
+
+    @classmethod
+    def tax_input_gaps(
+        cls, prop_ids: Iterable[str], *, tax_year: int, chunk_size: int = _CHUNK
+    ) -> dict[str, str | None]:
+        """Name each property's missing matching-year tax inputs, a fixed query count per chunk.
+
+        This judges tax inputs only; tax-impact-ready also requires report-ready.
+        """
+        gaps: dict[str, str | None] = {}
+        chunk: list[str] = []
+        for prop_id in prop_ids:
+            chunk.append(prop_id)
+            if len(chunk) == chunk_size:
+                gaps.update(cls._tax_input_gaps_chunk(chunk, tax_year))
+                chunk = []
+        if chunk:
+            gaps.update(cls._tax_input_gaps_chunk(chunk, tax_year))
+        return gaps
+
+    @classmethod
+    def _tax_input_gaps_chunk(cls, prop_ids: list[str], year: int) -> dict[str, str | None]:
+        rows_by_prop: dict[str, list[_TaxRow]] = {prop_id: [] for prop_id in prop_ids}
+        # Explicit order: a unit's name comes from its base row ("" sorts first),
+        # else from its first named exemption row.
+        for account_number, *row in (
             PropertyJurisdictionExemption.objects.filter(
-                account_number=account.prop_id,
-                tax_year=projection.tax_year,
-                county="brazos",
+                account_number__in=prop_ids, tax_year=year, county="brazos"
             )
-        )
-        year = projection.tax_year
-        names: dict[str, str] = {}
-        for row in rows:
-            if row.tax_unit_code:
-                names[row.tax_unit_code] = names.get(row.tax_unit_code) or row.tax_unit_name
-        if not names:
-            return f"No {year} jurisdiction and exemption rows for this property"
-
-        def units(codes: set[str]) -> str:
-            return taxing_units({code: names[code] for code in codes})
-
-        gaps = []
-        bases = [row for row in rows if not row.exemption_code]
-        unverified = {
-            row.tax_unit_code
-            for row in rows
-            if row.exemption_code and row.exemption_amount is None and row.exemption_percent is None
-        }
-        if unverified:
-            gaps.append(f"{year} exemption amounts are unverified for {units(unverified)}")
-        unbased = names.keys() - {row.tax_unit_code for row in bases}
-        if unbased:
-            gaps.append(f"{year} gross jurisdiction base unavailable for {units(unbased)}")
-        # Units that levy no tax need no rate (ADR-0019).
-        levying = names.keys() - NON_LEVYING_UNITS.keys()
-        unrated = levying - set(
+            .order_by("account_number", "tax_unit_code", "exemption_code")
+            .values_list(
+                "account_number",
+                "tax_unit_code",
+                "tax_unit_name",
+                "exemption_code",
+                "exemption_amount",
+                "exemption_percent",
+                "taxable_value",
+            )
+        ):
+            rows_by_prop[account_number].append(_TaxRow(*row))
+        levying = {
+            row.tax_unit_code for rows in rows_by_prop.values() for row in rows if row.tax_unit_code
+        } - NON_LEVYING_UNITS.keys()
+        rated = set(
             TaxUnitRate.objects.filter(
                 county="brazos", tax_year=year, tax_unit_code__in=levying
             ).values_list("tax_unit_code", flat=True)
         )
-        if unrated:
-            gaps.append(f"Adopted {year} rate unavailable for {units(unrated)}")
-        has_assessment = AssessmentHistory.objects.filter(
-            account_number=account.prop_id,
-            tax_year=year,
-            county="brazos",
-            assessed_value__isnull=False,
-        ).exists()
-        if any(row.taxable_value is None for row in bases) and not has_assessment:
-            gaps.append(f"{year} taxable or assessed value unavailable")
-        return "; ".join(gaps) or None
+        assessed = set(
+            AssessmentHistory.objects.filter(
+                account_number__in=prop_ids,
+                tax_year=year,
+                county="brazos",
+                assessed_value__isnull=False,
+            ).values_list("account_number", flat=True)
+        )
+        return {
+            prop_id: _tax_input_gap(
+                year, rows_by_prop[prop_id], rated=rated, has_assessment=prop_id in assessed
+            )
+            for prop_id in prop_ids
+        }
 
     @staticmethod
     def _positive(value: Decimal | None) -> bool:
         return value is not None and value > 0
+
+
+class _TaxRow(NamedTuple):
+    tax_unit_code: str
+    tax_unit_name: str
+    exemption_code: str
+    exemption_amount: Decimal | None
+    exemption_percent: Decimal | None
+    taxable_value: Decimal | None
+
+
+def _tax_input_gap(
+    year: int, rows: list[_TaxRow], *, rated: set[str], has_assessment: bool
+) -> str | None:
+    """Name one property's missing tax inputs from its rows, ordered by unit and exemption."""
+    names: dict[str, str] = {}
+    for row in rows:
+        if row.tax_unit_code:
+            names[row.tax_unit_code] = names.get(row.tax_unit_code) or row.tax_unit_name
+    if not names:
+        return f"No {year} jurisdiction and exemption rows for this property"
+
+    def units(codes: set[str]) -> str:
+        return taxing_units({code: names[code] for code in codes})
+
+    gaps = []
+    bases = [row for row in rows if not row.exemption_code]
+    unverified = {
+        row.tax_unit_code
+        for row in rows
+        if row.exemption_code and row.exemption_amount is None and row.exemption_percent is None
+    }
+    if unverified:
+        gaps.append(f"{year} exemption amounts are unverified for {units(unverified)}")
+    unbased = names.keys() - {row.tax_unit_code for row in bases}
+    if unbased:
+        gaps.append(f"{year} gross jurisdiction base unavailable for {units(unbased)}")
+    # Units that levy no tax need no rate (ADR-0019).
+    unrated = names.keys() - NON_LEVYING_UNITS.keys() - rated
+    if unrated:
+        gaps.append(f"Adopted {year} rate unavailable for {units(unrated)}")
+    if any(row.taxable_value is None for row in bases) and not has_assessment:
+        gaps.append(f"{year} taxable or assessed value unavailable")
+    return "; ".join(gaps) or None

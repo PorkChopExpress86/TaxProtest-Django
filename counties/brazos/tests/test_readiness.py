@@ -20,7 +20,11 @@ from counties.brazos.models import (
     SnapshotOutcome,
 )
 from counties.brazos.readiness import BrazosActiveSnapshotReadiness
-from counties.common.tax_models import PropertyJurisdictionExemption, TaxUnitRate
+from counties.common.tax_models import (
+    AssessmentHistory,
+    PropertyJurisdictionExemption,
+    TaxUnitRate,
+)
 
 TARGET = "000000010013"
 
@@ -309,17 +313,107 @@ class BrazosTaxReadinessTests(TestCase):
             county="brazos", tax_year=2025, tax_unit_code="S1", adopted_rate=Decimal("0.011")
         )
 
-    def unit(self, code, name, exemption_code="", amount=None):
+    def unit(
+        self,
+        code,
+        name,
+        exemption_code="",
+        amount=None,
+        *,
+        account=TARGET,
+        percent=None,
+        taxable=Decimal("300000"),
+    ):
         PropertyJurisdictionExemption.objects.create(
             county="brazos",
             tax_year=2025,
-            account_number=TARGET,
+            account_number=account,
             tax_unit_code=code,
             tax_unit_name=name,
             exemption_code=exemption_code,
             exemption_amount=amount,
-            taxable_value=None if exemption_code else Decimal("300000"),
+            exemption_percent=percent,
+            taxable_value=None if exemption_code else taxable,
         )
+
+    def test_a_percent_exemption_is_verified(self):
+        self.unit("S1", "BRYAN ISD")
+        self.unit("S1", "BRYAN ISD", exemption_code="OV65", percent=Decimal("20"))
+        projection = BrazosActiveSnapshotReadiness().project(TARGET)
+        self.assertTrue(projection.tax_impact_ready, projection.reason_for("tax"))
+
+    def test_a_missing_taxable_value_falls_back_to_a_matching_year_assessment(self):
+        self.unit("S1", "BRYAN ISD", taxable=None)
+        gap = "2025 taxable or assessed value unavailable"
+        readiness = BrazosActiveSnapshotReadiness()
+        self.assertEqual(readiness.project(TARGET).reason_for("tax"), gap)
+
+        history = AssessmentHistory.objects.create(
+            county="brazos", account_number=TARGET, tax_year=2025, assessed_value=None
+        )
+        self.assertEqual(readiness.project(TARGET).reason_for("tax"), gap)
+
+        history.assessed_value = Decimal("300000")
+        history.save()
+        self.assertTrue(readiness.project(TARGET).tax_impact_ready)
+
+    def test_a_unit_is_named_from_its_base_row_whatever_the_row_order(self):
+        self.unit("S1", "BRYAN ISD")
+        self.unit("W9", "WATER DISTRICT NINE", exemption_code="HS", amount=Decimal("1000"))
+        self.unit("W9", "WD 9")
+        self.unit("Q7", "", exemption_code="HS", amount=Decimal("1000"))
+        self.unit("Q7", "")
+        self.unit("Q7", "QUAIL DISTRICT", exemption_code="OV65", amount=Decimal("1000"))
+
+        self.assertEqual(
+            BrazosActiveSnapshotReadiness().project(TARGET).reason_for("tax"),
+            "Adopted 2025 rate unavailable for taxing units Q7 (QUAIL DISTRICT), W9 (WD 9)",
+        )
+
+    def test_tax_inputs_for_a_chunk_equal_each_single_property(self):
+        neighbours = ["000000020001", "000000020002", "000000020003"]
+        self.unit("S1", "BRYAN ISD")
+        self.unit("S1", "BRYAN ISD", account=neighbours[0], taxable=None)
+        self.unit("S1", "BRYAN ISD", account=neighbours[1])
+        self.unit("Q7", "", account=neighbours[1])
+        self.unit("S1", "BRYAN ISD", account=neighbours[2], exemption_code="HS")
+        expected = {
+            TARGET: None,
+            neighbours[0]: "2025 taxable or assessed value unavailable",
+            neighbours[1]: "Adopted 2025 rate unavailable for taxing unit Q7",
+            neighbours[2]: (
+                "2025 exemption amounts are unverified for taxing unit S1 (BRYAN ISD); "
+                "2025 gross jurisdiction base unavailable for taxing unit S1 (BRYAN ISD)"
+            ),
+            "000000099999": "No 2025 jurisdiction and exemption rows for this property",
+        }
+        readiness = BrazosActiveSnapshotReadiness()
+
+        for chunk_size in (1, 2, len(expected)):
+            with self.subTest(chunk_size=chunk_size):
+                self.assertEqual(
+                    readiness.tax_input_gaps(expected, tax_year=2025, chunk_size=chunk_size),
+                    expected,
+                )
+        for prop_id in [TARGET, *neighbours]:
+            projection = readiness.project(prop_id)
+            self.assertTrue(projection.report_ready, projection.reason_for("report"))
+            self.assertEqual(projection.reason_for("tax"), expected[prop_id])
+
+    def test_tax_inputs_cost_the_same_queries_for_one_property_or_many(self):
+        prop_ids = [TARGET, "000000020001", "000000020002", "000000020003"]
+        for prop_id in prop_ids:
+            self.unit("S1", "BRYAN ISD", account=prop_id)
+            self.unit("G1", "BRAZOS COUNTY", account=prop_id)
+        readiness = BrazosActiveSnapshotReadiness()
+
+        with CaptureQueriesContext(connection) as one:
+            readiness.tax_input_gaps([TARGET], tax_year=2025)
+        with CaptureQueriesContext(connection) as many:
+            readiness.tax_input_gaps(prop_ids, tax_year=2025)
+
+        self.assertGreater(len(one), 0)
+        self.assertEqual(len(many), len(one))
 
     def test_units_that_levy_no_tax_need_no_rate(self):
         self.unit("S1", "BRYAN ISD")
