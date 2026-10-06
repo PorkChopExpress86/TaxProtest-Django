@@ -26,7 +26,7 @@ from counties.brazos.models import (
     PropertyLand,
     SnapshotOutcome,
 )
-from counties.brazos.readiness import BrazosActiveSnapshotReadiness
+from counties.brazos.readiness import BrazosActiveSnapshotReadiness, BrazosSnapshotFacts
 from counties.common.candidate_lifecycle import CandidateLoad, Loaded, prepare, publish
 from counties.common.import_audit import OperationStatus, audited_operation
 from counties.common.import_coverage import OutcomePopulation
@@ -194,10 +194,10 @@ def outcome_populations(
         .exists()
     )
     comparable_supported = has_gis and structural_inputs and not deliberately_absent_gis
+    # Supported follows the same report-pool count that decides report-ready.
     report_supported = (
         comparable_supported
-        and len(projections) >= 4
-        and accounts.filter(assessed_value__isnull=False, living_area__isnull=False).exists()
+        and BrazosSnapshotFacts.surveyed(projections.values()).report_pool_reached
     )
     # A tax gap is independently unavailable. The authoritative projection
     # requires complete matching-year rates and values before claiming it.
