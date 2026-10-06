@@ -82,6 +82,18 @@ def import_disposition(operation: ImportOperation, *, subject: str) -> ImportDis
                 f"Candidate {candidate_id}; operation {operation.pk}."
             ),
         )
+    if operation.intent == PREVIEW_INTENT and status in (
+        OperationStatus.COMPLETED,
+        OperationStatus.COMPLETED_WITH_WARNINGS,
+        OperationStatus.PARTIAL,
+    ):
+        # A preview prepares no candidate, so even a partial one holds nothing.
+        return ImportDisposition(
+            ImportDispositionKind.PREVIEWED,
+            operation.pk,
+            None,
+            incomplete=status == OperationStatus.PARTIAL,
+        )
     if status in _HELD_STATE or status == OperationStatus.PARTIAL:
         # A best-effort run that loaded only some sources always blocks its candidate.
         incomplete = status == OperationStatus.PARTIAL
@@ -104,9 +116,4 @@ def import_disposition(operation: ImportOperation, *, subject: str) -> ImportDis
             operation.pk,
             _named_candidate(operation.evidence.get("candidate_id")),
         )
-    if operation.intent == PREVIEW_INTENT and status in (
-        OperationStatus.COMPLETED,
-        OperationStatus.COMPLETED_WITH_WARNINGS,
-    ):
-        return ImportDisposition(ImportDispositionKind.PREVIEWED, operation.pk, None)
     raise ValueError(f"Import operation {operation.pk} has no disposition for status {status}")

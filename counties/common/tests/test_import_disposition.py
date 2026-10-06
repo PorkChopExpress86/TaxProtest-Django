@@ -63,3 +63,29 @@ class UnsettledOperationTests(TestCase):
 
                 with self.assertRaises(ValueError):
                     import_disposition(operation, subject="Brazos import")
+
+
+class PreviewDispositionTests(TestCase):
+    def test_a_best_effort_preview_after_a_failed_fetch_is_previewed_and_incomplete(self):
+        # A best-effort preview whose download stage failed still validates the sources
+        # it has, so it ends partial without ever preparing a candidate.
+        operation = ImportOperation.objects.create(
+            county="harris", intent="preview", status="partial", evidence={"sources": []}
+        )
+
+        disposition = import_disposition(operation, subject="Harris import")
+
+        self.assertIs(disposition.kind, ImportDispositionKind.PREVIEWED)
+        self.assertIsNone(disposition.candidate_id)
+        self.assertTrue(disposition.incomplete)
+        self.assertIsNone(disposition.notice)
+
+    def test_a_failed_preview_is_failed(self):
+        operation = ImportOperation.objects.create(
+            county="harris", intent="preview", status="failed"
+        )
+
+        disposition = import_disposition(operation, subject="Harris import")
+
+        self.assertIs(disposition.kind, ImportDispositionKind.FAILED)
+        self.assertIsNone(disposition.candidate_id)
