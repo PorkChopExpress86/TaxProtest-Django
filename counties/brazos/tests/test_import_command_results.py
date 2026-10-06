@@ -1,7 +1,7 @@
 """Characterize what Brazos property-import commands report for real runs.
 
-These pins hold today's exit behaviour and printed text (with its style) before the
-commands classify through the Import disposition (ADR-0023).
+These pins hold the exit behaviour and printed text (with its style) of commands that
+classify through the Import disposition (ADR-0023); held imports print as warnings.
 """
 
 import tempfile
@@ -102,8 +102,8 @@ class BrazosImportResultTestCase(TransactionTestCase):
 
     @staticmethod
     def held(subject, state, operation, candidate):
-        # Printed without a style today.
-        return (
+        # The shared held-import sentence, printed as a warning.
+        return warning(
             f"Brazos {subject} import {state}; published data unchanged. "
             f"Candidate {candidate.pk}; operation {operation.pk}. "
             "Review in Django admin /admin/data/importcandidate/."
@@ -126,6 +126,15 @@ class LoadBrazosCadResultTests(BrazosImportResultTestCase):
 
         operation, candidate = self.finished("blocked", "blocked")
         self.assertEqual(lines[-1], self.held("CAD", "blocked", operation, candidate))
+
+    def test_dry_run_is_previewed_as_success(self):
+        write_pacs(self.root, ACCOUNTS, equity=True)
+
+        lines = self.call("load_brazos_cad", *OFFLINE_2026, "--dry-run")
+
+        self.assertEqual(
+            lines[-1], success("[dry-run] Brazos CAD recovery validated for tax_year=2026.")
+        )
 
     def test_incomplete_source_fails_with_exit_code_one(self):
         source = self.root / "extracted" / "2026"
@@ -168,6 +177,16 @@ class RefreshBrazosAnnualResultTests(BrazosImportResultTestCase):
 
         operation, candidate = self.finished("awaiting_review", "awaiting_review")
         self.assertEqual(lines[-1], self.held("annual", "awaiting_review", operation, candidate))
+
+    def test_dry_run_is_previewed_as_success(self):
+        write_pacs(self.root, ACCOUNTS, equity=True)
+        write_gis(self.root, ACCOUNTS)
+
+        lines = self.call("refresh_brazos_annual", *OFFLINE_2026, "--dry-run")
+
+        self.assertEqual(
+            lines[-1], success("[dry-run] Brazos annual refresh validated for tax_year=2026.")
+        )
 
     def test_missing_gis_source_fails_with_exit_code_one(self):
         write_pacs(self.root, ACCOUNTS, equity=True)
@@ -214,6 +233,18 @@ class LoadBrazosGisResultTests(BrazosImportResultTestCase):
 
         operation, candidate = self.finished("awaiting_review", "awaiting_review")
         self.assertEqual(lines[-1], self.held("GIS", "awaiting_review", operation, candidate))
+
+    def test_dry_run_is_previewed_as_success(self):
+        BrazosPropertySnapshot.objects.create(
+            tax_year=2026, outcome=SnapshotOutcome.PARTIAL, cad_source_year=2026
+        )
+        write_gis(self.root, ACCOUNTS)
+
+        lines = self.call("load_brazos_gis", *OFFLINE_2026, "--dry-run")
+
+        self.assertEqual(
+            lines[-1], success("[dry-run] Brazos GIS recovery validated for tax_year=2026.")
+        )
 
     def test_recovery_without_an_active_partial_snapshot_fails_with_exit_code_one(self):
         write_gis(self.root, ACCOUNTS)
