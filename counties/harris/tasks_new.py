@@ -17,6 +17,9 @@ import requests
 from celery import shared_task
 from django.conf import settings
 
+from counties.common.import_disposition import ImportDispositionKind, import_disposition
+from counties.common.models import ImportOperation
+
 from .etl_pipeline.import_plan import HarrisImportPlan
 from .models import DownloadRecord
 from .source_catalog import DEFAULT_HCAD_SOURCE_CATALOG
@@ -273,14 +276,21 @@ def _run_authoritative_pipeline(
         wrote_data=result.wrote_data,
         already_applied=result.already_applied,
     )
-    if result.status.value in ("prepared", "awaiting_review", "blocked"):
+    if task_instance is None:
+        held = result.status.value in ("prepared", "awaiting_review", "blocked")
+    else:
+        disposition = import_disposition(
+            ImportOperation.objects.get(pk=result.operation_id), subject="Harris import"
+        )
+        # A strict run never ends incomplete, so it keeps failing if one ever does.
+        held = disposition.kind is ImportDispositionKind.HELD and not (
+            strict and disposition.incomplete
+        )
+    if held:
+        # A held import succeeds: a county's first import is always held (ADR-0023).
         if task_instance is not None:
             task_instance.update_state(
-                state="SUCCESS",
-                meta={
-                    "step": f"Import {result.status.value}; published data unchanged",
-                    **result_dict,
-                },
+                state="SUCCESS", meta={"step": disposition.notice, **result_dict}
             )
         return result_dict
     if strict and not result.success:

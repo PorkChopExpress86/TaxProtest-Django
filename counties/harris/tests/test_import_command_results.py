@@ -314,7 +314,14 @@ class RunEtlPipelineTaskResultTests(HarrisImportResultTestCase):
             self.last_state,
             {
                 "state": "SUCCESS",
-                "meta": {"step": "Import awaiting_review; published data unchanged", **result},
+                "meta": {
+                    "step": (
+                        "Harris import awaiting_review; published data unchanged. "
+                        f"Candidate {candidate.pk}; operation {operation.pk}. "
+                        "Review in Django admin /admin/data/importcandidate/."
+                    ),
+                    **result,
+                },
             },
         )
 
@@ -333,15 +340,39 @@ class RunEtlPipelineTaskResultTests(HarrisImportResultTestCase):
             {"state": "FAILURE", "meta": {"step": "Pipeline failed", "errors": (VALIDATION_GAP,)}},
         )
 
-    def test_best_effort_partial_import_succeeds_as_pipeline_completed(self):
+    def test_best_effort_partial_import_is_held_incomplete_and_the_task_succeeds(self):
         self.write_full_sources()
 
         result = self.run_task(strict=False)
 
-        # The run left a blocked candidate, yet the task reports a completed pipeline.
         operation, candidate = self.finished("partial", "blocked")
         self.assert_serialized(result, operation, candidate, status="partial", wrote_data=False)
         self.assertEqual(result["errors"], [VALIDATION_GAP])
+        self.assertEqual(
+            self.last_state,
+            {
+                "state": "SUCCESS",
+                "meta": {
+                    "step": (
+                        "Harris import blocked (incomplete); published data unchanged. "
+                        f"Candidate {candidate.pk}; operation {operation.pk}. "
+                        "Review in Django admin /admin/data/importcandidate/."
+                    ),
+                    **result,
+                },
+            },
+        )
+
+    def test_preview_succeeds_as_pipeline_completed(self):
+        self.write_full_sources()
+
+        result = self.run_task(skip_load=True)
+
+        operation = ImportOperation.objects.get()
+        self.assertEqual((operation.intent, operation.status), ("preview", "completed"))
+        self.assertEqual(result["status"], "completed")
+        self.assertIsNone(result["candidate_id"])
+        self.assertIs(result["wrote_data"], False)
         self.assertEqual(
             self.last_state, {"state": "SUCCESS", "meta": {"step": "Pipeline completed"}}
         )
