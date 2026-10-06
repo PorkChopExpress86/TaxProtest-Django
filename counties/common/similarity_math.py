@@ -1,11 +1,12 @@
-"""Shared pure similarity math used by every county's similarity scoring.
+"""Shared similarity math used by every county's similarity scoring.
 
-Everything here takes numbers or codes and returns numbers or dicts, with no
-model coupling: numeric helpers, curve interpolation, the per-factor
-similarity functions, the tuning curves as named constants, the user-facing
-label bands, and score assembly. Each county keeps its own factor list,
-weights, quality and condition semantics, candidate pre-filters, and pair
-scorer (ADR-0021).
+The math takes numbers or codes and returns numbers or dicts, with no model
+coupling: numeric helpers, curve interpolation, the per-factor similarity
+functions, the tuning curves as named constants, the user-facing label bands,
+and score assembly. ``nearby_properties`` is the one nearest-properties query:
+it narrows any county queryset with latitude/longitude fields, so it names no
+county model. Each county keeps its own factor list, weights, quality and
+condition semantics, candidate pre-filters, and pair scorer (ADR-0021).
 
 The tuning curves are shared. A county that needs a different curve defines
 and justifies its own constant (ADR-0003) rather than editing these.
@@ -18,6 +19,10 @@ shape that the shared web layer's ``ScoreComponent.from_mapping()`` (in
 from __future__ import annotations
 
 from collections.abc import Sequence
+from math import cos, radians
+
+from django.db.models import ExpressionWrapper, F, FloatField, QuerySet, Value
+from django.db.models.functions import ACos, Cos, Greatest, Least, Radians, Sin
 
 Curve = Sequence[tuple[float, float]]
 
@@ -320,3 +325,64 @@ def score_from_components(
         "components": components,
         "available_weight": round(available_weight, 1),
     }
+
+
+# ---------------------------------------------------------------------------
+# Nearest-properties query
+# ---------------------------------------------------------------------------
+
+# Most candidates one search scores. Read at call time so tests can lower it.
+NEARBY_PROPERTIES_CAP = 2000
+
+EARTH_RADIUS_MILES = 3959.0
+
+
+def nearby_properties(
+    candidates: QuerySet,
+    *,
+    latitude: float,
+    longitude: float,
+    max_distance_miles: float,
+) -> QuerySet:
+    """Narrow pre-filtered ``candidates`` to the nearest ones within the radius.
+
+    The county applies its own pre-filters (and excludes the subject) first.
+    This adds a bounding box, the great-circle distance in miles as a
+    ``distance`` annotation computed in the database, the radius filter,
+    nearest-first ordering, and the ``NEARBY_PROPERTIES_CAP`` slice.
+    """
+    lat_range = max_distance_miles / 69.0
+    lon_range = max_distance_miles / (69.0 * cos(radians(latitude)))
+    target_lat_rad = radians(latitude)
+    target_lon_rad = radians(longitude)
+
+    return (
+        candidates.filter(
+            latitude__gte=latitude - lat_range,
+            latitude__lte=latitude + lat_range,
+            longitude__gte=longitude - lon_range,
+            longitude__lte=longitude + lon_range,
+            latitude__isnull=False,
+            longitude__isnull=False,
+        )
+        .annotate(
+            distance=ExpressionWrapper(
+                EARTH_RADIUS_MILES
+                * ACos(
+                    Least(
+                        1.0,
+                        Greatest(
+                            -1.0,
+                            Cos(Value(target_lat_rad))
+                            * Cos(Radians(F("latitude")))
+                            * Cos(Radians(F("longitude")) - Value(target_lon_rad))
+                            + Sin(Value(target_lat_rad)) * Sin(Radians(F("latitude"))),
+                        ),
+                    )
+                ),
+                output_field=FloatField(),
+            )
+        )
+        .filter(distance__lte=max_distance_miles)
+        .order_by("distance")[:NEARBY_PROPERTIES_CAP]
+    )

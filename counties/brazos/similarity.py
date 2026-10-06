@@ -32,10 +32,6 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
-from math import cos, radians
-
-from django.db.models import ExpressionWrapper, F, FloatField, Value
-from django.db.models.functions import ACos, Cos, Greatest, Least, Radians, Sin
 
 from counties.common.similarity_math import (
     AGE_CURVE,
@@ -51,6 +47,7 @@ from counties.common.similarity_math import (
     difference_similarity,
     distance_similarity,
     interpolate_curve,
+    nearby_properties,
     normalized_code,
     percentage_similarity,
     score_from_components,
@@ -148,12 +145,26 @@ def _feature_similarity(
     return intersection / union
 
 
-def _primary_improvement(
+def _select_primary_improvement(
+    improvements: list[PropertyImprovement],
+    characteristics_by_imp: dict[str, PropertyBuildingCharacteristic],
+) -> tuple[PropertyImprovement | None, PropertyBuildingCharacteristic | None]:
+    """Scoring's primary-improvement rule over one property's 'R' improvements
+    (ordered by imp_id) and that property's characteristics rows by imp_id."""
+    for improvement in improvements:
+        characteristic = characteristics_by_imp.get(improvement.imp_id)
+        if characteristic is not None:
+            return improvement, characteristic
+    return (improvements[0] if improvements else None), None
+
+
+def primary_improvement(
     prop_id: str, tax_year: int
 ) -> tuple[PropertyImprovement | None, PropertyBuildingCharacteristic | None]:
-    """Pick the residential improvement + its characteristics row to
-    represent this property. See module docstring for why 'R'/first-match
-    is the tiebreak for the 20.4% of properties with multiple improvements."""
+    """Pick the residential improvement + its characteristics row that scoring
+    uses to represent this property. See module docstring for why 'R'/first-match
+    is the tiebreak for the 20.4% of properties with multiple improvements.
+    Readiness keeps its own primary-improvement rule (ADR-0020)."""
     improvements = list(
         PropertyImprovement.objects.filter(
             prop_id=prop_id, tax_year=tax_year, improvement_type="R"
@@ -168,11 +179,7 @@ def _primary_improvement(
             prop_id=prop_id, tax_year=tax_year, imp_id__in=[i.imp_id for i in improvements]
         )
     }
-    for improvement in improvements:
-        characteristic = characteristics_by_imp.get(improvement.imp_id)
-        if characteristic is not None:
-            return improvement, characteristic
-    return improvements[0], None
+    return _select_primary_improvement(improvements, characteristics_by_imp)
 
 
 def _has_second_floor(prop_id: str, imp_id: str, tax_year: int) -> bool:
@@ -352,61 +359,25 @@ def find_similar_properties(
     max_results: int = 50,
     min_score: float = 30.0,
 ) -> list[dict]:
-    """Find Brazos properties similar to the given prop_id. Mirrors
-    data/similarity.py::find_similar_properties's DB-side haversine
-    bounding-box approach (that part of Harris's implementation has no
-    model coupling at all -- it's a pure lat/long query pattern, safe to
-    replicate structurally against PropertyAccount instead of
-    PropertyRecord)."""
+    """Find Brazos properties similar to the given prop_id.
+
+    Candidates come from the shared nearest-properties query, pre-filtered
+    here to the same tax year."""
     target = PropertyAccount.objects.filter(prop_id=prop_id, tax_year=tax_year).first()
     if not target or not target.latitude or not target.longitude:
         return []
     target_lat = float(target.latitude)
     target_lon = float(target.longitude)
 
-    target_improvement, target_building = _primary_improvement(prop_id, tax_year)
+    target_improvement, target_building = primary_improvement(prop_id, tax_year)
     target_features = list(PropertyExtraFeature.objects.filter(prop_id=prop_id, tax_year=tax_year))
     target_acreage = _total_acreage(prop_id, tax_year)
 
-    lat_range = max_distance_miles / 69.0
-    lon_range = max_distance_miles / (69.0 * cos(radians(target_lat)))
-    min_lat, max_lat = target_lat - lat_range, target_lat + lat_range
-    min_lon, max_lon = target_lon - lon_range, target_lon + lon_range
-
-    candidates = PropertyAccount.objects.filter(
-        tax_year=tax_year,
-        latitude__gte=min_lat,
-        latitude__lte=max_lat,
-        longitude__gte=min_lon,
-        longitude__lte=max_lon,
-        latitude__isnull=False,
-        longitude__isnull=False,
-    ).exclude(prop_id=prop_id)
-
-    target_lat_rad = radians(target_lat)
-    target_lon_rad = radians(target_lon)
-
-    candidates = (
-        candidates.annotate(
-            distance=ExpressionWrapper(
-                3959.0
-                * ACos(
-                    Least(
-                        1.0,
-                        Greatest(
-                            -1.0,
-                            Cos(Value(target_lat_rad))
-                            * Cos(Radians(F("latitude")))
-                            * Cos(Radians(F("longitude")) - Value(target_lon_rad))
-                            + Sin(Value(target_lat_rad)) * Sin(Radians(F("latitude"))),
-                        ),
-                    )
-                ),
-                output_field=FloatField(),
-            )
-        )
-        .filter(distance__lte=max_distance_miles)
-        .order_by("distance")[:2000]
+    candidates = nearby_properties(
+        PropertyAccount.objects.filter(tax_year=tax_year).exclude(prop_id=prop_id),
+        latitude=target_lat,
+        longitude=target_lon,
+        max_distance_miles=max_distance_miles,
     )
 
     candidate_list = list(candidates)
@@ -421,13 +392,14 @@ def find_similar_properties(
     ).order_by("imp_id"):
         improvements_by_prop[imp.prop_id].append(imp)
 
-    # Keyed by (prop_id, imp_id): imp_id alone repeats across properties.
-    characteristics_by_imp: dict[tuple[str, str], PropertyBuildingCharacteristic] = {
-        (c.prop_id, c.imp_id): c
-        for c in PropertyBuildingCharacteristic.objects.filter(
-            prop_id__in=candidate_prop_ids, tax_year=tax_year
-        )
-    }
+    # Keyed by prop_id, then imp_id: imp_id alone repeats across properties.
+    characteristics_by_prop: dict[str, dict[str, PropertyBuildingCharacteristic]] = defaultdict(
+        dict
+    )
+    for c in PropertyBuildingCharacteristic.objects.filter(
+        prop_id__in=candidate_prop_ids, tax_year=tax_year
+    ):
+        characteristics_by_prop[c.prop_id][c.imp_id] = c
 
     features_by_prop: dict[str, list[PropertyExtraFeature]] = defaultdict(list)
     for f in PropertyExtraFeature.objects.filter(prop_id__in=candidate_prop_ids, tax_year=tax_year):
@@ -446,16 +418,10 @@ def find_similar_properties(
     for candidate in candidate_list:
         dist = getattr(candidate, "distance", 0.0)
 
-        c_improvements = improvements_by_prop.get(candidate.prop_id, [])
-        c_improvement = None
-        c_building = None
-        for imp in c_improvements:
-            characteristic = characteristics_by_imp.get((imp.prop_id, imp.imp_id))
-            if characteristic is not None:
-                c_improvement, c_building = imp, characteristic
-                break
-        if c_improvement is None and c_improvements:
-            c_improvement = c_improvements[0]
+        c_improvement, c_building = _select_primary_improvement(
+            improvements_by_prop.get(candidate.prop_id, []),
+            characteristics_by_prop.get(candidate.prop_id, {}),
+        )
 
         c_features = features_by_prop.get(candidate.prop_id, [])
         c_acreage = (

@@ -3,11 +3,7 @@ Similarity search algorithm for finding comparable properties.
 Uses location (lat/long), size, age, and features to find similar properties.
 """
 
-from math import cos, radians
 from typing import TYPE_CHECKING, Optional
-
-from django.db.models import ExpressionWrapper, F, FloatField, Value
-from django.db.models.functions import ACos, Cos, Greatest, Least, Radians, Sin
 
 from counties.common.similarity_math import (
     AGE_CURVE,
@@ -20,6 +16,7 @@ from counties.common.similarity_math import (
     component,
     difference_similarity,
     distance_similarity,
+    nearby_properties,
     percentage_similarity,
     ranked_code_similarity,
     score_from_components,
@@ -314,32 +311,13 @@ def find_similar_properties(
     target_building = target.buildings.filter(is_active=True).first()  # type: ignore[attr-defined]
     target_features = list(target.extra_features.filter(is_active=True))  # type: ignore[attr-defined]
 
-    # Calculate bounding box for initial index-based filtering
-    # 1 degree lat =~ 69 miles
-    lat_range = max_distance_miles / 69.0
-    lon_range = max_distance_miles / (69.0 * cos(radians(target_lat)))
-
-    min_lat = target_lat - lat_range
-    max_lat = target_lat + lat_range
-    min_lon = target_lon - lon_range
-    max_lon = target_lon + lon_range
-
-    # Query for nearby properties using Django ORM with annotations
-    # This avoids raw SQL issues and "GROUP BY" errors while still being efficient
-
-    # 1. Base filter by bounding box (uses database index)
+    # Harris pre-filters; the shared query adds the radius, order and cap.
     candidates = PropertyRecord.objects.filter(
         is_residential=True,
         is_data_ready=True,
-        latitude__gte=min_lat,
-        latitude__lte=max_lat,
-        longitude__gte=min_lon,
-        longitude__lte=max_lon,
-        latitude__isnull=False,
-        longitude__isnull=False,
     ).exclude(account_number=account_number)
 
-    # 2. Optional: Filter by size if we have target building data
+    # Optional: filter by size if we have target building data
     if target_building and target_building.heat_area:
         min_area = float(target_building.heat_area) * 0.5
         max_area = float(target_building.heat_area) * 1.5
@@ -351,40 +329,12 @@ def find_similar_properties(
 
         candidates = candidates.filter(account_number__in=matching_buildings)
 
-    # 3. Annotate with distance calculation and filter
-    # Formula: 3959 * acos(cos(radians(lat1)) * cos(radians(lat2)) * cos(radians(long2) - radians(long1)) + sin(radians(lat1)) * sin(radians(lat2)))
-
-    # We use Value() for constants (target lat/lon) and F() for DB fields
-    # Ensure float conversion for constants to avoid type issues
-    target_lat_rad = radians(target_lat)
-    target_lon_rad = radians(target_lon)
-
-    candidates = (
-        candidates.annotate(
-            distance=ExpressionWrapper(
-                3959.0
-                * ACos(
-                    Least(
-                        1.0,
-                        Greatest(
-                            -1.0,
-                            Cos(Value(target_lat_rad))
-                            * Cos(Radians(F("latitude")))
-                            * Cos(Radians(F("longitude")) - Value(target_lon_rad))
-                            + Sin(Value(target_lat_rad)) * Sin(Radians(F("latitude"))),
-                        ),
-                    )
-                ),
-                output_field=FloatField(),
-            )
-        )
-        .filter(distance__lte=max_distance_miles)
-        .order_by("distance")
+    candidates = nearby_properties(
+        candidates,
+        latitude=target_lat,
+        longitude=target_lon,
+        max_distance_miles=max_distance_miles,
     )
-
-    # Limit the number of candidates we process in Python
-    # We fetch more than max_results to allow for filtering by similarity score
-    candidates = candidates[:2000]
 
     # Process candidates
     results = []

@@ -1,4 +1,5 @@
 from decimal import Decimal
+from unittest import mock
 
 from django.test import TestCase
 
@@ -6,6 +7,7 @@ from counties.harris.models import BuildingDetail, PropertyRecord
 from counties.harris.similarity import (
     calculate_similarity_details,
     calculate_similarity_score,
+    find_similar_properties,
 )
 
 
@@ -212,3 +214,53 @@ class SimilarityScoringTests(TestCase):
         self.assertEqual(bedrooms["label"], "Bedrooms")
         self.assertLess(bedrooms["similarity"], 1.0)
         self.assertGreater(bedrooms["points"], 0)
+
+
+class NearbyPropertiesCapTests(TestCase):
+    """The shared nearest-properties query caps Harris candidates nearest-first."""
+
+    def _property(self, account_number: str, lat_offset: str, **overrides) -> None:
+        heat_area = overrides.pop("heat_area", Decimal("2200"))
+        fields = {"is_residential": True, "is_data_ready": True, **overrides}
+        record = PropertyRecord.objects.create(
+            address=f"{account_number} Cap St",
+            city="Houston",
+            zipcode="77040",
+            owner_name=f"Owner {account_number}",
+            account_number=account_number,
+            street_number=account_number[-3:],
+            street_name="Cap St",
+            assessed_value=Decimal("350000"),
+            building_area=Decimal("2200"),
+            land_area=Decimal("9000"),
+            latitude=Decimal("29.8000000") + Decimal(lat_offset),
+            longitude=Decimal("-95.5000000"),
+            **fields,
+        )
+        BuildingDetail.objects.create(
+            property=record,
+            account_number=account_number,
+            building_number=1,
+            heat_area=heat_area,
+            is_active=True,
+        )
+
+    def setUp(self):
+        self._property("HCAP00000000", "0")
+        # Nearest of all, but removed by Harris's own pre-filters before the cap.
+        self._property("HCAP00000001", "0.001", heat_area=Decimal("5000"))
+        self._property("HCAP00000002", "0.002", is_data_ready=False)
+        self._property("HCAP00000003", "0.003")
+        self._property("HCAP00000004", "0.004")
+        self._property("HCAP00000005", "0.005")
+
+    def _found(self) -> list[str]:
+        results = find_similar_properties("HCAP00000000", max_results=50, min_score=0.0)
+        return sorted(result["property"].account_number for result in results)
+
+    def test_search_scores_only_the_nearest_capped_candidates_after_pre_filters(self):
+        with mock.patch("counties.common.similarity_math.NEARBY_PROPERTIES_CAP", 2):
+            self.assertEqual(self._found(), ["HCAP00000003", "HCAP00000004"])
+
+    def test_default_cap_admits_every_nearby_candidate(self):
+        self.assertEqual(self._found(), ["HCAP00000003", "HCAP00000004", "HCAP00000005"])

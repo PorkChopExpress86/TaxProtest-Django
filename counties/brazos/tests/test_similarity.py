@@ -9,9 +9,12 @@ docstring for why condition isn't a separate component here).
 
 from __future__ import annotations
 
+import ast
 from decimal import Decimal
+from pathlib import Path
+from unittest import mock
 
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 
 from counties.brazos.models import (
     PropertyAccount,
@@ -26,11 +29,11 @@ from counties.brazos.similarity import (
     _building_character_similarity,
     _feature_similarity,
     _has_second_floor,
-    _primary_improvement,
     _quality_digit,
     _quality_similarity,
     calculate_similarity_details,
     find_similar_properties,
+    primary_improvement,
 )
 
 TAX_YEAR = 2025
@@ -94,7 +97,7 @@ class PrimaryImprovementSelectionTests(TestCase):
             prop_id="P1", imp_id="I2", tax_year=TAX_YEAR, bedrooms=3
         )
 
-        improvement, characteristic = _primary_improvement("P1", TAX_YEAR)
+        improvement, characteristic = primary_improvement("P1", TAX_YEAR)
 
         self.assertEqual(improvement.imp_id, "I2")
         self.assertEqual(characteristic.bedrooms, 3)
@@ -112,13 +115,34 @@ class PrimaryImprovementSelectionTests(TestCase):
             prop_id="P2", imp_id="I2", tax_year=TAX_YEAR, bedrooms=4
         )
 
-        improvement, characteristic = _primary_improvement("P2", TAX_YEAR)
+        improvement, characteristic = primary_improvement("P2", TAX_YEAR)
 
         self.assertEqual(improvement.imp_id, "I2")
         self.assertEqual(characteristic.bedrooms, 4)
 
     def test_no_improvements_returns_none_none(self):
-        self.assertEqual(_primary_improvement("NOPE", TAX_YEAR), (None, None))
+        self.assertEqual(primary_improvement("NOPE", TAX_YEAR), (None, None))
+
+
+class SimilarityPrivateNameBoundaryTests(SimpleTestCase):
+    def test_no_production_module_imports_a_private_similarity_name(self):
+        root = Path(__file__).resolve().parents[3]
+        offenders = []
+        for package in ("counties", "taxprotest"):
+            for path in (root / package).rglob("*.py"):
+                if "tests" in path.parts or path.name.startswith("test_"):
+                    continue
+                for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+                    if (
+                        isinstance(node, ast.ImportFrom)
+                        and node.module == "counties.brazos.similarity"
+                    ):
+                        offenders.extend(
+                            f"{path.relative_to(root)}: {alias.name}"
+                            for alias in node.names
+                            if alias.name.startswith("_")
+                        )
+        self.assertEqual(offenders, [])
 
 
 class SecondFloorStoriesTests(TestCase):
@@ -353,3 +377,39 @@ class FindSimilarPropertiesTests(TestCase):
 
     def test_unknown_prop_id_returns_empty(self):
         self.assertEqual(find_similar_properties("NOPE", tax_year=TAX_YEAR), [])
+
+
+class NearbyPropertiesCapTests(TestCase):
+    """The shared nearest-properties query caps Brazos candidates nearest-first."""
+
+    def _account(self, prop_id: str, lat_offset: str, tax_year: int = TAX_YEAR) -> None:
+        PropertyAccount.objects.create(
+            prop_id=prop_id,
+            tax_year=tax_year,
+            living_area=Decimal("2200"),
+            latitude=Decimal("30.6700000") + Decimal(lat_offset),
+            longitude=Decimal("-96.3700000"),
+            class_code="RV3",
+            year_built=2005,
+        )
+
+    def setUp(self):
+        self._account("BCAP00000000", "0")
+        # Nearest of all, but another tax year: removed by Brazos's pre-filter before the cap.
+        self._account("BCAP00000001", "0.001", tax_year=TAX_YEAR - 1)
+        self._account("BCAP00000002", "0.002")
+        self._account("BCAP00000003", "0.003")
+        self._account("BCAP00000004", "0.004")
+
+    def _found(self) -> list[str]:
+        results = find_similar_properties(
+            "BCAP00000000", tax_year=TAX_YEAR, max_results=50, min_score=0.0
+        )
+        return sorted(result["property"].prop_id for result in results)
+
+    def test_search_scores_only_the_nearest_capped_candidates_after_pre_filters(self):
+        with mock.patch("counties.common.similarity_math.NEARBY_PROPERTIES_CAP", 2):
+            self.assertEqual(self._found(), ["BCAP00000002", "BCAP00000003"])
+
+    def test_default_cap_admits_every_nearby_candidate(self):
+        self.assertEqual(self._found(), ["BCAP00000002", "BCAP00000003", "BCAP00000004"])
