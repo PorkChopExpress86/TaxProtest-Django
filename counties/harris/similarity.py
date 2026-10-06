@@ -3,11 +3,27 @@ Similarity search algorithm for finding comparable properties.
 Uses location (lat/long), size, age, and features to find similar properties.
 """
 
-from math import asin, cos, radians, sin, sqrt
+from math import cos, radians
 from typing import TYPE_CHECKING, Optional
 
 from django.db.models import ExpressionWrapper, F, FloatField, Value
 from django.db.models.functions import ACos, Cos, Greatest, Least, Radians, Sin
+
+from counties.common.similarity_math import (
+    AGE_CURVE,
+    BATHROOMS_CURVE,
+    BEDROOMS_CURVE,
+    LAND_SIZE_CURVE,
+    LIVING_AREA_CURVE,
+    STORIES_CURVE,
+    categorical_similarity,
+    component,
+    difference_similarity,
+    distance_similarity,
+    percentage_similarity,
+    ranked_code_similarity,
+    score_from_components,
+)
 
 from .models import BuildingDetail, ExtraFeature, PropertyRecord
 
@@ -52,126 +68,12 @@ COMPONENT_LABELS = {
 }
 
 
-def _clamp(value: float, lower: float = 0.0, upper: float = 1.0) -> float:
-    return max(lower, min(upper, value))
-
-
-def _interpolate_curve(value: float, curve: list[tuple[float, float]]) -> float:
-    """Return a smoothed similarity value from a piecewise linear curve."""
-    if not curve:
-        return 0.0
-
-    if value <= curve[0][0]:
-        return curve[0][1]
-
-    for (start_x, start_y), (end_x, end_y) in zip(curve, curve[1:]):
-        if value <= end_x:
-            if end_x == start_x:
-                return end_y
-
-            ratio = (value - start_x) / (end_x - start_x)
-            return start_y + ((end_y - start_y) * ratio)
-
-    return curve[-1][1]
-
-
-def _safe_float(value: object) -> float | None:
-    if value is None:
-        return None
-
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _normalized_code(value: object) -> str:
-    return str(value or "").strip().upper()
-
-
-def _percentage_similarity(
-    target_value: object,
-    candidate_value: object,
-    curve: list[tuple[float, float]],
-) -> float | None:
-    target_num = _safe_float(target_value)
-    candidate_num = _safe_float(candidate_value)
-
-    if target_num is None or candidate_num is None or target_num <= 0:
-        return None
-
-    diff_pct = abs(target_num - candidate_num) / target_num
-    return _clamp(_interpolate_curve(diff_pct, curve))
-
-
-def _difference_similarity(
-    target_value: object,
-    candidate_value: object,
-    curve: list[tuple[float, float]],
-) -> float | None:
-    target_num = _safe_float(target_value)
-    candidate_num = _safe_float(candidate_value)
-
-    if target_num is None or candidate_num is None:
-        return None
-
-    return _clamp(_interpolate_curve(abs(target_num - candidate_num), curve))
-
-
-def _ranked_code_similarity(
-    target_code: object,
-    candidate_code: object,
-    rank_map: dict[str, int],
-) -> float | None:
-    normalized_target = _normalized_code(target_code)
-    normalized_candidate = _normalized_code(candidate_code)
-
-    if not normalized_target or not normalized_candidate:
-        return None
-
-    if normalized_target == normalized_candidate:
-        return 1.0
-
-    target_rank = rank_map.get(normalized_target)
-    candidate_rank = rank_map.get(normalized_candidate)
-
-    if target_rank is None or candidate_rank is None:
-        return None
-
-    return _clamp(
-        _interpolate_curve(
-            abs(target_rank - candidate_rank),
-            [(0.0, 1.0), (1.0, 0.72), (2.0, 0.42), (3.0, 0.18), (5.0, 0.0)],
-        )
-    )
-
-
-def _categorical_similarity(target_code: object, candidate_code: object) -> float | None:
-    normalized_target = _normalized_code(target_code)
-    normalized_candidate = _normalized_code(candidate_code)
-
-    if not normalized_target or not normalized_candidate:
-        return None
-
-    if normalized_target == normalized_candidate:
-        return 1.0
-
-    if len(normalized_target) >= 2 and len(normalized_candidate) >= 2:
-        if normalized_target[:2] == normalized_candidate[:2]:
-            return 0.65
-
-    if normalized_target[0] == normalized_candidate[0]:
-        return 0.4
-
-    return 0.0
-
-
 def _condition_similarity(target_code: object, candidate_code: object) -> float | None:
-    ranked_similarity = _ranked_code_similarity(target_code, candidate_code, QUALITY_RANK)
+    ranked_similarity = ranked_code_similarity(target_code, candidate_code, QUALITY_RANK)
     if ranked_similarity is not None:
         return ranked_similarity
 
-    return _categorical_similarity(target_code, candidate_code)
+    return categorical_similarity(target_code, candidate_code)
 
 
 def _building_character_similarity(
@@ -179,7 +81,7 @@ def _building_character_similarity(
     candidate_building: "BuildingDetail",
 ) -> float | None:
     for attr_name in ("building_style", "building_type", "building_class"):
-        similarity = _categorical_similarity(
+        similarity = categorical_similarity(
             getattr(target_building, attr_name, None),
             getattr(candidate_building, attr_name, None),
         )
@@ -222,97 +124,6 @@ def _feature_similarity(
     return intersection / union
 
 
-def _distance_similarity(distance: float, max_distance_miles: float) -> float | None:
-    if max_distance_miles <= 0:
-        return None
-
-    ratio = _clamp(distance / max_distance_miles)
-    return _clamp(
-        _interpolate_curve(
-            ratio,
-            [(0.0, 1.0), (0.1, 0.93), (0.25, 0.78), (0.5, 0.52), (0.75, 0.24), (1.0, 0.05)],
-        )
-    )
-
-
-def get_similarity_label(score: float) -> str:
-    """Return a user-facing label for a 0-100 match score."""
-    if score >= 84:
-        return "Best match"
-    if score >= 70:
-        return "Highly similar"
-    if score >= 52:
-        return "Good match"
-    if score >= 36:
-        return "OK match"
-    return "Broad match"
-
-
-def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """
-    Calculate the great circle distance between two points on the earth in miles.
-
-    Args:
-        lat1, lon1: Latitude and longitude of first point
-        lat2, lon2: Latitude and longitude of second point
-
-    Returns:
-        Distance in miles
-    """
-    # Convert decimal degrees to radians
-    lon1, lat1, lon2, lat2 = map(radians, [lon1, lat1, lon2, lat2])
-
-    # Haversine formula
-    dlon = lon2 - lon1
-    dlat = lat2 - lat1
-    a = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2
-    c = 2 * asin(sqrt(a))
-
-    # Radius of earth in miles
-    miles = 3959 * c
-    return miles
-
-
-def _component(name: str, weight: float, similarity: float | None) -> dict[str, object]:
-    return {
-        "name": name,
-        "label": COMPONENT_LABELS.get(name, name.replace("_", " ").title()),
-        "weight": weight,
-        "similarity": None if similarity is None else round(similarity, 3),
-        "points": None if similarity is None else round(weight * similarity, 1),
-        "available": similarity is not None,
-    }
-
-
-def _score_from_components(
-    components: list[dict[str, object]],
-    *,
-    is_land_only: bool,
-) -> dict[str, object]:
-    total_possible_weight = sum(float(component["weight"]) for component in components)
-    available_components = [
-        (float(component["weight"]), float(component["similarity"]))
-        for component in components
-        if component["similarity"] is not None
-    ]
-
-    if not available_components or total_possible_weight <= 0:
-        return {"score": 0.0, "components": components, "available_weight": 0.0}
-
-    available_weight = sum(weight for weight, _ in available_components)
-    weighted_sum = sum(weight * similarity for weight, similarity in available_components)
-    base_score = weighted_sum / available_weight
-    coverage_ratio = 1.0 if is_land_only else (available_weight / total_possible_weight)
-    completeness_multiplier = 1.0 if is_land_only else (0.8 + (0.2 * coverage_ratio))
-    final_score = base_score * completeness_multiplier * 100.0
-
-    return {
-        "score": round(_clamp(final_score, lower=0.0, upper=100.0), 1),
-        "components": components,
-        "available_weight": round(available_weight, 1),
-    }
-
-
 def calculate_similarity_details(
     target_prop: PropertyRecord,
     candidate_prop: PropertyRecord,
@@ -330,90 +141,80 @@ def calculate_similarity_details(
     if not is_land_only and target_building and candidate_building:
         components.extend(
             [
-                _component(
+                component(
                     "living_area",
                     RESIDENTIAL_WEIGHTS["living_area"],
-                    _percentage_similarity(
+                    percentage_similarity(
                         target_building.heat_area,
                         candidate_building.heat_area,
-                        [
-                            (0.0, 1.0),
-                            (0.03, 0.96),
-                            (0.05, 0.90),
-                            (0.10, 0.78),
-                            (0.20, 0.55),
-                            (0.30, 0.32),
-                            (0.40, 0.16),
-                            (0.50, 0.06),
-                            (0.75, 0.0),
-                        ],
+                        LIVING_AREA_CURVE,
                     ),
+                    labels=COMPONENT_LABELS,
                 ),
-                _component(
+                component(
                     "bedrooms",
                     RESIDENTIAL_WEIGHTS["bedrooms"],
-                    _difference_similarity(
+                    difference_similarity(
                         target_building.bedrooms,
                         candidate_building.bedrooms,
-                        [(0.0, 1.0), (1.0, 0.62), (2.0, 0.22), (3.0, 0.06), (4.0, 0.0)],
+                        BEDROOMS_CURVE,
                     ),
+                    labels=COMPONENT_LABELS,
                 ),
-                _component(
+                component(
                     "bathrooms",
                     RESIDENTIAL_WEIGHTS["bathrooms"],
-                    _difference_similarity(
+                    difference_similarity(
                         target_building.bathrooms,
                         candidate_building.bathrooms,
-                        [(0.0, 1.0), (0.5, 0.76), (1.0, 0.40), (1.5, 0.14), (2.5, 0.0)],
+                        BATHROOMS_CURVE,
                     ),
+                    labels=COMPONENT_LABELS,
                 ),
-                _component(
+                component(
                     "quality",
                     RESIDENTIAL_WEIGHTS["quality"],
-                    _ranked_code_similarity(
+                    ranked_code_similarity(
                         target_building.quality_code,
                         candidate_building.quality_code,
                         QUALITY_RANK,
                     ),
+                    labels=COMPONENT_LABELS,
                 ),
-                _component(
+                component(
                     "condition",
                     RESIDENTIAL_WEIGHTS["condition"],
                     _condition_similarity(
                         target_building.condition_code,
                         candidate_building.condition_code,
                     ),
+                    labels=COMPONENT_LABELS,
                 ),
-                _component(
+                component(
                     "age",
                     RESIDENTIAL_WEIGHTS["age"],
-                    _difference_similarity(
+                    difference_similarity(
                         _effective_year(target_building),
                         _effective_year(candidate_building),
-                        [
-                            (0.0, 1.0),
-                            (2.0, 0.90),
-                            (5.0, 0.76),
-                            (10.0, 0.42),
-                            (15.0, 0.22),
-                            (25.0, 0.08),
-                            (40.0, 0.0),
-                        ],
+                        AGE_CURVE,
                     ),
+                    labels=COMPONENT_LABELS,
                 ),
-                _component(
+                component(
                     "stories",
                     RESIDENTIAL_WEIGHTS["stories"],
-                    _difference_similarity(
+                    difference_similarity(
                         target_building.stories,
                         candidate_building.stories,
-                        [(0.0, 1.0), (0.5, 0.70), (1.0, 0.35), (2.0, 0.0)],
+                        STORIES_CURVE,
                     ),
+                    labels=COMPONENT_LABELS,
                 ),
-                _component(
+                component(
                     "building_character",
                     RESIDENTIAL_WEIGHTS["building_character"],
                     _building_character_similarity(target_building, candidate_building),
+                    labels=COMPONENT_LABELS,
                 ),
             ]
         )
@@ -430,35 +231,32 @@ def calculate_similarity_details(
 
     components.extend(
         [
-            _component(
+            component(
                 "land_size",
                 land_weight,
-                _percentage_similarity(
+                percentage_similarity(
                     target_prop.land_area,
                     candidate_prop.land_area,
-                    [
-                        (0.0, 1.0),
-                        (0.05, 0.90),
-                        (0.10, 0.76),
-                        (0.20, 0.54),
-                        (0.35, 0.28),
-                        (0.50, 0.12),
-                        (0.80, 0.0),
-                    ],
+                    LAND_SIZE_CURVE,
                 ),
+                labels=COMPONENT_LABELS,
             ),
-            _component(
-                "features", feature_weight, _feature_similarity(target_features, candidate_features)
+            component(
+                "features",
+                feature_weight,
+                _feature_similarity(target_features, candidate_features),
+                labels=COMPONENT_LABELS,
             ),
-            _component(
+            component(
                 "distance",
                 distance_weight,
-                _distance_similarity(distance, max_distance_miles),
+                distance_similarity(distance, max_distance_miles),
+                labels=COMPONENT_LABELS,
             ),
         ]
     )
 
-    return _score_from_components(components, is_land_only=is_land_only)
+    return score_from_components(components, is_land_only=is_land_only)
 
 
 def calculate_similarity_score(

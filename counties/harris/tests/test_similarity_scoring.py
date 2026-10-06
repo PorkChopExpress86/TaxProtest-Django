@@ -6,7 +6,6 @@ from counties.harris.models import BuildingDetail, PropertyRecord
 from counties.harris.similarity import (
     calculate_similarity_details,
     calculate_similarity_score,
-    get_similarity_label,
 )
 
 
@@ -213,10 +212,3 @@ class SimilarityScoringTests(TestCase):
         self.assertEqual(bedrooms["label"], "Bedrooms")
         self.assertLess(bedrooms["similarity"], 1.0)
         self.assertGreater(bedrooms["points"], 0)
-
-    def test_match_labels_cover_all_user_facing_tiers(self) -> None:
-        self.assertEqual(get_similarity_label(90), "Best match")
-        self.assertEqual(get_similarity_label(72), "Highly similar")
-        self.assertEqual(get_similarity_label(58), "Good match")
-        self.assertEqual(get_similarity_label(40), "OK match")
-        self.assertEqual(get_similarity_label(20), "Broad match")
