@@ -10,6 +10,7 @@ docstring for why condition isn't a separate component here).
 from __future__ import annotations
 
 from decimal import Decimal
+from unittest import mock
 
 from django.test import TestCase
 
@@ -353,3 +354,39 @@ class FindSimilarPropertiesTests(TestCase):
 
     def test_unknown_prop_id_returns_empty(self):
         self.assertEqual(find_similar_properties("NOPE", tax_year=TAX_YEAR), [])
+
+
+class NearbyPropertiesCapTests(TestCase):
+    """The shared nearest-properties query caps Brazos candidates nearest-first."""
+
+    def _account(self, prop_id: str, lat_offset: str, tax_year: int = TAX_YEAR) -> None:
+        PropertyAccount.objects.create(
+            prop_id=prop_id,
+            tax_year=tax_year,
+            living_area=Decimal("2200"),
+            latitude=Decimal("30.6700000") + Decimal(lat_offset),
+            longitude=Decimal("-96.3700000"),
+            class_code="RV3",
+            year_built=2005,
+        )
+
+    def setUp(self):
+        self._account("BCAP00000000", "0")
+        # Nearest of all, but another tax year: removed by Brazos's pre-filter before the cap.
+        self._account("BCAP00000001", "0.001", tax_year=TAX_YEAR - 1)
+        self._account("BCAP00000002", "0.002")
+        self._account("BCAP00000003", "0.003")
+        self._account("BCAP00000004", "0.004")
+
+    def _found(self) -> list[str]:
+        results = find_similar_properties(
+            "BCAP00000000", tax_year=TAX_YEAR, max_results=50, min_score=0.0
+        )
+        return sorted(result["property"].prop_id for result in results)
+
+    def test_search_scores_only_the_nearest_capped_candidates_after_pre_filters(self):
+        with mock.patch("counties.common.similarity_math.NEARBY_PROPERTIES_CAP", 2):
+            self.assertEqual(self._found(), ["BCAP00000002", "BCAP00000003"])
+
+    def test_default_cap_admits_every_nearby_candidate(self):
+        self.assertEqual(self._found(), ["BCAP00000002", "BCAP00000003", "BCAP00000004"])
