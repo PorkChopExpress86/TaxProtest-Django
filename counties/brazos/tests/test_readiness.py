@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.db import connection
 from django.test import TestCase
@@ -25,6 +26,7 @@ from counties.common.tax_models import (
     PropertyJurisdictionExemption,
     TaxUnitRate,
 )
+from counties.common.tests.similarity_scenarios import build_brazos_residential_scenario
 
 TARGET = "000000010013"
 
@@ -106,6 +108,52 @@ class ActiveSnapshotReadTests(TestCase):
         snapshot_reads = [query for query in queries if table in query["sql"]]
         self.assertEqual(len(snapshot_reads), 1)
         self.assertEqual(projection.snapshot_id, snapshot.id)
+
+
+class AdapterComparableReadingTests(TestCase):
+    """Search rows, the subject and the comparables lookup read one active snapshot."""
+
+    def snapshot_reads(self, call):
+        table = BrazosPropertySnapshot._meta.db_table
+        with CaptureQueriesContext(connection) as queries:
+            result = call()
+        return result, len([query for query in queries if table in query["sql"]])
+
+    def test_subject_lookup_reads_the_active_snapshot_once(self):
+        subject = build_brazos_residential_scenario()
+
+        found, reads = self.snapshot_reads(lambda: adapter.get_subject(subject))
+
+        self.assertTrue(found.has_location)
+        self.assertEqual(reads, 1)
+
+    def test_comparables_lookup_reads_one_snapshot_for_subject_and_peers(self):
+        subject = build_brazos_residential_scenario()
+
+        comps, reads = self.snapshot_reads(
+            lambda: adapter.find_comps(
+                subject, max_distance_miles=10.0, max_results=50, min_score=30.0
+            )
+        )
+
+        self.assertTrue(comps)
+        self.assertEqual(reads, 1)
+
+    def test_search_rows_and_subject_lookup_never_run_a_comparables_search(self):
+        subject = build_brazos_residential_scenario()
+        forbidden = AssertionError("comparables search must not run")
+
+        with (
+            patch("counties.brazos.similarity.find_similar_properties", side_effect=forbidden),
+            patch("counties.brazos.adapter.find_similar_properties", side_effect=forbidden),
+            patch("counties.brazos.readiness.find_similar_properties", side_effect=forbidden),
+        ):
+            response = self.client.get(reverse("brazos_index"), {"owner_name": "OWNER"})
+            found = adapter.get_subject(subject)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(any(row["protest_url"] for row in response.context["results"]))
+        self.assertTrue(found.has_location)
 
 
 NO_FACTS = "The active property lacks enough comparable facts."
