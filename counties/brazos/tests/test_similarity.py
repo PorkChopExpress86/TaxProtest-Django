@@ -14,7 +14,9 @@ from decimal import Decimal
 from pathlib import Path
 from unittest import mock
 
+from django.db import connection
 from django.test import SimpleTestCase, TestCase
+from django.test.utils import CaptureQueriesContext
 
 from counties.brazos.models import (
     PropertyAccount,
@@ -33,7 +35,16 @@ from counties.brazos.similarity import (
     _quality_similarity,
     calculate_similarity_details,
     find_similar_properties,
+    load_scoring_facts,
     primary_improvement,
+    score_pair,
+)
+from counties.common.similarity_math import nearby_properties
+from counties.common.tests.similarity_scenarios import (
+    BRAZOS_TAX_YEAR,
+    _brazos_property,
+    build_brazos_building_free_scenario,
+    build_brazos_residential_scenario,
 )
 
 TAX_YEAR = 2025
@@ -413,3 +424,137 @@ class NearbyPropertiesCapTests(TestCase):
 
     def test_default_cap_admits_every_nearby_candidate(self):
         self.assertEqual(self._found(), ["BCAP00000002", "BCAP00000003", "BCAP00000004"])
+
+
+class PairScoringQueryCountTests(TestCase):
+    """A search's query total does not grow with the number of candidates."""
+
+    def _candidate(self, prefix: str, index: int) -> None:
+        _brazos_property(
+            f"{prefix}{index:010d}",
+            lat_offset=f"0.00{index % 9 + 1}",
+            improvements=(
+                {"improvement_type": "M"},
+                {"year_built": 1999},
+                {"year_built": 2001, "building": {}, "second_floor": index % 2 == 0},
+            ),
+            acreage=("0.20", "0.05"),
+            features=("Fireplace",),
+        )
+
+    def _search_query_count(self, prefix: str, candidate_count: int) -> int:
+        _brazos_property(
+            f"{prefix}0000000000",
+            improvements=({"year_built": 2006, "building": {}, "second_floor": True},),
+            acreage=("0.25",),
+            features=("Fireplace", "Carport"),
+        )
+        for index in range(1, candidate_count + 1):
+            self._candidate(prefix, index)
+        with CaptureQueriesContext(connection) as queries:
+            results = find_similar_properties(f"{prefix}0000000000", tax_year=BRAZOS_TAX_YEAR)
+        self.assertEqual(len(results), candidate_count)
+        return len(queries)
+
+    def test_small_and_large_candidate_sets_issue_equal_query_totals(self):
+        small = self._search_query_count("BS", 2)
+        PropertyAccount.objects.filter(prop_id__startswith="BS").delete()
+        large = self._search_query_count("BL", 12)
+        self.assertEqual(small, large)
+
+
+class PurePairScorerDifferentialTests(TestCase):
+    """Temporary: the pure scorer equals the old per-pair scorer across the golden
+    matrix. Issue #88 deletes this test together with calculate_similarity_details."""
+
+    def _old_inputs(self, prop_id: str) -> tuple:
+        improvement, building = primary_improvement(prop_id, BRAZOS_TAX_YEAR)
+        features = list(
+            PropertyExtraFeature.objects.filter(prop_id=prop_id, tax_year=BRAZOS_TAX_YEAR)
+        )
+        acreages = [
+            float(a)
+            for a in PropertyLand.objects.filter(
+                prop_id=prop_id, tax_year=BRAZOS_TAX_YEAR
+            ).values_list("acreage", flat=True)
+            if a is not None
+        ]
+        return improvement, building, features, (sum(acreages) if acreages else None)
+
+    def _assert_scorers_agree_for_every_target(self) -> int:
+        compared = 0
+        targets = PropertyAccount.objects.filter(tax_year=BRAZOS_TAX_YEAR).exclude(
+            latitude__isnull=True
+        )
+        for target in targets:
+            candidates = list(
+                nearby_properties(
+                    PropertyAccount.objects.filter(tax_year=BRAZOS_TAX_YEAR).exclude(
+                        prop_id=target.prop_id
+                    ),
+                    latitude=float(target.latitude),
+                    longitude=float(target.longitude),
+                    max_distance_miles=10.0,
+                )
+            )
+            facts = load_scoring_facts([target, *candidates], BRAZOS_TAX_YEAR)
+            t_imp, t_bld, t_feat, t_acre = self._old_inputs(target.prop_id)
+            for candidate in candidates:
+                c_imp, c_bld, c_feat, c_acre = self._old_inputs(candidate.prop_id)
+                old = calculate_similarity_details(
+                    target,
+                    candidate,
+                    t_imp,
+                    c_imp,
+                    t_bld,
+                    c_bld,
+                    t_feat,
+                    c_feat,
+                    t_acre,
+                    c_acre,
+                    candidate.distance,
+                    max_distance_miles=10.0,
+                )
+                with self.assertNumQueries(0):
+                    new = score_pair(
+                        facts[target.prop_id],
+                        facts[candidate.prop_id],
+                        distance=candidate.distance,
+                        max_distance_miles=10.0,
+                    )
+                self.assertEqual(new, old, (target.prop_id, candidate.prop_id))
+                compared += 1
+        return compared
+
+    def test_residential_matrix_scores_identically(self):
+        build_brazos_residential_scenario()
+        self.assertGreater(self._assert_scorers_agree_for_every_target(), 40)
+
+    def test_building_free_matrix_scores_identically(self):
+        build_brazos_building_free_scenario()
+        self.assertEqual(self._assert_scorers_agree_for_every_target(), 12)
+
+
+class PairScoringReadsCurrentFactsTests(TestCase):
+    """The scorer keeps no state between searches: a changed fact changes the score."""
+
+    def test_adding_a_second_floor_changes_the_next_search(self):
+        subject = build_brazos_residential_scenario()
+
+        def stories_row(results: list[dict]) -> tuple:
+            row = next(r for r in results if r["property"].prop_id == "BC0000000002")
+            stories = next(c for c in row["score_breakdown"] if c["name"] == "stories")
+            return row["similarity_score"], stories["similarity"]
+
+        before = stories_row(find_similar_properties(subject, tax_year=BRAZOS_TAX_YEAR))
+        PropertyImprovementDetail.objects.create(
+            prop_id="BC0000000002",
+            imp_id="IMP-BC0000000002-1",
+            tax_year=BRAZOS_TAX_YEAR,
+            detail_seq=2,
+            detail_description="SECOND FLOOR",
+        )
+        after = stories_row(find_similar_properties(subject, tax_year=BRAZOS_TAX_YEAR))
+
+        self.assertLess(before[1], after[1])
+        self.assertLess(before[0], after[0])
