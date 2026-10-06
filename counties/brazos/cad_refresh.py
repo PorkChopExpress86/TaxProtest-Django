@@ -374,7 +374,7 @@ class CadRefreshStage:
         PropertyImprovement (APPRAISAL_IMPROVEMENT_INFO.TXT carries no
         year_built of its own — only per-detail-row values exist, and one
         improvement typically has several detail rows). The representative
-        year_built picked per imp_id is the one from its highest-detail_value
+        year_built picked per (prop_id, imp_id) is the one from its highest-detail_value
         row (the dominant structural component, usually the main area).
         """
         if not text_file.exists():
@@ -388,8 +388,9 @@ class CadRefreshStage:
             return 0
 
         instances = []
-        rollup_best_value: dict[str, Decimal] = {}
-        rollup_year_built: dict[str, int] = {}
+        # Keyed by (prop_id, imp_id): imp_id alone repeats across properties.
+        rollup_best_value: dict[tuple[str, str], Decimal] = {}
+        rollup_year_built: dict[tuple[str, str], int] = {}
         mismatched = 0
 
         for line in self._iter_lines(text_file):
@@ -399,13 +400,13 @@ class CadRefreshStage:
                 mismatched += 1
                 continue
             year_built = fields.pop("year_built", None)
-            imp_id = fields["imp_id"]
+            key = (fields["prop_id"], fields["imp_id"])
             detail_value = fields.get("detail_value") or Decimal("0")
             if year_built is not None and (
-                imp_id not in rollup_best_value or detail_value > rollup_best_value[imp_id]
+                key not in rollup_best_value or detail_value > rollup_best_value[key]
             ):
-                rollup_best_value[imp_id] = detail_value
-                rollup_year_built[imp_id] = year_built
+                rollup_best_value[key] = detail_value
+                rollup_year_built[key] = year_built
             fields["tax_year"] = tax_year
             fields["source_file"] = text_file.name
             instances.append(PropertyImprovementDetail(**fields))
@@ -428,13 +429,17 @@ class CadRefreshStage:
         )
 
         if rollup_year_built:
-            improvements = list(
-                PropertyImprovement.objects.filter(
-                    tax_year=tax_year, imp_id__in=rollup_year_built.keys()
+            improvements = [
+                improvement
+                for improvement in PropertyImprovement.objects.filter(
+                    tax_year=tax_year, imp_id__in={imp_id for _, imp_id in rollup_year_built}
                 )
-            )
+                if (improvement.prop_id, improvement.imp_id) in rollup_year_built
+            ]
             for improvement in improvements:
-                improvement.year_built = rollup_year_built.get(improvement.imp_id)
+                improvement.year_built = rollup_year_built[
+                    (improvement.prop_id, improvement.imp_id)
+                ]
             PropertyImprovement.objects.bulk_update(improvements, ["year_built"], batch_size=5000)
             logger.info("Rolled up year_built onto %d PropertyImprovement rows", len(improvements))
 
