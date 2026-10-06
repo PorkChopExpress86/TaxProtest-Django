@@ -80,9 +80,8 @@ class ScoreComponent:
 
     Each county's similarity module scores a candidate factor-by-factor (living
     area, bedrooms, distance, ...) and returns that breakdown as a list of
-    these — Harris's and Brazos's ``_component()`` helpers build the same shape
-    independently (see ``counties/harris/similarity.py`` and
-    ``counties/brazos/similarity.py``); this is the seam where each adapter's
+    these, in the dict shape built by ``component()`` in
+    ``counties/common/similarity_math.py``; this is the seam where each adapter's
     ``find_comps`` declares that shared shape explicit rather than leaving it
     an informal key-name agreement. ``similarity`` and ``points`` are ``None``
     when neither property had the data needed to score this factor at all.
@@ -96,7 +95,7 @@ class ScoreComponent:
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> ScoreComponent:
-        """Build from the raw dict a similarity module's ``_component()`` returns."""
+        """Build from the raw dict ``similarity_math.component()`` returns."""
         return cls(
             name=data["name"],
             label=data["label"],

@@ -117,15 +117,10 @@ properties = PropertyRecord.objects.filter(
 
 ### Distance Calculation
 
-Exact distances are computed using the pure-math Haversine formula implemented in [`counties/common/similarity_math.py`](file:///home/specter/dev/TaxProtest-Django/counties/common/similarity_math.py):
-
-```python
-from counties.common.similarity_math import haversine_distance
-
-# Property 1 (Downtown Houston) vs Property 2 (Rice University)
-dist = haversine_distance(29.760427, -95.369804, 29.717208, -95.401825)
-print(f"Distance: {dist:.2f} miles")
-```
+Exact distances are computed in the database: each county's `find_similar_properties` annotates
+bounding-box candidates with a great-circle distance in miles (spherical law of cosines), keeps
+those within the search radius, and orders them nearest first. There is no Python-side distance
+helper.
 
 ---
 

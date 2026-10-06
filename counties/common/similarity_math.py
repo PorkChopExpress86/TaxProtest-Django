@@ -1,23 +1,86 @@
-"""Shared pure-math helpers for similarity scoring.
+"""Shared pure similarity math used by every county's similarity scoring.
 
-Both ``counties/harris/similarity.py`` and ``counties/brazos/similarity.py``
-use the same curve interpolation, percentage/difference similarity, and
-distance-curve functions.  These have zero model coupling — they take
-numbers and return numbers — so they live here once rather than being
-duplicated across the two county modules.
+Everything here takes numbers or codes and returns numbers or dicts, with no
+model coupling: numeric helpers, curve interpolation, the per-factor
+similarity functions, the tuning curves as named constants, the user-facing
+label bands, and score assembly. Each county keeps its own factor list,
+weights, quality and condition semantics, candidate pre-filters, and pair
+scorer (ADR-0021).
 
-The ``component`` and ``score_from_components`` functions build the
-score-breakdown dict shape that the shared web layer's
-``ScoreComponent.from_mapping()`` (in ``contracts.py``) consumes.
+The tuning curves are shared. A county that needs a different curve defines
+and justifies its own constant (ADR-0003) rather than editing these.
 
-The curves themselves (the ``list[tuple[float, float]]`` arguments) are
-defined inline in each county's ``calculate_similarity_details`` — they
-are per-factor tuning, not shared infrastructure.
+``component`` and ``score_from_components`` build the score-breakdown dict
+shape that the shared web layer's ``ScoreComponent.from_mapping()`` (in
+``contracts.py``) consumes.
 """
 
 from __future__ import annotations
 
-from math import asin, cos, radians, sin, sqrt
+from collections.abc import Sequence
+
+Curve = Sequence[tuple[float, float]]
+
+# ---------------------------------------------------------------------------
+# Tuning curves: (x, similarity) points sorted by x
+# ---------------------------------------------------------------------------
+
+# x is the fractional difference from the target's living area.
+LIVING_AREA_CURVE: Curve = (
+    (0.0, 1.0),
+    (0.03, 0.96),
+    (0.05, 0.90),
+    (0.10, 0.78),
+    (0.20, 0.55),
+    (0.30, 0.32),
+    (0.40, 0.16),
+    (0.50, 0.06),
+    (0.75, 0.0),
+)
+
+# x is the fractional difference from the target's land size.
+LAND_SIZE_CURVE: Curve = (
+    (0.0, 1.0),
+    (0.05, 0.90),
+    (0.10, 0.76),
+    (0.20, 0.54),
+    (0.35, 0.28),
+    (0.50, 0.12),
+    (0.80, 0.0),
+)
+
+# x is the absolute difference in bedrooms.
+BEDROOMS_CURVE: Curve = ((0.0, 1.0), (1.0, 0.62), (2.0, 0.22), (3.0, 0.06), (4.0, 0.0))
+
+# x is the absolute difference in bathrooms.
+BATHROOMS_CURVE: Curve = ((0.0, 1.0), (0.5, 0.76), (1.0, 0.40), (1.5, 0.14), (2.5, 0.0))
+
+# x is the absolute difference in effective year, in years.
+AGE_CURVE: Curve = (
+    (0.0, 1.0),
+    (2.0, 0.90),
+    (5.0, 0.76),
+    (10.0, 0.42),
+    (15.0, 0.22),
+    (25.0, 0.08),
+    (40.0, 0.0),
+)
+
+# x is the absolute difference in stories.
+STORIES_CURVE: Curve = ((0.0, 1.0), (0.5, 0.70), (1.0, 0.35), (2.0, 0.0))
+
+# x is the absolute difference in rank between two ranked codes.
+RANK_DIFFERENCE_CURVE: Curve = ((0.0, 1.0), (1.0, 0.72), (2.0, 0.42), (3.0, 0.18), (5.0, 0.0))
+
+# x is the distance as a fraction of the search radius.
+DISTANCE_CURVE: Curve = (
+    (0.0, 1.0),
+    (0.1, 0.93),
+    (0.25, 0.78),
+    (0.5, 0.52),
+    (0.75, 0.24),
+    (1.0, 0.05),
+)
 
 # ---------------------------------------------------------------------------
 # Numeric helpers
@@ -49,10 +112,10 @@ def normalized_code(value: object) -> str:
 # ---------------------------------------------------------------------------
 
 
-def interpolate_curve(value: float, curve: list[tuple[float, float]]) -> float:
+def interpolate_curve(value: float, curve: Curve) -> float:
     """Return a smoothed similarity value from a piecewise linear curve.
 
-    ``curve`` is a list of ``(x, y)`` points sorted by x.  For ``value``
+    ``curve`` is a sequence of ``(x, y)`` points sorted by x.  For ``value``
     below the first x or above the last x, the first/last y is returned.
     Between points, linear interpolation is used.
     """
@@ -81,7 +144,7 @@ def interpolate_curve(value: float, curve: list[tuple[float, float]]) -> float:
 def percentage_similarity(
     target_value: object,
     candidate_value: object,
-    curve: list[tuple[float, float]],
+    curve: Curve,
 ) -> float | None:
     """Similarity based on percentage difference from target.
 
@@ -100,7 +163,7 @@ def percentage_similarity(
 def difference_similarity(
     target_value: object,
     candidate_value: object,
-    curve: list[tuple[float, float]],
+    curve: Curve,
 ) -> float | None:
     """Similarity based on absolute difference."""
     target_num = safe_float(target_value)
@@ -140,8 +203,8 @@ def ranked_code_similarity(
 ) -> float | None:
     """Similarity for ranked codes (e.g. quality grades A-F).
 
-    Uses a fixed curve: rank diff 0→1.0, 1→0.72, 2→0.42, 3→0.18, 5→0.0.
-    Falls back to ``categorical_similarity`` when codes aren't in the map.
+    Scores the rank difference on ``RANK_DIFFERENCE_CURVE``. Returns None
+    when either code is missing from ``rank_map``.
     """
     normalized_target = normalized_code(target_code)
     normalized_candidate = normalized_code(candidate_code)
@@ -158,12 +221,7 @@ def ranked_code_similarity(
     if target_rank is None or candidate_rank is None:
         return None
 
-    return clamp(
-        interpolate_curve(
-            abs(target_rank - candidate_rank),
-            [(0.0, 1.0), (1.0, 0.72), (2.0, 0.42), (3.0, 0.18), (5.0, 0.0)],
-        )
-    )
+    return clamp(interpolate_curve(abs(target_rank - candidate_rank), RANK_DIFFERENCE_CURVE))
 
 
 def distance_similarity(distance: float, max_distance_miles: float) -> float | None:
@@ -172,27 +230,7 @@ def distance_similarity(distance: float, max_distance_miles: float) -> float | N
         return None
 
     ratio = clamp(distance / max_distance_miles)
-    return clamp(
-        interpolate_curve(
-            ratio,
-            [(0.0, 1.0), (0.1, 0.93), (0.25, 0.78), (0.5, 0.52), (0.75, 0.24), (1.0, 0.05)],
-        )
-    )
-
-
-# ---------------------------------------------------------------------------
-# Distance
-# ---------------------------------------------------------------------------
-
-
-def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Great-circle distance between two points on Earth, in miles."""
-    lon1, lat1, lon2, lat2 = map(radians, [lon1, lat1, lon2, lat2])
-    dlon = lon2 - lon1
-    dlat = lat2 - lat1
-    a = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2
-    c = 2 * asin(sqrt(a))
-    return 3959 * c
+    return clamp(interpolate_curve(ratio, DISTANCE_CURVE))
 
 
 # ---------------------------------------------------------------------------
@@ -203,9 +241,8 @@ def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> fl
 def get_similarity_label(score: float) -> str:
     """Return a user-facing label for a 0-100 match score.
 
-    The bands are shared across all counties — they describe the score
-    itself, not anything county-specific (see CLAUDE.md's Similarity
-    Algorithm section).
+    The bands are shared across all counties: they describe the score
+    itself, not anything county-specific.
     """
     if score >= 84:
         return "Best match"
