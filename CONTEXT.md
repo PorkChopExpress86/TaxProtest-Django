@@ -121,8 +121,8 @@ _Avoid_: job, task, run
 **Import disposition**:
 What a finished Import operation did to its county's published data, read from
 the operation's own classified status: published, already applied, held for an
-operator, or failed, and whether the import was incomplete. Derived, never
-stored.
+operator, or failed, and whether the import was incomplete. A preview, which
+writes nothing, is previewed. Derived, never stored.
 _Avoid_: outcome, import success, result status, workflow state
 
 **Candidate state**:

@@ -13,8 +13,8 @@ Candidate state and Import operation status stay two persisted vocabularies with
 byte-identical values, defined once in one shared module and paired explicitly
 rather than by spelling. An Import disposition is derived from the finished
 Import operation and the candidate it names: published, already applied, held
-for an operator, or failed, and whether the import was incomplete. It is never
-stored. Command and Celery adapters classify through it and keep only the
+for an operator, or failed, and whether the import was incomplete; a preview
+writes nothing and is previewed. It is never stored. Command and Celery adapters classify through it and keep only the
 translation of their own flags into a request.
 
 This is a read model, not a convergence. County result types, the Harris import
