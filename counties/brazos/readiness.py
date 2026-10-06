@@ -110,7 +110,7 @@ class BrazosActiveSnapshotReadiness:
             )
         )
 
-    def comparable_results(
+    def _legacy_report_comparables(
         self,
         prop_id: str,
         *,
@@ -119,6 +119,10 @@ class BrazosActiveSnapshotReadiness:
         min_score: float,
         snapshot: BrazosPropertySnapshot | None = None,
     ) -> list[dict]:
+        """The searched report pool, kept only until report-ready stops searching (#80).
+
+        The comparables lookup composes its own search in the Brazos adapter.
+        """
         snapshot = snapshot or self.active_snapshot()
         if snapshot is None:
             return []
@@ -328,7 +332,7 @@ class BrazosActiveSnapshotReadiness:
             return projection.reason_for("comparable")
         if not self._positive(account.assessed_value) or not self._positive(account.living_area):
             return "Positive assessed value and living area are required for a report."
-        comps = self.comparable_results(
+        comps = self._legacy_report_comparables(
             account.prop_id,
             max_distance_miles=10.0,
             max_results=50,
