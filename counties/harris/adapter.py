@@ -25,16 +25,13 @@ from counties.common.contracts import (
     SearchField,
     Subject,
 )
+from counties.common.similarity_math import get_similarity_label
 from counties.common.tax_impact import calculate_tax_impact, unavailable_tax_impact
 from counties.harris.models import BuildingDetail, ExtraFeature, PropertyRecord
 from counties.harris.query import build_property_search_queryset
 from counties.harris.readiness import HarrisReadinessProjection
 from counties.harris.readiness import published_year as harris_published_year
-from counties.harris.similarity import (
-    find_similar_properties,
-    format_feature_list,
-    get_similarity_label,
-)
+from counties.harris.similarity import find_similar_properties, format_feature_list
 from counties.harris.tax_units import NON_LEVYING_UNITS
 
 COUNTY_SLUG = "harris"
@@ -317,10 +314,6 @@ class HarrisAdapter(CountyAdapter):
             tax_impact_ready="tax" in readiness.ready,
             reasons={outcome: "; ".join(reasons) for outcome, reasons in readiness.reasons.items()},
         )
-
-    def unavailable_reason(self, key: str, capability: str) -> str | None:
-        caps = self.capabilities(key)
-        return caps.reason_for(capability)
 
 
 adapter = HarrisAdapter()

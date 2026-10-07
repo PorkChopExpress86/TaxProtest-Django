@@ -7,10 +7,12 @@ from pathlib import Path
 from django.core.exceptions import PermissionDenied
 from django.utils import timezone
 
-from counties.common.candidate_ports import dataset_identity, port_for, published_identity
+from counties.common.candidate_ports import dataset_identity, published_identity
 from counties.common.candidate_staging import switch_search_path
+from counties.common.county_registry import registration_for
 from counties.common.import_audit import audited_operation
 from counties.common.import_coverage import compare_coverage
+from counties.common.import_states import CandidateState
 from counties.common.import_writers import fenced_write
 from counties.common.models import ImportAuditEntry, ImportCandidate
 
@@ -34,7 +36,7 @@ def captured_binding(candidate) -> str:
 
 def current_coverage(candidate):
     """Measure the candidate against the published data with the county's own rules."""
-    port = port_for(candidate.county)
+    port = registration_for(candidate.county).port
     previous = port.outcomes(None)
     with switch_search_path(candidate.storage_schema):
         current = port.outcomes(candidate)
@@ -99,16 +101,20 @@ def checked_binding(candidate: ImportCandidate) -> str:
 
 def authorize_publication(candidate, *, user=None):
     binding = checked_binding(candidate)
-    if candidate.state in ("blocked", "rejected", "preparing"):
+    if candidate.state in (
+        CandidateState.BLOCKED,
+        CandidateState.REJECTED,
+        CandidateState.PREPARING,
+    ):
         raise ImportReviewRejected("Candidate is not qualified for publication")
     if not candidate.evidence["coverage"]["requires_review"]:
         return None
     from django.contrib.auth import get_user_model
 
     review = candidate.operation.audit_entries.filter(
-        kind="coverage_review", result="approved"
+        kind="coverage_review", result=CandidateState.APPROVED
     ).last()
-    if candidate.state != "approved" or review is None:
+    if candidate.state != CandidateState.APPROVED or review is None:
         raise ImportReviewRejected("Coverage review approval is required before publication")
     reviewer = (
         get_user_model()
@@ -139,8 +145,9 @@ def review_candidate(candidate, *, user, reason: str, decision: str, expected_bi
         or not user.has_perm("data.approve_import_coverage")
     ):
         raise PermissionDenied
-    if not reason.strip() or decision not in ("approved", "rejected"):
+    if not reason.strip() or decision not in (CandidateState.APPROVED, CandidateState.REJECTED):
         raise ImportReviewRejected("A valid decision and justification are required")
+    decision = CandidateState(decision)
     evidence = {
         "candidate_id": str(candidate.pk),
         "binding": expected_binding,
@@ -154,7 +161,12 @@ def review_candidate(candidate, *, user, reason: str, decision: str, expected_bi
         ):
             with fenced_write():
                 candidate = ImportCandidate.objects.select_for_update().get(pk=candidate.pk)
-                if candidate.state in ("approved", "rejected", "published", "superseded"):
+                if candidate.state in (
+                    CandidateState.APPROVED,
+                    CandidateState.REJECTED,
+                    CandidateState.PUBLISHED,
+                    CandidateState.SUPERSEDED,
+                ):
                     raise ImportReviewRejected(
                         "Candidate already has a review decision or publication"
                     )
@@ -162,7 +174,7 @@ def review_candidate(candidate, *, user, reason: str, decision: str, expected_bi
                     raise ImportReviewRejected(
                         "Review evidence changed; reload and review fresh evidence"
                     )
-                if decision == "approved":
+                if decision == CandidateState.APPROVED:
                     evidence["qualification_binding"] = checked_binding(candidate)
                 ImportAuditEntry.objects.create(
                     operation=candidate.operation,
@@ -173,7 +185,7 @@ def review_candidate(candidate, *, user, reason: str, decision: str, expected_bi
                     result=decision,
                 )
                 candidate.state = decision
-                if decision == "rejected":
+                if decision == CandidateState.REJECTED:
                     candidate.rejected_at = timezone.now()
                 candidate.save(update_fields=["state", "rejected_at"])
     except Exception as exc:

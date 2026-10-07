@@ -287,10 +287,8 @@ def validate_harris_sources(
                 result.errors.append(f"{source.name}: no requested GIS layer")
             else:
                 gis_paths.append(layer)
-                paths = (
-                    list(layer.rglob("*"))
-                    if layer.is_dir()
-                    else list(layer.parent.glob(f"{layer.stem}.*"))
+                paths = sorted(
+                    layer.rglob("*") if layer.is_dir() else layer.parent.glob(f"{layer.stem}.*")
                 )
                 record_sources(
                     operation,

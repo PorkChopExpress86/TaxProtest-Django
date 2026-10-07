@@ -1,13 +1,17 @@
 """Compatibility command contracts for the authoritative Harris ETL path."""
 
 import tempfile
+from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from django.core.management import call_command
-from django.test import SimpleTestCase
+from django.core.management.base import CommandError
+from django.test import TestCase
 
+from counties.common.import_disposition import import_disposition
+from counties.common.models import ImportOperation
 from counties.harris.etl_pipeline import (
     HarrisAcquisitionMode,
     HarrisApply,
@@ -18,10 +22,16 @@ from counties.harris.etl_pipeline import (
 from counties.harris.etl_pipeline.import_plan import HarrisImportPlan
 
 
-class ImportBuildingDataCommandTests(SimpleTestCase):
-    @patch("counties.harris.management.commands.import_building_data._run_authoritative_pipeline")
+class ImportBuildingDataCommandTests(TestCase):
+    @patch("counties.harris.management.commands.import_building_data._run_authoritative_import")
     def test_sync_command_builds_one_plan_and_preserves_skip_flags(self, mocked_run):
-        mocked_run.return_value = {"status": "completed"}
+        operation = ImportOperation.objects.create(
+            county="harris", intent="building-only", status="published"
+        )
+        mocked_run.return_value = (
+            {"status": "completed", "operation_id": str(operation.pk)},
+            import_disposition(operation, subject="Harris import"),
+        )
 
         call_command(
             "import_building_data",
@@ -61,7 +71,7 @@ class ImportBuildingDataCommandTests(SimpleTestCase):
         )
 
 
-class ETLPipelineCommandTests(SimpleTestCase):
+class ETLPipelineCommandTests(TestCase):
     @patch("counties.harris.management.commands.etl_pipeline.run_harris_import")
     def test_run_translates_legacy_flags_at_the_cli_boundary(self, mocked_import):
         mocked_import.return_value = SimpleNamespace(
@@ -70,6 +80,9 @@ class ETLPipelineCommandTests(SimpleTestCase):
             duration=0.1,
             stages={},
             errors=(),
+            operation_id=ImportOperation.objects.create(
+                county="harris", intent="preview", status="completed"
+            ).pk,
         )
 
         call_command(
@@ -94,13 +107,62 @@ class ETLPipelineCommandTests(SimpleTestCase):
         self.assertIs(request.failure_policy, HarrisFailurePolicy.BEST_EFFORT)
 
 
-class LoadHcadRealAcctCommandTests(SimpleTestCase):
+class StrictIncompleteRunTests(TestCase):
+    """A strict run that somehow ends held and incomplete still fails, never exits zero.
+
+    A real strict run ends failed rather than partial, so the partial outcome is simulated.
+    """
+
+    def incomplete_result(self):
+        operation = ImportOperation.objects.create(
+            county="harris",
+            intent="full",
+            status="partial",
+            evidence={"candidate_id": "11111111-2222-3333-4444-555555555555"},
+        )
+        return SimpleNamespace(
+            success=False,
+            status=SimpleNamespace(value="partial"),
+            duration=0.1,
+            stages={},
+            errors=(),
+            operation_id=operation.pk,
+        )
+
+    def assert_fails_without_a_held_notice(self, message, *args):
+        output = StringIO()
+        with self.assertRaisesMessage(CommandError, message):
+            call_command(*args, stdout=output)
+        self.assertNotIn("published data unchanged", output.getvalue())
+
+    def test_import_all_data_fails(self):
+        with patch(
+            "counties.harris.management.commands.import_all_data.run_harris_import",
+            return_value=self.incomplete_result(),
+        ):
+            self.assert_fails_without_a_held_notice(
+                "Authoritative modern ETL import failed", "import_all_data", "--skip-download"
+            )
+
+    def test_strict_etl_pipeline_run_fails(self):
+        with patch(
+            "counties.harris.management.commands.etl_pipeline.run_harris_import",
+            return_value=self.incomplete_result(),
+        ):
+            self.assert_fails_without_a_held_notice(
+                "Pipeline execution failed", "etl_pipeline", "run", "--skip-download"
+            )
+
+
+class LoadHcadRealAcctCommandTests(TestCase):
     @patch("counties.harris.management.commands.load_hcad_real_acct.run_harris_import")
     def test_command_delegates_property_file_to_authoritative_import(self, mocked_import):
         mocked_import.return_value = SimpleNamespace(
             status=SimpleNamespace(value="completed"),
             wrote_data=True,
-            operation_id="operation-123",
+            operation_id=ImportOperation.objects.create(
+                county="harris", intent="property-only", status="published"
+            ).pk,
             candidate_id="candidate-123",
         )
 

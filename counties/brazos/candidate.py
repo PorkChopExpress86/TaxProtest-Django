@@ -27,6 +27,11 @@ from counties.common.models import ImportCandidate, ImportOperation
 from counties.common.tax_models import PropertyJurisdictionExemption
 
 
+def source_roots() -> tuple[Path, ...]:
+    """The roots under which Brazos imports keep managed sources, read on every call."""
+    return (Path(settings.BCAD_DOWNLOAD_DIR), Path(settings.BCAD_EXTRACT_DIR))
+
+
 class BrazosCandidatePort:
     """What the shared Candidate lifecycle asks Brazos."""
 

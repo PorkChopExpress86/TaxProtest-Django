@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 import requests
 from django.test import TestCase, override_settings
 
+from counties.common.models import ImportOperation
 from counties.harris.etl_pipeline import (
     HarrisAcquisitionMode,
     HarrisExtractionMode,
@@ -136,7 +137,9 @@ class AuthoritativeTaskDelegationTests(TestCase):
             success=True,
             status=HarrisImportStatus.COMPLETED,
             errors=(),
-            operation_id="operation-123",
+            operation_id=ImportOperation.objects.create(
+                county="harris", intent="preview", status="completed"
+            ).pk,
             candidate_id="candidate-123",
             wrote_data=False,
             already_applied=False,
@@ -144,7 +147,7 @@ class AuthoritativeTaskDelegationTests(TestCase):
         result.to_dict.return_value = {"status": "completed"}
         mocked_import.return_value = result
 
-        payload = _run_authoritative_pipeline(
+        _run_authoritative_pipeline(
             task_instance=None,
             skip_download=True,
             skip_extract=True,
@@ -154,17 +157,8 @@ class AuthoritativeTaskDelegationTests(TestCase):
             strict=False,
         )
 
+        # Serialized result keys are pinned against real runs in test_import_command_results.
         request = mocked_import.call_args.args[0]
-        self.assertEqual(
-            payload,
-            {
-                "status": "completed",
-                "operation_id": "operation-123",
-                "candidate_id": "candidate-123",
-                "wrote_data": False,
-                "already_applied": False,
-            },
-        )
         self.assertEqual(request.plan, HarrisImportPlan.from_legacy_scope("building-only"))
         self.assertEqual(request.data_year, 2025)
         self.assertIs(request.acquisition, HarrisAcquisitionMode.REUSE_DOWNLOADED)

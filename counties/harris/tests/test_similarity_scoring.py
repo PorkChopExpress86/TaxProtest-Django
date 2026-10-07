@@ -1,76 +1,34 @@
+"""Harris similarity scoring, exercised through the public search.
+
+Distances come from real coordinates: one thousandth of a degree of latitude
+is about 0.069 miles at the shared query's earth radius.
+"""
+
 from decimal import Decimal
+from unittest import mock
 
 from django.test import TestCase
 
+from counties.common.tests.similarity_scenarios import harris_property
 from counties.harris.models import BuildingDetail, PropertyRecord
-from counties.harris.similarity import (
-    calculate_similarity_details,
-    calculate_similarity_score,
-    get_similarity_label,
-)
+from counties.harris.similarity import find_similar_properties
+
+
+def _scores(subject: str) -> dict[str, dict]:
+    results = find_similar_properties(subject, max_results=50, min_score=0.0)
+    return {result["property"].account_number: result for result in results}
 
 
 class SimilarityScoringTests(TestCase):
-    def create_property_with_building(
-        self,
-        account_number: str,
-        *,
-        property_overrides: dict | None = None,
-        building_overrides: dict | None = None,
-    ) -> tuple[PropertyRecord, BuildingDetail]:
-        property_defaults = {
-            "address": f"{account_number} Test St",
-            "city": "Houston",
-            "zipcode": "77040",
-            "owner_name": f"Owner {account_number}",
-            "account_number": account_number,
-            "street_number": account_number[-3:],
-            "street_name": "Test St",
-            "assessed_value": Decimal("350000"),
-            "building_area": Decimal("2200"),
-            "land_area": Decimal("9000"),
-            "latitude": Decimal("29.8000000"),
-            "longitude": Decimal("-95.5000000"),
-        }
-        if property_overrides:
-            property_defaults.update(property_overrides)
-
-        property_record = PropertyRecord.objects.create(**property_defaults)
-
-        building_defaults = {
-            "property": property_record,
-            "account_number": account_number,
-            "building_number": 1,
-            "building_type": "A1",
-            "building_style": "TR",
-            "building_class": "R1",
-            "quality_code": "A",
-            "condition_code": "B",
-            "year_built": 2005,
-            "effective_year": 2008,
-            "heat_area": Decimal("2200"),
-            "stories": Decimal("2.0"),
-            "bedrooms": 4,
-            "bathrooms": Decimal("2.5"),
-            "half_baths": 1,
-            "is_active": True,
-        }
-        if building_overrides:
-            building_defaults.update(building_overrides)
-
-        building = BuildingDetail.objects.create(**building_defaults)
-        return property_record, building
-
     def test_granular_score_separates_best_from_ok_match(self) -> None:
-        target, target_building = self.create_property_with_building("TARGET0000001")
-        perfect, perfect_building = self.create_property_with_building("CAND00000001")
-        ok_match, ok_match_building = self.create_property_with_building(
+        harris_property("TARGET0000001", building={})
+        harris_property("CAND00000001", lat_offset="0.0058", building={})
+        harris_property(
             "CAND00000002",
-            property_overrides={
-                "land_area": Decimal("12000"),
-                "assessed_value": Decimal("320000"),
-            },
-            building_overrides={
+            lat_offset="0.0695",
+            land_area=Decimal("12000"),
+            assessed_value=Decimal("320000"),
+            building={
                 "heat_area": Decimal("2640"),
                 "bedrooms": 3,
                 "bathrooms": Decimal("2.0"),
@@ -83,22 +41,9 @@ class SimilarityScoringTests(TestCase):
             },
         )
 
-        perfect_score = calculate_similarity_score(
-            target,
-            perfect,
-            target_building,
-            perfect_building,
-            distance=0.4,
-            max_distance_miles=10.0,
-        )
-        ok_match_score = calculate_similarity_score(
-            target,
-            ok_match,
-            target_building,
-            ok_match_building,
-            distance=4.8,
-            max_distance_miles=10.0,
-        )
+        scores = _scores("TARGET0000001")
+        perfect_score = scores["CAND00000001"]["similarity_score"]
+        ok_match_score = scores["CAND00000002"]["similarity_score"]
 
         self.assertGreater(perfect_score, 95)
         self.assertGreater(perfect_score, ok_match_score + 25)
@@ -106,36 +51,24 @@ class SimilarityScoringTests(TestCase):
         self.assertLess(ok_match_score, 75)
 
     def test_distance_breaks_otherwise_close_ties(self) -> None:
-        target, target_building = self.create_property_with_building("TARGET0000002")
-        near_candidate, near_building = self.create_property_with_building("CAND00000003")
-        far_candidate, far_building = self.create_property_with_building("CAND00000004")
+        harris_property("TARGET0000002", building={})
+        harris_property("CAND00000003", lat_offset="0.0043", building={})
+        harris_property("CAND00000004", lat_offset="0.1230", building={})
 
-        near_score = calculate_similarity_score(
-            target,
-            near_candidate,
-            target_building,
-            near_building,
-            distance=0.3,
-            max_distance_miles=10.0,
-        )
-        far_score = calculate_similarity_score(
-            target,
-            far_candidate,
-            target_building,
-            far_building,
-            distance=8.5,
-            max_distance_miles=10.0,
-        )
+        scores = _scores("TARGET0000002")
+        near_score = scores["CAND00000003"]["similarity_score"]
+        far_score = scores["CAND00000004"]["similarity_score"]
 
         self.assertGreater(near_score, far_score)
         self.assertGreater(near_score - far_score, 2)
 
     def test_secondary_attributes_separate_near_ties(self) -> None:
-        target, target_building = self.create_property_with_building("TARGET0000003")
-        aligned, aligned_building = self.create_property_with_building("CAND00000005")
-        weaker, weaker_building = self.create_property_with_building(
+        harris_property("TARGET0000003", building={})
+        harris_property("CAND00000005", lat_offset="0.0174", building={})
+        harris_property(
             "CAND00000006",
-            building_overrides={
+            lat_offset="-0.0174",
+            building={
                 "condition_code": "E",
                 "stories": Decimal("1.0"),
                 "building_style": "RN",
@@ -143,32 +76,20 @@ class SimilarityScoringTests(TestCase):
             },
         )
 
-        aligned_score = calculate_similarity_score(
-            target,
-            aligned,
-            target_building,
-            aligned_building,
-            distance=1.2,
-            max_distance_miles=10.0,
-        )
-        weaker_score = calculate_similarity_score(
-            target,
-            weaker,
-            target_building,
-            weaker_building,
-            distance=1.2,
-            max_distance_miles=10.0,
-        )
+        scores = _scores("TARGET0000003")
+        aligned_score = scores["CAND00000005"]["similarity_score"]
+        weaker_score = scores["CAND00000006"]["similarity_score"]
 
         self.assertGreater(aligned_score, weaker_score)
         self.assertGreater(aligned_score - weaker_score, 8)
 
-    def test_near_but_not_identical_match_no_longer_clusters_at_97(self) -> None:
-        target, target_building = self.create_property_with_building("TARGET0000007")
-        candidate, candidate_building = self.create_property_with_building(
+    def test_near_but_not_identical_match_does_not_cluster_at_97(self) -> None:
+        harris_property("TARGET0000007", building={})
+        harris_property(
             "CAND00000007",
-            property_overrides={"land_area": Decimal("9700")},
-            building_overrides={
+            lat_offset="0.0217",
+            land_area=Decimal("9700"),
+            building={
                 "heat_area": Decimal("2320"),
                 "bedrooms": 5,
                 "bathrooms": Decimal("3.0"),
@@ -176,47 +97,87 @@ class SimilarityScoringTests(TestCase):
             },
         )
 
-        score = calculate_similarity_score(
-            target,
-            candidate,
-            target_building,
-            candidate_building,
-            distance=1.5,
-            max_distance_miles=10.0,
-        )
+        score = _scores("TARGET0000007")["CAND00000007"]["similarity_score"]
 
         self.assertGreaterEqual(score, 84)
         self.assertLess(score, 95)
 
-    def test_similarity_details_explain_component_scores(self) -> None:
-        target, target_building = self.create_property_with_building("TARGET0000008")
-        candidate, candidate_building = self.create_property_with_building(
+    def test_score_breakdown_explains_component_scores(self) -> None:
+        harris_property("TARGET0000008", building={})
+        harris_property(
             "CAND00000008",
-            building_overrides={"bedrooms": 3, "bathrooms": Decimal("3.0")},
+            lat_offset="0.029",
+            building={"bedrooms": 3, "bathrooms": Decimal("3.0")},
         )
 
-        details = calculate_similarity_details(
-            target,
-            candidate,
-            target_building,
-            candidate_building,
-            distance=2.0,
-            max_distance_miles=10.0,
+        breakdown = _scores("TARGET0000008")["CAND00000008"]["score_breakdown"]
+
+        by_name = {component["name"]: component for component in breakdown}
+        self.assertIn("living_area", by_name)
+        # One bedroom apart sits on the bedrooms curve's (1.0, 0.62) point.
+        self.assertEqual(by_name["bedrooms"]["label"], "Bedrooms")
+        self.assertEqual(by_name["bedrooms"]["similarity"], 0.62)
+        self.assertEqual(by_name["bedrooms"]["points"], 8.7)
+
+    def test_residential_components_are_skipped_unless_both_sides_have_a_building(self) -> None:
+        # No heat area on the subject, so the living-area window does not drop the
+        # building-free candidate before scoring.
+        harris_property("TARGET0000009", building={"heat_area": None})
+        harris_property("CAND00000009", lat_offset="0.01", building=None)
+
+        breakdown = _scores("TARGET0000009")["CAND00000009"]["score_breakdown"]
+
+        self.assertEqual(
+            [(c["name"], c["weight"]) for c in breakdown],
+            [("land_size", 10.0), ("features", 4.0), ("distance", 4.0)],
         )
 
-        self.assertIn("score", details)
-        self.assertIn("components", details)
-        component_names = {component["name"] for component in details["components"]}
-        self.assertIn("living_area", component_names)
-        self.assertIn("bedrooms", component_names)
-        bedrooms = next(c for c in details["components"] if c["name"] == "bedrooms")
-        self.assertEqual(bedrooms["label"], "Bedrooms")
-        self.assertLess(bedrooms["similarity"], 1.0)
-        self.assertGreater(bedrooms["points"], 0)
 
-    def test_match_labels_cover_all_user_facing_tiers(self) -> None:
-        self.assertEqual(get_similarity_label(90), "Best match")
-        self.assertEqual(get_similarity_label(72), "Highly similar")
-        self.assertEqual(get_similarity_label(58), "Good match")
-        self.assertEqual(get_similarity_label(40), "OK match")
-        self.assertEqual(get_similarity_label(20), "Broad match")
+class NearbyPropertiesCapTests(TestCase):
+    """The shared nearest-properties query caps Harris candidates nearest-first."""
+
+    def _property(self, account_number: str, lat_offset: str, **overrides) -> None:
+        heat_area = overrides.pop("heat_area", Decimal("2200"))
+        fields = {"is_residential": True, "is_data_ready": True, **overrides}
+        record = PropertyRecord.objects.create(
+            address=f"{account_number} Cap St",
+            city="Houston",
+            zipcode="77040",
+            owner_name=f"Owner {account_number}",
+            account_number=account_number,
+            street_number=account_number[-3:],
+            street_name="Cap St",
+            assessed_value=Decimal("350000"),
+            building_area=Decimal("2200"),
+            land_area=Decimal("9000"),
+            latitude=Decimal("29.8000000") + Decimal(lat_offset),
+            longitude=Decimal("-95.5000000"),
+            **fields,
+        )
+        BuildingDetail.objects.create(
+            property=record,
+            account_number=account_number,
+            building_number=1,
+            heat_area=heat_area,
+            is_active=True,
+        )
+
+    def setUp(self):
+        self._property("HCAP00000000", "0")
+        # Nearest of all, but removed by Harris's own pre-filters before the cap.
+        self._property("HCAP00000001", "0.001", heat_area=Decimal("5000"))
+        self._property("HCAP00000002", "0.002", is_data_ready=False)
+        self._property("HCAP00000003", "0.003")
+        self._property("HCAP00000004", "0.004")
+        self._property("HCAP00000005", "0.005")
+
+    def _found(self) -> list[str]:
+        results = find_similar_properties("HCAP00000000", max_results=50, min_score=0.0)
+        return sorted(result["property"].account_number for result in results)
+
+    def test_search_scores_only_the_nearest_capped_candidates_after_pre_filters(self):
+        with mock.patch("counties.common.similarity_math.NEARBY_PROPERTIES_CAP", 2):
+            self.assertEqual(self._found(), ["HCAP00000003", "HCAP00000004"])
+
+    def test_default_cap_admits_every_nearby_candidate(self):
+        self.assertEqual(self._found(), ["HCAP00000003", "HCAP00000004", "HCAP00000005"])

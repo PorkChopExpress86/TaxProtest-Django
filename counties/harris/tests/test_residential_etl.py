@@ -11,6 +11,7 @@ from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import TestCase
 
+from counties.common.models import ImportOperation
 from counties.harris.etl_pipeline import (
     ExtractedSourceRetention,
     HarrisAcquisitionMode,
@@ -318,6 +319,10 @@ class ResidentialValidationCommandTests(TestCase):
 
 
 class ImportAllDataCommandTests(TestCase):
+    @staticmethod
+    def finished_operation(status):
+        return ImportOperation.objects.create(county="harris", intent="full", status=status).pk
+
     def _create_property(
         self,
         *,
@@ -369,6 +374,7 @@ class ImportAllDataCommandTests(TestCase):
             duration=0.1,
             stages={},
             errors=["validation failed"],
+            operation_id=self.finished_operation("failed"),
         )
 
         with self.assertRaises(CommandError):
@@ -384,6 +390,7 @@ class ImportAllDataCommandTests(TestCase):
             duration=0.1,
             stages={},
             errors=[],
+            operation_id=self.finished_operation("published"),
         )
 
         call_command("import_all_data", skip_download=True, skip_property=True)
@@ -416,6 +423,7 @@ class ImportAllDataCommandTests(TestCase):
             duration=0.1,
             stages={},
             errors=[],
+            operation_id=self.finished_operation("published"),
         )
 
         call_command(
@@ -438,6 +446,7 @@ class ImportAllDataCommandTests(TestCase):
             duration=0.1,
             stages={},
             errors=[],
+            operation_id=self.finished_operation("published"),
         )
 
         call_command("import_all_data", skip_download=True, skip_gis=True)
@@ -463,6 +472,7 @@ class ImportAllDataCommandTests(TestCase):
             duration=0.1,
             stages={},
             errors=[],
+            operation_id=self.finished_operation("published"),
         )
 
         call_command(

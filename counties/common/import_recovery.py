@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import UUID, uuid4
 
+from counties.common.import_states import CandidateState
 from counties.common.models import ImportCandidate
 
 
@@ -78,7 +79,7 @@ def verify_replay(request, operation, before):
     if not request.reason.strip():
         raise ReplayRejected("A recovery reason is required")
     if (
-        candidate.state not in ("published", "superseded")
+        candidate.state not in (CandidateState.PUBLISHED, CandidateState.SUPERSEDED)
         or not candidate.operation.audit_entries.filter(
             kind="publication", result="published"
         ).exists()

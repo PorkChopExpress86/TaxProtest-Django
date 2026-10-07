@@ -27,7 +27,7 @@ Comprehensive guide to database management, multi-county schemas, data imports, 
 
 ## 1. Architecture Overview
 
-TaxProtest-Django supports multiple Texas appraisal districts. Each county brings its own distinct data schemas, source file layouts, and ETL pipelines, but maps into a shared web interface ([`counties/common/`](file:///home/specter/dev/TaxProtest-Django/counties/common)):
+TaxProtest-Django supports multiple Texas appraisal districts. Each county brings its own distinct data schemas, source file layouts, and ETL pipelines, but maps into a shared web interface ([`counties/common/`](../../counties/common)):
 
 ```
 counties/
@@ -225,7 +225,7 @@ Detail files (`extra_features_detail1.txt`, `extra_features_detail2.txt`) take p
 
 ## 6. Scheduled Background Imports (Celery Beat)
 
-Configured in [`taxprotest/celery.py`](file:///home/specter/dev/TaxProtest-Django/taxprotest/celery.py):
+Configured in [`taxprotest/celery.py`](../../taxprotest/celery.py):
 
 | Task Name | Schedule | Target Scope |
 |---|---|---|

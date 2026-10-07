@@ -11,7 +11,7 @@ adapter, not a new set of views and templates.
 ## Features
 
 - Property search by owner, address, street, or ZIP
-- Similar properties ranked by a weighted similarity score (Excellent / Good / Fair / Partial / Poor)
+- Similar properties ranked by a weighted similarity score (Best match / Highly similar / Good match / OK match / Broad match)
 - Building details (sqft, year built, bedrooms, bathrooms, quality, condition, etc.)
 - Extra features (pools, garages, patios, etc.)
 - GIS coordinates (latitude/longitude) for location-aware results
@@ -96,7 +96,7 @@ See `docs/guides/DATABASE.md` for the full ETL guide.
 2. Search by address, owner, or ZIP
 3. Open a result and click "Similar" to view comparable properties
 
-Similarity scoring uses weighted factors for residential properties:
+Similarity scoring uses weighted factors for residential properties (Harris weights shown):
 
 | Factor | Weight |
 |---|---|
@@ -110,10 +110,11 @@ Similarity scoring uses weighted factors for residential properties:
 | Stories | 4% |
 | Building character | 4% |
 | Extra features | 4% |
+| Distance | 4% |
 
-Distance is used as a **filter** (default 10 miles) but does not affect the score. Land-only properties use a separate weight set (land size 80%, features 10%, distance 10%).
+Brazos has no separate condition rating and scores one 16% quality factor instead. Candidates must lie within the search radius (default 10 miles), and distance also scores as a 4% factor. Properties with no building facts on either side use a separate weight set (land size 80%, features 10%, distance 10%). See `docs/guides/SIMILARITY.md`.
 
-Match labels: **Excellent** (≥84) · **Good** (≥70) · **Fair** (≥52) · **Partial** (≥36) · **Poor** (<36)
+Match labels: **Best match** (≥84) · **Highly similar** (≥70) · **Good match** (≥52) · **OK match** (≥36) · **Broad match** (<36)
 
 ## Development
 

@@ -17,6 +17,12 @@ import requests
 from celery import shared_task
 from django.conf import settings
 
+from counties.common.import_disposition import (
+    ImportDisposition,
+    ImportDispositionKind,
+    disposition_for,
+)
+
 from .etl_pipeline.import_plan import HarrisImportPlan
 from .models import DownloadRecord
 from .source_catalog import DEFAULT_HCAD_SOURCE_CATALOG
@@ -198,7 +204,7 @@ def download_and_import_gis_data(self, actor=""):
 # =============================================================================
 
 
-def _run_authoritative_pipeline(
+def _run_authoritative_import(
     *,
     task_instance: Any | None,
     skip_download: bool,
@@ -211,8 +217,11 @@ def _run_authoritative_pipeline(
     refresh_readiness: bool = True,
     validate_contract: bool | None = None,
     actor: str = "",
-) -> dict[str, Any]:
-    """Execute the authoritative modern ETL pipeline and propagate failures."""
+) -> tuple[dict[str, Any], ImportDisposition]:
+    """Execute the authoritative modern ETL pipeline and propagate failures.
+
+    Returns the serialized result and the run's Import disposition.
+    """
     from .etl_pipeline import (
         ExtractedSourceRetention,
         HarrisAcquisitionMode,
@@ -273,16 +282,15 @@ def _run_authoritative_pipeline(
         wrote_data=result.wrote_data,
         already_applied=result.already_applied,
     )
-    if result.status.value in ("prepared", "awaiting_review", "blocked"):
+    disposition = disposition_for(result.operation_id, subject="Harris import")
+    # A strict run never ends incomplete, so it keeps failing if one ever does.
+    if disposition.kind is ImportDispositionKind.HELD and not (strict and disposition.incomplete):
+        # A held import succeeds: a county's first import is always held (ADR-0023).
         if task_instance is not None:
             task_instance.update_state(
-                state="SUCCESS",
-                meta={
-                    "step": f"Import {result.status.value}; published data unchanged",
-                    **result_dict,
-                },
+                state="SUCCESS", meta={"step": disposition.notice, **result_dict}
             )
-        return result_dict
+        return result_dict, disposition
     if strict and not result.success:
         if task_instance is not None:
             task_instance.update_state(
@@ -303,7 +311,13 @@ def _run_authoritative_pipeline(
     if task_instance is not None:
         task_instance.update_state(state="SUCCESS", meta={"step": "Pipeline completed"})
 
-    return result_dict
+    return result_dict, disposition
+
+
+def _run_authoritative_pipeline(**options: Any) -> dict[str, Any]:
+    """The serialized result of ``_run_authoritative_import``, as a Celery task returns it."""
+    result, _ = _run_authoritative_import(**options)
+    return result
 
 
 @shared_task(bind=True)

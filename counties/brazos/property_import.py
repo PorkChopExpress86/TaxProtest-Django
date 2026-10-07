@@ -26,10 +26,11 @@ from counties.brazos.models import (
     PropertyLand,
     SnapshotOutcome,
 )
-from counties.brazos.readiness import BrazosActiveSnapshotReadiness
+from counties.brazos.readiness import BrazosActiveSnapshotReadiness, BrazosSnapshotFacts
 from counties.common.candidate_lifecycle import CandidateLoad, Loaded, prepare, publish
-from counties.common.import_audit import OperationStatus, audited_operation
+from counties.common.import_audit import audited_operation
 from counties.common.import_coverage import OutcomePopulation
+from counties.common.import_states import CandidateState, OperationStatus, operation_status_for
 from counties.common.import_writers import fenced_write
 from counties.common.models import ImportCandidate, ImportOperation
 from counties.common.tax_models import PropertyJurisdictionExemption
@@ -75,7 +76,7 @@ class AnnualRefreshResult:
     cad: StageResult
     gis: StageResult
     dry_run: bool
-    workflow_state: str = "published"
+    workflow_state: str = CandidateState.PUBLISHED
     candidate_id: str | None = None
     operation_id: str | None = None
 
@@ -139,7 +140,7 @@ class PropertyImportResult:
     operation_id: UUID | None = None
     candidate_id: UUID | None = None
     prepared: bool = False
-    workflow_state: str = "published"
+    workflow_state: str = CandidateState.PUBLISHED
     already_applied: bool = False
 
 
@@ -162,11 +163,14 @@ def outcome_populations(
     names = ("search", "comparable", "report", "tax")
     eligible = {name: set() for name in names}
     exclusions = {name: {} for name in names}
-    accounts = list(PropertyAccount.objects.filter(tax_year=snapshot.tax_year)) if snapshot else []
-    for account in accounts:
-        projection = reader.project(account.prop_id)
-        if projection is None:
-            continue
+    # One readiness rule surveys the whole snapshot; coverage never searches.
+    projections = reader.survey(snapshot=snapshot) if snapshot else {}
+    accounts = (
+        PropertyAccount.objects.filter(tax_year=snapshot.tax_year)
+        if snapshot
+        else PropertyAccount.objects.none()
+    )
+    for prop_id, projection in projections.items():
         for name, ready in (
             ("search", projection.search_ready),
             ("comparable", projection.comparable_ready),
@@ -174,28 +178,27 @@ def outcome_populations(
             ("tax", projection.tax_impact_ready),
         ):
             if ready and not (deliberately_absent_gis and name != "search"):
-                eligible[name].add(account.prop_id)
+                eligible[name].add(prop_id)
             else:
-                exclusions[name][account.prop_id] = [
+                exclusions[name][prop_id] = [
                     projection.reason_for(name)
                     or "GIS deliberately absent from explicit Partial candidate"
                 ]
-    structural_inputs = any(account.living_area is not None for account in accounts) or bool(
+    structural_inputs = accounts.filter(living_area__isnull=False).exists() or bool(
         snapshot
         and PropertyLand.objects.filter(tax_year=snapshot.tax_year, acreage__isnull=False).exists()
     )
-    has_gis = claimed_gis or any(
-        account.coordinate_source and account.coordinate_source_year is not None
-        for account in accounts
+    has_gis = (
+        claimed_gis
+        or accounts.exclude(coordinate_source="")
+        .filter(coordinate_source_year__isnull=False)
+        .exists()
     )
     comparable_supported = has_gis and structural_inputs and not deliberately_absent_gis
+    # Supported follows the same report-pool count that decides report-ready.
     report_supported = (
         comparable_supported
-        and len(accounts) >= 4
-        and any(
-            account.assessed_value is not None and account.living_area is not None
-            for account in accounts
-        )
+        and BrazosSnapshotFacts.surveyed(projections.values()).report_pool_reached
     )
     # A tax gap is independently unavailable. The authoritative projection
     # requires complete matching-year rates and values before claiming it.
@@ -334,6 +337,7 @@ class BrazosPropertyImport:
                 publish(operation, candidate.pk, user=reviewer, reason=request.application_reason)
                 active = BrazosPropertySnapshot.objects.get(is_active=True)
                 already = "already_applied" in operation.evidence
+                status = OperationStatus.ALREADY_APPLIED if already else OperationStatus.PUBLISHED
                 completed = PropertyImportResult(
                     tax_year=active.tax_year,
                     outcome=PropertyImportOutcome(active.outcome),
@@ -350,11 +354,12 @@ class BrazosPropertyImport:
                     snapshot_id=active.pk,
                     dry_run=False,
                     candidate_id=candidate.pk,
-                    workflow_state="already_applied" if already else "published",
+                    workflow_state=status,
                     already_applied=already,
                 )
             elif request.options.dry_run:
                 completed = self._preview(request, operation)
+                status = OperationStatus.COMPLETED
             else:
                 # An automatic publication runs under the reservation that prepared it.
                 prepared = prepare(
@@ -364,14 +369,16 @@ class BrazosPropertyImport:
                     user=reviewer,
                     reason=request.application_reason,
                 )
+                state = CandidateState(prepared.candidate.state)
+                status = operation_status_for(state)
                 completed = replace(
                     prepared.result,
                     snapshot_id=None,
                     prepared=True,
                     candidate_id=prepared.candidate.pk,
-                    workflow_state=prepared.candidate.state,
+                    workflow_state=state,
                 )
-                if prepared.candidate.state == "published":
+                if state is CandidateState.PUBLISHED:
                     active = BrazosPropertySnapshot.objects.get(is_active=True)
                     completed = replace(
                         completed,
@@ -381,11 +388,7 @@ class BrazosPropertyImport:
                         prepared=False,
                     )
             result = replace(completed, operation_id=operation.pk)
-            operation.status = (
-                OperationStatus.COMPLETED
-                if result.dry_run and not result.prepared
-                else OperationStatus(result.workflow_state)
-            )
+            operation.status = status
             if result.snapshot_id is None:
                 # Publication, when it happens, records the published identity itself.
                 operation.publication_after = operation.publication_before

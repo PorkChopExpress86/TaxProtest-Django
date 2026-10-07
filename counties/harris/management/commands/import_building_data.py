@@ -2,8 +2,9 @@
 
 from django.core.management.base import BaseCommand
 
+from counties.common.import_disposition import ImportDispositionKind
 from counties.harris.etl_pipeline import HarrisImportPlan
-from counties.harris.tasks_new import _run_authoritative_pipeline, run_etl_pipeline
+from counties.harris.tasks_new import _run_authoritative_import, run_etl_pipeline
 
 
 class Command(BaseCommand):
@@ -56,7 +57,7 @@ class Command(BaseCommand):
             return
 
         self.stdout.write(self.style.SUCCESS("Starting authoritative building data import..."))
-        result = _run_authoritative_pipeline(
+        result, disposition = _run_authoritative_import(
             task_instance=None,
             skip_download=skip_download,
             skip_extract=skip_download,
@@ -67,6 +68,9 @@ class Command(BaseCommand):
             refresh_readiness=refresh_readiness,
             validate_contract=refresh_readiness,
         )
+        if disposition.kind is ImportDispositionKind.HELD:
+            self.stdout.write(self.style.WARNING(disposition.notice))
+            return
         self.stdout.write(
             self.style.SUCCESS(f"Authoritative building import completed ({result['status']}).")
         )

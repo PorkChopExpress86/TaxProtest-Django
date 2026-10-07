@@ -7,7 +7,6 @@ from django.urls import path, reverse
 from django.utils.html import format_html_join
 
 from counties.common.candidate_lifecycle import apply, recover
-from counties.common.import_audit import OperationStatus
 from counties.common.import_recovery import ReplayRejected, replay_binding
 from counties.common.import_retention import cleanup_sources, source_availability
 from counties.common.import_review import (
@@ -16,6 +15,7 @@ from counties.common.import_review import (
     checked_binding,
     review_candidate,
 )
+from counties.common.import_states import CandidateState, OperationStatus
 from counties.common.import_writers import RecoveryRejected, recover_writer, writer_status
 from counties.common.models import ImportAuditEntry, ImportCandidate, ImportOperation
 
@@ -45,7 +45,10 @@ def render_source_availability(sources):
 
 class CandidateReviewForm(forms.Form):
     decision = forms.ChoiceField(
-        choices=(("approved", "Approve coverage exception"), ("rejected", "Reject candidate"))
+        choices=(
+            (CandidateState.APPROVED, "Approve coverage exception"),
+            (CandidateState.REJECTED, "Reject candidate"),
+        )
     )
     reason = forms.CharField(widget=forms.Textarea, label="Review justification", strip=True)
     binding = forms.CharField(widget=forms.HiddenInput)

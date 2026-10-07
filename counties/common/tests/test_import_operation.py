@@ -2,11 +2,20 @@
 
 import logging
 
+from django.db import connection
 from django.test import TransactionTestCase
 
-from counties.common.import_audit import OperationStatus, audited_operation
+from counties.common.county_registry import UnknownCounty
+from counties.common.import_audit import audited_operation
+from counties.common.import_states import OperationStatus
 from counties.common.import_writers import WriterConflict, county_writer, fenced_write
 from counties.common.models import ImportOperation
+from counties.common.tests.fake_county import (
+    FAKE_COUNTY,
+    FAKE_LOCK_KEY,
+    FAKE_LOGGER,
+    registered_fake_county,
+)
 
 
 class ImportOperationTests(TransactionTestCase):
@@ -77,3 +86,32 @@ class ImportOperationTests(TransactionTestCase):
         self.assertEqual(
             operation.evidence["post_publication_failure"], "Extracted files could not be removed"
         )
+
+
+class RegisteredCountyOperationTests(TransactionTestCase):
+    """A fake third county runs an Import operation from its registration alone (ADR-0022)."""
+
+    def test_an_unregistered_county_is_rejected_before_any_operation_is_recorded(self):
+        with self.assertRaises(UnknownCounty), audited_operation(FAKE_COUNTY, "annual"):
+            self.fail("An unregistered county must not run")
+        self.assertFalse(ImportOperation.objects.exists())
+
+    def test_a_fake_county_runs_under_its_own_lock_beside_a_real_county(self):
+        with registered_fake_county():
+            with audited_operation(FAKE_COUNTY, "annual") as operation:
+                logging.getLogger(FAKE_LOGGER).warning("Travis appraisal roll is late")
+                logging.getLogger("etl_orchestrator").warning("Not a Travis warning")
+                with fenced_write():
+                    operation.evidence["written"] = True
+                with audited_operation("harris", "full"):
+                    with connection.cursor() as cursor:
+                        cursor.execute(
+                            "SELECT objid FROM pg_locks WHERE locktype = 'advisory' "
+                            "AND classid = 0 AND objsubid = 1 AND granted "
+                            "AND pid = pg_backend_pid()"
+                        )
+                        held = sorted(row[0] for row in cursor.fetchall())
+        self.assertEqual(held, [742101, FAKE_LOCK_KEY])
+        operation.refresh_from_db()
+        self.assertEqual(operation.warnings, ["Travis appraisal roll is late"])
+        self.assertTrue(operation.evidence["written"])

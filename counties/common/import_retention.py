@@ -3,10 +3,11 @@
 from datetime import timedelta
 from pathlib import Path
 
-from django.conf import settings
 from django.utils import timezone
 
+from counties.common.county_registry import registration_for
 from counties.common.import_audit import audited_operation
+from counties.common.import_states import CandidateState
 from counties.common.import_writers import fenced_write
 from counties.common.models import ImportAuditEntry, ImportCandidate, ImportOperation
 
@@ -16,10 +17,10 @@ def record_publication(candidate, operation):
     now = timezone.now()
     for previous in (
         ImportCandidate.objects.select_for_update()
-        .filter(county=candidate.county, state="published")
+        .filter(county=candidate.county, state=CandidateState.PUBLISHED)
         .exclude(pk=candidate.pk)
     ):
-        previous.state = "superseded"
+        previous.state = CandidateState.SUPERSEDED
         previous.superseded_at = now
         previous.save(update_fields=["state", "superseded_at"])
         ImportAuditEntry.objects.create(
@@ -33,7 +34,7 @@ def record_publication(candidate, operation):
             },
             result="superseded",
         )
-    candidate.state = "published"
+    candidate.state = CandidateState.PUBLISHED
     candidate.published_at = now
     candidate.save(update_fields=["state", "published_at"])
 
@@ -59,7 +60,9 @@ def baseline_sources(county):
             "reference": "inherited",
             "source_operation_id": source.get("source_operation_id") or str(candidate.operation_id),
         }
-        for candidate in ImportCandidate.objects.filter(county=county, state="published")
+        for candidate in ImportCandidate.objects.filter(
+            county=county, state=CandidateState.PUBLISHED
+        )
         for source in candidate.sources
     ]
 
@@ -75,16 +78,15 @@ def retain_baseline_sources(operation, inherited):
 def _eligible(candidate, now):
     retired_at = (
         candidate.superseded_at
-        if candidate.state == "superseded"
-        else candidate.rejected_at if candidate.state == "rejected" else None
+        if candidate.state == CandidateState.SUPERSEDED
+        else candidate.rejected_at if candidate.state == CandidateState.REJECTED else None
     )
     return retired_at is not None and retired_at + timedelta(days=90) <= now
 
 
 def _managed_path(candidate, path):
-    prefix = "BCAD" if candidate.county == "brazos" else "HCAD"
-    for setting in (f"{prefix}_DOWNLOAD_DIR", f"{prefix}_EXTRACT_DIR"):
-        root = Path(getattr(settings, setting)).resolve()
+    for source_root in registration_for(candidate.county).source_roots():
+        root = source_root.resolve()
         try:
             relative = path.relative_to(root)
         except ValueError:

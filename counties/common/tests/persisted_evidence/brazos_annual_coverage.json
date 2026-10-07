@@ -1,0 +1,104 @@
+{
+  "automatic_publication_allowed": false,
+  "hard_failures": [],
+  "outcomes": {
+    "comparable": {
+      "added_identities": [
+        "000000010013",
+        "000000010014",
+        "000000010015",
+        "000000010016"
+      ],
+      "additions": 4,
+      "deliberately_absent": false,
+      "exclusion_reasons": {},
+      "loss_fraction": null,
+      "lost_identities": [],
+      "material_loss": false,
+      "prior_ready": 0,
+      "retained_ready": 0,
+      "supported": true,
+      "total_ready": 4,
+      "unavailable_reason": null,
+      "unexplained_loss": 0,
+      "verified_removals": []
+    },
+    "report": {
+      "added_identities": [
+        "000000010013",
+        "000000010014",
+        "000000010015",
+        "000000010016"
+      ],
+      "additions": 4,
+      "deliberately_absent": false,
+      "exclusion_reasons": {},
+      "loss_fraction": null,
+      "lost_identities": [],
+      "material_loss": false,
+      "prior_ready": 0,
+      "retained_ready": 0,
+      "supported": true,
+      "total_ready": 4,
+      "unavailable_reason": null,
+      "unexplained_loss": 0,
+      "verified_removals": []
+    },
+    "search": {
+      "added_identities": [
+        "000000010013",
+        "000000010014",
+        "000000010015",
+        "000000010016"
+      ],
+      "additions": 4,
+      "deliberately_absent": false,
+      "exclusion_reasons": {},
+      "loss_fraction": null,
+      "lost_identities": [],
+      "material_loss": false,
+      "prior_ready": 0,
+      "retained_ready": 0,
+      "supported": true,
+      "total_ready": 4,
+      "unavailable_reason": null,
+      "unexplained_loss": 0,
+      "verified_removals": []
+    },
+    "tax": {
+      "added_identities": [],
+      "additions": 0,
+      "deliberately_absent": false,
+      "exclusion_reasons": {
+        "000000010013": [
+          "Adopted 2026 rate unavailable for taxing unit G1"
+        ],
+        "000000010014": [
+          "Adopted 2026 rate unavailable for taxing unit G1"
+        ],
+        "000000010015": [
+          "Adopted 2026 rate unavailable for taxing unit G1"
+        ],
+        "000000010016": [
+          "Adopted 2026 rate unavailable for taxing unit G1"
+        ]
+      },
+      "loss_fraction": null,
+      "lost_identities": [],
+      "material_loss": false,
+      "prior_ready": 0,
+      "retained_ready": 0,
+      "supported": false,
+      "total_ready": 0,
+      "unavailable_reason": "Complete matching-year report, jurisdiction, values and rates are required",
+      "unexplained_loss": 0,
+      "verified_removals": []
+    }
+  },
+  "requires_review": true,
+  "review_reasons": [
+    "search: eligible comparison baseline unavailable",
+    "comparable: eligible comparison baseline unavailable",
+    "report: eligible comparison baseline unavailable"
+  ]
+}

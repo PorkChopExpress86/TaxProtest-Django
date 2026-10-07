@@ -346,6 +346,47 @@ class ProtestCompRow:
 
 
 @dataclass(frozen=True)
+class ComparableShortfall:
+    """A report that found fewer comparables than complete evidence needs.
+
+    The page, the CSV and the PDF all state it with this one wording.
+    """
+
+    found: int
+    min_score: float
+
+    @property
+    def headline(self) -> str:
+        score = f"{self.min_score:.0f}"
+        if self.found == 0:
+            return f"Comparable shortfall: no comparables meet the minimum score of {score}."
+        noun, verb = ("comparable", "meets") if self.found == 1 else ("comparables", "meet")
+        return (
+            f"Comparable shortfall: only {self.found} {noun} {verb} "
+            f"the minimum score of {score}."
+        )
+
+    @property
+    def guidance(self) -> str:
+        if self.min_score <= PROTEST_MIN_MIN_SCORE:
+            return "The minimum score is already at its lowest setting; this is thin evidence."
+        return (
+            f"Lower the minimum score to find at least {MIN_COMPS_FOR_RECOMMENDATION} comparables."
+        )
+
+    @property
+    def message(self) -> str:
+        return f"{self.headline} {self.guidance}"
+
+
+def comparable_shortfall(comps: Sequence[Comp], min_score: float) -> ComparableShortfall | None:
+    """The shortfall for comparables found at ``min_score``, or ``None`` when there are enough."""
+    if len(comps) >= MIN_COMPS_FOR_RECOMMENDATION:
+        return None
+    return ComparableShortfall(found=len(comps), min_score=min_score)
+
+
+@dataclass(frozen=True)
 class ProtestEvidenceDossier:
     """The complete evidence package required for an ARB hearing."""
 
@@ -359,6 +400,7 @@ class ProtestEvidenceDossier:
     min_score: float
     assessment_history_chart: Mapping[str, Any] | None
     ppsf_distribution_chart: Mapping[str, Any] | None
+    comparable_shortfall: ComparableShortfall | None = None
 
 
 @dataclass(frozen=True)
@@ -393,13 +435,6 @@ def build_protest_dossier(
             subject=subject,
             error=caps.reason_for("report")
             or "This property does not have location data required for similarity search.",
-        )
-
-    if not subject.has_location:
-        return ProtestDossierOutcome(
-            status="unavailable",
-            subject=subject,
-            error="This property does not have location data required for similarity search.",
         )
 
     effective_min_score = clamped_float(
@@ -443,5 +478,6 @@ def build_protest_dossier(
         ppsf_distribution_chart=ppsf_distribution_chart(
             equity.qualifying_ppsf, equity.subject_value_per_sqft
         ),
+        comparable_shortfall=comparable_shortfall(comps, effective_min_score),
     )
     return ProtestDossierOutcome(status="ready", dossier=dossier, subject=subject)

@@ -15,6 +15,7 @@ from datetime import datetime
 
 from django.core.management.base import BaseCommand, CommandError
 
+from counties.common.import_disposition import ImportDispositionKind, disposition_for
 from counties.harris.etl_pipeline import (
     DownloadManager,
     ETLConfig,
@@ -333,21 +334,17 @@ class Command(BaseCommand):
             for error in result.errors[:5]:
                 self.stdout.write(self.style.ERROR(f"  - {error}"))
 
-        if result.status.value in ("prepared", "awaiting_review", "blocked"):
-            self.stdout.write(
-                self.style.WARNING(
-                    f"Published data unchanged. Candidate {result.candidate_id}; operation {result.operation_id}. Review in Django admin /admin/data/importcandidate/."
-                )
-            )
-            return
-        if options.get("strict", True):
-            if not result.success:
-                raise CommandError("Pipeline execution failed")
-        elif result.status.value == "failed":
+        disposition = disposition_for(result.operation_id, subject="Harris import")
+        # A strict run never ends incomplete, so it keeps failing if one ever does.
+        strict = options.get("strict", True)
+        if disposition.kind is ImportDispositionKind.FAILED or (strict and disposition.incomplete):
             raise CommandError("Pipeline execution failed")
+        if disposition.kind is ImportDispositionKind.HELD:
+            self.stdout.write(self.style.WARNING(disposition.notice))
+            return
 
         self.stdout.write("")
-        if result.status.value == "partial":
+        if disposition.incomplete:
             self.stdout.write(self.style.WARNING("Pipeline completed with partial results."))
         else:
             self.stdout.write(self.style.SUCCESS("Pipeline completed successfully!"))

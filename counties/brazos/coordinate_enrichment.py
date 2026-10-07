@@ -19,7 +19,8 @@ from counties.brazos.models import (
 from counties.brazos.models import CoordinateEnrichmentOutcome as ModelCoordinateEnrichmentOutcome
 from counties.brazos.property_import import RefreshOptions, StagePreparation
 from counties.brazos.stage_reporting import SilentStageReporter, StageReporter
-from counties.common.import_audit import OperationStatus, audited_operation, record_sources
+from counties.common.import_audit import audited_operation, record_sources
+from counties.common.import_states import OperationStatus
 from counties.common.import_writers import fenced_write
 
 COORDINATE_SOURCE = "bcad-certified-gis"

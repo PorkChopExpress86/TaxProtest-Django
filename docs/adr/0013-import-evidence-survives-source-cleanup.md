@@ -20,5 +20,6 @@ Audit records have no automatic expiry. Operators review both counties' import,
 publication, exception, and writer-recovery evidence in the shared Django admin
 import area, linked to the corresponding operation.
 
-Implementation of the complete audit contract is pending; existing batch and
-snapshot metadata do not establish it.
+The shared Import operation audit carries this evidence, and its persisted
+shapes are a contract (ADR-0024). Retention deletes only attempt-owned sources
+under each county's registered source roots (ADR-0022).

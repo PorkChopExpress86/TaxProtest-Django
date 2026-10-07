@@ -9,10 +9,11 @@ from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Permission
-from django.core.management import call_command
+from django.core.management import CommandError, call_command
 from django.db import connection
 from django.test import TransactionTestCase
 from django.urls import reverse
+from django.utils import timezone
 
 from counties.brazos.cad_refresh import CadRefreshStage
 from counties.brazos.models import BrazosPropertySnapshot, PropertyAccount
@@ -24,6 +25,7 @@ from counties.brazos.property_import import (
 )
 from counties.brazos.tests.test_property_coverage import write_pacs
 from counties.common.models import ImportAuditEntry, ImportCandidate, ImportOperation
+from counties.common.tests.fake_county import FAKE_COUNTY, registered_fake_county
 
 
 class SourceRetentionTests(TransactionTestCase):
@@ -306,3 +308,65 @@ class SourceRetentionTests(TransactionTestCase):
                 kind="coverage_review", result="rejected"
             ).exists()
         )
+
+
+class RegisteredCountyRetentionTests(TransactionTestCase):
+    """Retention reaches only attempt-owned sources under the registered county's roots."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        self.enterContext(
+            registered_fake_county(
+                source_roots=lambda: (self.root / "downloads", self.root / "extracted")
+            )
+        )
+
+    def write(self, *parts):
+        path = self.root.joinpath(*parts)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("roll")
+        return path
+
+    def test_only_attempt_owned_sources_under_registered_roots_are_removed(self):
+        operation = ImportOperation.objects.create(
+            county=FAKE_COUNTY, intent="annual", status="published"
+        )
+        attempt = str(operation.pk)
+        removed = [
+            self.write("downloads", ".imports", attempt, "roll.zip"),
+            self.write("extracted", ".imports", attempt, "nested", "roll.txt"),
+        ]
+        kept = [
+            self.write("downloads", "roll.zip"),
+            self.write("downloads", ".imports", "another-attempt", "roll.zip"),
+            self.write("elsewhere", ".imports", attempt, "roll.zip"),
+        ]
+        ImportCandidate.objects.create(
+            operation=operation,
+            county=FAKE_COUNTY,
+            state="superseded",
+            storage_schema="travis_candidate_retention",
+            superseded_at=timezone.now() - timedelta(days=91),
+            sources=[{"path": str(path), "sha256": "0"} for path in removed + kept],
+        )
+
+        call_command(
+            "cleanup_import_sources", county=FAKE_COUNTY, reason="Expired", stdout=io.StringIO()
+        )
+
+        self.assertFalse(any(path.exists() for path in removed))
+        self.assertTrue(all(path.exists() for path in kept))
+        audit = operation.audit_entries.get(kind="source_cleanup")
+        self.assertEqual(
+            [source["result"] for source in audit.evidence["sources"]],
+            ["removed", "removed", "unmanaged", "unmanaged", "unmanaged"],
+        )
+
+    def test_cleanup_offers_only_registered_counties(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "cleanup_import_sources", county="dallas", reason="Expired", stdout=io.StringIO()
+            )
+        self.assertFalse(ImportOperation.objects.exists())

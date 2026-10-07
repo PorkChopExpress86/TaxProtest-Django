@@ -397,7 +397,7 @@ class HarrisPublicationTests(TransactionTestCase):
                 str(Path(root) / "extracted/Real_acct_owner/real_acct.txt"),
                 stdout=output,
             )
-            self.assertIn("Status: blocked; applied: False", output.getvalue())
+            self.assertIn("Harris import blocked; published data unchanged", output.getvalue())
             self.assertEqual(PropertyRecord.objects.get().address, "Old address")
             with patch.object(run_etl_pipeline, "update_state") as status:
                 result = run_etl_pipeline.run(

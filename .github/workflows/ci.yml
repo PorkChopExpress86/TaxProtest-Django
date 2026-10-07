@@ -27,6 +27,14 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # The dev service runs as ${UID}:${GID} over a bind mount of the checkout,
+      # and Compose requires the .env file its services name.
+      - name: Prepare compose environment
+        run: |
+          echo "UID=$(id -u)" >> "$GITHUB_ENV"
+          echo "GID=$(id -g)" >> "$GITHUB_ENV"
+          touch .env
+
       - name: Build development image
         run: docker compose build taxprotest-dev
 
