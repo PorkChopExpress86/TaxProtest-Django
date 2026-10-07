@@ -493,7 +493,7 @@ class Command(BaseCommand):
         with fenced_write():
             directory = self._resolve_dir(options.get("path"))
         record_sources(
-            operation, list(directory.glob("*.txt")), target_year=tax_year, source_year=None
+            operation, sorted(directory.glob("*.txt")), target_year=tax_year, source_year=None
         )
         operation.evidence.update(target_year=tax_year, dry_run=dry_run)
         self.stdout.write(f"Reading HCAD jurisdiction data from {directory}")

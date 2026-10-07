@@ -87,7 +87,7 @@ class Command(BaseCommand):
         shapefile_path = str(shapefile)
         record_sources(
             operation,
-            list(shapefile.parent.glob("*")),
+            sorted(shapefile.parent.glob("*")),
             source_year=None,
             target_year=None,
             source_url=source.url_template,

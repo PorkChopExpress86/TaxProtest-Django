@@ -255,7 +255,7 @@ class BrazosCoordinateEnrichment:
         payload = source.preparation.payload
         record_sources(
             operation,
-            list(payload.shapefile_path.parent.glob("*")),
+            sorted(payload.shapefile_path.parent.glob("*")),
             source_year=source.preparation.source_year,
             target_year=source.preparation.target_year,
         )

@@ -1,5 +1,9 @@
 """Boundary guard: shared lifecycle code names no county and production code imports no tests.
 
+It also requires recorded import sources to come in a deterministic order: a directory
+listing passed to ``record_sources`` goes through ``sorted``, because the recorded order
+feeds the hashed bindings pinned as persisted evidence (ADR-0024).
+
 Shared Import operation, candidate lifecycle, review, recovery, retention and writer code
 reads county facts only through the County registration (ADR-0018, ADR-0022). This one
 module scans those files for county names, county imports and bare candidate-state or
@@ -127,6 +131,61 @@ def bare_status_strings(source: str) -> list[str]:
     ]
 
 
+DIRECTORY_LISTINGS = frozenset({"glob", "rglob", "iterdir", "listdir", "scandir", "walk"})
+
+
+def _unsorted_listing(expression: ast.AST) -> bool:
+    """True when the expression holds a directory listing that no ``sorted(...)`` wraps."""
+    if (
+        isinstance(expression, ast.Call)
+        and isinstance(expression.func, ast.Name)
+        and expression.func.id == "sorted"
+    ):
+        return False
+    if (
+        isinstance(expression, ast.Call)
+        and isinstance(expression.func, ast.Attribute)
+        and expression.func.attr in DIRECTORY_LISTINGS
+    ):
+        return True
+    return any(_unsorted_listing(child) for child in ast.iter_child_nodes(expression))
+
+
+def unsorted_recorded_listings(source: str) -> list[int]:
+    """Lines of ``record_sources`` calls whose paths are an unsorted directory listing.
+
+    A paths argument named by a local variable is followed to that variable's
+    assignments in the same function.
+    """
+    lines: list[int] = []
+    for function in ast.walk(ast.parse(source)):
+        if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Module)):
+            continue
+        assigned: dict[str, list[ast.AST]] = {}
+        for node in ast.walk(function):
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        assigned.setdefault(target.id, []).append(node.value)
+        for call in ast.walk(function):
+            if not (
+                isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Name)
+                and call.func.id == "record_sources"
+            ):
+                continue
+            paths = call.args[1] if len(call.args) > 1 else None
+            for keyword in call.keywords:
+                if keyword.arg == "paths":
+                    paths = keyword.value
+            if paths is None:
+                continue
+            candidates = assigned.get(paths.id, []) if isinstance(paths, ast.Name) else [paths]
+            if any(_unsorted_listing(candidate) for candidate in candidates):
+                lines.append(call.lineno)
+    return sorted(set(lines))
+
+
 def _is_test_path(path: Path) -> bool:
     return "tests" in path.parts or path.name.startswith("test_")
 
@@ -171,6 +230,23 @@ class BoundaryScannerTests(SimpleTestCase):
 
         self.assertEqual(bare_status_strings(source), ["awaiting_review", "validated"])
 
+    def test_unsorted_directory_listings_passed_to_record_sources_are_found(self):
+        source = (
+            "def unsorted(operation, root):\n"
+            '    record_sources(operation, list(root.glob("*")))\n'
+            "def unsorted_variable(operation, layer):\n"
+            '    paths = list(layer.rglob("*"))\n'
+            "    record_sources(operation, paths, source_id=1)\n"
+            "def unsorted_keyword(operation, root):\n"
+            "    record_sources(operation, paths=[*root.iterdir()])\n"
+            "def sorted_listing(operation, root):\n"
+            '    record_sources(operation, sorted(root.glob("*.txt")))\n'
+            "def explicit_list(operation, archive, paths):\n"
+            "    record_sources(operation, [archive, *paths])\n"
+        )
+
+        self.assertEqual(unsorted_recorded_listings(source), [2, 5, 7])
+
 
 class SharedLifecycleBoundaryTests(SimpleTestCase):
     def test_shared_lifecycle_modules_name_no_county(self):
@@ -202,5 +278,17 @@ class ProductionImportBoundaryTests(SimpleTestCase):
             if not _is_test_path(path.relative_to(ROOT))
             for module in sorted(imported_modules(path.read_text(encoding="utf-8")))
             if _is_test_module(module)
+        ]
+        self.assertEqual(offenders, [])
+
+
+class RecordedSourceOrderTests(SimpleTestCase):
+    def test_recorded_directory_listings_are_sorted(self):
+        offenders = [
+            f"{path.relative_to(ROOT).as_posix()}:{line}"
+            for package in PRODUCTION_PACKAGES
+            for path in sorted((ROOT / package).rglob("*.py"))
+            if not _is_test_path(path.relative_to(ROOT))
+            for line in unsorted_recorded_listings(path.read_text(encoding="utf-8"))
         ]
         self.assertEqual(offenders, [])
