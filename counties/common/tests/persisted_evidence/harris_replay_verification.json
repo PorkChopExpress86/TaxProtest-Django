@@ -40,20 +40,6 @@
       "source_year": null
     },
     {
-      "path": "{root}/extracted/.imports/{operation}/Parcels/parcels.prj",
-      "requested_year": 2026,
-      "sha256": "2f5e65421e4e2990523632226a49accdca24e72cb438c912e120a115a0f7d301",
-      "source_id": "gis-parcels",
-      "source_year": null
-    },
-    {
-      "path": "{root}/extracted/.imports/{operation}/Parcels/parcels.shp",
-      "requested_year": 2026,
-      "sha256": "2e8136460b203f6a44b89a0954529531564bef1d8951851c5c85d557ac407ef1",
-      "source_id": "gis-parcels",
-      "source_year": null
-    },
-    {
       "path": "{root}/extracted/.imports/{operation}/Parcels/parcels.cpg",
       "requested_year": 2026,
       "sha256": "3ad3031f5503a4404af825262ee8232cc04d4ea6683d42c5dd0a2f2a27ac9824",
@@ -64,6 +50,20 @@
       "path": "{root}/extracted/.imports/{operation}/Parcels/parcels.dbf",
       "requested_year": 2026,
       "sha256": "{gis_dbf}",
+      "source_id": "gis-parcels",
+      "source_year": null
+    },
+    {
+      "path": "{root}/extracted/.imports/{operation}/Parcels/parcels.prj",
+      "requested_year": 2026,
+      "sha256": "2f5e65421e4e2990523632226a49accdca24e72cb438c912e120a115a0f7d301",
+      "source_id": "gis-parcels",
+      "source_year": null
+    },
+    {
+      "path": "{root}/extracted/.imports/{operation}/Parcels/parcels.shp",
+      "requested_year": 2026,
+      "sha256": "2e8136460b203f6a44b89a0954529531564bef1d8951851c5c85d557ac407ef1",
       "source_id": "gis-parcels",
       "source_year": null
     },
