@@ -1,1 +1,15 @@
+* text=auto eol=lf
 *.sh text eol=lf
+scripts/dc text eol=lf
+
+# Binary formats
+*.png binary
+*.jpg binary
+*.ico binary
+*.zip binary
+*.pdf binary
+*.dbf binary
+*.shp binary
+*.shx binary
+*.woff binary
+*.woff2 binary
