@@ -22,6 +22,7 @@ from counties.common.contracts import (
     Subject,
 )
 from counties.common.exports import protest_report_pdf, simple_pdf
+from counties.common.tax_impact import unavailable_tax_impact
 
 
 class SimplePdfTests(SimpleTestCase):
@@ -93,8 +94,10 @@ class SimplePdfTests(SimpleTestCase):
             subject=subject,
             comps=[comp],
             history_rows=[],
-            tax_impact=None,
+            tax_impact=unavailable_tax_impact(None, "Not computed."),
         )
 
         assert response["Content-Type"] == "application/pdf"
         assert b"%PDF-" in response.content[:10]
+        # Like the dossier-based renderer, the wrapper states history availability.
+        assert b"Assessment history unavailable" in response.content

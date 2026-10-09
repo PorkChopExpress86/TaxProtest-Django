@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import io
+import textwrap
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -11,13 +12,16 @@ from typing import Any, Literal
 from django.http import HttpResponse
 
 from counties.common.analysis import (
+    TAX_TOTALS_WITHHELD_NOTICE,
     ComparableShortfall,
     EquitySummary,
+    ProtestCompRow,
     ProtestEvidenceDossier,
-    history_availability_notice,
+    protest_comp_rows,
 )
-from counties.common.charts import score_breakdown_summary
 from counties.common.contracts import Column, Comp, CountyProfile, Subject
+from counties.common.tax_evaluation import history_availability_notice
+from counties.common.tax_impact import TaxImpactResult
 
 #: Leading characters a spreadsheet would evaluate as a formula.
 CSV_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
@@ -113,9 +117,8 @@ def search_results_csv(
 
 def _build_protest_csv_doc(
     subject: Subject,
-    comps: Sequence[Comp],
-    equity: EquitySummary,
-    tax_impact: Any,
+    comp_rows: Sequence[ProtestCompRow],
+    tax_impact: TaxImpactResult,
     history_warning: str = "",
     comparable_shortfall: ComparableShortfall | None = None,
 ) -> ExportDocument:
@@ -137,23 +140,24 @@ def _build_protest_csv_doc(
         "delta_vs_subject_per_sqft",
         "score_breakdown",
     ]
-    if tax_impact is not None:
-        header += [
-            "tax_year_used",
-            "tax_impact_completeness",
-            "current_tax_owed",
-            "median_tax_owed",
-            "estimated_tax_savings",
-            "tax_impact_warnings",
-        ]
-    header += ["property_source_year", "assessment_history_availability", "comparable_shortfall"]
+    header += [
+        "tax_year_used",
+        "tax_impact_completeness",
+        "current_tax_owed",
+        "median_tax_owed",
+        "estimated_tax_savings",
+        "tax_impact_warnings",
+        "property_source_year",
+        "assessment_history_availability",
+        "comparable_shortfall",
+    ]
     writer.writerow(header)
     shortfall_text = comparable_shortfall.message if comparable_shortfall else ""
 
-    subject_ppsf = equity.subject_value_per_sqft
-    for comp in comps:
-        ppsf = comp.value_per_sqft
-        delta = comp.delta_vs(subject_ppsf)
+    for entry in comp_rows:
+        comp = entry.comp
+        ppsf = entry.value_per_sqft
+        delta = entry.delta
         row = [
             csv_safe_text(comp.address),
             f"{comp.similarity_score:.1f}",
@@ -167,36 +171,21 @@ def _build_protest_csv_doc(
             f"{float(comp.assessed_value):.2f}" if comp.assessed_value else "",
             f"{ppsf:.2f}" if ppsf is not None else "",
             f"{delta:.2f}" if delta is not None else "",
-            score_breakdown_summary(comp.score_breakdown),
+            entry.breakdown_summary,
         ]
-        if tax_impact is not None:
-            row += [
-                tax_impact.tax_year or "",
-                tax_impact.completeness,
-                (
-                    f"{float(tax_impact.current_tax_owed):.2f}"
-                    if tax_impact.completeness == "complete"
-                    else ""
-                ),
-                (
-                    f"{float(tax_impact.median_tax_owed):.2f}"
-                    if tax_impact.completeness == "complete"
-                    else ""
-                ),
-                (
-                    f"{float(tax_impact.estimated_savings):.2f}"
-                    if tax_impact.completeness == "complete"
-                    else ""
-                ),
-                " | ".join(tax_impact.warnings),
-            ]
         row += [
+            tax_impact.tax_year or "",
+            tax_impact.completeness,
+            f"{float(tax_impact.current_tax_owed):.2f}" if tax_impact.may_show_totals else "",
+            f"{float(tax_impact.median_tax_owed):.2f}" if tax_impact.may_show_totals else "",
+            f"{float(tax_impact.estimated_savings):.2f}" if tax_impact.may_show_totals else "",
+            " | ".join(tax_impact.warnings),
             subject.tax_year or "Not recorded",
             csv_safe_text(history_warning),
             shortfall_text,
         ]
         writer.writerow(row)
-    if not comps and comparable_shortfall:
+    if not comp_rows and comparable_shortfall:
         # One notice-only row, so a file with no comparables still states the shortfall.
         writer.writerow([""] * (len(header) - 1) + [shortfall_text])
 
@@ -212,8 +201,7 @@ def render_protest_csv(dossier: ProtestEvidenceDossier) -> ExportDocument:
     """Render a completed protest evidence dossier to a CSV ExportDocument."""
     return _build_protest_csv_doc(
         subject=dossier.subject,
-        comps=dossier.comps,
-        equity=dossier.equity,
+        comp_rows=dossier.comp_rows,
         tax_impact=dossier.tax_impact,
         history_warning=dossier.history_notice,
         comparable_shortfall=dossier.comparable_shortfall,
@@ -224,14 +212,13 @@ def protest_comps_csv(
     subject: Subject,
     comps: Sequence[Comp],
     equity: EquitySummary,
-    tax_impact: Any,
+    tax_impact: TaxImpactResult,
     history_warning: str = "",
 ) -> HttpResponse:
     """One row per comparable, with the shared tax-impact columns appended."""
     return _build_protest_csv_doc(
         subject=subject,
-        comps=comps,
-        equity=equity,
+        comp_rows=protest_comp_rows(comps, equity.subject_value_per_sqft),
         tax_impact=tax_impact,
         history_warning=history_warning,
     ).to_response()
@@ -245,6 +232,13 @@ def _pdf_escape(text: Any) -> str:
 
 
 PDF_LINES_PER_PAGE = 38
+
+#: Characters per line for a notice the PDF has to break itself: ``simple_pdf`` does not wrap.
+PDF_NOTICE_WIDTH = 80
+
+#: The most comparables the evidence PDF lists, so the report stays about one page. The
+#: renderer owns this layout policy; when the dossier holds more, the PDF says so.
+PDF_COMPARABLE_CAP = 10
 
 
 def simple_pdf(lines: Sequence[str], lines_per_page: int = PDF_LINES_PER_PAGE) -> bytes:
@@ -319,11 +313,13 @@ def simple_pdf(lines: Sequence[str], lines_per_page: int = PDF_LINES_PER_PAGE) -
 def _build_protest_pdf_doc(
     profile: CountyProfile,
     subject: Subject,
-    comps: Sequence[Comp],
+    comp_rows: Sequence[ProtestCompRow],
     history_rows: Sequence[Mapping[str, Any]],
-    tax_impact: Any,
-    max_comps: int = 10,
+    tax_impact: TaxImpactResult,
+    comparable_count: int,
+    tax_totals_notice: str,
     comparable_shortfall: ComparableShortfall | None = None,
+    history_notice: str = "",
 ) -> ExportDocument:
     assessed = subject.assessed_value
     lines = [
@@ -337,9 +333,8 @@ def _build_protest_pdf_doc(
         if subject.value_per_sqft is not None:
             lines.append(f"Subject Value/Sqft: ${subject.value_per_sqft:,.2f}")
     lines.append(f"Property Source Year: {subject.tax_year or 'Not recorded'}")
-    notice = history_availability_notice(history_rows, subject.tax_year)
-    if notice:
-        lines.append(notice)
+    if history_notice:
+        lines.append(history_notice)
 
     if history_rows:
         lines.append("")
@@ -354,36 +349,40 @@ def _build_protest_pdf_doc(
             cap_status = row["cap_status"]["label"] if row.get("cap_status") else "Needs review"
             lines.append(f"{row['tax_year']}: {assessed_text}, YoY {change_text}, {cap_status}")
 
-    if comps or comparable_shortfall:
+    if comp_rows or comparable_shortfall:
         lines.append("")
         lines.append("Comparable Evidence")
         if comparable_shortfall:
             lines.extend([comparable_shortfall.headline, comparable_shortfall.guidance])
-        for comp in comps[:max_comps]:
-            ppsf = comp.value_per_sqft
+        if comparable_count > PDF_COMPARABLE_CAP:
+            lines.append(
+                f"Showing the {PDF_COMPARABLE_CAP} closest of {comparable_count} comparables"
+            )
+        for entry in comp_rows[:PDF_COMPARABLE_CAP]:
+            comp = entry.comp
+            ppsf = entry.value_per_sqft
             ppsf_text = f", ${ppsf:,.2f}/sqft" if ppsf is not None else ""
             lines.append(f"{comp.address}: score {float(comp.similarity_score):.1f}{ppsf_text}")
 
-    if tax_impact is not None:
+    lines.extend(
+        [
+            "",
+            "Tax Impact (Estimated)",
+            f"Tax Year Used: {tax_impact.tax_year or '-'} ({tax_impact.completeness})",
+        ]
+    )
+    if tax_impact.may_show_totals:
         lines.extend(
             [
-                "",
-                "Tax Impact (Estimated)",
-                f"Tax Year Used: {tax_impact.tax_year or '-'} ({tax_impact.completeness})",
+                f"Current Taxes Owed: ${float(tax_impact.current_tax_owed):,.2f}",
+                f"Median-Scenario Taxes Owed: ${float(tax_impact.median_tax_owed):,.2f}",
+                f"Estimated Annual Savings: ${float(tax_impact.estimated_savings):,.2f}",
             ]
         )
-        if tax_impact.completeness == "complete":
-            lines.extend(
-                [
-                    f"Current Taxes Owed: ${float(tax_impact.current_tax_owed):,.2f}",
-                    f"Median-Scenario Taxes Owed: ${float(tax_impact.median_tax_owed):,.2f}",
-                    f"Estimated Annual Savings: ${float(tax_impact.estimated_savings):,.2f}",
-                ]
-            )
-        else:
-            lines.append("Tax totals unavailable until matching-year inputs are complete.")
-        if tax_impact.warnings:
-            lines.append(f"Warnings: {' | '.join(tax_impact.warnings)}")
+    else:
+        lines.extend(textwrap.wrap(tax_totals_notice, PDF_NOTICE_WIDTH))
+    if tax_impact.warnings:
+        lines.append(f"Warnings: {' | '.join(tax_impact.warnings)}")
 
     pdf_bytes = simple_pdf(lines)
     safe_key = str(subject.key).replace('"', "").replace("\\", "")
@@ -397,17 +396,18 @@ def _build_protest_pdf_doc(
 def render_protest_pdf(
     profile: CountyProfile,
     dossier: ProtestEvidenceDossier,
-    max_comps: int = 10,
 ) -> ExportDocument:
     """Render a completed protest evidence dossier to a PDF ExportDocument."""
     return _build_protest_pdf_doc(
         profile=profile,
         subject=dossier.subject,
-        comps=dossier.comps,
+        comp_rows=dossier.comp_rows,
         history_rows=dossier.history,
         tax_impact=dossier.tax_impact,
-        max_comps=max_comps,
+        comparable_count=dossier.comparable_count,
+        tax_totals_notice=dossier.tax_totals_notice,
         comparable_shortfall=dossier.comparable_shortfall,
+        history_notice=dossier.history_notice,
     )
 
 
@@ -416,17 +416,19 @@ def protest_report_pdf(
     subject: Subject,
     comps: Sequence[Comp],
     history_rows: Sequence[Mapping[str, Any]],
-    tax_impact: Any,
-    max_comps: int = 10,
+    tax_impact: TaxImpactResult,
 ) -> HttpResponse:
     """The printable evidence report: subject, history, comparables, tax impact."""
+    comp_rows = protest_comp_rows(comps, subject.value_per_sqft)
     return _build_protest_pdf_doc(
         profile=profile,
         subject=subject,
-        comps=comps,
+        comp_rows=comp_rows,
         history_rows=history_rows,
         tax_impact=tax_impact,
-        max_comps=max_comps,
+        comparable_count=len(comp_rows),
+        tax_totals_notice=TAX_TOTALS_WITHHELD_NOTICE,
+        history_notice=history_availability_notice(history_rows, subject.tax_year),
     ).to_response()
 
 
@@ -434,12 +436,10 @@ def render_protest_export(
     profile: CountyProfile,
     dossier: ProtestEvidenceDossier,
     format: Literal["csv", "pdf"] = "csv",
-    *,
-    max_comps: int = 10,
 ) -> ExportDocument:
     """Unified protest export dispatcher returning an ExportDocument."""
     if format == "csv":
         return render_protest_csv(dossier)
     if format == "pdf":
-        return render_protest_pdf(profile, dossier, max_comps=max_comps)
+        return render_protest_pdf(profile, dossier)
     raise ValueError(f"Unsupported export format: {format}")

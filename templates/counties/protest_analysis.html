@@ -179,15 +179,14 @@
     </div>
     {% endif %}
 
-    {% if tax_impact %}
     <div class="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden mb-6">
       <div class="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
         <h2 class="text-sm font-bold text-gray-900 uppercase tracking-wider">Tax Impact</h2>
-        <span class="text-xs px-2 py-1 rounded-full {% if tax_impact.completeness == 'complete' %}bg-green-100 text-green-800{% elif tax_impact.completeness == 'partial' %}bg-amber-100 text-amber-800{% else %}bg-red-100 text-red-800{% endif %}">
+        <span class="text-xs px-2 py-1 rounded-full {% if tax_impact.may_show_totals %}bg-green-100 text-green-800{% elif tax_impact.is_partial %}bg-amber-100 text-amber-800{% else %}bg-red-100 text-red-800{% endif %}">
           {{ tax_impact.completeness|title }}
         </span>
       </div>
-      {% if tax_impact.completeness == 'complete' %}
+      {% if tax_impact.may_show_totals %}
       <div class="px-6 py-5 grid grid-cols-1 md:grid-cols-3 gap-4 border-b border-gray-100">
         <div>
           <p class="text-xs text-gray-500 uppercase font-medium">Current Taxes Owed</p>
@@ -203,7 +202,7 @@
           <p class="text-[11px] text-gray-500 mt-1">Year {{ tax_impact.tax_year|default:"-" }} • Total rate {{ tax_impact.effective_rate|floatformat:6 }}</p>
         </div>
       </div>
-      {% else %}<p class="px-6 py-5 text-sm text-amber-900">Tax totals unavailable until all applicable matching-year jurisdiction, exemption, and rate inputs are complete.</p>{% endif %}
+      {% else %}<p class="px-6 py-5 text-sm text-amber-900">{{ tax_totals_notice }}</p>{% endif %}
       {% if tax_impact.warnings %}
       <div class="px-6 py-3 border-b border-gray-100 bg-amber-50">
         {% for warning in tax_impact.warnings %}
@@ -238,7 +237,6 @@
         </table>
       </div>
     </div>
-    {% endif %}
 
     {% if ppsf_distribution_chart %}
     <div class="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden mb-6">
@@ -363,7 +361,7 @@
       <div class="bg-gradient-to-r from-green-600 to-emerald-700 px-8 py-5">
         <h2 class="text-xl font-bold text-white">Comparable Properties</h2>
         <p class="text-green-100 text-sm mt-1">
-          {{ comps|length }} propert{{ comps|length|pluralize:"y,ies" }} with similarity score &ge; {{ min_score|floatformat:0 }}
+          {{ comparable_count }} propert{{ comparable_count|pluralize:"y,ies" }} with similarity score &ge; {{ min_score|floatformat:0 }}
         </p>
       </div>
       <div class="px-8 py-4 border-b border-gray-100 bg-gray-50">
