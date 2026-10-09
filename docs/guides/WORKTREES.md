@@ -21,9 +21,10 @@ stack. `scripts/dc` gets around that:
 - **This checkout's code:** the dev container mounts the checkout the script lives in, so
   it works from any directory.
 - **Settings:** it reads the main checkout's `.env`; a worktree needs no copy.
-- **Own test database:** each `pytest` run gets a database named after the checkout plus
-  the process id. Concurrent runs, even in one checkout, never share a test database, and
-  no stale one is reused. Other commands use the shared dev database.
+- **Own test database:** each `pytest` or `python -m pytest` run gets a database named
+  after the checkout plus the process id. Concurrent runs, even in one checkout, never
+  share a test database, and no stale one is reused. Other commands use the shared dev
+  database.
 
 Create a worktree from the main checkout:
 

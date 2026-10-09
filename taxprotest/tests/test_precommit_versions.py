@@ -13,7 +13,8 @@ CONFIG = Path(__file__).resolve().parents[2] / ".pre-commit-config.yaml"
 
 def pinned_rev(repo: str) -> str:
     match = re.search(
-        rf"repo: https://github\.com/{re.escape(repo)}\s+rev: v?(\S+)", CONFIG.read_text()
+        rf"repo: https://github\.com/{re.escape(repo)}\s+rev: v?(\S+)",
+        CONFIG.read_text(encoding="utf-8"),
     )
     assert match, f"{repo} is not configured in {CONFIG.name}"
     return match.group(1)

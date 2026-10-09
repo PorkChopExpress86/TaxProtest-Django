@@ -6,9 +6,9 @@
 #
 # Every checkout (the main one or a git worktree) shares the main checkout's
 # Compose project, so one postgres container serves them all. This checkout's
-# own source is mounted at /app. Each pytest run gets its own database name, so
-# concurrent runs never collide and no stale test database is reused. Other
-# commands use the shared dev database.
+# own source is mounted at /app. Each pytest run (``pytest`` or ``python -m
+# pytest``) gets its own database name, so concurrent runs never collide and no
+# stale test database is reused. Other commands use the shared dev database.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -29,7 +29,7 @@ args=(-p "$project" -f "$root/docker-compose.yml" --project-directory "$root")
 [ -f "$env_file" ] && args+=(--env-file "$env_file")
 
 run_env=()
-if [ "${1:-}" = "pytest" ]; then
+if [ "${1:-}" = "pytest" ] || { [ "${1:-}" = "python" ] && [ "${2:-}" = "-m" ] && [ "${3:-}" = "pytest" ]; }; then
   checkout="$(basename "$root" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_\n' '_')"
   database="taxprotest_${checkout}_$$"
   run_env+=(-e "DATABASE_URL=postgresql://${POSTGRES_USER:-taxprotest}:${POSTGRES_PASSWORD:-taxprotest}@postgres:5432/${database}")
