@@ -106,7 +106,7 @@ class RefreshPropertyReadinessTests(TestCase):
         missing_gis_prop.refresh_from_db()
         non_residential.refresh_from_db()
 
-        self.assertEqual(results["ready_properties_set"], 1)
+        self.assertEqual(results.ready_properties_set, 1)
         self.assertTrue(ready_prop.is_data_ready)
         self.assertFalse(missing_gis_prop.is_data_ready)
         self.assertFalse(non_residential.is_data_ready)

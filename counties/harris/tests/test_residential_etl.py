@@ -221,7 +221,7 @@ class ResidentialPropertyImportTests(TestCase):
         missing_gis_prop = PropertyRecord.objects.get(pk=missing_gis_prop.pk)
         non_residential = PropertyRecord.objects.get(pk=non_residential.pk)
 
-        self.assertEqual(results["ready_properties_set"], 1)
+        self.assertEqual(results.ready_properties_set, 1)
         self.assertTrue(ready_prop.is_data_ready)
         self.assertFalse(missing_gis_prop.is_data_ready)
         self.assertFalse(non_residential.is_data_ready)
