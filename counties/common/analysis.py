@@ -30,9 +30,13 @@ from counties.common.tax_evaluation import (
     evaluate_assessment_history,
     history_availability_notice,
 )
+from counties.common.tax_impact import TaxImpactResult, unavailable_tax_impact
 
 ONE_HUNDRED = Decimal("100")
 PERCENT = Decimal("0.01")
+
+#: Why a county whose adapter returns no tax impact has none to show.
+NO_TAX_IMPACT_REASON = "No tax impact estimate is available from this county."
 
 #: A recommendation needs at least this many comparables with usable $/sqft.
 MIN_COMPS_FOR_RECOMMENDATION = 3
@@ -433,7 +437,7 @@ class ProtestEvidenceDossier:
     equity: EquitySummary
     history: Sequence[Mapping[str, Any]]
     history_notice: str
-    tax_impact: Any
+    tax_impact: TaxImpactResult
     comp_rows: Sequence[ProtestCompRow]
     min_score: float
     assessment_history_chart: Mapping[str, Any] | None
@@ -495,6 +499,8 @@ def build_protest_dossier(
     history = adapter.assessment_history(subject.key)
     history_notice = history_availability_notice(history, subject.tax_year)
     tax_impact = adapter.tax_impact(subject.key, subject.tax_year, equity.median_assessed_value)
+    if tax_impact is None:
+        tax_impact = unavailable_tax_impact(subject.tax_year, NO_TAX_IMPACT_REASON)
 
     comp_rows = [
         ProtestCompRow(
