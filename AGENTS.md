@@ -13,7 +13,9 @@ report surface.
   `docs/guides/`; verify commands against `docker-compose.yml` or `Makefile` before relying on prose.
 - Similarity behavior: use `docs/guides/SIMILARITY.md` and the county implementation/tests.
 - HCAD source fields: use `docs/hcad_docs/HCAD_DATA_REFERENCE.md` and the importer tests.
-- Code review: apply `CODING_STANDARDS.md`.
+- `mattpocock-skills:code-review` for code review: it checks Standards (`CODING_STANDARDS.md`) and
+  Spec (the originating issue). Run it from a worktree on the branch under review; see
+  `docs/guides/WORKTREES.md`.
 - Issue work or triage: follow `docs/agents/issue-tracker.md` and
   `docs/agents/triage-labels.md` before making GitHub changes.
 

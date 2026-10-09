@@ -35,14 +35,26 @@ git worktree add ../TaxProtest-Django-wt/<name> -b <name> <base-branch>
 ## Which tests to run
 
 On Windows the full suite takes 13–20 minutes in Docker, because the checkout is a slow
-bind mount. On CI's Linux runner it takes about two minutes. CI runs on every branch
-push, so:
+bind mount, and longer when several agents share the machine. On CI's Linux runner it
+takes about 4 minutes. CI runs on every branch push, so:
 
-- **Implementer:** run the focused tests, then the test directories its change touches:
-  `counties/common/tests` for shared code, `counties/<slug>/tests` for a county. Then run
-  `ruff`, `black --check`, `mypy` and `makemigrations --check`.
+- **Implementer:** run the focused tests, then `ruff`, `black --check`, `mypy` and
+  `makemigrations --check`. Push the ticket branch and read its CI run (`gh run watch`)
+  for the directory-wide and full-suite results. Run a directory locally only when CI
+  cannot reach the failure, such as a bug that only reproduces on Windows.
 - **Integration branch:** the merger runs the full suite once per batch of merges, or
   pushes the branch and reads the CI result.
 
 CI is also the only Linux run. Behaviour that depends on the filesystem, such as
 directory-listing order, can pass on Windows and fail there.
+
+## Reviewing a branch
+
+Review from a worktree on that branch:
+
+```bash
+git worktree add ../TaxProtest-Django-wt/<name> <branch>
+```
+
+The primary checkout stays on the branch its owner left it: a review that switches it
+leaves their work detached.
