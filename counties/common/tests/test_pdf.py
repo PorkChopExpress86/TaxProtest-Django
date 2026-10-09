@@ -99,3 +99,5 @@ class SimplePdfTests(SimpleTestCase):
 
         assert response["Content-Type"] == "application/pdf"
         assert b"%PDF-" in response.content[:10]
+        # Like the dossier-based renderer, the wrapper states history availability.
+        assert b"Assessment history unavailable" in response.content

@@ -20,6 +20,7 @@ from counties.common.analysis import (
     protest_comp_rows,
 )
 from counties.common.contracts import Column, Comp, CountyProfile, Subject
+from counties.common.tax_evaluation import history_availability_notice
 from counties.common.tax_impact import TaxImpactResult
 
 #: Leading characters a spreadsheet would evaluate as a formula.
@@ -424,6 +425,7 @@ def protest_report_pdf(
         history_rows=history_rows,
         tax_impact=tax_impact,
         comparable_count=len(comp_rows),
+        history_notice=history_availability_notice(history_rows, subject.tax_year),
     ).to_response()
 
 
