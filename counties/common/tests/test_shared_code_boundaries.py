@@ -1,8 +1,9 @@
 """Boundary guard: shared lifecycle code names no county and production code imports no tests.
 
 It also requires recorded import sources to come in a deterministic order: a directory
-listing passed to ``record_sources`` goes through ``sorted``, because the recorded order
-feeds the hashed bindings pinned as persisted evidence (ADR-0024).
+listing passed to ``record_sources`` goes through ``sorted``. A candidate's bindings hash
+its sources and its operation's evidence in recorded order (ADR-0024), and for every other
+import the order keeps the recorded sources identical across machines.
 
 Shared Import operation, candidate lifecycle, review, recovery, retention and writer code
 reads county facts only through the County registration (ADR-0018, ADR-0022). This one
@@ -15,6 +16,7 @@ from __future__ import annotations
 import ast
 import re
 from collections import Counter
+from collections.abc import Iterator
 from pathlib import Path
 
 from django.test import SimpleTestCase
@@ -151,23 +153,53 @@ def _unsorted_listing(expression: ast.AST) -> bool:
     return any(_unsorted_listing(child) for child in ast.iter_child_nodes(expression))
 
 
+FUNCTION_NODES = (ast.FunctionDef, ast.AsyncFunctionDef)
+
+
+def _scope_nodes(scope: ast.AST) -> Iterator[ast.AST]:
+    """Nodes in the scope's own body, not those of the functions defined inside it."""
+    pending = list(ast.iter_child_nodes(scope))
+    while pending:
+        node = pending.pop()
+        yield node
+        if not isinstance(node, FUNCTION_NODES):
+            pending.extend(ast.iter_child_nodes(node))
+
+
 def unsorted_recorded_listings(source: str) -> list[int]:
     """Lines of ``record_sources`` calls whose paths are an unsorted directory listing.
 
     A paths argument named by a local variable is followed to that variable's
-    assignments in the same function.
+    assignments, ``+=``, ``.extend`` and ``.append`` calls in the same function. It is
+    not followed into a variable of an enclosing function or the module, through an
+    alias, nor through a ``for`` loop over a listing. A listing sorted only after it is
+    collected still counts as unsorted: sort it where it is listed.
     """
     lines: list[int] = []
     for function in ast.walk(ast.parse(source)):
-        if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Module)):
+        if not isinstance(function, (*FUNCTION_NODES, ast.Module)):
             continue
         assigned: dict[str, list[ast.AST]] = {}
-        for node in ast.walk(function):
+        for node in _scope_nodes(function):
             if isinstance(node, ast.Assign):
                 for target in node.targets:
                     if isinstance(target, ast.Name):
                         assigned.setdefault(target.id, []).append(node.value)
-        for call in ast.walk(function):
+            elif (
+                isinstance(node, (ast.AugAssign, ast.AnnAssign))
+                and isinstance(node.target, ast.Name)
+                and node.value is not None
+            ):
+                assigned.setdefault(node.target.id, []).append(node.value)
+            elif (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in ("extend", "append")
+                and isinstance(node.func.value, ast.Name)
+                and node.args
+            ):
+                assigned.setdefault(node.func.value.id, []).append(node.args[0])
+        for call in _scope_nodes(function):
             if not (
                 isinstance(call, ast.Call)
                 and isinstance(call.func, ast.Name)
@@ -246,6 +278,79 @@ class BoundaryScannerTests(SimpleTestCase):
         )
 
         self.assertEqual(unsorted_recorded_listings(source), [2, 5, 7])
+
+    def test_a_variable_is_followed_only_within_its_own_function(self):
+        source = (
+            "def recorded(operation, root):\n"
+            '    paths = sorted(root.glob("*"))\n'
+            "    record_sources(operation, paths)\n"
+            "def unrelated(root):\n"
+            '    paths = list(root.glob("*"))\n'
+            "    return len(paths)\n"
+        )
+
+        self.assertEqual(unsorted_recorded_listings(source), [])
+
+    def test_a_variable_is_not_followed_into_or_out_of_a_nested_function(self):
+        source = (
+            "def outer(operation, root):\n"
+            '    paths = sorted(root.glob("*"))\n'
+            "    def helper():\n"
+            '        paths = list(root.glob("*"))\n'
+            "        return paths\n"
+            "    record_sources(operation, paths)\n"
+            "def enclosing(operation, root):\n"
+            '    paths = list(root.glob("*"))\n'
+            "    def inner(paths):\n"
+            "        record_sources(operation, paths)\n"
+            "    return inner\n"
+        )
+
+        self.assertEqual(unsorted_recorded_listings(source), [])
+
+    def test_listings_added_to_a_variable_after_it_is_assigned_are_found(self):
+        source = (
+            "def augmented(operation, root):\n"
+            "    paths = []\n"
+            '    paths += list(root.glob("*"))\n'
+            "    record_sources(operation, paths)\n"
+            "def extended(operation, root):\n"
+            "    paths = []\n"
+            "    paths.extend(root.iterdir())\n"
+            "    record_sources(operation, paths)\n"
+            "def sorted_addition(operation, root):\n"
+            '    paths = [root / "archive.zip"]\n'
+            '    paths += sorted(root.glob("*"))\n'
+            "    record_sources(operation, paths)\n"
+        )
+
+        self.assertEqual(unsorted_recorded_listings(source), [4, 8])
+
+    def test_a_listing_entry_appended_to_a_variable_is_found(self):
+        source = (
+            "def appended(operation, root):\n"
+            "    paths = []\n"
+            '    paths.append(next(root.glob("*.shp")))\n'
+            "    record_sources(operation, paths)\n"
+            "def sorted_entry(operation, root):\n"
+            "    paths = []\n"
+            '    paths.append(sorted(root.glob("*.shp"))[0])\n'
+            "    record_sources(operation, paths)\n"
+        )
+
+        self.assertEqual(unsorted_recorded_listings(source), [4])
+
+    def test_an_annotated_variable_is_followed_like_a_plain_one(self):
+        source = (
+            "def annotated(operation, root):\n"
+            '    paths: list[Path] = list(root.glob("*"))\n'
+            "    record_sources(operation, paths)\n"
+            "def declared_only(operation, root):\n"
+            "    paths: list[Path]\n"
+            "    record_sources(operation, paths)\n"
+        )
+
+        self.assertEqual(unsorted_recorded_listings(source), [3])
 
 
 class SharedLifecycleBoundaryTests(SimpleTestCase):
