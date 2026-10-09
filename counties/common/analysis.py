@@ -41,6 +41,22 @@ NO_TAX_IMPACT_REASON = "No tax impact estimate is available from this county."
 #: A recommendation needs at least this many comparables with usable $/sqft.
 MIN_COMPS_FOR_RECOMMENDATION = 3
 
+# Policy sentences. Each is stated here once and every surface reads it from the dossier
+# layer; the shortfall wording is ``ComparableShortfall`` and the history notice is
+# ``ProtestEvidenceDossier.history_notice``.
+
+#: What an unavailable outcome says when the county's readiness gave no reason, so an
+#: unavailable outcome always carries one. Harris readiness persists an identical sentence
+#: into import evidence (``NO_LOCATION`` in ``counties/harris/readiness.py``, ADR-0024); that
+#: copy is deliberate and stays, as the shared layer cannot import county modules.
+LOCATION_DATA_REQUIRED = "This property does not have location data required for similarity search."
+
+#: Printed in place of the tax totals whenever the tax impact is not complete.
+TAX_TOTALS_WITHHELD_NOTICE = (
+    "Tax totals unavailable until all applicable matching-year jurisdiction, "
+    "exemption, and rate inputs are complete."
+)
+
 
 @dataclass(frozen=True)
 class EquitySummary:
@@ -291,8 +307,7 @@ def build_comparables_dossier(
         return ComparablesDossierOutcome(
             status=DossierStatus.UNAVAILABLE,
             subject=subject,
-            error=caps.reason_for("comparable")
-            or "This property does not have location data required for similarity search.",
+            error=caps.reason_for("comparable") or LOCATION_DATA_REQUIRED,
         )
 
     effective_max_distance = clamped_float(
@@ -487,8 +502,7 @@ def build_protest_dossier(
         return ProtestDossierOutcome(
             status=DossierStatus.UNAVAILABLE,
             subject=subject,
-            error=caps.reason_for("report")
-            or "This property does not have location data required for similarity search.",
+            error=caps.reason_for("report") or LOCATION_DATA_REQUIRED,
         )
 
     effective_min_score = clamped_float(

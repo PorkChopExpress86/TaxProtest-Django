@@ -200,7 +200,7 @@ class NullTaxImpactRouteTests(TestCase):
                         "",
                         "Tax Impact (Estimated)",
                         f"Tax Year Used: {year} (missing)",
-                        PDF_TAX_UNAVAILABLE,
+                        *PDF_TAX_UNAVAILABLE,
                         f"Warnings: {NO_TAX_IMPACT_REASON}",
                     ],
                 )
