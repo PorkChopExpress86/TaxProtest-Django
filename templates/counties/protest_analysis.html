@@ -361,7 +361,7 @@
       <div class="bg-gradient-to-r from-green-600 to-emerald-700 px-8 py-5">
         <h2 class="text-xl font-bold text-white">Comparable Properties</h2>
         <p class="text-green-100 text-sm mt-1">
-          {{ comps|length }} propert{{ comps|length|pluralize:"y,ies" }} with similarity score &ge; {{ min_score|floatformat:0 }}
+          {{ comparable_count }} propert{{ comparable_count|pluralize:"y,ies" }} with similarity score &ge; {{ min_score|floatformat:0 }}
         </p>
       </div>
       <div class="px-8 py-4 border-b border-gray-100 bg-gray-50">
