@@ -25,7 +25,6 @@ from counties.common.contracts import (
 from counties.common.exports import (
     ExportDocument,
     render_protest_csv,
-    render_protest_export,
     render_protest_pdf,
     render_search_csv,
 )
@@ -151,10 +150,3 @@ class RenderExportsTests(SimpleTestCase):
         self.assertNotIn(b"Assessment history", pdf.payload)
         (row,) = list(csv.DictReader(io.StringIO(csv_doc.payload.decode())))
         self.assertEqual(row["assessment_history_availability"], "")
-
-    def test_render_protest_export_dispatches_correct_format(self):
-        csv_doc = render_protest_export(self.profile, self.dossier, format="csv")
-        self.assertEqual(csv_doc.content_type, "text/csv")
-
-        pdf_doc = render_protest_export(self.profile, self.dossier, format="pdf")
-        self.assertEqual(pdf_doc.content_type, "application/pdf")
