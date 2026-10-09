@@ -2,7 +2,8 @@
 
 A function that no production line names is dead weight that still looks live: it is read,
 edited and kept passing in tests, and it silently loses behaviour when nothing exercises
-it (commit 6b17d58). The scan finds each module-level function and class in ``counties/``
+it (the unused PDF wrapper that lost its history notice when ticket #112 moved the notice
+onto the dossier). The scan finds each module-level function and class in ``counties/``
 and ``taxprotest/`` (tests and migrations excluded) whose name no other production line
 refers to. Use by a test is no use: that is the point of the guard.
 
@@ -610,7 +611,7 @@ class NoOrphanDefinitionsTests(SimpleTestCase):
             for key in new
         ] + [
             f"{key.split('::')[0]}: `{key.split('::')[1]}` is in BASELINE but is no longer "
-            "an orphan. Remove the entry from BASELINE."
+            "an orphan (deleted, or now referenced). Remove the entry from BASELINE."
             for key in stale
         ]
         if problems:
