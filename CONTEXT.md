@@ -67,7 +67,11 @@ _Avoid_: source archive, coordinate cache, command log
 **Protest evidence dossier**:
 The complete, source-backed package of comparable properties, equity math,
 tax impact estimates, and assessment-history availability notices required for
-an ARB hearing on one subject property.
+an ARB hearing on one subject property. Every printed surface (report page,
+CSV, PDF) states the comparable count or truncation, tax completeness with its
+warnings, assessment-history availability, and any comparable shortfall, except
+that the CSV for a report with no comparables is a single notice-only row that
+states the count and shortfall only.
 _Avoid_: report context, view data, protest tuple
 
 **Comparable shortfall**:
