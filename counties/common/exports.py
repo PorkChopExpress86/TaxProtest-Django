@@ -231,6 +231,10 @@ def _pdf_escape(text: Any) -> str:
 
 PDF_LINES_PER_PAGE = 38
 
+#: The most comparables the evidence PDF lists, so the report stays about one page. The
+#: renderer owns this layout policy; when the dossier holds more, the PDF says so.
+PDF_COMPARABLE_CAP = 10
+
 
 def simple_pdf(lines: Sequence[str], lines_per_page: int = PDF_LINES_PER_PAGE) -> bytes:
     """A minimal paginated PDF of left-aligned Helvetica text.
@@ -307,7 +311,7 @@ def _build_protest_pdf_doc(
     comp_rows: Sequence[ProtestCompRow],
     history_rows: Sequence[Mapping[str, Any]],
     tax_impact: TaxImpactResult,
-    max_comps: int = 10,
+    comparable_count: int,
     comparable_shortfall: ComparableShortfall | None = None,
 ) -> ExportDocument:
     assessed = subject.assessed_value
@@ -344,7 +348,11 @@ def _build_protest_pdf_doc(
         lines.append("Comparable Evidence")
         if comparable_shortfall:
             lines.extend([comparable_shortfall.headline, comparable_shortfall.guidance])
-        for entry in comp_rows[:max_comps]:
+        if comparable_count > PDF_COMPARABLE_CAP:
+            lines.append(
+                f"Showing the {PDF_COMPARABLE_CAP} closest of {comparable_count} comparables"
+            )
+        for entry in comp_rows[:PDF_COMPARABLE_CAP]:
             comp = entry.comp
             ppsf = entry.value_per_sqft
             ppsf_text = f", ${ppsf:,.2f}/sqft" if ppsf is not None else ""
@@ -382,7 +390,6 @@ def _build_protest_pdf_doc(
 def render_protest_pdf(
     profile: CountyProfile,
     dossier: ProtestEvidenceDossier,
-    max_comps: int = 10,
 ) -> ExportDocument:
     """Render a completed protest evidence dossier to a PDF ExportDocument."""
     return _build_protest_pdf_doc(
@@ -391,7 +398,7 @@ def render_protest_pdf(
         comp_rows=dossier.comp_rows,
         history_rows=dossier.history,
         tax_impact=dossier.tax_impact,
-        max_comps=max_comps,
+        comparable_count=dossier.comparable_count,
         comparable_shortfall=dossier.comparable_shortfall,
     )
 
@@ -402,16 +409,16 @@ def protest_report_pdf(
     comps: Sequence[Comp],
     history_rows: Sequence[Mapping[str, Any]],
     tax_impact: TaxImpactResult,
-    max_comps: int = 10,
 ) -> HttpResponse:
     """The printable evidence report: subject, history, comparables, tax impact."""
+    comp_rows = protest_comp_rows(comps, subject.value_per_sqft)
     return _build_protest_pdf_doc(
         profile=profile,
         subject=subject,
-        comp_rows=protest_comp_rows(comps, subject.value_per_sqft),
+        comp_rows=comp_rows,
         history_rows=history_rows,
         tax_impact=tax_impact,
-        max_comps=max_comps,
+        comparable_count=len(comp_rows),
     ).to_response()
 
 
@@ -419,12 +426,10 @@ def render_protest_export(
     profile: CountyProfile,
     dossier: ProtestEvidenceDossier,
     format: Literal["csv", "pdf"] = "csv",
-    *,
-    max_comps: int = 10,
 ) -> ExportDocument:
     """Unified protest export dispatcher returning an ExportDocument."""
     if format == "csv":
         return render_protest_csv(dossier)
     if format == "pdf":
-        return render_protest_pdf(profile, dossier, max_comps=max_comps)
+        return render_protest_pdf(profile, dossier)
     raise ValueError(f"Unsupported export format: {format}")

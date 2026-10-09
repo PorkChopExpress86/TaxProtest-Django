@@ -692,7 +692,7 @@ class ProtestCsvOutputTests(TestCase):
 
 
 class ComparableCountTests(TestCase):
-    """The page and CSV list every comparable found; the PDF lists only ten of them.
+    """The page and CSV list every comparable found; the PDF lists only ten and says so.
 
     The report routes ask the adapter for up to 50 comparables. These tests stub
     the adapter to return more than ten and compare what each surface prints, side by
@@ -719,8 +719,8 @@ class ComparableCountTests(TestCase):
         for county in COUNTIES:
             county.make_subject()
 
-    def test_pdf_lists_ten_comparables_while_page_and_csv_list_all_ticket_114_adds_a_note(self):
-        """Today nothing on the PDF says comparables were left out; #114 adds that note."""
+    def test_pdf_lists_ten_comparables_and_states_the_total_while_page_and_csv_list_all(self):
+        """Ticket #114: the PDF says how many comparables there are when it lists only ten."""
         for county in COUNTIES:
             for total in (11, 12, 50):
                 with self.subTest(county=county.slug, comparables=total):
@@ -740,8 +740,9 @@ class ComparableCountTests(TestCase):
                     self.assertEqual([row["address"] for row in csv_rows], addresses)
                     body = pdf.content.decode("latin-1")
                     self.assertEqual(re.findall(r"\((Comp \d\d Ln): score", body), addresses[:10])
-                    self.assertNotIn("Showing", body)
-                    self.assertNotIn("closest", body)
+                    self.assertEqual(
+                        pdf_lines(pdf).count(f"Showing the 10 closest of {total} comparables"), 1
+                    )
 
     def test_report_routes_ask_the_adapter_for_up_to_50_comparables(self):
         for county in COUNTIES:
