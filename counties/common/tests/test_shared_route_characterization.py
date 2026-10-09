@@ -75,18 +75,15 @@ def get(
 class UnknownKeyTests(TestCase):
     """A key that names no property, asked for on a database that does hold properties."""
 
-    def test_comparables_page_today_answers_200_property_not_found_ticket_110_changes_to_404(self):
-        """Today the comparables page answers an unknown key with a normal 200 page."""
+    def test_comparables_page_answers_404(self):
+        """Ticket #110: the comparables page 404s for an unknown key like the other routes."""
         for county in COUNTIES:
             county.make_subject()
             with self.subTest(county=county.slug):
                 response = get(self.client, county, COMPARABLES, county.unknown_key)
 
-                self.assertEqual(response.status_code, 200)
-                self.assertTemplateUsed(response, "counties/similar_properties.html")
-                self.assertContains(response, "Property not found")
-                self.assertIsNone(response.context["subject"])
-                self.assertEqual(response.context["error"], "Property not found")
+                self.assertEqual(response.status_code, 404)
+                self.assertTemplateNotUsed(response, "counties/similar_properties.html")
 
     def test_report_page_csv_and_pdf_answer_404(self):
         for county in COUNTIES:
@@ -126,14 +123,14 @@ class HarrisRecordThatIsNotSearchReadyTests(TestCase):
 
                     self.assertNotContains(response, reason, status_code=response.status_code)
 
-    def test_comparables_page_today_answers_200_property_not_found_ticket_110_changes_to_404(self):
+    def test_comparables_page_answers_404(self):
+        """Ticket #110: the comparables page 404s for these records like the other routes."""
         for key in self.reasons:
             with self.subTest(key=key):
                 response = get(self.client, HARRIS, COMPARABLES, key)
 
-                self.assertEqual(response.status_code, 200)
-                self.assertContains(response, "Property not found")
-                self.assertIsNone(response.context["subject"])
+                self.assertEqual(response.status_code, 404)
+                self.assertTemplateNotUsed(response, "counties/similar_properties.html")
 
     def test_report_page_csv_and_pdf_answer_404(self):
         for key in self.reasons:

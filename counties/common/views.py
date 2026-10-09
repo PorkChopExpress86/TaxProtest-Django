@@ -20,6 +20,7 @@ from django.urls import reverse
 from counties.common.analysis import (
     PROTEST_MAX_MIN_SCORE,
     PROTEST_MIN_MIN_SCORE,
+    DossierStatus,
     build_comparables_dossier,
     build_protest_dossier,
     clamped_float,
@@ -170,6 +171,8 @@ def similar_properties(request, key, *, adapter: CountyAdapter):
         max_results=request.GET.get("max_results"),
         min_score=request.GET.get("min_score"),
     )
+    if outcome.status == DossierStatus.NOT_FOUND:
+        raise Http404("Property not found")
     if not outcome.is_ready:
         return render(
             request,
@@ -177,10 +180,7 @@ def similar_properties(request, key, *, adapter: CountyAdapter):
             {
                 "county": profile,
                 "subject": outcome.subject,
-                "error": (
-                    outcome.error
-                    or "This property does not have location data required for similarity search."
-                ),
+                "error": outcome.error,
                 "subject_key": key,
             },
         )
@@ -212,16 +212,15 @@ def protest_analysis(request, key, *, adapter: CountyAdapter):
     """ARB evidence report: equity comparison, tax impact, comparable table."""
     profile = adapter.profile
     outcome = build_protest_dossier(adapter, key, min_score=request.GET.get("min_score"))
+    if outcome.status == DossierStatus.NOT_FOUND:
+        raise Http404("Property not found")
     if not outcome.is_ready:
-        if outcome.error == "Property not found":
-            raise Http404("Property not found")
-        subject = outcome.subject or adapter.get_subject(key)
         return render(
             request,
             "counties/protest_analysis.html",
             {
                 "county": profile,
-                "subject": subject,
+                "subject": outcome.subject,
                 "error": outcome.error,
                 "subject_key": key,
             },
@@ -256,13 +255,10 @@ def protest_analysis(request, key, *, adapter: CountyAdapter):
 def protest_analysis_export(request, key, *, adapter: CountyAdapter):
     """CSV of the report's comparable table plus its tax-impact totals."""
     outcome = build_protest_dossier(adapter, key, min_score=request.GET.get("min_score"))
+    if outcome.status == DossierStatus.NOT_FOUND:
+        raise Http404("Property not found")
     if not outcome.is_ready:
-        if outcome.error == "Property not found":
-            raise Http404("Property not found")
-        return HttpResponseBadRequest(
-            outcome.error
-            or "This property does not have location data required for similarity search."
-        )
+        return HttpResponseBadRequest(outcome.error)
     dossier = outcome.dossier
     assert dossier is not None
     return render_protest_csv(dossier).to_response()
@@ -271,13 +267,10 @@ def protest_analysis_export(request, key, *, adapter: CountyAdapter):
 def protest_analysis_pdf(request, key, *, adapter: CountyAdapter):
     """Printable evidence report."""
     outcome = build_protest_dossier(adapter, key, min_score=request.GET.get("min_score"))
+    if outcome.status == DossierStatus.NOT_FOUND:
+        raise Http404("Property not found")
     if not outcome.is_ready:
-        if outcome.error == "Property not found":
-            raise Http404("Property not found")
-        return HttpResponseBadRequest(
-            outcome.error
-            or "This property does not have location data required for similarity search."
-        )
+        return HttpResponseBadRequest(outcome.error)
     dossier = outcome.dossier
     assert dossier is not None
     return render_protest_pdf(adapter.profile, dossier).to_response()

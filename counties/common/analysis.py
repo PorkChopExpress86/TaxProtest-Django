@@ -17,7 +17,8 @@ import statistics
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Any, Literal
+from enum import StrEnum
+from typing import Any
 
 from counties.common.charts import (
     assessment_history_chart,
@@ -195,6 +196,26 @@ def assessment_history_rows(
     return evaluate_assessment_history(county, account_number, limit=limit)
 
 
+# --------------------------------------------------------------------------- outcome states
+
+
+class DossierStatus(StrEnum):
+    """The three ways a dossier request can end, shared by both dossier builders.
+
+    Only this vocabulary is shared: the comparables and protest dossiers, and their
+    outcome types, stay separate.
+    """
+
+    #: The dossier was built.
+    READY = "ready"
+    #: The property is found but cannot be served; the outcome carries the subject and
+    #: the source-backed reason.
+    UNAVAILABLE = "unavailable"
+    #: The county has no such subject: no such key or, for Harris, a record that is not
+    #: search-ready (``CountyAdapter.get_subject`` returned ``None``).
+    NOT_FOUND = "not_found"
+
+
 # --------------------------------------------------------------------------- comparables dossier
 
 SIMILAR_DEFAULT_MAX_DISTANCE = 10.0
@@ -233,16 +254,20 @@ class ComparablesDossier:
 
 @dataclass(frozen=True)
 class ComparablesDossierOutcome:
-    """Polymorphic result of evaluating a comparables request."""
+    """Polymorphic result of evaluating a comparables request.
 
-    status: Literal["ready", "unavailable"]
+    ``READY`` carries the dossier; ``UNAVAILABLE`` carries the subject and the reason in
+    ``error``; ``NOT_FOUND`` carries neither.
+    """
+
+    status: DossierStatus
     dossier: ComparablesDossier | None = None
     subject: Subject | None = None
     error: str | None = None
 
     @property
     def is_ready(self) -> bool:
-        return self.status == "ready" and self.dossier is not None
+        return self.status == DossierStatus.READY and self.dossier is not None
 
 
 def build_comparables_dossier(
@@ -255,14 +280,12 @@ def build_comparables_dossier(
 ) -> ComparablesDossierOutcome:
     subject = adapter.get_subject(key)
     if subject is None:
-        return ComparablesDossierOutcome(
-            status="unavailable", subject=None, error="Property not found"
-        )
+        return ComparablesDossierOutcome(status=DossierStatus.NOT_FOUND)
 
     caps = adapter.capabilities(key)
     if not caps.comparable_ready:
         return ComparablesDossierOutcome(
-            status="unavailable",
+            status=DossierStatus.UNAVAILABLE,
             subject=subject,
             error=caps.reason_for("comparable")
             or "This property does not have location data required for similarity search.",
@@ -314,7 +337,7 @@ def build_comparables_dossier(
         max_results=effective_max_results,
         min_score=effective_min_score,
     )
-    return ComparablesDossierOutcome(status="ready", dossier=dossier, subject=subject)
+    return ComparablesDossierOutcome(status=DossierStatus.READY, dossier=dossier, subject=subject)
 
 
 # --------------------------------------------------------------------------- protest dossier
@@ -405,16 +428,20 @@ class ProtestEvidenceDossier:
 
 @dataclass(frozen=True)
 class ProtestDossierOutcome:
-    """Polymorphic result of evaluating a protest evidence dossier request."""
+    """Polymorphic result of evaluating a protest evidence dossier request.
 
-    status: Literal["ready", "unavailable"]
+    ``READY`` carries the dossier; ``UNAVAILABLE`` carries the subject and the reason in
+    ``error``; ``NOT_FOUND`` carries neither.
+    """
+
+    status: DossierStatus
     dossier: ProtestEvidenceDossier | None = None
     subject: Subject | None = None
     error: str | None = None
 
     @property
     def is_ready(self) -> bool:
-        return self.status == "ready" and self.dossier is not None
+        return self.status == DossierStatus.READY and self.dossier is not None
 
 
 def build_protest_dossier(
@@ -426,12 +453,12 @@ def build_protest_dossier(
     """Prepare a full protest evidence dossier across the county adapter seam."""
     subject = adapter.get_subject(key)
     if subject is None:
-        return ProtestDossierOutcome(status="unavailable", subject=None, error="Property not found")
+        return ProtestDossierOutcome(status=DossierStatus.NOT_FOUND)
 
     caps = adapter.capabilities(key)
     if not caps.report_ready:
         return ProtestDossierOutcome(
-            status="unavailable",
+            status=DossierStatus.UNAVAILABLE,
             subject=subject,
             error=caps.reason_for("report")
             or "This property does not have location data required for similarity search.",
@@ -480,4 +507,4 @@ def build_protest_dossier(
         ),
         comparable_shortfall=comparable_shortfall(comps, effective_min_score),
     )
-    return ProtestDossierOutcome(status="ready", dossier=dossier, subject=subject)
+    return ProtestDossierOutcome(status=DossierStatus.READY, dossier=dossier, subject=subject)
