@@ -289,7 +289,11 @@ class CountyAdapter(ABC):
 
     @abstractmethod
     def get_subject(self, key: str) -> Subject | None:
-        """The property identified by ``key``, or ``None`` if it does not exist."""
+        """The property identified by ``key``.
+
+        ``None`` when the property does not exist or is not eligible: a county may
+        hold a record it will not expose to the shared pages.
+        """
 
     @abstractmethod
     def find_comps(
