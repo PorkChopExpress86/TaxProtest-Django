@@ -252,6 +252,47 @@ class BuildProtestDossierTests(SimpleTestCase):
         )
         self.assertEqual(outcome.subject, subject)
 
+    def test_a_blank_reason_is_no_reason(self):
+        subject = Subject(key="1", address_line="123 Main")
+        caps = PropertyCapabilities(report_ready=False, reasons={"report": ""})
+        adapter = FakeAdapter(subject=subject, caps=caps)
+
+        outcome = build_protest_dossier(adapter, "1")
+
+        self.assertEqual(outcome.status, DossierStatus.UNAVAILABLE)
+        self.assertEqual(
+            outcome.error,
+            "This property does not have location data required for similarity search.",
+        )
+
+    def test_the_dossier_carries_the_history_availability_notice(self):
+        class GappyHistoryAdapter(FakeAdapter):
+            def assessment_history(self, key, limit=5):
+                return [
+                    {"tax_year": 2026, "assessed_value": 300000},
+                    {"tax_year": 2024, "assessed_value": 280000},
+                ]
+
+        subject = Subject(key="1", address_line="123 Main", tax_year=2026)
+
+        dossier = build_protest_dossier(GappyHistoryAdapter(subject=subject), "1").dossier
+
+        self.assertEqual(dossier.history_notice, "Assessment history gaps: 2025")
+
+    def test_the_dossier_carries_the_comparable_shortfall(self):
+        subject = Subject(key="1", address_line="123 Main", tax_year=2026)
+        comps = [_comp("C1", similarity_score=85.0), _comp("C2", similarity_score=75.0)]
+
+        dossier = build_protest_dossier(
+            FakeAdapter(subject=subject, comps=comps), "1", min_score="60"
+        ).dossier
+
+        self.assertEqual(
+            dossier.comparable_shortfall.message,
+            "Comparable shortfall: only 2 comparables meet the minimum score of 60. "
+            "Lower the minimum score to find at least 3 comparables.",
+        )
+
     def test_ready_subject_builds_complete_dossier(self):
         subject = Subject(
             key="1",
@@ -328,6 +369,22 @@ class BuildComparablesDossierTests(SimpleTestCase):
         self.assertEqual(outcome.error, "No location")
         self.assertEqual(outcome.subject, subject)
         self.assertIsNone(outcome.dossier)
+
+    def test_not_comparable_ready_without_reason_falls_back_to_location_message(self):
+        subject = Subject(key="1", address_line="123 Main")
+        for reasons in ({}, {"comparable": ""}):
+            with self.subTest(reasons=reasons):
+                caps = PropertyCapabilities(comparable_ready=False, reasons=reasons)
+                adapter = FakeAdapter(subject=subject, caps=caps)
+
+                outcome = build_comparables_dossier(adapter, "1")
+
+                self.assertEqual(outcome.status, DossierStatus.UNAVAILABLE)
+                self.assertEqual(
+                    outcome.error,
+                    "This property does not have location data required for similarity search.",
+                )
+                self.assertEqual(outcome.subject, subject)
 
     def test_ready_subject_builds_comparables_dossier(self):
         subject = Subject(

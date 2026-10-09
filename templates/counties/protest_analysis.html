@@ -203,7 +203,7 @@
           <p class="text-[11px] text-gray-500 mt-1">Year {{ tax_impact.tax_year|default:"-" }} • Total rate {{ tax_impact.effective_rate|floatformat:6 }}</p>
         </div>
       </div>
-      {% else %}<p class="px-6 py-5 text-sm text-amber-900">Tax totals unavailable until all applicable matching-year jurisdiction, exemption, and rate inputs are complete.</p>{% endif %}
+      {% else %}<p class="px-6 py-5 text-sm text-amber-900">{{ tax_totals_notice }}</p>{% endif %}
       {% if tax_impact.warnings %}
       <div class="px-6 py-3 border-b border-gray-100 bg-amber-50">
         {% for warning in tax_impact.warnings %}
