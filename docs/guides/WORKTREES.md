@@ -40,16 +40,16 @@ takes about 4 minutes. CI runs on every branch push, so:
 
 - **Implementer:** run the focused tests, then `ruff`, `black --check`, `mypy` and
   `makemigrations --check`. Push the ticket branch and read its CI run for the
-  directory-wide and full-suite results, then cite the run id in the report apart from the
-  local results. Run a directory locally only when CI cannot reach the failure, such as a
-  bug that only reproduces on Windows.
+  directory-wide and full-suite results, then cite the run id in the report, separately from
+  the local results. Run a directory locally for failures CI cannot reproduce, such as a
+  Windows-only bug.
 - **Integration branch:** the merger runs the full suite once per batch of merges, or
   pushes the branch and reads the CI result.
 
 Follow a branch's latest CI run by id (`gh run watch` with no id needs a terminal):
 
 ```bash
-gh run list --branch <branch> --limit 1 --json databaseId,headSha
+gh run list --workflow ci.yml --branch <branch> --limit 1 --json databaseId,headSha
 gh run watch <id> --exit-status
 ```
 
@@ -57,13 +57,13 @@ The run appears a few seconds after the push, so rerun the list until `headSha` 
 commit you pushed. A newer push cancels the in-progress run (a concurrency group in
 `ci.yml`), so the latest run is the one to read.
 
-CI is also the only Linux run. Behaviour that depends on the filesystem, such as
+CI is the only Linux run. Behaviour that depends on the filesystem, such as
 directory-listing order, can pass on Windows and fail there.
 
 ## Reviewing a branch
 
 Review from a worktree detached at that branch, or from the branch's own worktree if it
-has one (`git worktree list`):
+has one (`git worktree list`). From the main checkout:
 
 ```bash
 git worktree add --detach ../TaxProtest-Django-wt/<name> <branch>
