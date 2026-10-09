@@ -487,7 +487,13 @@ PDF_COMPS = [
     "=SUM(A1) Fraud Rd: score 81.0, $120.00/sqft",
     "303 Pine Ct: score 70.0",
 ]
-PDF_TAX_UNAVAILABLE = "Tax totals unavailable until matching-year inputs are complete."
+#: Ticket #112: the PDF states the page's sentence (it read "Tax totals unavailable until
+#: matching-year inputs are complete." before). The PDF does not wrap text, so the renderer
+#: breaks this one sentence over two lines to keep it inside the page.
+PDF_TAX_UNAVAILABLE = [
+    "Tax totals unavailable until all applicable matching-year jurisdiction,",
+    "exemption, and rate inputs are complete.",
+]
 PDF_TAX = {
     "complete": [
         "",
@@ -501,7 +507,7 @@ PDF_TAX = {
         "",
         "Tax Impact (Estimated)",
         "Tax Year Used: 2025 (partial)",
-        PDF_TAX_UNAVAILABLE,
+        *PDF_TAX_UNAVAILABLE,
         "Warnings: W one. | W two.",
     ],
     "missing": {
@@ -509,7 +515,7 @@ PDF_TAX = {
             "",
             "Tax Impact (Estimated)",
             "Tax Year Used: - (missing)",
-            PDF_TAX_UNAVAILABLE,
+            *PDF_TAX_UNAVAILABLE,
             "Warnings: Published property source year is not recorded; "
             "matching-year tax impact is unavailable.",
         ],
@@ -517,7 +523,7 @@ PDF_TAX = {
             "",
             "Tax Impact (Estimated)",
             "Tax Year Used: 2025 (missing)",
-            PDF_TAX_UNAVAILABLE,
+            *PDF_TAX_UNAVAILABLE,
             "Warnings: No 2025 jurisdiction and exemption rows for this property",
         ],
     },

@@ -20,6 +20,7 @@ from django.urls import reverse
 from counties.common.analysis import (
     PROTEST_MAX_MIN_SCORE,
     PROTEST_MIN_MIN_SCORE,
+    TAX_TOTALS_WITHHELD_NOTICE,
     DossierStatus,
     build_comparables_dossier,
     build_protest_dossier,
@@ -241,6 +242,7 @@ def protest_analysis(request, key, *, adapter: CountyAdapter):
         "assessment_history_chart": dossier.assessment_history_chart,
         "ppsf_distribution_chart": dossier.ppsf_distribution_chart,
         "tax_impact": dossier.tax_impact,
+        "tax_totals_notice": TAX_TOTALS_WITHHELD_NOTICE,
         "comparable_shortfall": dossier.comparable_shortfall,
         "min_score": dossier.min_score,
         "min_score_floor": int(PROTEST_MIN_MIN_SCORE),

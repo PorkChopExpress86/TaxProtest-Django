@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import io
+import textwrap
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -11,11 +12,11 @@ from typing import Any, Literal
 from django.http import HttpResponse
 
 from counties.common.analysis import (
+    TAX_TOTALS_WITHHELD_NOTICE,
     ComparableShortfall,
     EquitySummary,
     ProtestCompRow,
     ProtestEvidenceDossier,
-    history_availability_notice,
     protest_comp_rows,
 )
 from counties.common.contracts import Column, Comp, CountyProfile, Subject
@@ -231,6 +232,9 @@ def _pdf_escape(text: Any) -> str:
 
 PDF_LINES_PER_PAGE = 38
 
+#: Characters per line for a notice the PDF has to break itself: ``simple_pdf`` does not wrap.
+PDF_NOTICE_WIDTH = 80
+
 
 def simple_pdf(lines: Sequence[str], lines_per_page: int = PDF_LINES_PER_PAGE) -> bytes:
     """A minimal paginated PDF of left-aligned Helvetica text.
@@ -309,6 +313,7 @@ def _build_protest_pdf_doc(
     tax_impact: TaxImpactResult,
     max_comps: int = 10,
     comparable_shortfall: ComparableShortfall | None = None,
+    history_notice: str = "",
 ) -> ExportDocument:
     assessed = subject.assessed_value
     lines = [
@@ -322,9 +327,8 @@ def _build_protest_pdf_doc(
         if subject.value_per_sqft is not None:
             lines.append(f"Subject Value/Sqft: ${subject.value_per_sqft:,.2f}")
     lines.append(f"Property Source Year: {subject.tax_year or 'Not recorded'}")
-    notice = history_availability_notice(history_rows, subject.tax_year)
-    if notice:
-        lines.append(notice)
+    if history_notice:
+        lines.append(history_notice)
 
     if history_rows:
         lines.append("")
@@ -366,7 +370,7 @@ def _build_protest_pdf_doc(
             ]
         )
     else:
-        lines.append("Tax totals unavailable until matching-year inputs are complete.")
+        lines.extend(textwrap.wrap(TAX_TOTALS_WITHHELD_NOTICE, PDF_NOTICE_WIDTH))
     if tax_impact.warnings:
         lines.append(f"Warnings: {' | '.join(tax_impact.warnings)}")
 
@@ -393,6 +397,7 @@ def render_protest_pdf(
         tax_impact=dossier.tax_impact,
         max_comps=max_comps,
         comparable_shortfall=dossier.comparable_shortfall,
+        history_notice=dossier.history_notice,
     )
 
 
