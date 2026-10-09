@@ -3,12 +3,21 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
+from enum import StrEnum
 
 from counties.common.tax_models import AssessmentHistory, PropertyJurisdictionExemption, TaxUnitRate
 
 MONEY_QUANT = Decimal("0.01")
 ZERO = Decimal("0")
 ONE_HUNDRED = Decimal("100")
+
+
+class TaxCompleteness(StrEnum):
+    """How much of a tax impact could be computed: the closed set every surface reads."""
+
+    MISSING = "missing"
+    PARTIAL = "partial"
+    COMPLETE = "complete"
 
 
 @dataclass
@@ -20,10 +29,23 @@ class TaxImpactResult:
     effective_rate: Decimal
     current_assessed_value: Decimal | None
     taxable_value_used: Decimal | None
-    completeness: str
+    completeness: TaxCompleteness
     warnings: list[str]
     exemptions_summary: list[dict[str, object]]
     per_unit_breakdown: list[dict[str, object]]
+
+    def __post_init__(self) -> None:
+        # Accepts the spelling and rejects anything outside the set.
+        self.completeness = TaxCompleteness(self.completeness)
+
+    @property
+    def may_show_totals(self) -> bool:
+        """The one answer to whether the current, median and savings totals may be shown."""
+        return self.completeness is TaxCompleteness.COMPLETE
+
+    @property
+    def is_partial(self) -> bool:
+        return self.completeness is TaxCompleteness.PARTIAL
 
 
 def _to_decimal(value: object) -> Decimal | None:
@@ -94,7 +116,7 @@ def unavailable_tax_impact(tax_year: int | None, *warnings: str) -> TaxImpactRes
         effective_rate=ZERO,
         current_assessed_value=None,
         taxable_value_used=None,
-        completeness="missing",
+        completeness=TaxCompleteness.MISSING,
         warnings=list(warnings),
         exemptions_summary=[],
         per_unit_breakdown=[],
@@ -336,13 +358,13 @@ def calculate_tax_impact(
         exemptions_summary.extend(exemptions_applied)
 
     if known_units == 0:
-        completeness = "missing"
+        completeness = TaxCompleteness.MISSING
     elif missing_units > 0 or median_value is None:
-        completeness = "partial"
+        completeness = TaxCompleteness.PARTIAL
     else:
-        completeness = "complete"
+        completeness = TaxCompleteness.COMPLETE
 
-    if completeness != "complete":
+    if completeness is not TaxCompleteness.COMPLETE:
         warnings.append("Tax impact is partial because one or more required inputs were missing.")
 
     current_total = _money(current_total)

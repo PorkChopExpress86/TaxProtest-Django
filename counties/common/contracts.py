@@ -313,7 +313,10 @@ class CountyAdapter(ABC):
         return []
 
     def tax_impact(self, key: str, tax_year: int | None, median_assessed_value: Decimal | None):
-        """Estimated tax impact, or ``None`` when the county cannot compute one."""
+        """Estimated tax impact, or ``None`` when the county cannot compute one.
+
+        The dossier reports ``None`` as an unavailable tax impact with a reason.
+        """
         return None
 
     # -- capabilities ---------------------------------------------------------
