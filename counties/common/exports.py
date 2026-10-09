@@ -15,9 +15,10 @@ from counties.common.analysis import (
     TAX_TOTALS_WITHHELD_NOTICE,
     ComparableShortfall,
     EquitySummary,
+    ProtestCompRow,
     ProtestEvidenceDossier,
+    protest_comp_rows,
 )
-from counties.common.charts import score_breakdown_summary
 from counties.common.contracts import Column, Comp, CountyProfile, Subject
 from counties.common.tax_impact import TaxImpactResult
 
@@ -115,8 +116,7 @@ def search_results_csv(
 
 def _build_protest_csv_doc(
     subject: Subject,
-    comps: Sequence[Comp],
-    equity: EquitySummary,
+    comp_rows: Sequence[ProtestCompRow],
     tax_impact: TaxImpactResult,
     history_warning: str = "",
     comparable_shortfall: ComparableShortfall | None = None,
@@ -153,10 +153,10 @@ def _build_protest_csv_doc(
     writer.writerow(header)
     shortfall_text = comparable_shortfall.message if comparable_shortfall else ""
 
-    subject_ppsf = equity.subject_value_per_sqft
-    for comp in comps:
-        ppsf = comp.value_per_sqft
-        delta = comp.delta_vs(subject_ppsf)
+    for entry in comp_rows:
+        comp = entry.comp
+        ppsf = entry.value_per_sqft
+        delta = entry.delta
         row = [
             csv_safe_text(comp.address),
             f"{comp.similarity_score:.1f}",
@@ -170,7 +170,7 @@ def _build_protest_csv_doc(
             f"{float(comp.assessed_value):.2f}" if comp.assessed_value else "",
             f"{ppsf:.2f}" if ppsf is not None else "",
             f"{delta:.2f}" if delta is not None else "",
-            score_breakdown_summary(comp.score_breakdown),
+            entry.breakdown_summary,
         ]
         row += [
             tax_impact.tax_year or "",
@@ -184,7 +184,7 @@ def _build_protest_csv_doc(
             shortfall_text,
         ]
         writer.writerow(row)
-    if not comps and comparable_shortfall:
+    if not comp_rows and comparable_shortfall:
         # One notice-only row, so a file with no comparables still states the shortfall.
         writer.writerow([""] * (len(header) - 1) + [shortfall_text])
 
@@ -200,8 +200,7 @@ def render_protest_csv(dossier: ProtestEvidenceDossier) -> ExportDocument:
     """Render a completed protest evidence dossier to a CSV ExportDocument."""
     return _build_protest_csv_doc(
         subject=dossier.subject,
-        comps=dossier.comps,
-        equity=dossier.equity,
+        comp_rows=dossier.comp_rows,
         tax_impact=dossier.tax_impact,
         history_warning=dossier.history_notice,
         comparable_shortfall=dossier.comparable_shortfall,
@@ -218,8 +217,7 @@ def protest_comps_csv(
     """One row per comparable, with the shared tax-impact columns appended."""
     return _build_protest_csv_doc(
         subject=subject,
-        comps=comps,
-        equity=equity,
+        comp_rows=protest_comp_rows(comps, equity.subject_value_per_sqft),
         tax_impact=tax_impact,
         history_warning=history_warning,
     ).to_response()
@@ -310,7 +308,7 @@ def simple_pdf(lines: Sequence[str], lines_per_page: int = PDF_LINES_PER_PAGE) -
 def _build_protest_pdf_doc(
     profile: CountyProfile,
     subject: Subject,
-    comps: Sequence[Comp],
+    comp_rows: Sequence[ProtestCompRow],
     history_rows: Sequence[Mapping[str, Any]],
     tax_impact: TaxImpactResult,
     max_comps: int = 10,
@@ -345,13 +343,14 @@ def _build_protest_pdf_doc(
             cap_status = row["cap_status"]["label"] if row.get("cap_status") else "Needs review"
             lines.append(f"{row['tax_year']}: {assessed_text}, YoY {change_text}, {cap_status}")
 
-    if comps or comparable_shortfall:
+    if comp_rows or comparable_shortfall:
         lines.append("")
         lines.append("Comparable Evidence")
         if comparable_shortfall:
             lines.extend([comparable_shortfall.headline, comparable_shortfall.guidance])
-        for comp in comps[:max_comps]:
-            ppsf = comp.value_per_sqft
+        for entry in comp_rows[:max_comps]:
+            comp = entry.comp
+            ppsf = entry.value_per_sqft
             ppsf_text = f", ${ppsf:,.2f}/sqft" if ppsf is not None else ""
             lines.append(f"{comp.address}: score {float(comp.similarity_score):.1f}{ppsf_text}")
 
@@ -393,7 +392,7 @@ def render_protest_pdf(
     return _build_protest_pdf_doc(
         profile=profile,
         subject=dossier.subject,
-        comps=dossier.comps,
+        comp_rows=dossier.comp_rows,
         history_rows=dossier.history,
         tax_impact=dossier.tax_impact,
         max_comps=max_comps,
@@ -414,7 +413,7 @@ def protest_report_pdf(
     return _build_protest_pdf_doc(
         profile=profile,
         subject=subject,
-        comps=comps,
+        comp_rows=protest_comp_rows(comps, subject.value_per_sqft),
         history_rows=history_rows,
         tax_impact=tax_impact,
         max_comps=max_comps,

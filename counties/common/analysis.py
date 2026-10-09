@@ -387,6 +387,21 @@ class ProtestCompRow:
     breakdown_summary: str
 
 
+def protest_comp_rows(
+    comps: Sequence[Comp], subject_value_per_sqft: float | None
+) -> list[ProtestCompRow]:
+    """The one place a comparable's $/sqft, delta against the subject and breakdown are derived."""
+    return [
+        ProtestCompRow(
+            comp=comp,
+            value_per_sqft=comp.value_per_sqft,
+            delta=comp.delta_vs(subject_value_per_sqft),
+            breakdown_summary=score_breakdown_summary(comp.score_breakdown),
+        )
+        for comp in comps
+    ]
+
+
 @dataclass(frozen=True)
 class ComparableShortfall:
     """A report that found fewer comparables than complete evidence needs.
@@ -443,6 +458,14 @@ class ProtestEvidenceDossier:
     assessment_history_chart: Mapping[str, Any] | None
     ppsf_distribution_chart: Mapping[str, Any] | None
     comparable_shortfall: ComparableShortfall | None = None
+    #: The other request parameters the comparables were found with (``min_score`` above).
+    max_distance: float = PROTEST_MAX_DISTANCE
+    max_results: int = PROTEST_MAX_COMPS
+
+    @property
+    def comparable_count(self) -> int:
+        """How many comparables the report found: the one count every surface states."""
+        return len(self.comp_rows)
 
 
 @dataclass(frozen=True)
@@ -502,16 +525,6 @@ def build_protest_dossier(
     if tax_impact is None:
         tax_impact = unavailable_tax_impact(subject.tax_year, NO_TAX_IMPACT_REASON)
 
-    comp_rows = [
-        ProtestCompRow(
-            comp=comp,
-            value_per_sqft=comp.value_per_sqft,
-            delta=comp.delta_vs(equity.subject_value_per_sqft),
-            breakdown_summary=score_breakdown_summary(comp.score_breakdown),
-        )
-        for comp in comps
-    ]
-
     dossier = ProtestEvidenceDossier(
         subject=subject,
         comps=comps,
@@ -519,12 +532,14 @@ def build_protest_dossier(
         history=history,
         history_notice=history_notice,
         tax_impact=tax_impact,
-        comp_rows=comp_rows,
+        comp_rows=protest_comp_rows(comps, equity.subject_value_per_sqft),
         min_score=effective_min_score,
         assessment_history_chart=assessment_history_chart(history),
         ppsf_distribution_chart=ppsf_distribution_chart(
             equity.qualifying_ppsf, equity.subject_value_per_sqft
         ),
         comparable_shortfall=comparable_shortfall(comps, effective_min_score),
+        max_distance=PROTEST_MAX_DISTANCE,
+        max_results=PROTEST_MAX_COMPS,
     )
     return ProtestDossierOutcome(status=DossierStatus.READY, dossier=dossier, subject=subject)
