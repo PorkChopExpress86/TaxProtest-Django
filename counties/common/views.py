@@ -233,6 +233,7 @@ def protest_analysis(request, key, *, adapter: CountyAdapter):
         "subject": dossier.subject,
         "comps": dossier.comps,
         "comp_rows": dossier.comp_rows,
+        "comparable_count": dossier.comparable_count,
         "columns": profile.comp_columns,
         "equity": dossier.equity,
         "assessment_history": dossier.history,
