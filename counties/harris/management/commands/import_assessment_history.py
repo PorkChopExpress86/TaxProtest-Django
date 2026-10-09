@@ -77,13 +77,13 @@ class Command(BaseCommand):
                 )
             record_sources(
                 operation,
-                list((extract_root / str(year)).rglob("*.txt")),
+                sorted((extract_root / str(year)).rglob("*.txt")),
                 source_year=None,
                 selected_year=year,
             )
             record_sources(
                 operation,
-                list((download_root / str(year)).glob("*.zip")),
+                sorted((download_root / str(year)).glob("*.zip")),
                 source_year=None,
                 selected_year=year,
             )

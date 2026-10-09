@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Run a dev-container command for this checkout, safely alongside other checkouts.
+#
+#   scripts/dc pytest counties/common/tests -q
+#   scripts/dc ruff check .
+#
+# Every checkout (the main one or a git worktree) shares the main checkout's
+# Compose project, so one postgres container serves them all. This checkout's
+# own source is mounted at /app. Each pytest run gets its own database name, so
+# concurrent runs never collide and no stale test database is reused. Other
+# commands use the shared dev database.
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+common_dir="$(git -C "$root" rev-parse --path-format=absolute --git-common-dir)"
+main_root="$(dirname "$common_dir")"
+project="$(basename "$main_root" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_\n-' '-')"
+
+env_file="$main_root/.env"
+[ -f "$root/.env" ] && env_file="$root/.env"
+if [ -f "$env_file" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$env_file"
+  set +a
+fi
+
+args=(-p "$project" -f "$root/docker-compose.yml" --project-directory "$root")
+[ -f "$env_file" ] && args+=(--env-file "$env_file")
+
+run_env=()
+if [ "${1:-}" = "pytest" ]; then
+  checkout="$(basename "$root" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_\n' '_')"
+  database="taxprotest_${checkout}_$$"
+  run_env+=(-e "DATABASE_URL=postgresql://${POSTGRES_USER:-taxprotest}:${POSTGRES_PASSWORD:-taxprotest}@postgres:5432/${database}")
+fi
+
+exec docker compose "${args[@]}" run --rm "${run_env[@]}" taxprotest-dev "$@"

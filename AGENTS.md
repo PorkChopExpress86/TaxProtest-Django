@@ -13,11 +13,11 @@ report surface.
   `docs/guides/`; verify commands against `docker-compose.yml` or `Makefile` before relying on prose.
 - Similarity behavior: use `docs/guides/SIMILARITY.md` and the county implementation/tests.
 - HCAD source fields: use `docs/hcad_docs/HCAD_DATA_REFERENCE.md` and the importer tests.
+- Code review: apply `CODING_STANDARDS.md`.
 - Issue work or triage: follow `docs/agents/issue-tracker.md` and
   `docs/agents/triage-labels.md` before making GitHub changes.
 
-Read the relevant implementation and adjacent tests before editing. Check `git status` first and
-preserve unrelated work, runtime data, databases, and secrets.
+Check `git status` first and preserve unrelated work, runtime data, databases, and secrets.
 
 ## Load-bearing architecture
 
@@ -81,6 +81,9 @@ docker compose run --rm taxprotest-dev mypy taxprotest counties
 docker compose run --rm taxprotest-dev python manage.py makemigrations --check --dry-run
 ```
 
+For several checkouts testing at once (git worktrees, parallel agents), run commands through
+`scripts/dc` instead; see `docs/guides/WORKTREES.md`.
+
 Use the nearest tests: `counties/common/tests/` for cross-county contracts,
 `counties/<slug>/tests/` for county behavior, and `taxprotest/tests/` for site-wide behavior.
 Run `git diff --check` for every change. Do not claim browser, service, or full-suite validation that
@@ -93,7 +96,8 @@ was not actually run.
   `counties/common/tests/test_shared_pages.py`.
 - Use environment variables and the existing runtime-path helpers for configuration. Never hardcode
   credentials or production data.
-- Keep edits scoped.
+- Merging to `main` deploys to production (`.github/workflows/deploy.yml`). Time a merge as a
+  release; an evidence-changing merge follows the ADR-0024 release rule.
 - Finish by reporting the files changed, checks run with observed results, and anything still
   unverified.
 

@@ -14,8 +14,8 @@ lxml>=5.0
 
 # Dev/Test/Linting dependencies
 pre-commit>=3.7
-black>=24.8
-ruff>=0.6.9
+black==26.5.1
+ruff==0.16.4
 mypy>=1.11
 django-stubs>=5.0.2
 django-stubs-ext>=5.0.2

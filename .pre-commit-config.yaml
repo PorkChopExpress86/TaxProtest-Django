@@ -1,15 +1,16 @@
 # Note: The authoritative quality gates run inside Docker Compose (via `make check`
 # or `docker compose run --rm taxprotest-dev ...`). These pre-commit hooks provide
 # optional lightweight host-level git commit checks when pre-commit is installed.
+# Keep the black and ruff revs equal to the versions installed in the dev image.
 repos:
   - repo: https://github.com/psf/black
-    rev: 24.8.0
+    rev: 26.5.1
     hooks:
       - id: black
         language_version: python3
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.6.9
+    rev: v0.16.4
     hooks:
       - id: ruff
         args: [--fix]
