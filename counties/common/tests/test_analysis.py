@@ -279,6 +279,17 @@ class BuildProtestDossierTests(SimpleTestCase):
 
         self.assertEqual(dossier.history_notice, "Assessment history gaps: 2025")
 
+    def test_the_dossier_carries_the_tax_totals_withheld_notice(self):
+        subject = Subject(key="1", address_line="123 Main", tax_year=2026)
+
+        dossier = build_protest_dossier(FakeAdapter(subject=subject), "1").dossier
+
+        self.assertEqual(
+            dossier.tax_totals_notice,
+            "Tax totals unavailable until all applicable matching-year jurisdiction, "
+            "exemption, and rate inputs are complete.",
+        )
+
     def test_the_dossier_carries_the_comparable_shortfall(self):
         subject = Subject(key="1", address_line="123 Main", tax_year=2026)
         comps = [_comp("C1", similarity_score=85.0), _comp("C2", similarity_score=75.0)]

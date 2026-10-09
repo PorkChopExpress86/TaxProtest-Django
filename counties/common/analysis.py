@@ -42,8 +42,9 @@ NO_TAX_IMPACT_REASON = "No tax impact estimate is available from this county."
 MIN_COMPS_FOR_RECOMMENDATION = 3
 
 # Policy sentences. Each is stated here once and every surface reads it from the dossier
-# layer; the shortfall wording is ``ComparableShortfall`` and the history notice is
-# ``ProtestEvidenceDossier.history_notice``.
+# layer; the shortfall wording is ``ComparableShortfall``, the history notice is
+# ``ProtestEvidenceDossier.history_notice`` and the withheld-totals sentence is
+# ``ProtestEvidenceDossier.tax_totals_notice``.
 
 #: What an unavailable outcome says when the county's readiness gave no reason, so an
 #: unavailable outcome always carries one. Harris readiness persists an identical sentence
@@ -466,6 +467,11 @@ class ProtestEvidenceDossier:
     def comparable_count(self) -> int:
         """How many comparables the report found: the one count every surface states."""
         return len(self.comp_rows)
+
+    @property
+    def tax_totals_notice(self) -> str:
+        """What a surface prints in place of the tax totals while the tax impact is incomplete."""
+        return TAX_TOTALS_WITHHELD_NOTICE
 
 
 @dataclass(frozen=True)

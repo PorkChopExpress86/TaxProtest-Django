@@ -317,6 +317,7 @@ def _build_protest_pdf_doc(
     history_rows: Sequence[Mapping[str, Any]],
     tax_impact: TaxImpactResult,
     comparable_count: int,
+    tax_totals_notice: str,
     comparable_shortfall: ComparableShortfall | None = None,
     history_notice: str = "",
 ) -> ExportDocument:
@@ -379,7 +380,7 @@ def _build_protest_pdf_doc(
             ]
         )
     else:
-        lines.extend(textwrap.wrap(TAX_TOTALS_WITHHELD_NOTICE, PDF_NOTICE_WIDTH))
+        lines.extend(textwrap.wrap(tax_totals_notice, PDF_NOTICE_WIDTH))
     if tax_impact.warnings:
         lines.append(f"Warnings: {' | '.join(tax_impact.warnings)}")
 
@@ -404,6 +405,7 @@ def render_protest_pdf(
         history_rows=dossier.history,
         tax_impact=dossier.tax_impact,
         comparable_count=dossier.comparable_count,
+        tax_totals_notice=dossier.tax_totals_notice,
         comparable_shortfall=dossier.comparable_shortfall,
         history_notice=dossier.history_notice,
     )
@@ -425,6 +427,7 @@ def protest_report_pdf(
         history_rows=history_rows,
         tax_impact=tax_impact,
         comparable_count=len(comp_rows),
+        tax_totals_notice=TAX_TOTALS_WITHHELD_NOTICE,
         history_notice=history_availability_notice(history_rows, subject.tax_year),
     ).to_response()
 
