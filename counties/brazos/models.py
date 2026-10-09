@@ -371,8 +371,8 @@ class PropertyBuildingCharacteristic(models.Model):
 
     No bedroom/bathroom-adjacent "quality" or "condition" rating exists
     here -- see PropertyAccount.class_code (GIS-sourced) as the closest
-    available proxy, and CLAUDE.md's Similarity Algorithm section for how
-    Harris's own quality_code/condition_code are used.
+    available proxy, and docs/guides/SIMILARITY.md for how Harris's own
+    quality_code/condition_code are used.
     """
 
     prop_id = models.CharField(max_length=32, db_index=True)
