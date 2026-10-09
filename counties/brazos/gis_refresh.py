@@ -4,9 +4,8 @@ Unlike Harris's load_gis_data (lat/long only), this shapefile is the primary
 source for several PropertyAccount fields that don't exist anywhere in the
 fixed-width certified export: situs (physical) address, coordinates,
 state_class, living_area, year_built, and class_code. See
-docs/research/brazos-gis-parcel-shapefile.md on branch
-research/brazos-gis-parcel-shapefile (wayfinder tickets #4-#7) for the full
-field survey this command implements.
+docs/research/brazos-gis-parcel-shapefile.md (wayfinder tickets #4-#7) for the
+full field survey this command implements.
 
 NOT sourced from here: total_value/land_value/improvement_value/
 assessed_value. The shapefile's "<year> Certified Shapefiles Download" link

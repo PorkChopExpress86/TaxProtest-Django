@@ -240,8 +240,8 @@ def parse_entity_line(line: str) -> dict[str, Any]:
 # analog of counties.common.tax_models.PropertyJurisdictionExemption (wide: one column per
 # exemption type, needs unpivoting into that model's long per-code-row shape).
 # Offsets verified against real 2025 export bytes; see
-# docs/research/brazos-exemptions.md on branch research/brazos-exemptions for
-# the full methodology (wayfinder tickets #10, #11).
+# docs/research/brazos-exemptions.md for the full methodology (wayfinder tickets
+# #10, #11).
 #
 # Only hs_amt/ov65_amt/dp_amt are parsed here -- the only three amount fields
 # independently confirmed correct via cross-checks against freeze_exempt_type_cd

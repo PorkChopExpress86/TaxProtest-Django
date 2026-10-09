@@ -3,9 +3,8 @@ tax rates into the shared counties.harris.models.TaxUnitRate table (county="braz
 
 Unlike Harris's import_tax_unit_rates (a manual TSV upload), BCAD publishes
 adopted rates as a static, scrapable HTML table -- no bulk export file exists
-for this (see docs/research/brazos-entity-tax-rates.md on branch
-research/brazos-entity-tax-rates, wayfinder ticket #8). This command scrapes
-that page directly.
+for this (see docs/research/brazos-entity-tax-rates.md, wayfinder ticket #8).
+This command scrapes that page directly.
 
 TaxUnitRate is shared with Harris (wayfinder ticket #9): counties.common.tax_impact
 .calculate_tax_impact() is reused verbatim across counties once its three
