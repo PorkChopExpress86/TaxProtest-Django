@@ -35,6 +35,7 @@ from counties.common.contracts import (
     Subject,
 )
 from counties.common.exports import render_protest_csv, render_protest_pdf
+from counties.common.tax_impact import unavailable_tax_impact
 from counties.common.tests.test_analysis import FakeAdapter
 from counties.common.tests.test_shared_route_characterization import (
     COUNTIES,
@@ -173,7 +174,7 @@ class RendererRowsTests(SimpleTestCase):
             equity=summarize_equity(SUBJECT, [self.comp]),
             history=[],
             history_notice="",
-            tax_impact=None,
+            tax_impact=unavailable_tax_impact(None, "Not computed."),
             comp_rows=[
                 ProtestCompRow(
                     comp=self.comp,

@@ -19,6 +19,7 @@ from counties.common.analysis import (
     protest_comp_rows,
 )
 from counties.common.contracts import Column, Comp, CountyProfile, Subject
+from counties.common.tax_impact import TaxImpactResult
 
 #: Leading characters a spreadsheet would evaluate as a formula.
 CSV_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
@@ -115,7 +116,7 @@ def search_results_csv(
 def _build_protest_csv_doc(
     subject: Subject,
     comp_rows: Sequence[ProtestCompRow],
-    tax_impact: Any,
+    tax_impact: TaxImpactResult,
     history_warning: str = "",
     comparable_shortfall: ComparableShortfall | None = None,
 ) -> ExportDocument:
@@ -137,16 +138,17 @@ def _build_protest_csv_doc(
         "delta_vs_subject_per_sqft",
         "score_breakdown",
     ]
-    if tax_impact is not None:
-        header += [
-            "tax_year_used",
-            "tax_impact_completeness",
-            "current_tax_owed",
-            "median_tax_owed",
-            "estimated_tax_savings",
-            "tax_impact_warnings",
-        ]
-    header += ["property_source_year", "assessment_history_availability", "comparable_shortfall"]
+    header += [
+        "tax_year_used",
+        "tax_impact_completeness",
+        "current_tax_owed",
+        "median_tax_owed",
+        "estimated_tax_savings",
+        "tax_impact_warnings",
+        "property_source_year",
+        "assessment_history_availability",
+        "comparable_shortfall",
+    ]
     writer.writerow(header)
     shortfall_text = comparable_shortfall.message if comparable_shortfall else ""
 
@@ -169,28 +171,13 @@ def _build_protest_csv_doc(
             f"{delta:.2f}" if delta is not None else "",
             entry.breakdown_summary,
         ]
-        if tax_impact is not None:
-            row += [
-                tax_impact.tax_year or "",
-                tax_impact.completeness,
-                (
-                    f"{float(tax_impact.current_tax_owed):.2f}"
-                    if tax_impact.completeness == "complete"
-                    else ""
-                ),
-                (
-                    f"{float(tax_impact.median_tax_owed):.2f}"
-                    if tax_impact.completeness == "complete"
-                    else ""
-                ),
-                (
-                    f"{float(tax_impact.estimated_savings):.2f}"
-                    if tax_impact.completeness == "complete"
-                    else ""
-                ),
-                " | ".join(tax_impact.warnings),
-            ]
         row += [
+            tax_impact.tax_year or "",
+            tax_impact.completeness,
+            f"{float(tax_impact.current_tax_owed):.2f}" if tax_impact.may_show_totals else "",
+            f"{float(tax_impact.median_tax_owed):.2f}" if tax_impact.may_show_totals else "",
+            f"{float(tax_impact.estimated_savings):.2f}" if tax_impact.may_show_totals else "",
+            " | ".join(tax_impact.warnings),
             subject.tax_year or "Not recorded",
             csv_safe_text(history_warning),
             shortfall_text,
@@ -223,7 +210,7 @@ def protest_comps_csv(
     subject: Subject,
     comps: Sequence[Comp],
     equity: EquitySummary,
-    tax_impact: Any,
+    tax_impact: TaxImpactResult,
     history_warning: str = "",
 ) -> HttpResponse:
     """One row per comparable, with the shared tax-impact columns appended."""
@@ -319,7 +306,7 @@ def _build_protest_pdf_doc(
     subject: Subject,
     comp_rows: Sequence[ProtestCompRow],
     history_rows: Sequence[Mapping[str, Any]],
-    tax_impact: Any,
+    tax_impact: TaxImpactResult,
     max_comps: int = 10,
     comparable_shortfall: ComparableShortfall | None = None,
 ) -> ExportDocument:
@@ -363,26 +350,25 @@ def _build_protest_pdf_doc(
             ppsf_text = f", ${ppsf:,.2f}/sqft" if ppsf is not None else ""
             lines.append(f"{comp.address}: score {float(comp.similarity_score):.1f}{ppsf_text}")
 
-    if tax_impact is not None:
+    lines.extend(
+        [
+            "",
+            "Tax Impact (Estimated)",
+            f"Tax Year Used: {tax_impact.tax_year or '-'} ({tax_impact.completeness})",
+        ]
+    )
+    if tax_impact.may_show_totals:
         lines.extend(
             [
-                "",
-                "Tax Impact (Estimated)",
-                f"Tax Year Used: {tax_impact.tax_year or '-'} ({tax_impact.completeness})",
+                f"Current Taxes Owed: ${float(tax_impact.current_tax_owed):,.2f}",
+                f"Median-Scenario Taxes Owed: ${float(tax_impact.median_tax_owed):,.2f}",
+                f"Estimated Annual Savings: ${float(tax_impact.estimated_savings):,.2f}",
             ]
         )
-        if tax_impact.completeness == "complete":
-            lines.extend(
-                [
-                    f"Current Taxes Owed: ${float(tax_impact.current_tax_owed):,.2f}",
-                    f"Median-Scenario Taxes Owed: ${float(tax_impact.median_tax_owed):,.2f}",
-                    f"Estimated Annual Savings: ${float(tax_impact.estimated_savings):,.2f}",
-                ]
-            )
-        else:
-            lines.append("Tax totals unavailable until matching-year inputs are complete.")
-        if tax_impact.warnings:
-            lines.append(f"Warnings: {' | '.join(tax_impact.warnings)}")
+    else:
+        lines.append("Tax totals unavailable until matching-year inputs are complete.")
+    if tax_impact.warnings:
+        lines.append(f"Warnings: {' | '.join(tax_impact.warnings)}")
 
     pdf_bytes = simple_pdf(lines)
     safe_key = str(subject.key).replace('"', "").replace("\\", "")
@@ -415,7 +401,7 @@ def protest_report_pdf(
     subject: Subject,
     comps: Sequence[Comp],
     history_rows: Sequence[Mapping[str, Any]],
-    tax_impact: Any,
+    tax_impact: TaxImpactResult,
     max_comps: int = 10,
 ) -> HttpResponse:
     """The printable evidence report: subject, history, comparables, tax impact."""

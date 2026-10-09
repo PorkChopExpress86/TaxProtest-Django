@@ -26,6 +26,7 @@ from counties.common.exports import (
     render_protest_pdf,
     render_search_csv,
 )
+from counties.common.tax_impact import unavailable_tax_impact
 
 
 class ExportDocumentTests(SimpleTestCase):
@@ -84,7 +85,7 @@ class RenderExportsTests(SimpleTestCase):
             equity=self.equity,
             history=[],
             history_notice="",
-            tax_impact=None,
+            tax_impact=unavailable_tax_impact(None, "Not computed."),
             comp_rows=[
                 ProtestCompRow(
                     comp=self.comp,
