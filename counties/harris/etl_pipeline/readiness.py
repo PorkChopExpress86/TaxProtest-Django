@@ -9,6 +9,7 @@ successful load (see the private execution behind ``run_harris_import``).
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 
 from django.db import connection
 from django.db.models import Exists, OuterRef
@@ -18,7 +19,22 @@ from counties.harris.models import BuildingDetail, PropertyRecord
 logger = logging.getLogger(__name__)
 
 
-def refresh_property_readiness() -> dict:
+@dataclass(frozen=True)
+class ReadinessSummary:
+    """What a readiness refresh evaluated and set.
+
+    A dataclass rather than a dict because these field names are a contract:
+    ``reconcile_property_data`` prints ``ready_properties_set`` and records the
+    whole summary as operation evidence.
+    """
+
+    properties_evaluated: int
+    residential_properties: int
+    ready_properties_cleared: int
+    ready_properties_set: int
+
+
+def refresh_property_readiness() -> ReadinessSummary:
     """Recompute PropertyRecord.is_data_ready based on building, room, and GIS completeness."""
     ready_buildings = BuildingDetail.objects.filter(
         property_id=OuterRef("pk"),
@@ -28,10 +44,8 @@ def refresh_property_readiness() -> dict:
     )
 
     residential_properties = PropertyRecord.objects.filter(is_residential=True)
-    results = {
-        "properties_evaluated": PropertyRecord.objects.count(),
-        "residential_properties": residential_properties.count(),
-    }
+    properties_evaluated = PropertyRecord.objects.count()
+    residential_count = residential_properties.count()
 
     if connection.vendor == "postgresql":
         with connection.cursor() as cursor:
@@ -40,7 +54,7 @@ def refresh_property_readiness() -> dict:
                 SET is_data_ready = false
                 WHERE is_data_ready = true;
             """)
-            results["ready_properties_cleared"] = cursor.rowcount
+            cleared = cursor.rowcount
 
             cursor.execute("""
                 UPDATE data_propertyrecord
@@ -57,13 +71,11 @@ def refresh_property_readiness() -> dict:
                   AND data_propertyrecord.latitude IS NOT NULL
                   AND data_propertyrecord.longitude IS NOT NULL;
             """)
-            results["ready_properties_set"] = cursor.rowcount
+            ready = cursor.rowcount
     else:
-        results["ready_properties_cleared"] = PropertyRecord.objects.filter(
-            is_data_ready=True
-        ).update(is_data_ready=False)
+        cleared = PropertyRecord.objects.filter(is_data_ready=True).update(is_data_ready=False)
 
-        results["ready_properties_set"] = (
+        ready = (
             residential_properties.filter(
                 latitude__isnull=False,
                 longitude__isnull=False,
@@ -73,9 +85,15 @@ def refresh_property_readiness() -> dict:
             .update(is_data_ready=True)
         )
 
+    summary = ReadinessSummary(
+        properties_evaluated=properties_evaluated,
+        residential_properties=residential_count,
+        ready_properties_cleared=cleared,
+        ready_properties_set=ready,
+    )
     logger.info(
         "Refreshed property readiness: %s/%s residential properties ready",
-        results["ready_properties_set"],
-        results["residential_properties"],
+        summary.ready_properties_set,
+        summary.residential_properties,
     )
-    return results
+    return summary

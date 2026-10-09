@@ -8,6 +8,7 @@ Usage:
 from __future__ import annotations
 
 from collections import Counter
+from dataclasses import asdict
 
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
@@ -146,7 +147,7 @@ class Command(BaseCommand):
             f"  Features relinked:                 {link_results['features_linked']:>10,}"
         )
         self.stdout.write(
-            f"  Ready properties recomputed:       {readiness_results['ready_properties_set']:>10,}"
+            f"  Ready properties recomputed:       {readiness_results.ready_properties_set:>10,}"
         )
         self.stdout.write(
             f"  Properties deleted:                {deletion_totals.get('data.PropertyRecord', 0):>10,}"
@@ -167,7 +168,7 @@ class Command(BaseCommand):
         operation.evidence.update(
             sync=sync_results,
             linking=link_results,
-            readiness=readiness_results,
+            readiness=asdict(readiness_results),
             deleted=dict(deletion_totals),
         )
 
