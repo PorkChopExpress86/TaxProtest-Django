@@ -151,7 +151,7 @@ class Command(BaseCommand):
         )
 
         # List command
-        list_parser = subparsers.add_parser("list", help="List available data sources")
+        subparsers.add_parser("list", help="List available data sources")
 
     def handle(self, *args, **options):
         command = options.get("command")

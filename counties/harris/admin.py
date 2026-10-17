@@ -124,7 +124,6 @@ class DownloadRecordAdmin(admin.ModelAdmin):
 
     def etl_pipeline_view(self, request: HttpRequest) -> HttpResponse:
         """Admin-only page to queue a full ETL pipeline run."""
-        pipeline_url = reverse("admin:data_downloadrecord_etl_pipeline")
         changelist_url = reverse("admin:data_downloadrecord_changelist")
 
         if request.method == "POST":

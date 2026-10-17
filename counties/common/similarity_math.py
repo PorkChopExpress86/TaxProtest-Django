@@ -130,7 +130,7 @@ def interpolate_curve(value: float, curve: Curve) -> float:
     if value <= curve[0][0]:
         return curve[0][1]
 
-    for (start_x, start_y), (end_x, end_y) in zip(curve, curve[1:]):
+    for (start_x, start_y), (end_x, end_y) in zip(curve, curve[1:], strict=False):
         if value <= end_x:
             if end_x == start_x:
                 return end_y
