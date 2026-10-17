@@ -1,9 +1,12 @@
 name: Deploy
 
+# Deploy only a main commit whose CI run succeeded. A manual deploy is a
+# workflow_dispatch of CI on main, which triggers this workflow when it passes.
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
-  workflow_dispatch:
 
 concurrency:
   group: deploy-main
@@ -12,32 +15,36 @@ concurrency:
 jobs:
   deploy:
     name: SSH deploy to production server
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch')
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
     steps:
-      - name: Check for skip-deploy marker
+      - name: Checkout CI-verified commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      # The server deploys origin/main, so deploy only while main still points at
+      # the verified commit; a newer commit deploys after its own CI run passes.
+      - name: Check for skip-deploy marker and stale commit
         id: skip
         env:
-          MSG: ${{ github.event.head_commit.message }}
+          MSG: ${{ github.event.workflow_run.head_commit.message }}
+          VERIFIED_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
+          main_sha="$(git ls-remote origin refs/heads/main | cut -f1)"
           if [[ "$MSG" == "[skip deploy]"* ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          elif [[ "$main_sha" != "$VERIFIED_SHA" ]]; then
+            echo "::notice::main moved to ${main_sha:0:12}; skipping deploy of ${VERIFIED_SHA:0:12}"
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
-
-      - name: Checkout
-        if: steps.skip.outputs.skip != 'true'
-        uses: actions/checkout@v4
-
-      - name: Validate deploy.sh shell syntax
-        if: steps.skip.outputs.skip != 'true'
-        run: bash -n scripts/deploy.sh
-
-      - name: Validate deployment behavior
-        if: steps.skip.outputs.skip != 'true'
-        run: bash scripts/tests/test_deploy.sh
 
       - name: Set up SSH key
         if: steps.skip.outputs.skip != 'true'

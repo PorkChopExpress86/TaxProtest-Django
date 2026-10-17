@@ -8,8 +8,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Superseded runs on other branches are cancelled. Each main run gets its own
+# group so every main commit gets a verdict, which Deploy waits on.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -37,6 +39,11 @@ jobs:
           echo "UID=$(id -u)" >> "$GITHUB_ENV"
           echo "GID=$(id -g)" >> "$GITHUB_ENV"
           touch .env
+
+      - name: Validate deployment script
+        run: |
+          bash -n scripts/deploy.sh
+          bash scripts/tests/test_deploy.sh
 
       - name: Build development image
         run: docker compose build taxprotest-dev
