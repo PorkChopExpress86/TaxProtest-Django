@@ -268,9 +268,7 @@ def find_similar_properties(
     """
     # Get the target property
     try:
-        target = PropertyRecord.objects.filter(
-            account_number=account_number, is_residential=True, is_data_ready=True
-        ).first()
+        target = PropertyRecord.objects.queryable().filter(account_number=account_number).first()
         if not target:
             return []
     except Exception:
@@ -288,10 +286,7 @@ def find_similar_properties(
     target_features = list(target.extra_features.filter(is_active=True))  # type: ignore[attr-defined]
 
     # Harris pre-filters; the shared query adds the radius, order and cap.
-    candidates = PropertyRecord.objects.filter(
-        is_residential=True,
-        is_data_ready=True,
-    ).exclude(account_number=account_number)
+    candidates = PropertyRecord.objects.queryable().exclude(account_number=account_number)
 
     # Optional: filter by size if we have target building data
     if target_building and target_building.heat_area:

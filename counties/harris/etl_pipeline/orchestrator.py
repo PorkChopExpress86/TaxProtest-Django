@@ -947,9 +947,7 @@ def harris_candidate_load(
                     "properties": PropertyRecord.objects.count(),
                     "buildings": BuildingDetail.objects.count(),
                     "extra_features": ExtraFeature.objects.count(),
-                    "ready": PropertyRecord.objects.filter(
-                        is_residential=True, is_data_ready=True
-                    ).count(),
+                    "ready": PropertyRecord.objects.queryable().count(),
                 },
                 "result": result.to_dict(),
             },

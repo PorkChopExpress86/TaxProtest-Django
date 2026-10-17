@@ -414,3 +414,64 @@ class ComparableShortfallTests(TestCase):
                     self.assertIn(self.NOTICE, body)
                     self.assertIn("minimum score of 70", body)
                     self.assertIn("Lower the minimum score", body)
+
+
+def harris_search_population():
+    """One queryable Harris record and two that fail the residential/data-ready rule."""
+    for account_number, is_residential, is_data_ready in (
+        ("QUERYABLE1", True, True),
+        ("UNREADY001", True, False),
+        ("NONRESID01", False, True),
+    ):
+        PropertyRecord.objects.create(
+            address=f"{account_number} Search St",
+            zipcode="77001",
+            owner_name="Search Owner",
+            account_number=account_number,
+            is_residential=is_residential,
+            is_data_ready=is_data_ready,
+        )
+    return "77001", "QUERYABLE1", ("UNREADY001", "NONRESID01")
+
+
+def brazos_search_population():
+    """One searchable Brazos record, one outside the active year, one with no identity."""
+    BrazosPropertySnapshot.objects.create(
+        tax_year=2025,
+        outcome=SnapshotOutcome.COMPLETED,
+        cad_source_year=2025,
+        gis_source_year=2025,
+    )
+    for prop_id, tax_year, owner_name in (
+        ("000000010001", 2025, "SEARCH OWNER"),
+        ("000000090001", 2024, "SEARCH OWNER"),
+        ("000000090002", 2025, ""),
+    ):
+        PropertyAccount.objects.create(
+            prop_id=prop_id, tax_year=tax_year, owner_name=owner_name, situs_zip="77801"
+        )
+    return "77801", "000000010001", ("000000090001", "000000090002")
+
+
+class SearchListsOnlyQueryableRecordsTests(TestCase):
+    """Search rows link to the comparables and report pages, which serve only queryable
+    records, so search must not list a record those pages would reject."""
+
+    POPULATIONS = {
+        harris_adapter.profile.slug: harris_search_population,
+        brazos_adapter.profile.slug: brazos_search_population,
+    }
+
+    def test_every_county_declares_a_search_population(self):
+        self.assertEqual(set(self.POPULATIONS), {adapter.profile.slug for adapter in ADAPTERS})
+
+    def test_search_omits_records_that_are_not_queryable(self):
+        for adapter in ADAPTERS:
+            with self.subTest(county=adapter.profile.slug):
+                zip_code, listed, unlisted = self.POPULATIONS[adapter.profile.slug]()
+                response = self.client.get(
+                    reverse(adapter.profile.url_name("index")), {"zip_code": zip_code}
+                )
+                self.assertContains(response, listed)
+                for key in unlisted:
+                    self.assertNotContains(response, key)

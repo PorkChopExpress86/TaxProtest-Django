@@ -13,6 +13,12 @@ class DownloadRecord(models.Model):
         return f"{self.filename} ({'extracted' if self.extracted else 'downloaded'})"
 
 
+class PropertyRecordQuerySet(models.QuerySet):
+    def queryable(self):
+        """Records search, comparables and reports may serve: residential and data-ready."""
+        return self.filter(is_residential=True, is_data_ready=True)
+
+
 class PropertyRecord(models.Model):
     """Primary property table with core address/owner fields and HCAD attributes."""
 
@@ -45,6 +51,8 @@ class PropertyRecord(models.Model):
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    objects = PropertyRecordQuerySet.as_manager()
 
     def __str__(self):
         return f"{self.address} ({self.zipcode})"
