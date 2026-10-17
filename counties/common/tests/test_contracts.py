@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from inspect import getdoc
+
 from django.test import SimpleTestCase
 
 from counties.brazos.adapter import adapter as brazos_adapter
@@ -72,3 +74,12 @@ class CountyAdapterCapabilityQuestionTests(SimpleTestCase):
         for adapter in (harris_adapter, brazos_adapter):
             with self.subTest(county=adapter.profile.slug):
                 self.assertFalse(hasattr(adapter, "unavailable_reason"))
+
+
+class CountyAdapterSubjectLookupContractTests(SimpleTestCase):
+    """get_subject answers None for a key that is absent and for one the county will not expose."""
+
+    def test_subject_lookup_is_described_as_does_not_exist_or_is_not_eligible(self):
+        description = " ".join(getdoc(CountyAdapter.get_subject).split())
+
+        self.assertIn("does not exist or is not eligible", description)

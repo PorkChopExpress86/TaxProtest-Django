@@ -17,7 +17,8 @@ import statistics
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Any, Literal
+from enum import StrEnum
+from typing import Any
 
 from counties.common.charts import (
     assessment_history_chart,
@@ -29,12 +30,33 @@ from counties.common.tax_evaluation import (
     evaluate_assessment_history,
     history_availability_notice,
 )
+from counties.common.tax_impact import TaxImpactResult, unavailable_tax_impact
 
 ONE_HUNDRED = Decimal("100")
 PERCENT = Decimal("0.01")
 
+#: Why a county whose adapter returns no tax impact has none to show.
+NO_TAX_IMPACT_REASON = "No tax impact estimate is available from this county."
+
 #: A recommendation needs at least this many comparables with usable $/sqft.
 MIN_COMPS_FOR_RECOMMENDATION = 3
+
+# Policy sentences. Each is stated here once and every surface reads it from the dossier
+# layer; the shortfall wording is ``ComparableShortfall``, the history notice is
+# ``ProtestEvidenceDossier.history_notice`` and the withheld-totals sentence is
+# ``ProtestEvidenceDossier.tax_totals_notice``.
+
+#: What an unavailable outcome says when the county's readiness gave no reason, so an
+#: unavailable outcome always carries one. Harris readiness persists an identical sentence
+#: into import evidence (``NO_LOCATION`` in ``counties/harris/readiness.py``, ADR-0024); that
+#: copy is deliberate and stays, as the shared layer cannot import county modules.
+LOCATION_DATA_REQUIRED = "This property does not have location data required for similarity search."
+
+#: Printed in place of the tax totals whenever the tax impact is not complete.
+TAX_TOTALS_WITHHELD_NOTICE = (
+    "Tax totals unavailable until all applicable matching-year jurisdiction, "
+    "exemption, and rate inputs are complete."
+)
 
 
 @dataclass(frozen=True)
@@ -195,6 +217,26 @@ def assessment_history_rows(
     return evaluate_assessment_history(county, account_number, limit=limit)
 
 
+# --------------------------------------------------------------------------- outcome states
+
+
+class DossierStatus(StrEnum):
+    """The three ways a dossier request can end, shared by both dossier builders.
+
+    Only this vocabulary is shared: the comparables and protest dossiers, and their
+    outcome types, stay separate.
+    """
+
+    #: The dossier was built.
+    READY = "ready"
+    #: The property is found but cannot be served; the outcome carries the subject and
+    #: the source-backed reason.
+    UNAVAILABLE = "unavailable"
+    #: The county has no such subject: no such key or, for Harris, a record that is not
+    #: search-ready (``CountyAdapter.get_subject`` returned ``None``).
+    NOT_FOUND = "not_found"
+
+
 # --------------------------------------------------------------------------- comparables dossier
 
 SIMILAR_DEFAULT_MAX_DISTANCE = 10.0
@@ -233,16 +275,20 @@ class ComparablesDossier:
 
 @dataclass(frozen=True)
 class ComparablesDossierOutcome:
-    """Polymorphic result of evaluating a comparables request."""
+    """Polymorphic result of evaluating a comparables request.
 
-    status: Literal["ready", "unavailable"]
+    ``READY`` carries the dossier; ``UNAVAILABLE`` carries the subject and the reason in
+    ``error``; ``NOT_FOUND`` carries neither.
+    """
+
+    status: DossierStatus
     dossier: ComparablesDossier | None = None
     subject: Subject | None = None
     error: str | None = None
 
     @property
     def is_ready(self) -> bool:
-        return self.status == "ready" and self.dossier is not None
+        return self.status == DossierStatus.READY and self.dossier is not None
 
 
 def build_comparables_dossier(
@@ -255,17 +301,14 @@ def build_comparables_dossier(
 ) -> ComparablesDossierOutcome:
     subject = adapter.get_subject(key)
     if subject is None:
-        return ComparablesDossierOutcome(
-            status="unavailable", subject=None, error="Property not found"
-        )
+        return ComparablesDossierOutcome(status=DossierStatus.NOT_FOUND)
 
     caps = adapter.capabilities(key)
     if not caps.comparable_ready:
         return ComparablesDossierOutcome(
-            status="unavailable",
+            status=DossierStatus.UNAVAILABLE,
             subject=subject,
-            error=caps.reason_for("comparable")
-            or "This property does not have location data required for similarity search.",
+            error=caps.reason_for("comparable") or LOCATION_DATA_REQUIRED,
         )
 
     effective_max_distance = clamped_float(
@@ -314,7 +357,7 @@ def build_comparables_dossier(
         max_results=effective_max_results,
         min_score=effective_min_score,
     )
-    return ComparablesDossierOutcome(status="ready", dossier=dossier, subject=subject)
+    return ComparablesDossierOutcome(status=DossierStatus.READY, dossier=dossier, subject=subject)
 
 
 # --------------------------------------------------------------------------- protest dossier
@@ -343,6 +386,21 @@ class ProtestCompRow:
     value_per_sqft: float | None
     delta: float | None
     breakdown_summary: str
+
+
+def protest_comp_rows(
+    comps: Sequence[Comp], subject_value_per_sqft: float | None
+) -> list[ProtestCompRow]:
+    """The one place a comparable's $/sqft, delta against the subject and breakdown are derived."""
+    return [
+        ProtestCompRow(
+            comp=comp,
+            value_per_sqft=comp.value_per_sqft,
+            delta=comp.delta_vs(subject_value_per_sqft),
+            breakdown_summary=score_breakdown_summary(comp.score_breakdown),
+        )
+        for comp in comps
+    ]
 
 
 @dataclass(frozen=True)
@@ -395,26 +453,43 @@ class ProtestEvidenceDossier:
     equity: EquitySummary
     history: Sequence[Mapping[str, Any]]
     history_notice: str
-    tax_impact: Any
+    tax_impact: TaxImpactResult
     comp_rows: Sequence[ProtestCompRow]
     min_score: float
     assessment_history_chart: Mapping[str, Any] | None
     ppsf_distribution_chart: Mapping[str, Any] | None
     comparable_shortfall: ComparableShortfall | None = None
+    #: The other request parameters the comparables were found with (``min_score`` above).
+    max_distance: float = PROTEST_MAX_DISTANCE
+    max_results: int = PROTEST_MAX_COMPS
+
+    @property
+    def comparable_count(self) -> int:
+        """How many comparables the report found: the one count every surface states."""
+        return len(self.comp_rows)
+
+    @property
+    def tax_totals_notice(self) -> str:
+        """What a surface prints in place of the tax totals while the tax impact is incomplete."""
+        return TAX_TOTALS_WITHHELD_NOTICE
 
 
 @dataclass(frozen=True)
 class ProtestDossierOutcome:
-    """Polymorphic result of evaluating a protest evidence dossier request."""
+    """Polymorphic result of evaluating a protest evidence dossier request.
 
-    status: Literal["ready", "unavailable"]
+    ``READY`` carries the dossier; ``UNAVAILABLE`` carries the subject and the reason in
+    ``error``; ``NOT_FOUND`` carries neither.
+    """
+
+    status: DossierStatus
     dossier: ProtestEvidenceDossier | None = None
     subject: Subject | None = None
     error: str | None = None
 
     @property
     def is_ready(self) -> bool:
-        return self.status == "ready" and self.dossier is not None
+        return self.status == DossierStatus.READY and self.dossier is not None
 
 
 def build_protest_dossier(
@@ -426,15 +501,14 @@ def build_protest_dossier(
     """Prepare a full protest evidence dossier across the county adapter seam."""
     subject = adapter.get_subject(key)
     if subject is None:
-        return ProtestDossierOutcome(status="unavailable", subject=None, error="Property not found")
+        return ProtestDossierOutcome(status=DossierStatus.NOT_FOUND)
 
     caps = adapter.capabilities(key)
     if not caps.report_ready:
         return ProtestDossierOutcome(
-            status="unavailable",
+            status=DossierStatus.UNAVAILABLE,
             subject=subject,
-            error=caps.reason_for("report")
-            or "This property does not have location data required for similarity search.",
+            error=caps.reason_for("report") or LOCATION_DATA_REQUIRED,
         )
 
     effective_min_score = clamped_float(
@@ -454,16 +528,8 @@ def build_protest_dossier(
     history = adapter.assessment_history(subject.key)
     history_notice = history_availability_notice(history, subject.tax_year)
     tax_impact = adapter.tax_impact(subject.key, subject.tax_year, equity.median_assessed_value)
-
-    comp_rows = [
-        ProtestCompRow(
-            comp=comp,
-            value_per_sqft=comp.value_per_sqft,
-            delta=comp.delta_vs(equity.subject_value_per_sqft),
-            breakdown_summary=score_breakdown_summary(comp.score_breakdown),
-        )
-        for comp in comps
-    ]
+    if tax_impact is None:
+        tax_impact = unavailable_tax_impact(subject.tax_year, NO_TAX_IMPACT_REASON)
 
     dossier = ProtestEvidenceDossier(
         subject=subject,
@@ -472,12 +538,14 @@ def build_protest_dossier(
         history=history,
         history_notice=history_notice,
         tax_impact=tax_impact,
-        comp_rows=comp_rows,
+        comp_rows=protest_comp_rows(comps, equity.subject_value_per_sqft),
         min_score=effective_min_score,
         assessment_history_chart=assessment_history_chart(history),
         ppsf_distribution_chart=ppsf_distribution_chart(
             equity.qualifying_ppsf, equity.subject_value_per_sqft
         ),
         comparable_shortfall=comparable_shortfall(comps, effective_min_score),
+        max_distance=PROTEST_MAX_DISTANCE,
+        max_results=PROTEST_MAX_COMPS,
     )
-    return ProtestDossierOutcome(status="ready", dossier=dossier, subject=subject)
+    return ProtestDossierOutcome(status=DossierStatus.READY, dossier=dossier, subject=subject)

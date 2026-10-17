@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import csv
+import io
+from dataclasses import replace
 from decimal import Decimal
 
 from django.http import HttpResponse
@@ -22,10 +25,10 @@ from counties.common.contracts import (
 from counties.common.exports import (
     ExportDocument,
     render_protest_csv,
-    render_protest_export,
     render_protest_pdf,
     render_search_csv,
 )
+from counties.common.tax_impact import unavailable_tax_impact
 
 
 class ExportDocumentTests(SimpleTestCase):
@@ -84,7 +87,7 @@ class RenderExportsTests(SimpleTestCase):
             equity=self.equity,
             history=[],
             history_notice="",
-            tax_impact=None,
+            tax_impact=unavailable_tax_impact(None, "Not computed."),
             comp_rows=[
                 ProtestCompRow(
                     comp=self.comp,
@@ -128,9 +131,22 @@ class RenderExportsTests(SimpleTestCase):
         self.assertEqual(doc.filename, "protest_analysis_ACC001.pdf")
         self.assertTrue(doc.payload.startswith(b"%PDF-"))
 
-    def test_render_protest_export_dispatches_correct_format(self):
-        csv_doc = render_protest_export(self.profile, self.dossier, format="csv")
-        self.assertEqual(csv_doc.content_type, "text/csv")
+    def test_pdf_and_csv_print_the_dossiers_history_notice(self):
+        dossier = replace(self.dossier, history_notice="Notice written by the dossier.")
 
-        pdf_doc = render_protest_export(self.profile, self.dossier, format="pdf")
-        self.assertEqual(pdf_doc.content_type, "application/pdf")
+        pdf = render_protest_pdf(self.profile, dossier)
+        csv_doc = render_protest_csv(dossier)
+
+        self.assertIn(b"(Notice written by the dossier.) Tj", pdf.payload)
+        (row,) = list(csv.DictReader(io.StringIO(csv_doc.payload.decode())))
+        self.assertEqual(row["assessment_history_availability"], "Notice written by the dossier.")
+
+    def test_pdf_does_not_work_out_a_history_notice_of_its_own(self):
+        # The dossier has no history rows and no notice: a PDF that recomputed the
+        # notice from those rows would print "Assessment history unavailable".
+        pdf = render_protest_pdf(self.profile, self.dossier)
+        csv_doc = render_protest_csv(self.dossier)
+
+        self.assertNotIn(b"Assessment history", pdf.payload)
+        (row,) = list(csv.DictReader(io.StringIO(csv_doc.payload.decode())))
+        self.assertEqual(row["assessment_history_availability"], "")

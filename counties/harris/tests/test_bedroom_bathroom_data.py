@@ -231,7 +231,10 @@ class ViewDisplayTest(TestCase):
 
     @classmethod
     def setUpTestData(cls) -> None:
-        cls.property, cls.building = create_property_with_building()
+        # Search lists only queryable records, so the property must be residential and data-ready.
+        cls.property, cls.building = create_property_with_building(
+            property_overrides={"is_residential": True, "is_data_ready": True}
+        )
 
     def test_index_view_displays_bedrooms_bathrooms(self) -> None:
         client = Client()

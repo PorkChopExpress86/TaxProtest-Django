@@ -15,9 +15,13 @@ SORT_MAP = {
 
 
 def build_property_search_queryset(params: dict[str, str]) -> QuerySet:
-    """Return a filtered and ordered PropertyRecord queryset based on search params."""
+    """Return a filtered and ordered PropertyRecord queryset based on search params.
 
-    qs = PropertyRecord.objects.all()
+    Only queryable records (residential and data-ready) are searchable, so every
+    row offers links the comparables and report pages can honour.
+    """
+
+    qs = PropertyRecord.objects.filter(is_residential=True, is_data_ready=True)
 
     address = params.get("address", "").strip()
     street_name = params.get("street_name", "").strip()
