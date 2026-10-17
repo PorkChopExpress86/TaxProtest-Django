@@ -7,20 +7,16 @@ import io
 import textwrap
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any
 
 from django.http import HttpResponse
 
 from counties.common.analysis import (
-    TAX_TOTALS_WITHHELD_NOTICE,
     ComparableShortfall,
-    EquitySummary,
     ProtestCompRow,
     ProtestEvidenceDossier,
-    protest_comp_rows,
 )
-from counties.common.contracts import Column, Comp, CountyProfile, Subject
-from counties.common.tax_evaluation import history_availability_notice
+from counties.common.contracts import Column, CountyProfile, Subject
 from counties.common.tax_impact import TaxImpactResult
 
 #: Leading characters a spreadsheet would evaluate as a formula.
@@ -71,13 +67,6 @@ def has_meaningful_export_filter(profile: CountyProfile, params: Mapping[str, st
     return False
 
 
-def _attachment(filename: str) -> HttpResponse:
-    response = HttpResponse(content_type="text/csv")
-    safe = filename.replace('"', "").replace("\\", "")
-    response["Content-Disposition"] = f'attachment; filename="{safe}"'
-    return response
-
-
 def render_search_csv(
     columns: Sequence[Column],
     rows: Sequence[Mapping[str, Any]],
@@ -106,13 +95,6 @@ def render_search_csv(
         content_type="text/csv",
         payload=buffer.getvalue().encode("utf-8"),
     )
-
-
-def search_results_csv(
-    columns: Sequence[Column], rows: Sequence[Mapping[str, Any]]
-) -> HttpResponse:
-    """Export the search results table using the county's own column set."""
-    return render_search_csv(columns, rows).to_response()
 
 
 def _build_protest_csv_doc(
@@ -206,22 +188,6 @@ def render_protest_csv(dossier: ProtestEvidenceDossier) -> ExportDocument:
         history_warning=dossier.history_notice,
         comparable_shortfall=dossier.comparable_shortfall,
     )
-
-
-def protest_comps_csv(
-    subject: Subject,
-    comps: Sequence[Comp],
-    equity: EquitySummary,
-    tax_impact: TaxImpactResult,
-    history_warning: str = "",
-) -> HttpResponse:
-    """One row per comparable, with the shared tax-impact columns appended."""
-    return _build_protest_csv_doc(
-        subject=subject,
-        comp_rows=protest_comp_rows(comps, equity.subject_value_per_sqft),
-        tax_impact=tax_impact,
-        history_warning=history_warning,
-    ).to_response()
 
 
 # --------------------------------------------------------------------------- PDF
@@ -409,37 +375,3 @@ def render_protest_pdf(
         comparable_shortfall=dossier.comparable_shortfall,
         history_notice=dossier.history_notice,
     )
-
-
-def protest_report_pdf(
-    profile: CountyProfile,
-    subject: Subject,
-    comps: Sequence[Comp],
-    history_rows: Sequence[Mapping[str, Any]],
-    tax_impact: TaxImpactResult,
-) -> HttpResponse:
-    """The printable evidence report: subject, history, comparables, tax impact."""
-    comp_rows = protest_comp_rows(comps, subject.value_per_sqft)
-    return _build_protest_pdf_doc(
-        profile=profile,
-        subject=subject,
-        comp_rows=comp_rows,
-        history_rows=history_rows,
-        tax_impact=tax_impact,
-        comparable_count=len(comp_rows),
-        tax_totals_notice=TAX_TOTALS_WITHHELD_NOTICE,
-        history_notice=history_availability_notice(history_rows, subject.tax_year),
-    ).to_response()
-
-
-def render_protest_export(
-    profile: CountyProfile,
-    dossier: ProtestEvidenceDossier,
-    format: Literal["csv", "pdf"] = "csv",
-) -> ExportDocument:
-    """Unified protest export dispatcher returning an ExportDocument."""
-    if format == "csv":
-        return render_protest_csv(dossier)
-    if format == "pdf":
-        return render_protest_pdf(profile, dossier)
-    raise ValueError(f"Unsupported export format: {format}")
