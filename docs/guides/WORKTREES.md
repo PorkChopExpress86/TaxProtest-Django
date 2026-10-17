@@ -35,14 +35,43 @@ git worktree add ../TaxProtest-Django-wt/<name> -b <name> <base-branch>
 ## Which tests to run
 
 On Windows the full suite takes 13–20 minutes in Docker, because the checkout is a slow
-bind mount. On CI's Linux runner it takes about two minutes. CI runs on every branch
-push, so:
+bind mount, and longer when several agents share the machine. On CI's Linux runner it
+takes about 4 minutes. CI runs on every branch push, so:
 
-- **Implementer:** run the focused tests, then the test directories its change touches:
-  `counties/common/tests` for shared code, `counties/<slug>/tests` for a county. Then run
-  `ruff`, `black --check`, `mypy` and `makemigrations --check`.
+- **Implementer:** run the focused tests, then `ruff`, `black --check`, `mypy` and
+  `makemigrations --check`. Push the ticket branch and read its CI run for the
+  directory-wide and full-suite results, then cite the run id in the report, separately from
+  the local results. Run a directory locally for failures CI cannot reproduce, such as a
+  Windows-only bug.
 - **Integration branch:** the merger runs the full suite once per batch of merges, or
   pushes the branch and reads the CI result.
 
-CI is also the only Linux run. Behaviour that depends on the filesystem, such as
+Follow a branch's latest CI run by id (`gh run watch` with no id needs a terminal):
+
+```bash
+gh run list --workflow ci.yml --branch <branch> --limit 1 --json databaseId,headSha
+gh run watch <id> --exit-status
+```
+
+The run appears a few seconds after the push, so rerun the list until `headSha` is the
+commit you pushed. A newer push cancels the in-progress run (a concurrency group in
+`ci.yml`), so the latest run is the one to read.
+
+CI is the only Linux run. Behaviour that depends on the filesystem, such as
 directory-listing order, can pass on Windows and fail there.
+
+## Reviewing a branch
+
+Review from a worktree detached at that branch, or from the branch's own worktree if it
+has one (`git worktree list`). From the main checkout:
+
+```bash
+git worktree add --detach ../TaxProtest-Django-wt/<name> <branch>
+```
+
+`--detach` works when another worktree already holds `<branch>`, and `<branch>` can be a
+fetched `origin/<branch>`.
+
+The primary checkout stays on the branch its owner left it: a review that checks out
+another ref there moves the owner's HEAD, and carries their uncommitted changes, off their
+branch.
