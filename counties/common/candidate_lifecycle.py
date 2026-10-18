@@ -83,6 +83,7 @@ def prepare(
     automatic_publication: bool = False,
     user=None,
     reason: str = "",
+    baseline: dict | None = None,
 ) -> Prepared:
     """Prepare a candidate from ``load`` without changing published data.
 
@@ -90,7 +91,8 @@ def prepare(
     against the published outcome populations, and its content identity, then ends
     prepared, awaiting review, or blocked. A failed load blocks the candidate with its
     error and is raised. Baseline sources are retained and evidence saved either way.
-    With ``automatic_publication``, a prepared candidate is published at once.
+    With ``automatic_publication``, a prepared candidate is published at once. A caller
+    that has just observed the published identity passes it as ``baseline``.
     """
     if connection.vendor != "postgresql":
         raise ValueError("Durable candidate preparation requires PostgreSQL")
@@ -101,7 +103,7 @@ def prepare(
         county=county,
         operation=operation,
         storage_schema=f"{county}_candidate_{uuid4().hex}",
-        baseline=published_identity(county),
+        baseline=published_identity(county) if baseline is None else baseline,
         request=dict(load.identity),
         evidence={"publication": "Published data unchanged"},
     )
@@ -255,8 +257,13 @@ def recover(source: ImportCandidate, *, user, reason: str, binding: str) -> Impo
             requested_year=source.operation.requested_year,
             evidence=requested_replay(request),
         ) as operation:
-            verified = verify_replay(request, operation, published_identity(county))
-            prepare(operation, registration_for(county).port.replay(verified, operation))
+            before = published_identity(county)
+            verified = verify_replay(request, operation, before)
+            prepare(
+                operation,
+                registration_for(county).port.replay(verified, operation),
+                baseline=before,
+            )
     except Exception:
         operation = ImportOperation.objects.filter(
             county=county, evidence__recovery__request_id=str(request.id)

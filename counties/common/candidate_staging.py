@@ -32,6 +32,22 @@ def validate_schema_name(schema: str, county: str | None = None) -> None:
         raise ValueError(f"Candidate schema {schema} does not match county {county}")
 
 
+class _CopiedRows:
+    """Hashes COPY text output as each row's text followed by a newline."""
+
+    def __init__(self, digest: hashlib._Hash) -> None:
+        self.digest = digest
+        self.partial = b""
+
+    def write(self, data: bytes) -> None:
+        # row_to_json escapes every control character, so the one escape the COPY text
+        # format adds is a doubled backslash.
+        data = self.partial + data
+        end = data.rfind(b"\n") + 1
+        self.partial = data[end:]
+        self.digest.update(data[:end].replace(b"\\\\", b"\\"))
+
+
 def compute_dataset_hash(
     models_list: Sequence[type[models.Model]],
     schema: str = "public",
@@ -48,20 +64,13 @@ def compute_dataset_hash(
             table = connection.ops.quote_name(model._meta.db_table)
             scope = filters.get(model, "")
             digest.update(table.encode())
-            last_id = 0
-            while True:
-                cursor.execute(
-                    f"SELECT id, row_to_json(t)::text FROM {quoted_schema}.{table} t "
-                    f"WHERE id > %s {scope} ORDER BY id LIMIT 1000",
-                    [last_id],
-                )
-                rows = cursor.fetchall()
-                if not rows:
-                    break
-                for row_id, record in rows:
-                    digest.update(record.encode())
-                    digest.update(b"\n")
-                    last_id = row_id
+            # One COPY streams the table in a single scan that may use parallel workers.
+            # "id > 0" keeps the bounds of the keyset scan that made the persisted digests.
+            cursor.copy_expert(
+                f"COPY (SELECT row_to_json(t)::text FROM {quoted_schema}.{table} t "
+                f"WHERE id > 0 {scope} ORDER BY id) TO STDOUT",
+                _CopiedRows(digest),
+            )
     return {"sha256": digest.hexdigest()}
 
 

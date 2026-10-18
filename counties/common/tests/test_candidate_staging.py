@@ -1,9 +1,12 @@
 """Test the county-neutral candidate staging module."""
 
+import hashlib
+from datetime import UTC, datetime
+from decimal import Decimal
 from uuid import uuid4
 
 import pytest
-from django.db import connection
+from django.db import connection, models, transaction
 from django.test import SimpleTestCase, TransactionTestCase
 
 from counties.brazos.models import BrazosPropertySnapshot, PropertyAccount
@@ -30,6 +33,88 @@ class CandidateStagingUnitTests(SimpleTestCase):
 
         with pytest.raises(ValueError, match="does not match county"):
             validate_schema_name(f"brazos_candidate_{uuid4().hex}", county="harris")
+
+
+def keyset_dataset_hash(models_list, scope_filters):
+    """The 1000-row keyset scan that made every dataset identity persisted before #144."""
+    digest = hashlib.sha256()
+    with connection.cursor() as cursor:
+        for model in models_list:
+            table = connection.ops.quote_name(model._meta.db_table)
+            scope = scope_filters.get(model, "")
+            digest.update(table.encode())
+            last_id = 0
+            while True:
+                cursor.execute(
+                    f'SELECT id, row_to_json(t)::text FROM "public".{table} t '
+                    f"WHERE id > %s {scope} ORDER BY id LIMIT 1000",
+                    [last_id],
+                )
+                rows = cursor.fetchall()
+                if not rows:
+                    break
+                for row_id, record in rows:
+                    digest.update(record.encode())
+                    digest.update(b"\n")
+                    last_id = row_id
+    return {"sha256": digest.hexdigest()}
+
+
+class DatasetHashContractTests(TransactionTestCase):
+    """Persisted dataset identities are a byte-exact contract (ADR-0024)."""
+
+    def setUp(self):
+        owners = [
+            'O\'Brien "Bud" \\ Jr. \\\\N',
+            "Línea\nnueva\ttab\r\b\f\v\x01\x1f\x7f",
+            "日本 🏠",
+            "",
+        ]
+        PropertyAccount.objects.bulk_create(
+            PropertyAccount(
+                id=account_id,
+                prop_id=f"{account_id:012d}",
+                tax_year=2026,
+                owner_name=owners[account_id % len(owners)],
+                total_value=Decimal("1234.50") if account_id % 3 else None,
+                latitude=Decimal("30.6279830"),
+            )
+            # Ids out of insertion order, spanning several 1000-row keyset pages.
+            for account_id in [*range(2600, 100, -1), 7, 3]
+        )
+        PropertyAccount.objects.filter(id=1500).delete()
+        PropertyJurisdictionExemption.objects.bulk_create(
+            PropertyJurisdictionExemption(
+                id=exemption_id,
+                county="harris" if exemption_id % 2 else "brazos",
+                tax_year=2026,
+                account_number=f"{exemption_id:012d}",
+                tax_unit_code="GBC",
+                exemption_amount=Decimal("25000.00"),
+            )
+            for exemption_id in range(1, 40)
+        )
+        for model in (PropertyAccount, PropertyJurisdictionExemption):
+            model.objects.update(
+                **{
+                    field.name: datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
+                    for field in model._meta.fields
+                    if isinstance(field, models.DateTimeField)
+                }
+            )
+
+    def test_streamed_digest_matches_the_keyset_scan_and_its_pinned_bytes(self):
+        tables = (PropertyAccount, PropertyJurisdictionExemption)
+        scopes = {PropertyJurisdictionExemption: "AND county = 'brazos'"}
+        expected = {"sha256": "7b80ef8affb970b1fef4d329f2a52268dfcd986e790d48d320ecae7a96cf3618"}
+
+        self.assertEqual(keyset_dataset_hash(tables, scopes), expected)
+        self.assertEqual(compute_dataset_hash(tables, scope_filters=scopes), expected)
+        with transaction.atomic():
+            PropertyAccount.objects.filter(id=7).update(owner_name="Uncommitted \\ owner")
+            changed = keyset_dataset_hash(tables, scopes)
+            self.assertNotEqual(changed, expected)
+            self.assertEqual(compute_dataset_hash(tables, scope_filters=scopes), changed)
 
 
 class CandidateStagingIntegrationTests(TransactionTestCase):
