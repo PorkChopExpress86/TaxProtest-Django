@@ -3,10 +3,21 @@ from pathlib import Path
 
 from django.core.management import call_command
 from django.core.management.base import BaseCommand
+from django.urls import reverse
 
+from counties.common.import_states import CandidateState
+from counties.common.models import ImportCandidate
 from counties.harris.models import BuildingDetail, PropertyRecord
 
 logger = logging.getLogger(__name__)
+
+# Candidate states that may still publish, with what the operator does next.
+_NEXT_STEP_FOR_PENDING = {
+    CandidateState.PREPARING: "Wait for it to finish, then review it",
+    CandidateState.AWAITING_REVIEW: "Review it, then apply it",
+    CandidateState.APPROVED: "Apply it",
+    CandidateState.PREPARED: "Apply it",
+}
 
 
 class Command(BaseCommand):
@@ -32,6 +43,22 @@ class Command(BaseCommand):
             missing_data.append("GIS Data")
 
         if missing_data:
+            # A first import publishes nothing until an operator resolves its candidate,
+            # so a restart in the meantime must not start another import.
+            pending = ImportCandidate.objects.filter(
+                county="harris", state__in=_NEXT_STEP_FOR_PENDING
+            ).first()
+            if pending is not None:
+                link = reverse("admin:data_importcandidate_change", args=[pending.pk])
+                self.stdout.write(
+                    self.style.WARNING(
+                        f"Harris Candidate {pending.pk} is {pending.state}; published data "
+                        "unchanged. Not starting another import. "
+                        f"{_NEXT_STEP_FOR_PENDING[pending.state]} in Django admin {link}."
+                    )
+                )
+                return
+
             self.stdout.write(
                 self.style.WARNING(
                     f"Missing data detected: {', '.join(missing_data)}. Checking for local files..."
