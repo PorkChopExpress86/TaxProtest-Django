@@ -5,7 +5,9 @@ from django.core.management import call_command
 from django.core.management.base import BaseCommand
 from django.urls import reverse
 
+from counties.common.import_audit import reconcile_dead_operations
 from counties.common.import_states import CandidateState
+from counties.common.import_writers import WriterConflict
 from counties.common.models import ImportCandidate
 from counties.harris.models import BuildingDetail, PropertyRecord
 
@@ -43,6 +45,13 @@ class Command(BaseCommand):
             missing_data.append("GIS Data")
 
         if missing_data:
+            # A preparation whose worker died never finishes; reconciling blocks its candidate.
+            stuck_writer = None
+            try:
+                reconcile_dead_operations("harris", actor="check_and_import_data")
+            except WriterConflict as conflict:
+                if conflict.uncertain:
+                    stuck_writer = conflict.operation_id
             # A first import publishes nothing until an operator resolves its candidate,
             # so a restart in the meantime must not start another import.
             pending = ImportCandidate.objects.filter(
@@ -50,11 +59,20 @@ class Command(BaseCommand):
             ).first()
             if pending is not None:
                 link = reverse("admin:data_importcandidate_change", args=[pending.pk])
+                next_step = f"{_NEXT_STEP_FOR_PENDING[pending.state]} in Django admin {link}"
+                if pending.state == CandidateState.PREPARING and stuck_writer is not None:
+                    recovery = reverse(
+                        "admin:data_importoperation_recover_writer", args=[stuck_writer]
+                    )
+                    next_step = (
+                        "Its worker stopped without releasing the county writer. Recover the "
+                        f"county writer in Django admin {recovery}, then restart to block this "
+                        "Candidate and import again"
+                    )
                 self.stdout.write(
                     self.style.WARNING(
                         f"Harris Candidate {pending.pk} is {pending.state}; published data "
-                        "unchanged. Not starting another import. "
-                        f"{_NEXT_STEP_FOR_PENDING[pending.state]} in Django admin {link}."
+                        f"unchanged. Not starting another import. {next_step}."
                     )
                 )
                 return

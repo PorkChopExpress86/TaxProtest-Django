@@ -6,10 +6,12 @@ from unittest.mock import patch
 from uuid import uuid4
 
 from django.core.management import call_command
+from django.db import connection
 from django.test import TestCase
 from django.urls import reverse
 
-from counties.common.models import ImportCandidate, ImportOperation
+from counties.common.county_registry import registration_for
+from counties.common.models import CountyWriter, ImportCandidate, ImportOperation
 
 COMMAND = "counties.harris.management.commands.check_and_import_data.call_command"
 
@@ -32,7 +34,6 @@ class CheckAndImportDataTests(TestCase):
 
     def test_pending_harris_candidate_holds_the_import_and_names_the_next_step(self):
         next_steps = {
-            "preparing": "Wait for it to finish",
             "awaiting_review": "Review it",
             "approved": "Apply it",
             "prepared": "Apply it",
@@ -76,3 +77,55 @@ class CheckAndImportDataTests(TestCase):
         mocked_import, _ = self.run_check()
 
         mocked_import.assert_called_once_with("import_all_data")
+
+    def preparation(self):
+        operation = ImportOperation.objects.create(county="harris", intent="full")
+        candidate = ImportCandidate.objects.create(
+            county="harris",
+            operation=operation,
+            state="preparing",
+            storage_schema=f"harris_candidate_{uuid4().hex}",
+        )
+        return operation, candidate
+
+    def test_a_live_preparation_holds_the_import(self):
+        operation, candidate = self.preparation()
+        key = registration_for("harris").writer_lock_key
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT pg_backend_pid(), pg_advisory_lock(%s)", [key])
+            pid = cursor.fetchone()[0]
+        self.addCleanup(lambda: connection.cursor().execute("SELECT pg_advisory_unlock(%s)", [key]))
+        CountyWriter.objects.create(county="harris", operation=operation, backend_pid=pid)
+
+        mocked_import, output = self.run_check()
+
+        mocked_import.assert_not_called()
+        candidate.refresh_from_db()
+        self.assertEqual(candidate.state, "preparing")
+        self.assertIn(f"Harris Candidate {candidate.pk} is preparing", output)
+        self.assertIn("Wait for it to finish", output)
+
+    def test_a_dead_preparation_is_blocked_and_the_import_starts(self):
+        operation, candidate = self.preparation()
+
+        mocked_import, _ = self.run_check()
+
+        mocked_import.assert_called_once_with("import_all_data")
+        operation.refresh_from_db()
+        candidate.refresh_from_db()
+        self.assertEqual((operation.status, candidate.state), ("failed", "blocked"))
+
+    def test_a_dead_preparation_still_holding_the_writer_names_writer_recovery(self):
+        operation, candidate = self.preparation()
+        CountyWriter.objects.create(county="harris", operation=operation, backend_pid=None)
+
+        mocked_import, output = self.run_check()
+
+        mocked_import.assert_not_called()
+        self.assertIn(f"Harris Candidate {candidate.pk} is preparing", output)
+        self.assertIn(
+            "Recover the county writer in Django admin "
+            + reverse("admin:data_importoperation_recover_writer", args=[operation.pk]),
+            output,
+        )
+        self.assertNotIn("Wait for it to finish", output)
