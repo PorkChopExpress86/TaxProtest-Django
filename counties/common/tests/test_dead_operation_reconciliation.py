@@ -4,7 +4,7 @@ from uuid import uuid4
 
 from django.test import TransactionTestCase
 
-from counties.common.import_audit import audited_operation, reconcile_dead_operations
+from counties.common.import_audit import audited_operation
 from counties.common.models import ImportAuditEntry, ImportCandidate, ImportOperation
 from counties.common.tests.test_candidate_schema_retirement import (
     leave_schema_behind,
@@ -108,17 +108,10 @@ class DeadOperationReconciliationTests(TransactionTestCase):
         self.assertEqual((dead.status, candidate.state), ("running", "preparing"))
         self.assertTrue(schema_exists(candidate))
 
-    def test_reconcile_on_request_records_an_operation_only_when_one_is_dead(self):
-        reconcile_dead_operations("harris", actor="container start")
-        self.assertFalse(ImportOperation.objects.exists())
-
-        dead, candidate = crashed_preparation("harris")
-        reconcile_dead_operations("harris", actor="container start")
-        dead.refresh_from_db()
+    def test_an_operation_whose_candidate_awaits_review_is_left_alone(self):
+        unfinished, candidate = crashed_preparation("harris", state="awaiting_review")
+        next_operation("harris")
+        unfinished.refresh_from_db()
         candidate.refresh_from_db()
-        self.assertEqual((dead.status, candidate.state), ("failed", "blocked"))
-        reconciler = ImportOperation.objects.exclude(pk=dead.pk).get()
-        self.assertEqual(
-            (reconciler.intent, reconciler.actor, reconciler.status),
-            ("reconcile", "container start", "completed"),
-        )
+        self.assertEqual((unfinished.status, candidate.state), ("running", "awaiting_review"))
+        self.assertTrue(schema_exists(candidate))
