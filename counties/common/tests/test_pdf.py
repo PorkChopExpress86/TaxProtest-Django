@@ -4,7 +4,7 @@ Verifies that ``simple_pdf`` produces a valid PDF that:
 - Starts with the PDF magic bytes
 - Auto-paginates (a long line list produces a multi-page PDF, not a
   single page with silent overflow)
-- Handles special characters without corrupting PDF structure
+- Escapes the PDF string delimiters: parentheses and backslash
 """
 
 from __future__ import annotations
@@ -42,5 +42,5 @@ class SimplePdfTests(SimpleTestCase):
     def test_special_characters_are_escaped(self) -> None:
         lines = ["Price: $1,000 (approx.)", "Path: C:\\Users\\test"]
         output = simple_pdf(lines)
-        assert output[:5] == b"%PDF-"
-        assert b"%%EOF" in output[-20:], "PDF must end with %%EOF"
+        assert rb"(Price: $1,000 \(approx.\)) Tj" in output
+        assert rb"(Path: C:\\Users\\test) Tj" in output

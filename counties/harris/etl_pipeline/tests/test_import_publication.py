@@ -390,7 +390,7 @@ class HarrisPublicationTests(TransactionTestCase):
 
         self.baseline()
         with tempfile.TemporaryDirectory() as root, self.settings(**_runtime_settings(root)):
-            request = harris_request(root)
+            harris_request(root)
             output = StringIO()
             call_command(
                 "load_hcad_real_acct",

@@ -175,7 +175,7 @@ class PrimaryImprovementSelectionTests(TestCase):
 
 class FindSimilarPropertiesTests(TestCase):
     def test_finds_nearby_similar_property(self):
-        target = PropertyAccount.objects.create(
+        PropertyAccount.objects.create(
             prop_id="000000010001",
             tax_year=TAX_YEAR,
             living_area=Decimal("2200"),
@@ -198,7 +198,7 @@ class FindSimilarPropertiesTests(TestCase):
             prop_id="000000010001", tax_year=TAX_YEAR, land_seq=1, acreage=Decimal("0.25")
         )
 
-        nearby = PropertyAccount.objects.create(
+        PropertyAccount.objects.create(
             prop_id="000000010002",
             tax_year=TAX_YEAR,
             living_area=Decimal("2150"),

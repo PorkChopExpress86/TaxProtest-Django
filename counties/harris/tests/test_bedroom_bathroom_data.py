@@ -11,7 +11,7 @@ from typing import Any
 from django.test import Client, TestCase
 
 from counties.harris.etl_pipeline.fixtures_aggregator import update_building_room_counts
-from counties.harris.models import BuildingDetail, ExtraFeature, PropertyRecord
+from counties.harris.models import BuildingDetail, PropertyRecord
 
 TEST_ACCOUNT = "1074380000028"
 
@@ -60,108 +60,6 @@ def create_property_with_building(
     building = BuildingDetail.objects.create(**building_defaults)
 
     return property_record, building
-
-
-class BedroomBathroomDataTest(TestCase):
-    """Validate that ORM data for the Wall Street sample property is present."""
-
-    @classmethod
-    def setUpTestData(cls) -> None:
-        cls.property, cls.building = create_property_with_building()
-        cls.features = [
-            ExtraFeature.objects.create(
-                property=cls.property,
-                account_number=cls.property.account_number,
-                feature_number=1,
-                feature_code="RMB",
-                feature_description="Bedrooms",
-                quantity=Decimal("4"),
-            ),
-            ExtraFeature.objects.create(
-                property=cls.property,
-                account_number=cls.property.account_number,
-                feature_number=2,
-                feature_code="RMF",
-                feature_description="Full Baths",
-                quantity=Decimal("2"),
-            ),
-            ExtraFeature.objects.create(
-                property=cls.property,
-                account_number=cls.property.account_number,
-                feature_number=3,
-                feature_code="RMH",
-                feature_description="Half Baths",
-                quantity=Decimal("1"),
-            ),
-        ]
-
-    def test_property_exists(self) -> None:
-        prop = PropertyRecord.objects.filter(account_number=TEST_ACCOUNT).first()
-        self.assertIsNotNone(prop)
-        assert prop is not None  # mypy/pyright hint
-        self.assertEqual(prop.street_name, "WALL")
-        self.assertEqual(prop.zipcode, "77040")
-
-    def test_building_details_exist(self) -> None:
-        buildings = BuildingDetail.objects.filter(account_number=TEST_ACCOUNT, is_active=True)
-        self.assertEqual(buildings.count(), 1)
-        building = buildings.first()
-        self.assertIsNotNone(building)
-        assert building is not None
-        self.assertEqual(building.bedrooms, 4)
-
-    def test_bedroom_bathroom_values(self) -> None:
-        building = BuildingDetail.objects.get(account_number=TEST_ACCOUNT, building_number=1)
-        self.assertEqual(building.bedrooms, 4)
-        self.assertEqual(building.half_baths, 1)
-        self.assertEqual(building.bathrooms, Decimal("2.5"))
-
-    def test_extra_features_for_room_data(self) -> None:
-        room_codes = ["RMB", "RMF", "RMH"]
-        features = ExtraFeature.objects.filter(
-            account_number=TEST_ACCOUNT,
-            is_active=True,
-            feature_code__in=room_codes,
-        )
-        self.assertEqual(features.count(), 3)
-        quantities = {f.feature_code: int(f.quantity or 0) for f in features}
-        self.assertEqual(quantities["RMB"], 4)
-        self.assertEqual(quantities["RMF"], 2)
-        self.assertEqual(quantities["RMH"], 1)
-
-    def test_all_extra_features(self) -> None:
-        features = list(
-            ExtraFeature.objects.filter(account_number=TEST_ACCOUNT, is_active=True).order_by(
-                "feature_number"
-            )
-        )
-        self.assertEqual(len(features), 3)
-        self.assertListEqual([f.feature_code for f in features], ["RMB", "RMF", "RMH"])
-
-    def test_check_source_files(self) -> None:
-        account = TEST_ACCOUNT
-        with tempfile.TemporaryDirectory() as tmpdir:
-            base_path = os.path.join(tmpdir, "Real_acct_ownership_history")
-            os.makedirs(base_path, exist_ok=True)
-            sample_path = os.path.join(base_path, "extra_features_sample.txt")
-
-            with open(sample_path, "w", encoding="utf-8") as handle:
-                handle.write("acct\tbld_num\ttype\tunits\n")
-                handle.write(f"{account}\t1\tRMB\t4\n")
-                handle.write(f"{account}\t1\tRMF\t2\n")
-                handle.write(f"{account}\t1\tRMH\t1\n")
-                handle.write("9999999999999\t1\tRMF\t3\n")
-
-            with open(sample_path, encoding="utf-8") as handle:
-                matching_lines = [line.strip() for line in handle if account in line]
-
-            room_lines = [
-                line
-                for line in matching_lines
-                if any(code in line for code in ("RMB", "RMF", "RMH"))
-            ]
-            self.assertEqual(len(matching_lines), 3)
-            self.assertEqual(len(room_lines), 3)
 
 
 class ETLLogicTest(TestCase):

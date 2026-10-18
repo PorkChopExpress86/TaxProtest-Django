@@ -726,7 +726,7 @@ class ETLLoaderOptimizationTests(TestCase):
             def __setitem__(self, key, value):
                 self._derived[key] = value
                 if key in ("latitude", "longitude"):
-                    for row, v in zip(self._rows, value):
+                    for row, v in zip(self._rows, value, strict=True):
                         row[key] = v
 
             def __getitem__(self, key):

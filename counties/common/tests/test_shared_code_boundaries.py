@@ -7,8 +7,9 @@ import the order keeps the recorded sources identical across machines.
 
 Shared Import operation, candidate lifecycle, review, recovery, retention and writer code
 reads county facts only through the County registration (ADR-0018, ADR-0022). This one
-module scans those files for county names, county imports and bare candidate-state or
-operation-status strings, against one exact allow-list.
+module scans those files for county names and bare candidate-state or operation-status
+strings, against one exact allow-list, and scans all of ``counties/common`` outside its
+tests for county imports.
 """
 
 from __future__ import annotations
@@ -359,10 +360,14 @@ class SharedLifecycleBoundaryTests(SimpleTestCase):
             with self.subTest(module=_relative(module)):
                 self.assertEqual(county_names(module.read_text(encoding="utf-8")), [])
 
-    def test_shared_lifecycle_modules_import_no_county_package(self):
-        for module in SHARED_MODULES:
-            with self.subTest(module=_relative(module)):
-                self.assertEqual(county_imports(module.read_text(encoding="utf-8")), [])
+    def test_shared_modules_import_no_county_package(self):
+        offenders = [
+            f"{_relative(path)}: {module}"
+            for path in sorted(COMMON.rglob("*.py"))
+            if not _is_test_path(path.relative_to(ROOT))
+            for module in county_imports(path.read_text(encoding="utf-8"))
+        ]
+        self.assertEqual(offenders, [])
 
     def test_bare_status_strings_are_exactly_the_allow_list(self):
         found = Counter(
