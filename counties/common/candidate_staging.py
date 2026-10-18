@@ -199,6 +199,9 @@ def drop_candidate_schema(candidate: ImportCandidate) -> None:
     """Drop a retired candidate's staged schema; dropping it again does nothing."""
     validate_schema_name(candidate.storage_schema, county=candidate.county)
     with fenced_write(), connection.cursor() as cursor:
+        # A transaction that wrote staged rows cannot drop their tables while its
+        # deferred foreign-key checks are pending, so run those checks now.
+        connection.check_constraints()
         cursor.execute(
             f"DROP SCHEMA IF EXISTS {connection.ops.quote_name(candidate.storage_schema)} CASCADE"
         )

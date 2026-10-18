@@ -44,8 +44,6 @@ def current_coverage(candidate):
 
 
 def checked_binding(candidate: ImportCandidate) -> str:
-    if candidate.state in RETIRED_CANDIDATE_STATES:
-        raise ImportReviewRejected(f"Candidate is {candidate.state}; its staged data is retired")
     operation = candidate.operation
     validation = operation.evidence.get("validation", {})
     if not validation.get("valid"):
@@ -70,6 +68,9 @@ def checked_binding(candidate: ImportCandidate) -> str:
             ) from exc
         if digest.hexdigest() != source["sha256"]:
             raise ImportReviewRejected("Retained source changed; prepare fresh evidence")
+    # Its staged schema is dropped, so nothing below can be rechecked.
+    if candidate.state in RETIRED_CANDIDATE_STATES:
+        raise ImportReviewRejected(f"Candidate is {candidate.state}; its staged data is retired")
     baseline = published_identity(candidate.county)
     content = dataset_identity(candidate.county, candidate.storage_schema)
     if baseline != candidate.baseline:
