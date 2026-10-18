@@ -14,7 +14,7 @@ property carry an explicit status rather than being silently discarded.
 from __future__ import annotations
 
 import csv
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, TextIO, TypeAlias
@@ -244,6 +244,26 @@ def _open_text(filepath: Path) -> tuple[Iterator[list[str]], TextIO]:
     fh = open(filepath, encoding="latin-1", errors="ignore", newline="")
     reader = csv.reader(fh, delimiter="\t", quoting=csv.QUOTE_NONE)
     return reader, fh
+
+
+class SourceLayoutError(ValueError):
+    """An HCAD file lacks a column its reader cannot run without."""
+
+
+def iter_dict_rows(path: Path, required: Iterable[str]) -> Iterator[dict[str, str]]:
+    """Yield header-keyed rows, failing before the first row if a required column is absent."""
+    reader, fh = _open_text(path)
+    with fh:
+        header = next(reader, [])
+        missing = [name for name in required if name not in header]
+        if missing:
+            raise SourceLayoutError(
+                f"{path.name}: missing required column(s) {', '.join(missing)}; "
+                f"header is {', '.join(header) or '(empty)'}"
+            )
+        for row in reader:
+            if row:
+                yield dict(zip(header, row, strict=False))
 
 
 def _resolve_indices(header: list[str], source_names: Mapping[str, list[str]]) -> dict[str, int]:

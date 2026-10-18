@@ -18,8 +18,10 @@ from django.test import TestCase
 
 from counties.common.tax_impact import calculate_tax_impact
 from counties.common.tax_models import AssessmentHistory, PropertyJurisdictionExemption, TaxUnitRate
+from counties.harris.etl_pipeline.row_reader import SourceLayoutError
 from counties.harris.management.commands.import_hcad_jur_exempt import Command
 from counties.harris.models import PropertyRecord
+from counties.harris.replacement_guard import ReplacementShrinkError
 
 RATE_HEADER = "RP_TYPE\ttax_dist\tname\texempt_cd\tprop\tcurr\texempt_val\texempt_rate"
 VALUE_HEADER = "acct\ttax_district\ttp_cd\tpct_district\tappraised_val\ttaxable_val"
@@ -374,6 +376,75 @@ class ImportHcadJurExemptTests(TestCase):
             self._run()
 
         self.assertIn("jur_value.txt", str(ctx.exception))
+
+    def _stored(self) -> set[tuple]:
+        return set(
+            PropertyJurisdictionExemption.objects.filter(
+                county="harris", tax_year=2025
+            ).values_list("account_number", "tax_unit_code", "exemption_code", "taxable_value")
+        )
+
+    def _stored_rates(self) -> set[tuple]:
+        return set(
+            TaxUnitRate.objects.filter(county="harris", tax_year=2025).values_list(
+                "tax_unit_code", "adopted_rate"
+            )
+        )
+
+    def test_renamed_acct_column_raises_and_keeps_the_existing_year(self):
+        self._run()
+        stored, rates = self._stored(), self._stored_rates()
+        self._write(
+            "jur_value.txt",
+            "account\ttax_district\ttp_cd\tpct_district\tappraised_val\ttaxable_val",
+            ["0000000000001\t001\tI\t1.0000\t698360\t698360"],
+        )
+
+        with self.assertRaises(SourceLayoutError) as ctx:
+            self._run()
+
+        self.assertIn("acct", str(ctx.exception))
+        self.assertEqual(self._stored(), stored)
+        self.assertEqual(self._stored_rates(), rates)
+
+    def test_reload_far_below_the_existing_year_is_refused(self):
+        self._run()
+        stored, rates = self._stored(), self._stored_rates()
+        # 4 (account, unit) pairs are live; a reload of 1 is under half of them.
+        self._write_default_fixture(
+            value_rows=["0000000000001\t001\tI\t1.0000\t698360\t698360"], exempt_rows=[]
+        )
+
+        with self.assertRaises(ReplacementShrinkError):
+            self._run()
+
+        self.assertEqual(self._stored(), stored)
+        self.assertEqual(self._stored_rates(), rates)
+
+    def test_reload_that_stages_nothing_is_refused_even_into_an_empty_year(self):
+        self._write_default_fixture(
+            value_rows=["9999999999999\t001\tI\t1.0000\t100000\t100000"], exempt_rows=[]
+        )
+
+        with self.assertRaises(ReplacementShrinkError):
+            self._run()
+
+        self.assertFalse(TaxUnitRate.objects.exists())
+
+    def test_embedded_quote_does_not_merge_rows(self):
+        self._write(
+            "jur_tax_dist_exempt_value_rate.txt",
+            RATE_HEADER,
+            [
+                'Real\t001\t"HOUSTON ISD\tRES\t0.868300\t0.878300\t0\t0.000000',
+                "Real\t040\tHARRIS COUNTY\tRES\t0.370000\t0.380960\t0\t0.000000",
+            ],
+        )
+        self._run()
+
+        self.assertEqual(
+            self._stored_rates(), {("001", Decimal("0.00878300")), ("040", Decimal("0.00380960"))}
+        )
 
 
 class TaxImpactEndToEndTests(TestCase):
