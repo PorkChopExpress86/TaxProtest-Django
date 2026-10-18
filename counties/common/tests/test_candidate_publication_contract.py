@@ -69,9 +69,7 @@ class PublicationContract:
         repeated = self.client.post(url, {"reason": "Apply again"}, follow=True)
         self.assertContains(repeated, "already_applied")
         self.assertEqual(
-            list(
-                ImportOperation.objects.filter(intent="apply").values_list("status", flat=True)
-            ),
+            list(ImportOperation.objects.filter(intent="apply").values_list("status", flat=True)),
             ["already_applied", "published"],
         )
         self.assertEqual(ImportAuditEntry.objects.filter(kind="publication").count(), 1)
