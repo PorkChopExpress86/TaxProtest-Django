@@ -11,6 +11,7 @@ from django.test import SimpleTestCase, TransactionTestCase
 
 from counties.brazos.models import BrazosPropertySnapshot, PropertyAccount
 from counties.common.candidate_staging import (
+    _CopiedRows,
     compute_dataset_hash,
     cutover_staged_tables,
     staged_candidate_schema,
@@ -33,6 +34,14 @@ class CandidateStagingUnitTests(SimpleTestCase):
 
         with pytest.raises(ValueError, match="does not match county"):
             validate_schema_name(f"brazos_candidate_{uuid4().hex}", county="harris")
+
+    def test_copied_rows_hash_row_text_and_refuse_other_copy_escapes(self):
+        digest = hashlib.sha256()
+        _CopiedRows(digest).write(b'{"owner":"a \\\\\\\\ b"}\n')
+        self.assertEqual(digest.hexdigest(), hashlib.sha256(b'{"owner":"a \\\\ b"}\n').hexdigest())
+        # A json column keeps its raw newline, which COPY writes as backslash-n.
+        with pytest.raises(ValueError, match="COPY escaped a dataset row"):
+            _CopiedRows(hashlib.sha256()).write(b'{"js":{"a":\\n1}}\n')
 
 
 def keyset_dataset_hash(models_list, scope_filters):
@@ -79,8 +88,8 @@ class DatasetHashContractTests(TransactionTestCase):
                 total_value=Decimal("1234.50") if account_id % 3 else None,
                 latitude=Decimal("30.6279830"),
             )
-            # Ids out of insertion order, spanning several 1000-row keyset pages.
-            for account_id in [*range(2600, 100, -1), 7, 3]
+            # Ids out of insertion order, spanning several 1000-row keyset pages; 0 is unscanned.
+            for account_id in [*range(2600, 100, -1), 7, 3, 0]
         )
         PropertyAccount.objects.filter(id=1500).delete()
         PropertyJurisdictionExemption.objects.bulk_create(

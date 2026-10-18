@@ -37,15 +37,13 @@ class _CopiedRows:
 
     def __init__(self, digest: hashlib._Hash) -> None:
         self.digest = digest
-        self.partial = b""
 
     def write(self, data: bytes) -> None:
-        # row_to_json escapes every control character, so the one escape the COPY text
-        # format adds is a doubled backslash.
-        data = self.partial + data
-        end = data.rfind(b"\n") + 1
-        self.partial = data[end:]
-        self.digest.update(data[:end].replace(b"\\\\", b"\\"))
+        # COPY doubles each backslash. A lone one is another COPY escape, such as a raw
+        # control character from a json column, so its row's text bytes are unknown.
+        if b"\\" in data.replace(b"\\\\", b""):
+            raise ValueError("COPY escaped a dataset row; its identity bytes are unknown")
+        self.digest.update(data.replace(b"\\\\", b"\\"))
 
 
 def compute_dataset_hash(
@@ -68,7 +66,7 @@ def compute_dataset_hash(
             # "id > 0" keeps the bounds of the keyset scan that made the persisted digests.
             cursor.copy_expert(
                 f"COPY (SELECT row_to_json(t)::text FROM {quoted_schema}.{table} t "
-                f"WHERE id > 0 {scope} ORDER BY id) TO STDOUT",
+                f"WHERE id > 0 {scope} ORDER BY id) TO STDOUT (ENCODING 'UTF8')",
                 _CopiedRows(digest),
             )
     return {"sha256": digest.hexdigest()}
