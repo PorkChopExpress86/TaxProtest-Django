@@ -1,9 +1,12 @@
 # Deployment Guide
 
 This project deploys automatically to a Linux production server via GitHub
-Actions on every push to `main`. The workflow SSHes into the server, fetches
-only the target deployment module, and runs it. That module owns the revision
-snapshot, checkout update, classification, rebuild, and readiness verification.
+Actions after CI passes for a push to `main`. The Deploy workflow runs only when
+the CI run for that commit succeeds, and skips the deploy if `main` has already
+moved to a newer commit, which deploys after its own CI run. The workflow SSHes
+into the server, fetches only the target deployment module, and runs it. That
+module owns the revision snapshot, checkout update, classification, rebuild, and
+readiness verification.
 
 ## 1. Server prerequisites
 
@@ -78,7 +81,7 @@ and create the following five secrets:
 ### Optional: skip a specific push
 
 Add `[skip deploy]` to the start of a commit message to bypass the
-workflow without disabling the action.
+deploy for that commit without disabling the action. CI still runs.
 
 ## 5. First-time deployment
 
@@ -89,8 +92,9 @@ cd "$PROJECT_PATH"
 # Copy or create the .env file at $PROJECT_PATH/.env with the
 # production secrets (POSTGRES_PASSWORD, DJANGO_SECRET_KEY, ALLOWED_HOSTS, etc.)
 
-# Trigger a manual deploy from the GitHub Actions tab (workflow_dispatch)
-# or push a commit to main.
+# Trigger a manual deploy by running the CI workflow on main from the GitHub
+# Actions tab (workflow_dispatch); Deploy follows when it passes. Or push a
+# commit to main.
 ```
 
 ## 6. What `scripts/deploy.sh` actually does

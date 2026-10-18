@@ -2,20 +2,21 @@ name: CI
 
 on:
   # Every branch push runs CI, so an integration branch is checked on Linux
-  # before a PR exists. Pull requests run only from forks, avoiding a second run.
+  # before a PR exists. There is no pull_request trigger: a PR's checks are its
+  # branch's push run, and fork PRs are not accepted.
   push:
     branches: ["**"]
-  pull_request:
   workflow_dispatch:
 
+# Superseded runs on other branches are cancelled. Each main run gets its own
+# group so every main commit gets a verdict, which Deploy waits on.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
   cancel-in-progress: true
 
 jobs:
   quality-gates:
     name: Quality gates & test suite
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -37,6 +38,11 @@ jobs:
           echo "UID=$(id -u)" >> "$GITHUB_ENV"
           echo "GID=$(id -g)" >> "$GITHUB_ENV"
           touch .env
+
+      - name: Validate deployment script
+        run: |
+          bash -n scripts/deploy.sh
+          bash scripts/tests/test_deploy.sh
 
       - name: Build development image
         run: docker compose build taxprotest-dev

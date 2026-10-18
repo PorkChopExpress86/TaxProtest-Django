@@ -54,8 +54,8 @@ gh run watch <id> --exit-status
 ```
 
 The run appears a few seconds after the push, so rerun the list until `headSha` is the
-commit you pushed. A newer push cancels the in-progress run (a concurrency group in
-`ci.yml`), so the latest run is the one to read.
+commit you pushed. A newer push to a branch other than `main` cancels the in-progress
+run (a concurrency group in `ci.yml`), so the latest run is the one to read.
 
 CI is the only Linux run. Behaviour that depends on the filesystem, such as
 directory-listing order, can pass on Windows and fail there.
