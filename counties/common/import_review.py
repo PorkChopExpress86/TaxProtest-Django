@@ -43,10 +43,13 @@ def current_coverage(candidate):
     return compare_coverage(previous, current)
 
 
-def checked_binding(candidate: ImportCandidate) -> str:
-    operation = candidate.operation
-    validation = operation.evidence.get("validation", {})
-    if not validation.get("valid"):
+def check_recorded_qualification(candidate: ImportCandidate) -> None:
+    """Refuse a candidate whose recorded evidence already rules out approval.
+
+    Reads no source file and no staged or published table, so a page may call it;
+    ``checked_binding`` starts with it, then rechecks sources and data live.
+    """
+    if not candidate.operation.evidence.get("validation", {}).get("valid"):
         raise ImportReviewRejected("Source integrity qualification failed; prepare fresh evidence")
     coverage = candidate.evidence.get("coverage")
     if not coverage:
@@ -55,6 +58,15 @@ def checked_binding(candidate: ImportCandidate) -> str:
         raise ImportReviewRejected("; ".join(coverage["hard_failures"]))
     if not candidate.sources:
         raise ImportReviewRejected("Exact candidate source evidence unavailable")
+    # Its staged schema is dropped, so nothing live can be rechecked.
+    if candidate.state in RETIRED_CANDIDATE_STATES:
+        raise ImportReviewRejected(f"Candidate is {candidate.state}; its staged data is retired")
+
+
+def checked_binding(candidate: ImportCandidate) -> str:
+    check_recorded_qualification(candidate)
+    validation = candidate.operation.evidence["validation"]
+    coverage = candidate.evidence["coverage"]
     for source in candidate.sources:
         path = Path(source["path"])
         digest = hashlib.sha256()
@@ -68,9 +80,6 @@ def checked_binding(candidate: ImportCandidate) -> str:
             ) from exc
         if digest.hexdigest() != source["sha256"]:
             raise ImportReviewRejected("Retained source changed; prepare fresh evidence")
-    # Its staged schema is dropped, so nothing below can be rechecked.
-    if candidate.state in RETIRED_CANDIDATE_STATES:
-        raise ImportReviewRejected(f"Candidate is {candidate.state}; its staged data is retired")
     baseline = published_identity(candidate.county)
     content = dataset_identity(candidate.county, candidate.storage_schema)
     if baseline != candidate.baseline:

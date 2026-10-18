@@ -381,6 +381,7 @@ class HarrisPublicationTests(TransactionTestCase):
                 response = self.client.post(
                     reverse("admin:data_importcandidate_apply", args=[candidate.pk]),
                     {"reason": "Apply reviewed candidate"},
+                    follow=True,
                 )
                 self.assertContains(response, expected)
                 self.assertFalse(PropertyRecord.objects.exists())

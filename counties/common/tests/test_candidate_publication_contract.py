@@ -63,11 +63,15 @@ class PublicationContract:
         self.client.force_login(self.reviewer)
         url = reverse("admin:data_importcandidate_apply", args=[self.candidate.pk])
         applied = self.client.post(url, {"reason": "Apply reviewed"}, follow=True)
-        self.assertContains(applied, "Candidate publication observed. Data is applied.")
+        self.assertContains(applied, "published")
         self.candidate.refresh_from_db()
         self.assertEqual(self.candidate.state, "published")
         repeated = self.client.post(url, {"reason": "Apply again"}, follow=True)
-        self.assertContains(repeated, "Candidate already applied; no new write.")
+        self.assertContains(repeated, "already_applied")
+        self.assertEqual(
+            list(ImportOperation.objects.filter(intent="apply").values_list("status", flat=True)),
+            ["already_applied", "published"],
+        )
         self.assertEqual(ImportAuditEntry.objects.filter(kind="publication").count(), 1)
 
     def test_failed_publication_audit_rolls_back_the_publication(self):

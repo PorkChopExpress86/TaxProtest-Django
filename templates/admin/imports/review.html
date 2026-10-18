@@ -6,5 +6,6 @@
 <h2>Comparison baseline</h2><pre>{{ candidate.baseline }}</pre>
 <h2>Qualification and coverage evidence</h2><pre>{{ candidate.evidence }}</pre>
 {% if review_error %}<p class="errornote">Approval unavailable: {{ review_error }}. You may reject this candidate with a justification.</p>{% endif %}
+<p>Sources, the published baseline and staged contents are rechecked when the decision runs.</p>
 <form method="post">{% csrf_token %}{{ form.as_p }}<input type="submit" value="Record review decision"></form>
 {% endblock %}
