@@ -1,3 +1,5 @@
+from urllib.parse import urlencode
+
 from django import forms
 from django.contrib import admin, messages
 from django.core.exceptions import PermissionDenied
@@ -6,16 +8,15 @@ from django.template.response import TemplateResponse
 from django.urls import path, reverse
 from django.utils.html import format_html_join
 
-from counties.common.candidate_lifecycle import apply, recover
-from counties.common.import_recovery import ReplayRejected, replay_binding
+from counties.common import tasks
+from counties.common.import_recovery import replay_binding
 from counties.common.import_retention import cleanup_sources, source_availability
 from counties.common.import_review import (
     ImportReviewRejected,
     captured_binding,
-    checked_binding,
-    review_candidate,
+    check_recorded_qualification,
 )
-from counties.common.import_states import CandidateState, OperationStatus
+from counties.common.import_states import CandidateState
 from counties.common.import_writers import RecoveryRejected, recover_writer, writer_status
 from counties.common.models import ImportAuditEntry, ImportCandidate, ImportOperation
 
@@ -41,6 +42,21 @@ def render_source_availability(sources):
         )
         or "No exact retained sources recorded"
     )
+
+
+def queued(request, county: str, subject: str):
+    """Report a queued lifecycle call and show the operator's Import operations for ``county``.
+
+    The task opens its own Import operation, so this operator's newest row for the county is
+    the one to watch; filtering by actor keeps the lifecycle's intent names in the lifecycle.
+    """
+    messages.success(
+        request,
+        f"{subject} queued. It appears at the top of this list when a worker starts it; "
+        "refresh for its status and errors.",
+    )
+    query = urlencode({"county__exact": county, "actor__exact": request.user.get_username()})
+    return redirect(f"{reverse('admin:data_importoperation_changelist')}?{query}")
 
 
 class CandidateReviewForm(forms.Form):
@@ -93,6 +109,7 @@ class ImportOperationAdmin(admin.ModelAdmin):
         "intent",
         "requested_year",
         "status",
+        "errors",
         "county_writer",
         "started_at",
     )
@@ -223,20 +240,13 @@ class ImportOperationAdmin(admin.ModelAdmin):
             initial={"binding": replay_binding(candidate)} if candidate else {},
         )
         if request.method == "POST" and form.is_valid() and candidate:
-            try:
-                result = recover(
-                    candidate,
-                    user=request.user,
-                    reason=form.cleaned_data["reason"],
-                    binding=form.cleaned_data["binding"],
-                )
-            except ReplayRejected as exc:
-                form.add_error(None, str(exc))
-            else:
-                messages.success(
-                    request, "Recovery import prepared a new candidate; review and apply it"
-                )
-                return redirect("admin:data_importcandidate_change", result.candidate.pk)
+            tasks.recover_dataset.delay(
+                candidate_id=str(candidate.pk),
+                user_id=request.user.pk,
+                reason=form.cleaned_data["reason"],
+                binding=form.cleaned_data["binding"],
+            )
+            return queued(request, operation.county, f"Recovery of candidate {candidate.pk}")
         return TemplateResponse(
             request,
             "admin/imports/dataset_recovery.html",
@@ -350,24 +360,19 @@ class ImportCandidateAdmin(admin.ModelAdmin):
         if request.method == "POST":
             form = CandidateReviewForm(request.POST)
             if form.is_valid():
-                try:
-                    review_candidate(
-                        candidate,
-                        user=request.user,
-                        reason=form.cleaned_data["reason"],
-                        decision=form.cleaned_data["decision"],
-                        expected_binding=form.cleaned_data["binding"],
-                    )
-                except ImportReviewRejected as exc:
-                    form.add_error(None, str(exc))
-                else:
-                    messages.success(
-                        request, "Review decision recorded. Approval does not publish data."
-                    )
-                    return redirect("admin:data_importcandidate_change", candidate.pk)
+                tasks.review_candidate.delay(
+                    candidate_id=str(candidate.pk),
+                    user_id=request.user.pk,
+                    reason=form.cleaned_data["reason"],
+                    decision=form.cleaned_data["decision"],
+                    expected_binding=form.cleaned_data["binding"],
+                )
+                return queued(
+                    request, candidate.county, f"Review decision for candidate {candidate.pk}"
+                )
         else:
             try:
-                checked_binding(candidate)
+                check_recorded_qualification(candidate)
             except ImportReviewRejected as exc:
                 review_error = str(exc)
             form = CandidateReviewForm(initial={"binding": captured_binding(candidate)})
@@ -392,20 +397,12 @@ class ImportCandidateAdmin(admin.ModelAdmin):
         candidate = get_object_or_404(ImportCandidate, pk=candidate_id)
         form = CandidateApplyForm(request.POST if request.method == "POST" else None)
         if request.method == "POST" and form.is_valid():
-            try:
-                applied = apply(candidate, user=request.user, reason=form.cleaned_data["reason"])
-            except (ImportReviewRejected, ValueError) as exc:
-                form.add_error(None, str(exc))
-            else:
-                messages.success(
-                    request,
-                    (
-                        "Candidate already applied; no new write."
-                        if applied.status == OperationStatus.ALREADY_APPLIED
-                        else "Candidate publication observed. Data is applied."
-                    ),
-                )
-                return redirect("admin:data_importcandidate_change", candidate.pk)
+            tasks.apply_candidate.delay(
+                candidate_id=str(candidate.pk),
+                user_id=request.user.pk,
+                reason=form.cleaned_data["reason"],
+            )
+            return queued(request, candidate.county, f"Apply of candidate {candidate.pk}")
         return TemplateResponse(
             request,
             "admin/imports/apply.html",

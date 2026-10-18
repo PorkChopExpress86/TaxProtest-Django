@@ -70,10 +70,11 @@ class ImportRecoveryTests(TransactionTestCase):
         self.assertEqual(response.status_code, 200)
         return response.context["form"]["binding"].value()
 
-    def start(self, binding=None):
+    def start(self, binding=None, follow=False):
         return self.client.post(
             self.url,
             {"reason": "Restore verified prior source", "binding": binding or self.binding()},
+            follow=follow,
         )
 
     def test_admin_requires_permission_reason_and_explains_year_and_availability(self):
@@ -171,7 +172,7 @@ class ImportRecoveryTests(TransactionTestCase):
     def test_missing_or_changed_source_is_visible_audited_and_preserves_current(self):
         binding = self.binding()
         Path(self.historical.sources[0]["path"]).unlink()
-        response = self.start(binding)
+        response = self.start(binding, follow=True)
         self.assertContains(response, "unavailable")
         operation = ImportOperation.objects.get(origin="admin_recovery")
         self.assertEqual(operation.status, "failed")
@@ -188,7 +189,7 @@ class ImportRecoveryTests(TransactionTestCase):
         binding = self.binding()
         self.historical.sources[0]["source_year"] = 2025
         self.historical.save(update_fields=["sources"])
-        response = self.start(binding)
+        response = self.start(binding, follow=True)
         self.assertContains(response, "changed")
         self.assertEqual(ImportOperation.objects.get(origin="admin_recovery").status, "failed")
         self.assertEqual(PropertyAccount.objects.get().owner_name, "Current owner")
@@ -197,11 +198,11 @@ class ImportRecoveryTests(TransactionTestCase):
         binding = self.binding()
         source = Path(self.historical.sources[0]["path"])
         source.write_text(source.read_text().replace("Candidate owner", "Tampered owner "))
-        self.assertContains(self.start(binding), "changed")
+        self.assertContains(self.start(binding, follow=True), "changed")
         self.assertEqual(PropertyAccount.objects.get().owner_name, "Current owner")
         owner = ImportOperation.objects.create(county="brazos", intent="interrupted")
         CountyWriter.objects.update_or_create(county="brazos", defaults={"operation": owner})
-        response = self.start(binding)
+        response = self.start(binding, follow=True)
         self.assertContains(response, "Recovery required")
         self.assertEqual(
             ImportOperation.objects.filter(origin="admin_recovery", status="failed").count(), 2
@@ -226,7 +227,9 @@ class ImportRecoveryTests(TransactionTestCase):
         candidate = ImportOperation.objects.get(origin="admin_recovery").candidate
         self.assertEqual(candidate.state, "awaiting_review")
         apply_url = reverse("admin:data_importcandidate_apply", args=[candidate.pk])
-        self.assertContains(self.client.post(apply_url, {"reason": "Restore"}), "approval")
+        self.assertContains(
+            self.client.post(apply_url, {"reason": "Restore"}, follow=True), "approval"
+        )
         self.assertEqual(PropertyAccount.objects.count(), 2)
         review_url = reverse("admin:data_importcandidate_review", args=[candidate.pk])
         binding = self.client.get(review_url).context["form"]["binding"].value()
@@ -375,7 +378,7 @@ class ImportRecoveryTests(TransactionTestCase):
             )
             binding = self.client.get(url).context["form"]["binding"].value()
             refused = self.client.post(
-                url, {"reason": "Replay append publication", "binding": binding}
+                url, {"reason": "Replay append publication", "binding": binding}, follow=True
             )
             self.assertContains(refused, "unavailable for append or limited publications")
             failed = ImportOperation.objects.filter(

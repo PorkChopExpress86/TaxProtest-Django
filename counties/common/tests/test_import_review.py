@@ -98,7 +98,9 @@ class ImportReviewTests(TransactionTestCase):
             self.assertContains(detail, "Reviewed first import")
             self.assertContains(detail, "Approval does not publish")
             repeated = self.client.post(
-                self.url(candidate), {"decision": "approved", "reason": "Again", "binding": binding}
+                self.url(candidate),
+                {"decision": "approved", "reason": "Again", "binding": binding},
+                follow=True,
             )
             self.assertContains(repeated, "already has a review decision")
 
@@ -215,6 +217,7 @@ class ImportReviewTests(TransactionTestCase):
             response = self.client.post(
                 self.url(candidate),
                 {"decision": "approved", "reason": "Cannot override", "binding": binding},
+                follow=True,
             )
             self.assertContains(response, "Source integrity qualification failed")
             response = self.client.post(
@@ -236,6 +239,7 @@ class ImportReviewTests(TransactionTestCase):
             response = self.client.post(
                 self.url(candidate),
                 {"decision": "approved", "reason": "Cannot override", "binding": binding},
+                follow=True,
             )
             self.assertContains(response, "zero eligible")
             candidate.refresh_from_db()
