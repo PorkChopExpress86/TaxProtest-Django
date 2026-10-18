@@ -165,7 +165,9 @@ _Avoid_: county config, county plugin, ETL registry
 **Candidate staging**:
 The county-neutral database isolation mechanism that provisions a temporary
 PostgreSQL candidate schema, mirrors production table definitions and sequences,
-and facilitates atomic publication cutover.
+and facilitates atomic publication cutover. The schema lives only while its
+candidate can still be reviewed or published: the lifecycle drops it once the
+candidate is published, superseded, rejected, or blocked.
 _Avoid_: ETL framework, cross-county staging, table swap script
 
 **Brazos property import**:

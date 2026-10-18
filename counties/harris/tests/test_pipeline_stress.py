@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import tempfile
 import time
+from unittest.mock import patch
 
 from django.db import connection
 from django.test import TransactionTestCase
@@ -29,7 +30,9 @@ class HarrisPipelineStressTests(TransactionTestCase):
                 cursor.execute(f'DROP SCHEMA IF EXISTS "{candidate.storage_schema}" CASCADE')
         super().tearDown()
 
-    def test_harris_candidate_staging_under_synthetic_stress(self):
+    # Keep the blocked candidate's schema to count what the load staged.
+    @patch("counties.common.candidate_lifecycle.drop_candidate_schema")
+    def test_harris_candidate_staging_under_synthetic_stress(self, _drop):
         record_count = 5000
         request = HarrisImportRequest(
             plan=HarrisImportPlan.from_legacy_scope("property-only"),

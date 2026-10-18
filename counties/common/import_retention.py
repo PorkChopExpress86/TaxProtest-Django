@@ -3,11 +3,13 @@
 from datetime import timedelta
 from pathlib import Path
 
+from django.db import connection
 from django.utils import timezone
 
+from counties.common.candidate_staging import drop_candidate_schema
 from counties.common.county_registry import registration_for
 from counties.common.import_audit import audited_operation
-from counties.common.import_states import CandidateState
+from counties.common.import_states import RETIRED_CANDIDATE_STATES, CandidateState
 from counties.common.import_writers import fenced_write
 from counties.common.models import ImportAuditEntry, ImportCandidate, ImportOperation
 
@@ -23,6 +25,7 @@ def record_publication(candidate, operation):
         previous.state = CandidateState.SUPERSEDED
         previous.superseded_at = now
         previous.save(update_fields=["state", "superseded_at"])
+        drop_candidate_schema(previous)
         ImportAuditEntry.objects.create(
             operation=previous.operation,
             kind="supersession",
@@ -37,6 +40,7 @@ def record_publication(candidate, operation):
     candidate.state = CandidateState.PUBLISHED
     candidate.published_at = now
     candidate.save(update_fields=["state", "published_at"])
+    drop_candidate_schema(candidate)  # cut over, so published data no longer needs it
 
 
 def source_availability(sources):
@@ -107,6 +111,20 @@ def cleanup_sources(county, *, actor, reason, origin="command"):
             now = timezone.now()
             candidates = list(ImportCandidate.objects.select_for_update().filter(county=county))
             eligible = [candidate for candidate in candidates if _eligible(candidate, now)]
+            # Candidates retired by earlier releases left their staged schemas behind.
+            retired = {
+                candidate.storage_schema: candidate
+                for candidate in candidates
+                if candidate.state in RETIRED_CANDIDATE_STATES
+            }
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT nspname FROM pg_namespace WHERE nspname = ANY(%s) ORDER BY nspname",
+                    [list(retired)],
+                )
+                dropped_schemas = [schema for (schema,) in cursor.fetchall()]
+            for schema in dropped_schemas:
+                drop_candidate_schema(retired[schema])
             protected = {
                 Path(source["path"]).resolve()
                 for candidate in ImportCandidate.objects.all()
@@ -119,6 +137,7 @@ def cleanup_sources(county, *, actor, reason, origin="command"):
                     Path(source["path"]).resolve() for source in other.evidence.get("sources", [])
                 )
         operation.evidence["retired_candidates"] = [str(item.pk) for item in eligible]
+        operation.evidence["dropped_schemas"] = dropped_schemas
         operation.evidence["reason"] = reason.strip()
         operation.save(update_fields=["evidence"])
         for candidate in eligible:

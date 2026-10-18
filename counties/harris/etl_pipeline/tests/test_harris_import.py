@@ -190,7 +190,9 @@ class HarrisImportBoundaryTests(TestCase):
             refresh.assert_called_once_with()
             self.assertTrue(source.exists())
 
-    def test_property_and_building_apply_uses_the_rebuilt_property_account_map(self):
+    # Keep the blocked candidate's schema to read what the load staged.
+    @patch("counties.common.candidate_lifecycle.drop_candidate_schema")
+    def test_property_and_building_apply_uses_the_rebuilt_property_account_map(self, _drop):
         with tempfile.TemporaryDirectory() as root, override_settings(**_runtime_settings(root)):
             _write_property_source(root, account="P225")
             _write_building_sources(root, account="P225")
@@ -216,7 +218,8 @@ class HarrisImportBoundaryTests(TestCase):
         self.assertEqual(result.stages[HarrisImportPhase.LOAD].metrics["records_loaded"], 3)
         self.assertEqual(building.property_id, property_record.id)
 
-    def test_extra_feature_detail_files_persist_as_one_logical_dataset(self):
+    @patch("counties.common.candidate_lifecycle.drop_candidate_schema")
+    def test_extra_feature_detail_files_persist_as_one_logical_dataset(self, _drop):
         with tempfile.TemporaryDirectory() as root, override_settings(**_runtime_settings(root)):
             _write_property_source(root, account="P230")
             _write_building_sources(root, account="P230")
