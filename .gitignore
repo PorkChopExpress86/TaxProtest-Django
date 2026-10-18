@@ -184,8 +184,12 @@ counties/*/var/extracted/
 counties/*/var/logs/
 counties/*/var/reports/
 
-# Claude Code local settings and runtime files (no shared skills/commands here)
-.claude/
+# Claude Code local settings and runtime files; only project skills are shared
+.claude/*
+!.claude/skills/
+
+# Playwright MCP snapshots and console logs (verify skill harness scratch)
+/.playwright-mcp/
 
 # Local working drafts and validation artifacts
 /.scratch/
