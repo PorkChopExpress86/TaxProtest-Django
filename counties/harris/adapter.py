@@ -193,9 +193,7 @@ class HarrisAdapter(CountyAdapter):
     def get_subject(self, key: str) -> Subject | None:
         # filter().first() rather than get(): legacy imports can leave duplicate
         # rows for one account, and the report only needs one of them.
-        prop = PropertyRecord.objects.filter(
-            account_number=key, is_residential=True, is_data_ready=True
-        ).first()
+        prop = PropertyRecord.objects.queryable().filter(account_number=key).first()
         if prop is None:
             return None
 

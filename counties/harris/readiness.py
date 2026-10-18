@@ -256,7 +256,7 @@ class HarrisReadinessProjection:
     def dataset_facts(self) -> HarrisDatasetFacts:
         # Necessary conditions for positive equity inputs keep the scan to likely
         # pool members; the rule itself still decides membership.
-        pool = PropertyRecord.objects.filter(
+        pool = PropertyRecord.objects.queryable().filter(
             Q(assessed_value__gt=0) | Q(value__gt=0),
             Q(building_area__gt=0)
             | Exists(
@@ -264,8 +264,6 @@ class HarrisReadinessProjection:
                     account_number=OuterRef("account_number"), is_active=True, heat_area__gt=0
                 )
             ),
-            is_residential=True,
-            is_data_ready=True,
             latitude__isnull=False,
             longitude__isnull=False,
         )

@@ -21,7 +21,7 @@ def build_property_search_queryset(params: dict[str, str]) -> QuerySet:
     row offers links the comparables and report pages can honour.
     """
 
-    qs = PropertyRecord.objects.filter(is_residential=True, is_data_ready=True)
+    qs = PropertyRecord.objects.queryable()
 
     address = params.get("address", "").strip()
     street_name = params.get("street_name", "").strip()
