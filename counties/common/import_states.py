@@ -42,6 +42,17 @@ class CandidateState(StrEnum):
     SUPERSEDED = "superseded"
 
 
+# A candidate in these states is never reviewed or published again, so nothing reads
+# its staged schema and the lifecycle drops it.
+RETIRED_CANDIDATE_STATES = frozenset(
+    {
+        CandidateState.BLOCKED,
+        CandidateState.REJECTED,
+        CandidateState.PUBLISHED,
+        CandidateState.SUPERSEDED,
+    }
+)
+
 # Only these candidate states can end an Import operation.
 _OPERATION_STATUS_FOR_CANDIDATE = {
     CandidateState.PREPARED: OperationStatus.PREPARED,

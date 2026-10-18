@@ -150,7 +150,6 @@ def cutover_staged_tables(
     *,
     shared_models_scope: Mapping[type[models.Model], str] | None = None,
     shared_models_county: Mapping[type[models.Model], str] | None = None,
-    drop_staged: bool = False,
 ) -> None:
     """Atomically cut over staged tables to the public schema and reset sequences."""
     schema_name = candidate.storage_schema
@@ -195,5 +194,11 @@ def cutover_staged_tables(
                 [sequence, max(last_value, maximum)],
             )
 
-        if drop_staged:
-            cursor.execute(f'DROP SCHEMA IF EXISTS "{schema_name}" CASCADE')
+
+def drop_candidate_schema(candidate: ImportCandidate) -> None:
+    """Drop a retired candidate's staged schema; dropping it again does nothing."""
+    validate_schema_name(candidate.storage_schema, county=candidate.county)
+    with fenced_write(), connection.cursor() as cursor:
+        cursor.execute(
+            f"DROP SCHEMA IF EXISTS {connection.ops.quote_name(candidate.storage_schema)} CASCADE"
+        )

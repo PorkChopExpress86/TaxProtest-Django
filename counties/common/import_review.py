@@ -8,11 +8,11 @@ from django.core.exceptions import PermissionDenied
 from django.utils import timezone
 
 from counties.common.candidate_ports import dataset_identity, published_identity
-from counties.common.candidate_staging import switch_search_path
+from counties.common.candidate_staging import drop_candidate_schema, switch_search_path
 from counties.common.county_registry import registration_for
 from counties.common.import_audit import audited_operation
 from counties.common.import_coverage import compare_coverage
-from counties.common.import_states import CandidateState
+from counties.common.import_states import RETIRED_CANDIDATE_STATES, CandidateState
 from counties.common.import_writers import fenced_write
 from counties.common.models import ImportAuditEntry, ImportCandidate
 
@@ -44,6 +44,8 @@ def current_coverage(candidate):
 
 
 def checked_binding(candidate: ImportCandidate) -> str:
+    if candidate.state in RETIRED_CANDIDATE_STATES:
+        raise ImportReviewRejected(f"Candidate is {candidate.state}; its staged data is retired")
     operation = candidate.operation
     validation = operation.evidence.get("validation", {})
     if not validation.get("valid"):
@@ -101,11 +103,7 @@ def checked_binding(candidate: ImportCandidate) -> str:
 
 def authorize_publication(candidate, *, user=None):
     binding = checked_binding(candidate)
-    if candidate.state in (
-        CandidateState.BLOCKED,
-        CandidateState.REJECTED,
-        CandidateState.PREPARING,
-    ):
+    if candidate.state == CandidateState.PREPARING:
         raise ImportReviewRejected("Candidate is not qualified for publication")
     if not candidate.evidence["coverage"]["requires_review"]:
         return None
@@ -188,6 +186,8 @@ def review_candidate(candidate, *, user, reason: str, decision: str, expected_bi
                 if decision == CandidateState.REJECTED:
                     candidate.rejected_at = timezone.now()
                 candidate.save(update_fields=["state", "rejected_at"])
+                if decision == CandidateState.REJECTED:
+                    drop_candidate_schema(candidate)
     except Exception as exc:
         ImportAuditEntry.objects.create(
             operation=candidate.operation,
