@@ -184,7 +184,7 @@ mypy
 ### Tests
 
 ```bash
-docker compose exec web python manage.py test
+docker compose run --rm taxprotest-dev pytest -q
 ```
 
 ## Documentation

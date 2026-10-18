@@ -32,10 +32,10 @@ pre-commit run --all-files
 mypy
 
 # Full Django test suite
-docker compose exec web python manage.py test
+docker compose run --rm taxprotest-dev pytest -q
 
 # Targeted county test suites
-docker compose exec web python manage.py test counties.harris
-docker compose exec web python manage.py test counties.brazos
-docker compose exec web python manage.py test counties.common
+docker compose run --rm taxprotest-dev pytest counties/harris/tests -q
+docker compose run --rm taxprotest-dev pytest counties/brazos/tests -q
+docker compose run --rm taxprotest-dev pytest counties/common/tests -q
 ```
