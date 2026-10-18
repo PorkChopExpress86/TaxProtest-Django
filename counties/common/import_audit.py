@@ -5,13 +5,24 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+from django.db.models import QuerySet
 from django.utils import timezone
 
+from counties.common.candidate_staging import drop_candidate_schema
 from counties.common.county_registry import registration_for
 from counties.common.import_logging import import_warnings
-from counties.common.import_states import OperationStatus
-from counties.common.import_writers import county_writer
-from counties.common.models import ImportOperation
+from counties.common.import_states import (
+    RETIRED_CANDIDATE_STATES,
+    CandidateState,
+    OperationStatus,
+)
+from counties.common.import_writers import county_writer, fenced_write
+from counties.common.models import ImportAuditEntry, ImportOperation
+
+DEAD_OPERATION_ERROR = (
+    "Import operation never finished: its worker stopped, and another Import operation "
+    "has since held the county writer"
+)
 
 
 def record_sources(operation: ImportOperation, paths: list[Path], **identity) -> None:
@@ -62,6 +73,7 @@ def audited_operation(
             ) as warnings,
             county_writer(operation),
         ):
+            _reconcile_dead_operations(operation)
             yield operation
         if operation.status == OperationStatus.RUNNING:
             operation.status = (
@@ -90,3 +102,60 @@ def audited_operation(
         operation.warnings = list(dict.fromkeys([*operation.warnings, *warnings]))
         operation.finished_at = timezone.now()
         operation.save()
+
+
+def _unfinished_with_candidate(county: str) -> QuerySet[ImportOperation]:
+    # Only preparation creates a candidate, inside its operation's writer reservation,
+    # so these operations are known to have held the writer.
+    return ImportOperation.objects.filter(
+        county=county, status=OperationStatus.RUNNING, candidate__isnull=False
+    )
+
+
+def _reconcile_dead_operations(operation: ImportOperation) -> None:
+    """Fail operations that held the county writer before ``operation`` and never finished.
+
+    ``operation`` now holds the writer, so an earlier holder is fenced for good: its
+    worker died before its own cleanup recorded how it ended.
+    """
+    unfinished = _unfinished_with_candidate(operation.county).exclude(pk=operation.pk)
+    for pk in unfinished.values_list("pk", flat=True):
+        with fenced_write():
+            dead = unfinished.select_for_update(of=("self",)).filter(pk=pk).first()
+            if dead is None:
+                continue  # its worker recorded how it ended after all
+            candidate = dead.candidate
+            state_before = candidate.state
+            dead.status = OperationStatus.FAILED
+            dead.errors.append(DEAD_OPERATION_ERROR)
+            dead.finished_at = timezone.now()
+            dead.save(update_fields=["status", "errors", "finished_at"])
+            if candidate.state == CandidateState.PREPARING:
+                candidate.state = CandidateState.BLOCKED
+                candidate.evidence["error"] = DEAD_OPERATION_ERROR
+                candidate.save(update_fields=["state", "evidence"])
+            ImportAuditEntry.objects.create(
+                operation=dead,
+                kind="operation_reconciliation",
+                actor=operation.actor,
+                reason=DEAD_OPERATION_ERROR,
+                evidence={
+                    "reconciled_by": str(operation.pk),
+                    "candidate_id": str(candidate.pk),
+                    "candidate_state_before": state_before,
+                },
+                result=OperationStatus.FAILED,
+            )
+        if candidate.state in RETIRED_CANDIDATE_STATES:
+            drop_candidate_schema(candidate)
+
+
+def reconcile_dead_operations(county: str, *, actor: str = "", origin: str = "command") -> None:
+    """Reconcile dead operations now, rather than when the county's next import starts.
+
+    Records an Import operation only when an unfinished one may be dead. Raises
+    ``WriterConflict`` while another operation holds the county writer.
+    """
+    if _unfinished_with_candidate(county).exists():
+        with audited_operation(county, "reconcile", actor=actor, origin=origin):
+            pass
