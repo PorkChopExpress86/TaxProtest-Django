@@ -2,10 +2,10 @@ name: CI
 
 on:
   # Every branch push runs CI, so an integration branch is checked on Linux
-  # before a PR exists. Pull requests run only from forks, avoiding a second run.
+  # before a PR exists. There is no pull_request trigger: a PR's checks are its
+  # branch's push run, and fork PRs are not accepted.
   push:
     branches: ["**"]
-  pull_request:
   workflow_dispatch:
 
 # Superseded runs on other branches are cancelled. Each main run gets its own
@@ -17,7 +17,6 @@ concurrency:
 jobs:
   quality-gates:
     name: Quality gates & test suite
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
