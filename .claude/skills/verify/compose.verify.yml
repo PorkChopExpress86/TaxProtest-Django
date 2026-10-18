@@ -1,0 +1,20 @@
+# Overlay on docker-compose.yml for a throwaway verification instance.
+# scripts/verify.sh passes it with its own project name, so the postgres volume,
+# network and containers never touch the main taxprotest-* stack or its data.
+services:
+  postgres:
+    container_name: !reset null
+    ports: !reset []
+
+  taxprotest-dev:
+    ports:
+      - "127.0.0.1:${VERIFY_PORT:-18020}:8000"
+    environment:
+      - ALLOWED_HOSTS=localhost,127.0.0.1
+    command:
+      - sh
+      - -c
+      - >-
+        python manage.py migrate --noinput &&
+        python manage.py shell -c "exec(open('/app/.claude/skills/verify/scripts/seed.py').read())" &&
+        exec python manage.py runserver --skip-checks 0.0.0.0:8000
