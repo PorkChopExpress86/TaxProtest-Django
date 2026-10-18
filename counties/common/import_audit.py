@@ -99,19 +99,33 @@ def audited_operation(
         operation.save()
 
 
+def reconcile_dead_operations(county: str, *, actor: str) -> None:
+    """Take ``county``'s writer when a preparation may have died, so acquiring it reconciles.
+
+    Raises ``WriterConflict`` while another operation still holds the writer.
+    """
+    if _unfinished_preparations(county).exists():
+        with audited_operation(county, "operation_reconciliation", actor=actor):
+            pass
+
+
+def _unfinished_preparations(county: str):
+    # Only preparation creates a candidate, inside its operation's writer reservation,
+    # and it leaves one preparing or blocked only when it did not record how it ended.
+    return ImportOperation.objects.filter(
+        county=county,
+        status=OperationStatus.RUNNING,
+        candidate__state__in=(CandidateState.PREPARING, CandidateState.BLOCKED),
+    )
+
+
 def _reconcile_dead_operations(operation: ImportOperation) -> None:
     """Fail operations that held the county writer before ``operation`` and never finished.
 
     ``operation`` now holds the writer, so an earlier holder is fenced for good: its
     worker died before its own cleanup recorded how it ended.
     """
-    # Only preparation creates a candidate, inside its operation's writer reservation,
-    # and it leaves one preparing or blocked only when it did not record how it ended.
-    unfinished = ImportOperation.objects.filter(
-        county=operation.county,
-        status=OperationStatus.RUNNING,
-        candidate__state__in=(CandidateState.PREPARING, CandidateState.BLOCKED),
-    ).exclude(pk=operation.pk)
+    unfinished = _unfinished_preparations(operation.county).exclude(pk=operation.pk)
     for pk in unfinished.values_list("pk", flat=True):
         with fenced_write():
             dead = unfinished.select_for_update(of=("self",)).filter(pk=pk).first()
