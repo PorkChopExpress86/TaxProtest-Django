@@ -63,7 +63,6 @@ Usage:
 
 from __future__ import annotations
 
-import csv
 import logging
 import shutil
 import zipfile
@@ -80,7 +79,9 @@ from django.db import connection, transaction
 from counties.common.import_audit import audited_operation, record_sources
 from counties.common.import_writers import fenced_write, working_source_root
 from counties.common.tax_models import TaxUnitRate
+from counties.harris.etl_pipeline.row_reader import iter_dict_rows
 from counties.harris.models import PropertyRecord
+from counties.harris.replacement_guard import check_replacement
 
 logger = logging.getLogger(__name__)
 
@@ -139,11 +140,17 @@ def _decimal_or_none(value: str | None) -> Decimal | None:
         return None
 
 
-def _read_rows(path: Path) -> Iterator[dict[str, str]]:
-    # latin-1: HCAD exports are Windows-codepage text, and a stray high byte in
-    # an owner/jurisdiction name must not abort a 14-million-row pass.
-    with path.open("r", encoding="latin-1", newline="") as fh:
-        yield from csv.DictReader(fh, delimiter="\t")
+#: Columns each file cannot be loaded without; the rate file also needs --rate-column.
+REQUIRED_COLUMNS = {
+    VALUE_FILE: ("acct", "tax_district", "appraised_val", "taxable_val"),
+    EXEMPT_FILE: ("acct", "tax_district", "exempt_cat", "exempt_val"),
+    DESCRIPTION_FILE: ("exempt_cat", "exemption_dscr"),
+    RATE_FILE: ("RP_TYPE", "tax_dist", "name"),
+}
+
+
+def _read_rows(path: Path, *extra_required: str) -> Iterator[dict[str, str]]:
+    return iter_dict_rows(path, (*REQUIRED_COLUMNS[path.name], *extra_required))
 
 
 class Command(BaseCommand):
@@ -223,7 +230,7 @@ class Command(BaseCommand):
         names: dict[str, str] = {}
         rates: dict[str, Decimal] = {}
 
-        for row in _read_rows(directory / RATE_FILE):
+        for row in _read_rows(directory / RATE_FILE, rate_column):
             if _clean(row.get("RP_TYPE")).lower() != "real":
                 continue
             code = _clean(row.get("tax_dist"))
@@ -554,6 +561,23 @@ class Command(BaseCommand):
                 self.stdout.write(
                     f"  {pairs:,} (account, taxing unit) pairs; jur_exempt.txt itemises more "
                     f"than was applied on {over_itemised:,} and less on {under_itemised:,}"
+                )
+
+                # Base rows are one per (account, taxing unit) on both sides.
+                cursor.execute(
+                    "SELECT count(*) FROM data_propertyjurisdictionexemption "
+                    "WHERE tax_year = %s AND county = %s AND exemption_code = ''",
+                    [tax_year, COUNTY],
+                )
+                replacing = cursor.fetchone()[0]
+                cursor.execute(
+                    "SELECT count(*) FROM (SELECT DISTINCT account_number, tax_unit_code "
+                    "FROM jur_exempt_stage WHERE exemption_code = '') pairs"
+                )
+                check_replacement(
+                    f"Harris PropertyJurisdictionExemption {tax_year}",
+                    replacing=replacing,
+                    staged=cursor.fetchone()[0],
                 )
 
                 if dry_run:

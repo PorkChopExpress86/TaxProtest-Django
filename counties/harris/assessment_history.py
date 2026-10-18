@@ -1,14 +1,19 @@
 from __future__ import annotations
 
-import csv
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
 from django.db import transaction
+from django.db.models import Count
 
 from counties.common.tax_models import AssessmentHistory
+from counties.harris.etl_pipeline.row_reader import iter_dict_rows
+from counties.harris.replacement_guard import check_replacement
+
+REAL_ACCT_REQUIRED = ("acct", "assessed_val")
+HEARING_REQUIRED = ("acct", "Final_Appraised_Value")
 
 
 def _parse_decimal(value: Any) -> Decimal | None:
@@ -54,13 +59,22 @@ class AssessmentHistoryImporter:
             # county="harris": this importer reads HCAD snapshots only. AssessmentHistory
             # is now a shared table (see wayfinder ticket #9) — an unscoped delete here
             # would also wipe Brazos's rows for the same tax-year range.
-            AssessmentHistory.objects.filter(
+            existing = AssessmentHistory.objects.filter(
                 tax_year__gte=start_year, tax_year__lte=end_year, county="harris"
-            ).delete()
+            )
+            replacing = dict(existing.order_by().values_list("tax_year").annotate(rows=Count("id")))
+            existing.delete()
 
             for year in years:
                 year_root = extract_root / str(year)
-                counts.records_loaded += self.import_year(year, year_root)
+                loaded = self.import_year(year, year_root)
+                # Raising here rolls the delete back along with the partial load.
+                check_replacement(
+                    f"Harris AssessmentHistory {year}",
+                    replacing=replacing.get(year, 0),
+                    staged=loaded,
+                )
+                counts.records_loaded += loaded
                 counts.years_processed += 1
 
         return counts
@@ -76,27 +90,25 @@ class AssessmentHistoryImporter:
         loaded = 0
         batch: list[AssessmentHistory] = []
 
-        with real_acct_path.open(encoding="utf-8", errors="ignore", newline="") as handle:
-            reader = csv.DictReader(handle, delimiter="\t")
-            for row in reader:
-                account_number = str(row.get("acct", "")).strip()
-                if not account_number:
-                    continue
+        for row in iter_dict_rows(real_acct_path, REAL_ACCT_REQUIRED):
+            account_number = str(row.get("acct", "")).strip()
+            if not account_number:
+                continue
 
-                hearing = hearing_rows.pop(account_number, None)
-                history = self._build_history_from_real_acct(account_number, row, year, hearing)
-                observed_year = _parse_int(row.get("yr"))
-                if observed_year is not None:
-                    self.counts.source_years.add(observed_year)
-                self.counts.tax_year_counts[history.tax_year] = (
-                    self.counts.tax_year_counts.get(history.tax_year, 0) + 1
-                )
-                batch.append(history)
+            hearing = hearing_rows.pop(account_number, None)
+            history = self._build_history_from_real_acct(account_number, row, year, hearing)
+            observed_year = _parse_int(row.get("yr"))
+            if observed_year is not None:
+                self.counts.source_years.add(observed_year)
+            self.counts.tax_year_counts[history.tax_year] = (
+                self.counts.tax_year_counts.get(history.tax_year, 0) + 1
+            )
+            batch.append(history)
 
-                if len(batch) >= self.batch_size:
-                    AssessmentHistory.objects.bulk_create(batch, batch_size=self.batch_size)
-                    loaded += len(batch)
-                    batch.clear()
+            if len(batch) >= self.batch_size:
+                AssessmentHistory.objects.bulk_create(batch, batch_size=self.batch_size)
+                loaded += len(batch)
+                batch.clear()
 
         for account_number, hearing in hearing_rows.items():
             history = self._build_history_from_hearing_only(account_number, year, hearing)
@@ -119,20 +131,18 @@ class AssessmentHistoryImporter:
         self, hearing_path: Path, default_year: int
     ) -> dict[str, dict[str, Any]]:
         rows: dict[str, dict[str, Any]] = {}
-        with hearing_path.open(encoding="utf-8", errors="ignore", newline="") as handle:
-            reader = csv.DictReader(handle, delimiter="\t")
-            for row in reader:
-                account_number = str(row.get("acct", "")).strip()
-                if not account_number:
-                    continue
-                tax_year = _parse_int(row.get("Tax_Year")) or default_year
-                observed_year = _parse_int(row.get("Tax_Year"))
-                if observed_year is not None:
-                    self.counts.source_years.add(observed_year)
-                rows[account_number] = {
-                    "tax_year": tax_year,
-                    "final_appraised_value": _parse_decimal(row.get("Final_Appraised_Value")),
-                }
+        for row in iter_dict_rows(hearing_path, HEARING_REQUIRED):
+            account_number = str(row.get("acct", "")).strip()
+            if not account_number:
+                continue
+            tax_year = _parse_int(row.get("Tax_Year")) or default_year
+            observed_year = _parse_int(row.get("Tax_Year"))
+            if observed_year is not None:
+                self.counts.source_years.add(observed_year)
+            rows[account_number] = {
+                "tax_year": tax_year,
+                "final_appraised_value": _parse_decimal(row.get("Final_Appraised_Value")),
+            }
         return rows
 
     def _build_history_from_real_acct(

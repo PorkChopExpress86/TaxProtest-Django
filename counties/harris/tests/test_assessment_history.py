@@ -9,7 +9,9 @@ from django.db import IntegrityError
 from django.test import TestCase
 
 from counties.common.tax_models import AssessmentHistory
+from counties.harris.etl_pipeline.row_reader import SourceLayoutError
 from counties.harris.models import PropertyRecord
+from counties.harris.replacement_guard import ReplacementShrinkError
 
 
 class AssessmentHistoryModelTests(TestCase):
@@ -91,6 +93,99 @@ class ImportAssessmentHistoryCommandTests(TestCase):
                 + "\n",
                 encoding="utf-8",
             )
+
+    def _import(self, start_year: int, end_year: int) -> None:
+        call_command(
+            "import_assessment_history",
+            "--start-year",
+            str(start_year),
+            "--end-year",
+            str(end_year),
+            "--skip-download",
+            "--skip-extract",
+            "--extract-root",
+            str(self.extract_root),
+            "--download-root",
+            str(self.download_root),
+        )
+
+    def _seed_history(self, year: int, accounts: list[str]) -> None:
+        for account in accounts:
+            AssessmentHistory.objects.create(
+                account_number=account,
+                tax_year=year,
+                county="harris",
+                assessed_value=Decimal("100000"),
+            )
+
+    def test_renamed_acct_column_raises_and_keeps_the_existing_year(self):
+        self._seed_history(2026, ["HIST300", "HIST301"])
+        real_dir = self.extract_root / "2026" / "Real_acct_owner"
+        real_dir.mkdir(parents=True)
+        (real_dir / "real_acct.txt").write_text(
+            "account\tyr\tassessed_val\nHIST300\t2026\t310000\nHIST301\t2026\t220000\n",
+            encoding="utf-8",
+        )
+
+        with self.assertRaises(SourceLayoutError) as ctx:
+            self._import(2026, 2026)
+
+        self.assertIn("acct", str(ctx.exception))
+        self.assertEqual(
+            AssessmentHistory.objects.filter(county="harris", tax_year=2026).count(), 2
+        )
+
+    def test_reload_far_below_the_existing_year_is_refused(self):
+        self._seed_history(2026, ["HIST300", "HIST301", "HIST302", "HIST303"])
+        self._write_year_files(
+            2026, real_rows=["HIST300\t2026\t310000\t320000\t325000\t280000\t300000\t0\t\tN"]
+        )
+
+        with self.assertRaises(ReplacementShrinkError):
+            self._import(2026, 2026)
+
+        self.assertEqual(
+            set(
+                AssessmentHistory.objects.filter(county="harris", tax_year=2026).values_list(
+                    "account_number", "assessed_value"
+                )
+            ),
+            {(a, Decimal("100000.00")) for a in ("HIST300", "HIST301", "HIST302", "HIST303")},
+        )
+
+    def test_one_shrinking_year_refuses_the_whole_range(self):
+        self._seed_history(2025, ["HIST300", "HIST301", "HIST302"])
+        self._seed_history(2026, ["HIST300", "HIST301", "HIST302"])
+        rows = [f"HIST30{i}\t2025\t1\t1\t1\t1\t1\t0\t\tN" for i in range(3)]
+        self._write_year_files(2025, real_rows=rows)
+        self._write_year_files(2026, real_rows=["HIST300\t2026\t1\t1\t1\t1\t1\t0\t\tN"])
+
+        with self.assertRaises(ReplacementShrinkError) as ctx:
+            self._import(2025, 2026)
+
+        self.assertIn("2026", str(ctx.exception))
+        self.assertEqual(
+            AssessmentHistory.objects.filter(
+                county="harris", assessed_value=Decimal("100000")
+            ).count(),
+            6,
+        )
+
+    def test_embedded_quote_does_not_merge_rows(self):
+        self._write_year_files(
+            2026,
+            real_rows=[
+                'HIST300\t2026\t310000\t320000\t325000\t280000\t300000\t0\t\t"Y',
+                "HIST301\t2026\t220000\t230000\t235000\t200000\t210000\t0\t\tN",
+            ],
+        )
+
+        self._import(2026, 2026)
+
+        self.assertEqual(
+            AssessmentHistory.objects.get(account_number="HIST301", tax_year=2026).assessed_value,
+            Decimal("220000"),
+        )
 
     def test_import_command_prefers_hearing_final_value(self):
         self._write_year_files(
