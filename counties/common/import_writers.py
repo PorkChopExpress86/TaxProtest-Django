@@ -80,21 +80,30 @@ def working_source_root(root: Path, *, reuse: bool = True) -> Path:
             if prior.evidence.get("base_sources", {}).get(str(root)) != base_digests:
                 break  # Explicitly changed base inputs take precedence over cached outputs.
             expected = prior.evidence.get("retained_source_digests", {}).get(str(retained))
-            if expected is None or not retained.exists() or _source_digests(retained) != expected:
+            if expected is None or not retained.exists():
+                operation.warnings.append(
+                    f"Retained sources of {prior.pk} are unavailable; copied the base root"
+                )
+                break
+            if _source_digests(retained) != expected:
                 raise RuntimeError(f"Retained source files changed or are unavailable: {prior.pk}")
             source_root = retained
             operation.evidence.setdefault("reused_from", {})[str(root)] = str(prior.pk)
             break
         operation.evidence.setdefault("base_sources", {})[str(root)] = base_digests
         working.mkdir(parents=True)
-        for source in source_root.iterdir():
-            if source.name == ".imports":
-                continue
-            target = working / source.name
-            if source.is_dir():
-                shutil.copytree(source, target)
-            else:
-                shutil.copy2(source, target)
+        try:
+            for source in source_root.iterdir():
+                if source.name == ".imports":
+                    continue
+                target = working / source.name
+                if source.is_dir():
+                    shutil.copytree(source, target)
+                else:
+                    shutil.copy2(source, target)
+        except BaseException:
+            shutil.rmtree(working, ignore_errors=True)
+            raise
         operation.evidence.setdefault("working_sources", []).append(str(working))
     return working
 

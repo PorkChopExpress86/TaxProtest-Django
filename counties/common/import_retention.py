@@ -1,5 +1,7 @@
 """Protect exact import references and audit bounded source retirement."""
 
+import shutil
+from contextlib import contextmanager
 from datetime import timedelta
 from pathlib import Path
 
@@ -9,7 +11,11 @@ from django.utils import timezone
 from counties.common.candidate_staging import drop_candidate_schema
 from counties.common.county_registry import registration_for
 from counties.common.import_audit import audited_operation
-from counties.common.import_states import RETIRED_CANDIDATE_STATES, CandidateState
+from counties.common.import_states import (
+    RETIRED_CANDIDATE_STATES,
+    CandidateState,
+    OperationStatus,
+)
 from counties.common.import_writers import fenced_write
 from counties.common.models import ImportAuditEntry, ImportCandidate, ImportOperation
 
@@ -88,6 +94,11 @@ def _eligible(candidate, now):
     return retired_at is not None and retired_at + timedelta(days=90) <= now
 
 
+def _owns_no_retained_candidate(operation, owned, now):
+    candidate = owned.get(operation.pk)
+    return candidate is None or _eligible(candidate, now)
+
+
 def _managed_path(candidate, path):
     for source_root in registration_for(candidate.county).source_roots():
         root = source_root.resolve()
@@ -101,6 +112,36 @@ def _managed_path(candidate, path):
         ):
             return True
     return False
+
+
+def _working_directory(operation, path):
+    return any(
+        path == source_root.resolve() / ".imports" / str(operation.pk)
+        for source_root in registration_for(operation.county).source_roots()
+    )
+
+
+@contextmanager
+def _audited_removal(owner, kind, key, *, cleanup, actor, reason):
+    """Persist intent before any irreversible filesystem action, then record how it ended."""
+    with fenced_write():
+        audit = ImportAuditEntry.objects.create(
+            operation=owner,
+            kind=kind,
+            actor=actor,
+            reason=reason,
+            result="running",
+            evidence={"cleanup_operation_id": str(cleanup.pk), key: []},
+        )
+    results = []
+    yield audit, results
+    with fenced_write():
+        audit.result = (
+            "completed_with_warnings"
+            if any(item["result"] == "failed" for item in results)
+            else "completed"
+        )
+        audit.save(update_fields=["result"])
 
 
 def cleanup_sources(county, *, actor, reason, origin="command"):
@@ -136,45 +177,70 @@ def cleanup_sources(county, *, actor, reason, origin="command"):
                 protected.update(
                     Path(source["path"]).resolve() for source in other.evidence.get("sources", [])
                 )
+            owned = {candidate.operation_id: candidate for candidate in candidates}
+            stale = [
+                finished
+                for finished in ImportOperation.objects.filter(
+                    county=county, finished_at__lte=now - timedelta(days=90)
+                ).exclude(status=OperationStatus.RUNNING)
+                if finished.evidence.get("working_sources")
+                and _owns_no_retained_candidate(finished, owned, now)
+            ]
         operation.evidence["retired_candidates"] = [str(item.pk) for item in eligible]
+        operation.evidence["stale_operations"] = [str(item.pk) for item in stale]
         operation.evidence["dropped_schemas"] = dropped_schemas
         operation.evidence["reason"] = reason.strip()
         operation.save(update_fields=["evidence"])
+        audited = {"cleanup": operation, "actor": actor, "reason": reason.strip()}
         for candidate in eligible:
-            # Persist intent before any irreversible filesystem action.
-            with fenced_write():
-                audit = ImportAuditEntry.objects.create(
-                    operation=candidate.operation,
-                    kind="source_cleanup",
-                    actor=actor,
-                    reason=reason.strip(),
-                    result="running",
-                    evidence={"cleanup_operation_id": str(operation.pk), "sources": []},
-                )
-            results = []
-            for source in candidate.sources:
-                with fenced_write():
-                    path = Path(source["path"]).resolve()
-                    state = "protected" if path in protected else "unmanaged"
-                    if path not in protected and _managed_path(candidate, path):
-                        try:
-                            if path.is_file():
-                                path.unlink()
+            with _audited_removal(candidate.operation, "source_cleanup", "sources", **audited) as (
+                audit,
+                results,
+            ):
+                for source in candidate.sources:
+                    with fenced_write():
+                        path = Path(source["path"]).resolve()
+                        state = "protected" if path in protected else "unmanaged"
+                        if path not in protected and _managed_path(candidate, path):
+                            try:
+                                if path.is_file():
+                                    path.unlink()
+                                    state = "removed"
+                                else:
+                                    state = "unavailable"
+                            except OSError as exc:
+                                state = "failed"
+                                operation.warnings.append(
+                                    f"Source cleanup failed for {path}: {exc}"
+                                )
+                        results.append({**source, "result": state})
+                        audit.evidence["sources"] = results
+                        audit.save(update_fields=["evidence"])
+                        operation.save(update_fields=["warnings"])
+        for finished in stale:
+            with _audited_removal(
+                finished, "working_source_cleanup", "working_sources", **audited
+            ) as (audit, results):
+                for recorded in finished.evidence["working_sources"]:
+                    with fenced_write():
+                        path = Path(recorded).resolve()
+                        if not _working_directory(finished, path):
+                            state = "unmanaged"
+                        elif any(item.is_relative_to(path) for item in protected):
+                            state = "protected"
+                        elif not path.is_dir():
+                            state = "unavailable"
+                        else:
+                            try:
+                                shutil.rmtree(path)
                                 state = "removed"
-                            else:
-                                state = "unavailable"
-                        except OSError as exc:
-                            state = "failed"
-                            operation.warnings.append(f"Source cleanup failed for {path}: {exc}")
-                    results.append({**source, "result": state})
-                    audit.evidence["sources"] = results
-                    audit.save(update_fields=["evidence"])
-                    operation.save(update_fields=["warnings"])
-            with fenced_write():
-                audit.result = (
-                    "completed_with_warnings"
-                    if any(item["result"] == "failed" for item in results)
-                    else "completed"
-                )
-                audit.save(update_fields=["result"])
+                            except OSError as exc:
+                                state = "failed"
+                                operation.warnings.append(
+                                    f"Source cleanup failed for {path}: {exc}"
+                                )
+                        results.append({"path": recorded, "result": state})
+                        audit.evidence["working_sources"] = results
+                        audit.save(update_fields=["evidence"])
+                        operation.save(update_fields=["warnings"])
     return operation
