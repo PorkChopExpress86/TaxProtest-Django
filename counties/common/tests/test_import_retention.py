@@ -257,15 +257,17 @@ class SourceRetentionTests(TransactionTestCase):
                 return_value=old.superseded_at + timedelta(days=90),
             ),
             patch("pathlib.Path.unlink", side_effect=OSError("disk denied")),
+            patch("shutil.rmtree", side_effect=OSError("disk denied")),
         ):
             self.cleanup()
         operation = ImportOperation.objects.get(intent="source_cleanup")
         self.assertEqual(operation.status, "completed_with_warnings")
         self.assertIn("disk denied", str(operation.warnings))
         self.assertTrue(all(Path(s["path"]).is_file() for s in old.sources))
-        self.assertEqual(
-            old.operation.audit_entries.get(kind="source_cleanup").result, "completed_with_warnings"
-        )
+        for kind in ("source_cleanup", "working_source_cleanup"):
+            self.assertEqual(
+                old.operation.audit_entries.get(kind=kind).result, "completed_with_warnings"
+            )
         repeated = BrazosPropertyImport(CadRefreshStage(), None).run(
             replace(self.request, candidate_id=current.pk)
         )
@@ -362,6 +364,89 @@ class RegisteredCountyRetentionTests(TransactionTestCase):
         self.assertEqual(
             [source["result"] for source in audit.evidence["sources"]],
             ["removed", "removed", "unmanaged", "unmanaged", "unmanaged"],
+        )
+
+    def finished_operation(self, status, days_ago, **fields):
+        operation = ImportOperation.objects.create(
+            county=FAKE_COUNTY,
+            intent="annual",
+            status=status,
+            finished_at=timezone.now() - timedelta(days=days_ago),
+            **fields,
+        )
+        directories = [
+            self.root / kind / ".imports" / str(operation.pk) for kind in ("downloads", "extracted")
+        ]
+        for directory in directories:
+            self.write(*directory.relative_to(self.root).parts, "roll.zip")
+        operation.evidence["working_sources"] = [str(directory) for directory in directories]
+        operation.save(update_fields=["evidence"])
+        return operation, directories
+
+    def test_working_directories_of_stale_candidate_less_operations_are_removed(self):
+        stale, stale_dirs = self.finished_operation("failed", days_ago=91)
+        fresh, fresh_dirs = self.finished_operation("failed", days_ago=89)
+        published, published_dirs = self.finished_operation("published", days_ago=200)
+        ImportCandidate.objects.create(
+            operation=published,
+            county=FAKE_COUNTY,
+            state="published",
+            storage_schema="travis_candidate_published",
+            published_at=timezone.now() - timedelta(days=200),
+            sources=[{"path": str(published_dirs[0] / "roll.zip"), "sha256": "0"}],
+        )
+
+        call_command(
+            "cleanup_import_sources", county=FAKE_COUNTY, reason="Expired", stdout=io.StringIO()
+        )
+
+        self.assertFalse(any(directory.exists() for directory in stale_dirs))
+        self.assertTrue(all(directory.exists() for directory in fresh_dirs + published_dirs))
+        audit = stale.audit_entries.get(kind="working_source_cleanup")
+        self.assertEqual(audit.result, "completed")
+        self.assertEqual(
+            audit.evidence["working_sources"],
+            [{"path": str(directory), "result": "removed"} for directory in stale_dirs],
+        )
+        self.assertFalse(fresh.audit_entries.exists())
+        self.assertFalse(published.audit_entries.exists())
+        cleanup = ImportOperation.objects.get(intent="source_cleanup")
+        self.assertEqual(cleanup.evidence["stale_operations"], [str(stale.pk)])
+
+    def test_a_retired_candidate_working_directory_is_kept_while_a_live_candidate_shares_it(self):
+        retired, (shared_dir, private_dir) = self.finished_operation("published", days_ago=91)
+        shared = {"path": str(shared_dir / "roll.zip"), "sha256": "0"}
+        ImportCandidate.objects.create(
+            operation=retired,
+            county=FAKE_COUNTY,
+            state="superseded",
+            storage_schema="travis_candidate_retired",
+            superseded_at=timezone.now() - timedelta(days=91),
+            sources=[shared],
+        )
+        blocked, _ = self.finished_operation("blocked", days_ago=1)
+        ImportCandidate.objects.create(
+            operation=blocked,
+            county=FAKE_COUNTY,
+            state="blocked",
+            storage_schema="travis_candidate_blocked",
+            sources=[shared],
+        )
+
+        call_command(
+            "cleanup_import_sources", county=FAKE_COUNTY, reason="Expired", stdout=io.StringIO()
+        )
+
+        self.assertTrue((shared_dir / "roll.zip").is_file())
+        self.assertFalse(private_dir.exists())
+        self.assertEqual(
+            [
+                item["result"]
+                for item in retired.audit_entries.get(kind="working_source_cleanup").evidence[
+                    "working_sources"
+                ]
+            ],
+            ["protected", "removed"],
         )
 
     def test_cleanup_offers_only_registered_counties(self):
