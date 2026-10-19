@@ -1,8 +1,10 @@
 """County import coordination through real operations and PostgreSQL connections."""
 
+import shutil
 import tempfile
 from pathlib import Path
 from threading import Event, Thread
+from unittest.mock import patch
 from uuid import UUID
 
 from django.contrib.auth import get_user_model
@@ -19,6 +21,7 @@ from counties.brazos.property_import import (
     RefreshOptions,
 )
 from counties.brazos.tests.test_property_import import _stage_complete_pacs_export
+from counties.common.import_audit import audited_operation
 from counties.common.import_writers import (
     FencedWriter,
     WriterConflict,
@@ -26,6 +29,7 @@ from counties.common.import_writers import (
     working_source_root,
 )
 from counties.common.models import CountyWriter, ImportOperation
+from counties.common.tests.fake_county import FAKE_COUNTY, registered_fake_county
 from counties.harris.etl_pipeline import (
     ExtractedSourceRetention,
     HarrisAcquisitionMode,
@@ -237,3 +241,67 @@ class ImportWriterTests(TransactionTestCase):
             self.assertIs(retried.status, HarrisImportStatus.BLOCKED)
             self.assertFalse(retried.wrote_data)
             self.assertNotEqual(retried.operation_id, owner)
+
+
+class WorkingSourceRootTests(TransactionTestCase):
+    BASE = {"a.zip": "a", "b.zip": "b", "c.zip": "c"}
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name) / "downloads"
+        self.root.mkdir()
+        for name, text in self.BASE.items():
+            (self.root / name).write_text(text)
+        self.enterContext(registered_fake_county(source_roots=lambda: (self.root,)))
+
+    def working_copy(self):
+        with audited_operation(FAKE_COUNTY, "fixture", actor="operator") as operation:
+            working = working_source_root(self.root)
+        return operation, working
+
+    def contents(self, working):
+        return {path.name: path.read_text() for path in working.iterdir()}
+
+    def test_a_deleted_retained_copy_is_copied_from_the_base_root_again(self):
+        prior, retained = self.working_copy()
+        shutil.rmtree(retained)
+        operation, working = self.working_copy()
+        self.assertEqual(working, self.root / ".imports" / str(operation.pk))
+        self.assertEqual(self.contents(working), self.BASE)
+        self.assertNotIn("reused_from", operation.evidence)
+        self.assertEqual(
+            operation.warnings,
+            [f"Retained sources of {prior.pk} are unavailable; copied the base root"],
+        )
+
+    def test_a_tampered_retained_copy_blocks_imports_until_it_is_removed(self):
+        prior, retained = self.working_copy()
+        (retained / "a.zip").write_text("tampered")
+        with self.assertRaisesMessage(RuntimeError, f"changed or are unavailable: {prior.pk}"):
+            self.working_copy()
+        shutil.rmtree(retained)
+        operation, working = self.working_copy()
+        self.assertEqual(self.contents(working), self.BASE)
+        self.assertNotIn("reused_from", operation.evidence)
+
+    def test_a_copy_that_fails_partway_leaves_no_working_directory(self):
+        real_copy2 = shutil.copy2
+        copied = []
+
+        def copy2_until_the_disk_fills(source, target, *args, **kwargs):
+            if copied:
+                raise OSError("No space left on device")
+            copied.append(source)
+            return real_copy2(source, target, *args, **kwargs)
+
+        with (
+            self.assertRaisesMessage(OSError, "No space left on device"),
+            patch("shutil.copy2", copy2_until_the_disk_fills),
+        ):
+            self.working_copy()
+        failed = ImportOperation.objects.get(status="failed")
+        self.assertFalse((self.root / ".imports" / str(failed.pk)).exists())
+        operation, working = self.working_copy()
+        self.assertEqual(self.contents(working), self.BASE)
+        self.assertEqual(operation.status, "completed")

@@ -67,8 +67,8 @@ ALLOWED: dict[tuple[str, str], int] = {
     ("import_retention.py", "completed_with_warnings"): 1,
     ("import_review.py", "rejected"): 1,
     ("import_writers.py", "rejected"): 1,
-    # Not statuses: a per-source cleanup result.
-    ("import_retention.py", "failed"): 2,
+    # Not statuses: a per-source or per-directory cleanup result.
+    ("import_retention.py", "failed"): 3,
 }
 
 
