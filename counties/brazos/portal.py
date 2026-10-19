@@ -58,16 +58,21 @@ def download_archive(
         return destination
 
     log(f"Downloading {url} -> {destination}")
+    part = destination.with_name(destination.name + ".part")
     try:
         with requests.get(
             url, headers={"User-Agent": USER_AGENT}, timeout=DOWNLOAD_TIMEOUT, stream=True
         ) as response:
             response.raise_for_status()
-            with destination.open("wb") as fh:
+            with part.open("wb") as fh:
                 for chunk in response.iter_content(chunk_size=1024 * 1024):
                     fh.write(chunk)
-    except requests.RequestException as exc:
-        raise CommandError(f"Failed to download {url}: {exc}") from exc
+        part.replace(destination)
+    except BaseException as exc:
+        part.unlink(missing_ok=True)
+        if isinstance(exc, requests.RequestException):
+            raise CommandError(f"Failed to download {url}: {exc}") from exc
+        raise
     return destination
 
 

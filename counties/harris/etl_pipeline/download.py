@@ -303,53 +303,60 @@ class DownloadManager:
         # Ensure parent directory exists
         dest_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Stream download
-        with self.session.get(
-            url,
-            stream=True,
-            timeout=self.download_config.timeout,
-            verify=self.download_config.verify_ssl,
-        ) as response:
-            response.raise_for_status()
+        part_path = dest_path.with_name(dest_path.name + ".part")
+        try:
+            with self.session.get(
+                url,
+                stream=True,
+                timeout=self.download_config.timeout,
+                verify=self.download_config.verify_ssl,
+            ) as response:
+                response.raise_for_status()
 
-            total_size = int(response.headers.get("content-length", 0))
-            last_modified = response.headers.get("last-modified")
-            bytes_downloaded = 0
+                total_size = int(response.headers.get("content-length", 0))
+                last_modified = response.headers.get("last-modified")
+                bytes_downloaded = 0
 
-            with open(dest_path, "wb") as f:
-                for chunk in response.iter_content(chunk_size=self.download_config.chunk_size):
-                    if chunk:
-                        f.write(chunk)
-                        bytes_downloaded += len(chunk)
+                with open(part_path, "wb") as f:
+                    for chunk in response.iter_content(chunk_size=self.download_config.chunk_size):
+                        if chunk:
+                            f.write(chunk)
+                            bytes_downloaded += len(chunk)
 
-                        if progress_callback:
-                            progress_callback(bytes_downloaded, total_size)
+                            if progress_callback:
+                                progress_callback(bytes_downloaded, total_size)
 
-                        # Bandwidth throttling
-                        if self.download_config.bandwidth_limit:
-                            elapsed = time.time() - start_time
-                            expected_time = bytes_downloaded / self.download_config.bandwidth_limit
-                            if expected_time > elapsed:
-                                time.sleep(expected_time - elapsed)
+                            # Bandwidth throttling
+                            if self.download_config.bandwidth_limit:
+                                elapsed = time.time() - start_time
+                                expected_time = (
+                                    bytes_downloaded / self.download_config.bandwidth_limit
+                                )
+                                if expected_time > elapsed:
+                                    time.sleep(expected_time - elapsed)
 
-        # Stamp the file mtime with the server's Last-Modified so a later run can
-        # detect "unchanged" and skip re-downloading (see _cached_result_if_unchanged).
-        remote_mtime = self._parse_last_modified(last_modified)
-        if remote_mtime is not None:
-            try:
-                os.utime(dest_path, (remote_mtime, remote_mtime))
-            except OSError:
-                pass
+            # Stamp the file mtime with the server's Last-Modified so a later run can
+            # detect "unchanged" and skip re-downloading (see _cached_result_if_unchanged).
+            remote_mtime = self._parse_last_modified(last_modified)
+            if remote_mtime is not None:
+                try:
+                    os.utime(part_path, (remote_mtime, remote_mtime))
+                except OSError:
+                    pass
 
-        # Verify checksum if provided
-        checksum_verified = False
-        if source.checksum:
-            if not self.verify_checksum(dest_path, source.checksum):
-                dest_path.unlink(missing_ok=True)
-                raise ChecksumError(
-                    f"Checksum mismatch for {source.name}. " f"Expected: {source.checksum}"
-                )
-            checksum_verified = True
+            # Verify checksum if provided
+            checksum_verified = False
+            if source.checksum:
+                if not self.verify_checksum(part_path, source.checksum):
+                    raise ChecksumError(
+                        f"Checksum mismatch for {source.name}. " f"Expected: {source.checksum}"
+                    )
+                checksum_verified = True
+
+            part_path.replace(dest_path)
+        except BaseException:
+            part_path.unlink(missing_ok=True)
+            raise
 
         duration = time.time() - start_time
         self.logger.info(f"Downloaded {source.name}: {bytes_downloaded:,} bytes in {duration:.1f}s")

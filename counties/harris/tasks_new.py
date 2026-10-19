@@ -65,17 +65,21 @@ def download_archive_with_fallback(
     candidate_urls = build_archive_candidate_urls(source, reference_year)
     last_error: Exception | None = None
 
+    part_path = local_path + ".part"
     for url in candidate_urls:
         try:
             with requests.get(url, stream=True, timeout=source.get("timeout", 300)) as r:
                 r.raise_for_status()
-                with open(local_path, "wb") as f:
+                with open(part_path, "wb") as f:
                     shutil.copyfileobj(r.raw, f)
+            os.replace(part_path, local_path)
             return url, local_path
-        except requests.RequestException as exc:
+        except BaseException as exc:
+            if os.path.exists(part_path):
+                os.remove(part_path)
+            if not isinstance(exc, requests.RequestException):
+                raise
             last_error = exc
-            if os.path.exists(local_path):
-                os.remove(local_path)
 
             status_code = getattr(getattr(exc, "response", None), "status_code", None)
             if status_code == 404:
