@@ -6,7 +6,8 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import requests
-from django.test import TestCase, override_settings
+import urllib3
+from django.test import SimpleTestCase, TestCase, override_settings
 
 from counties.common.models import ImportOperation
 from counties.harris.etl_pipeline import (
@@ -19,10 +20,12 @@ from counties.harris.etl_pipeline import (
 from counties.harris.etl_pipeline.import_plan import HarrisImportPlan
 from counties.harris.models import DownloadRecord
 from counties.harris.tasks_new import (
+    HCAD_ARCHIVE_SOURCES,
     _run_authoritative_pipeline,
     download_and_extract_hcad,
     download_and_import_building_data,
     download_and_import_gis_data,
+    download_archive_with_fallback,
     run_etl_pipeline,
 )
 
@@ -53,6 +56,57 @@ class FakeResponse:
     def __exit__(self, exc_type, exc, tb):
         self.raw.close()
         return False
+
+
+class BrokenRaw:
+    def __init__(self, first_chunk: bytes):
+        self.chunks = [first_chunk]
+
+    def read(self, size: int = -1) -> bytes:
+        if self.chunks:
+            return self.chunks.pop(0)
+        raise urllib3.exceptions.ProtocolError("connection broken")
+
+    def close(self) -> None:
+        pass
+
+
+FULL_ARCHIVE = b"complete archive bytes"
+
+
+class DownloadArchiveWithFallbackTests(SimpleTestCase):
+    def assert_failed_download_leaves_nothing_and_next_run_completes(
+        self, failing_get, expected_error: type[Exception]
+    ):
+        source = HCAD_ARCHIVE_SOURCES[0]
+
+        def complete_get(url, stream=True, timeout=300):
+            return FakeResponse(url=url, content=FULL_ARCHIVE)
+
+        with tempfile.TemporaryDirectory() as download_dir:
+            with patch("counties.harris.tasks_new.requests.get", side_effect=failing_get):
+                with self.assertRaises(expected_error):
+                    download_archive_with_fallback(source, download_dir, reference_year=2026)
+            self.assertEqual(sorted(Path(download_dir).iterdir()), [])
+
+            with patch("counties.harris.tasks_new.requests.get", side_effect=complete_get):
+                url, local_path = download_archive_with_fallback(
+                    source, download_dir, reference_year=2026
+                )
+
+            self.assertIn("/2026/", url)
+            self.assertEqual(Path(local_path).read_bytes(), FULL_ARCHIVE)
+            self.assertEqual(sorted(Path(download_dir).iterdir()), [Path(local_path)])
+
+    def test_interrupted_stream_leaves_nothing_and_next_run_downloads_again(self):
+        def broken_get(url, stream=True, timeout=300):
+            response = FakeResponse(url=url)
+            response.raw = BrokenRaw(FULL_ARCHIVE[:9])
+            return response
+
+        self.assert_failed_download_leaves_nothing_and_next_run_completes(
+            broken_get, urllib3.exceptions.ProtocolError
+        )
 
 
 class DownloadAndExtractHCADTests(TestCase):
