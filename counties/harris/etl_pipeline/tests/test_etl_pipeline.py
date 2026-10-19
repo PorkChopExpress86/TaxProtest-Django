@@ -10,9 +10,13 @@ from email.utils import formatdate
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import requests
+from requests.structures import CaseInsensitiveDict
+
 from counties.harris.etl_pipeline.config import (
     DataSource,
     DataSourceType,
+    DownloadConfig,
     ETLConfig,
     LoadConfig,
     RetryConfig,
@@ -523,3 +527,78 @@ class TestConditionalDownload(unittest.TestCase):
             self.assertFalse(cfg.download.skip_if_unchanged)
         finally:
             del os.environ["ETL_FORCE_DOWNLOAD"]
+
+
+FULL_ARCHIVE = b"complete archive bytes"
+
+
+class FakeStream:
+    def __init__(
+        self,
+        chunks: list[bytes],
+        *,
+        broken: bool = False,
+        headers: dict[str, str] | None = None,
+    ):
+        self.chunks = chunks
+        self.broken = broken
+        self.headers = CaseInsensitiveDict(headers or {})
+
+    def raise_for_status(self) -> None:
+        pass
+
+    def iter_content(self, chunk_size: int):
+        yield from self.chunks
+        if self.broken:
+            raise requests.exceptions.ChunkedEncodingError("connection broken")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+class TestAtomicDownload(unittest.TestCase):
+    def assert_failed_download_leaves_nothing_and_next_run_completes(self, failing: FakeStream):
+        with tempfile.TemporaryDirectory() as tmp:
+            download_dir = Path(tmp) / "downloads"
+            config = ETLConfig(
+                download_dir=download_dir,
+                extract_dir=Path(tmp) / "extracted",
+                log_dir=Path(tmp) / "logs",
+                download=DownloadConfig(retry=RetryConfig(max_retries=0)),
+            )
+            manager = DownloadManager(config)
+            manager.session = MagicMock()
+            manager.session.head.return_value.status_code = 200
+            manager.session.get.side_effect = [
+                failing,
+                FakeStream(
+                    [FULL_ARCHIVE[:9], FULL_ARCHIVE[9:]],
+                    headers={"Content-Length": str(len(FULL_ARCHIVE))},
+                ),
+            ]
+            source = DataSource(
+                name="Test",
+                url_template="https://example.com/test.zip",
+                filename="test.zip",
+                source_type=DataSourceType.PROPERTY_DATA,
+            )
+
+            failed = manager.download_file(source)
+
+            self.assertFalse(failed.success)
+            self.assertEqual(sorted(download_dir.iterdir()), [])
+
+            result = manager.download_file(source)
+
+            self.assertTrue(result.success)
+            self.assertEqual(result.local_path, download_dir / "test.zip")
+            self.assertEqual((download_dir / "test.zip").read_bytes(), FULL_ARCHIVE)
+            self.assertEqual(sorted(download_dir.iterdir()), [download_dir / "test.zip"])
+
+    def test_interrupted_stream_leaves_nothing_and_next_run_downloads_again(self):
+        self.assert_failed_download_leaves_nothing_and_next_run_completes(
+            FakeStream([FULL_ARCHIVE[:9]], broken=True)
+        )
