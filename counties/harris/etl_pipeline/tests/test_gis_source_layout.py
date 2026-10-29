@@ -109,9 +109,7 @@ class HarrisGisSourceLayoutTests(TestCase):
             ):
                 _write_layout(root, layout)
 
-                result = run_harris_import(
-                    _gis_request(HarrisApply(validate_completeness=False))
-                )
+                result = run_harris_import(_gis_request(HarrisApply(validate_completeness=False)))
 
                 if expected[layout] is None:
                     self.assertFalse(result.success)
