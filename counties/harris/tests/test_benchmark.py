@@ -2,16 +2,30 @@
 
 from __future__ import annotations
 
+import tempfile
 from io import StringIO
+from pathlib import Path
 
 from django.core.management import call_command
 from django.db import connection
-from django.test import TransactionTestCase
+from django.test import SimpleTestCase, TransactionTestCase
 
 from counties.common.import_writers import WriterConflict
 from counties.common.models import CountyWriter, ImportCandidate, ImportOperation
+from counties.harris.benchmark import write_synthetic_real_acct
 
 COMMAND = "benchmark_harris_pipeline"
+
+
+class SyntheticRealAcctTests(SimpleTestCase):
+    def test_the_fixture_is_the_property_member_of_the_real_account_owner_extract(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = write_synthetic_real_acct(root, 2)
+
+            self.assertEqual(
+                source.relative_to(root), Path("extracted/Real_acct_owner/real_acct.txt")
+            )
+            self.assertEqual(len(source.read_text(encoding="latin-1").splitlines()), 3)
 
 
 class HarrisBenchmarkCommandTests(TransactionTestCase):

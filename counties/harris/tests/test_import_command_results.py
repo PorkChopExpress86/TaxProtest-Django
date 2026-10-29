@@ -21,6 +21,7 @@ from counties.harris.etl_pipeline.tests.test_harris_import import (
 )
 from counties.harris.etl_pipeline.tests.test_import_publication import harris_request
 from counties.harris.models import BuildingDetail, PropertyRecord
+from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG, HcadSourceId
 from counties.harris.tasks_new import run_etl_pipeline
 
 REUSE = ("--skip-download", "--skip-extract")
@@ -70,7 +71,8 @@ class HarrisImportResultTestCase(TransactionTestCase):
 
     def write_property_source(self, **kwargs):
         _write_property_source(self.root, **kwargs)
-        return str(Path(self.root) / "extracted/Real_acct_owner/real_acct.txt")
+        dirname = DEFAULT_HCAD_SOURCE_CATALOG.extract_dirname(HcadSourceId.REAL_ACCOUNT_OWNER)
+        return str(Path(self.root) / "extracted" / dirname / "real_acct.txt")
 
     def publish_baseline(self, *accounts):
         for account in accounts:
@@ -245,6 +247,14 @@ class LoadHcadRealAcctResultTests(HarrisImportResultTestCase):
         source = self.write_property_source()
 
         lines = self.call("load_hcad_real_acct", source)
+
+        operation, candidate = self.finished("blocked", "blocked")
+        self.assertEqual(lines, [warning(self.held("blocked", operation, candidate))])
+
+    def test_without_a_path_it_imports_the_catalog_member_under_the_extract_root(self):
+        self.write_property_source()
+
+        lines = self.call("load_hcad_real_acct")
 
         operation, candidate = self.finished("blocked", "blocked")
         self.assertEqual(lines, [warning(self.held("blocked", operation, candidate))])
