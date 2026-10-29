@@ -8,13 +8,15 @@ exemptions stack to zero out a district.
 
 from __future__ import annotations
 
+import shutil
 import tempfile
+import zipfile
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
 from django.core.management import CommandError, call_command
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 from counties.common.tax_impact import calculate_tax_impact
 from counties.common.tax_models import AssessmentHistory, PropertyJurisdictionExemption, TaxUnitRate
@@ -334,6 +336,62 @@ class ImportHcadJurExemptTests(TestCase):
 
         self.assertFalse(PropertyJurisdictionExemption.objects.exists())
         self.assertFalse(TaxUnitRate.objects.exists())
+
+    def _legacy_roots(self) -> tuple[Path, Path]:
+        roots = tempfile.TemporaryDirectory()
+        self.addCleanup(roots.cleanup)
+        extract_root = Path(roots.name) / "extracted"
+        download_root = Path(roots.name) / "downloads"
+        extract_root.mkdir()
+        download_root.mkdir()
+        return extract_root, download_root
+
+    def _run_default_path(self, extract_root: Path, download_root: Path) -> None:
+        with override_settings(HCAD_EXTRACT_DIR=extract_root, HCAD_DOWNLOAD_DIR=download_root):
+            call_command("import_hcad_jur_exempt", "--tax-year", "2025")
+
+    # The legacy download_and_extract_hcad task names its trees by stripping ".zip" from
+    # the archive filename. These layouts are spelled literally, not taken from the
+    # catalog, so a catalog name that drifts from the legacy tree fails here.
+
+    def test_default_path_reads_the_legacy_extract_directory(self):
+        extract_root, download_root = self._legacy_roots()
+        shutil.copytree(self.dir, extract_root / "Real_jur_exempt")
+
+        self._run_default_path(extract_root, download_root)
+
+        self.assertEqual(
+            self._stored_rates(),
+            {
+                ("001", Decimal("0.00878300")),
+                ("040", Decimal("0.00380960")),
+                ("061", Decimal("0.00519190")),
+            },
+        )
+
+    def test_default_path_extracts_the_legacy_download_archive(self):
+        extract_root, download_root = self._legacy_roots()
+        with zipfile.ZipFile(download_root / "Real_jur_exempt.zip", "w") as archive:
+            for member in sorted(self.dir.glob("*.txt")):
+                archive.write(member, member.name)
+
+        self._run_default_path(extract_root, download_root)
+
+        self.assertEqual(
+            self._stored_rates(),
+            {
+                ("001", Decimal("0.00878300")),
+                ("040", Decimal("0.00380960")),
+                ("061", Decimal("0.00519190")),
+            },
+        )
+
+    def test_a_missing_optional_description_only_warns(self):
+        (self.dir / "jur_exemption_dscr.txt").unlink()
+
+        self._run()
+
+        self.assertTrue(TaxUnitRate.objects.filter(county="harris", tax_year=2025).exists())
 
     def test_missing_directory_is_a_clear_error(self):
         with self.assertRaises(CommandError) as ctx:

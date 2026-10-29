@@ -10,6 +10,7 @@ from django.test import SimpleTestCase, TestCase
 from counties.common.models import ImportOperation
 from counties.harris.management.commands.load_gis_data import find_preferred_shapefile
 from counties.harris.models import PropertyRecord
+from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG, HcadSourceId
 
 
 class FindPreferredShapefileTests(SimpleTestCase):
@@ -102,7 +103,8 @@ class LoadGisDataProvenanceTests(TestCase):
         from shapely.geometry import Point
 
         with tempfile.TemporaryDirectory() as tmp:
-            layer = Path(tmp) / "Parcels" / "parcels.shp"
+            dirname = DEFAULT_HCAD_SOURCE_CATALOG.extract_dirname(HcadSourceId.GIS_PARCELS)
+            layer = Path(tmp) / dirname / "parcels.shp"
             layer.parent.mkdir()
             gpd.GeoDataFrame(
                 {"ACCT": ["GIS001"]}, geometry=[Point(3100000, 13800000)], crs="EPSG:2278"

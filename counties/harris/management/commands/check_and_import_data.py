@@ -10,8 +10,16 @@ from counties.common.import_states import CandidateState
 from counties.common.import_writers import WriterConflict
 from counties.common.models import ImportCandidate
 from counties.harris.models import BuildingDetail, PropertyRecord
+from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG, HcadSourceId
 
 logger = logging.getLogger(__name__)
+
+# Extracted sources whose presence lets an automatic import skip download and extraction.
+_LOCAL_SOURCES = (
+    HcadSourceId.REAL_ACCOUNT_OWNER,
+    HcadSourceId.REAL_BUILDING_LAND,
+    HcadSourceId.GIS_PARCELS,
+)
 
 # Candidate states that may still publish, with what the operator does next.
 _NEXT_STEP_FOR_PENDING = {
@@ -84,14 +92,12 @@ class Command(BaseCommand):
             )
 
             # Check if we have the files locally (e.g. baked into image)
-            # We assume if Real_acct_owner exists, we are good to go.
             from django.conf import settings
 
             extract_dir = Path(settings.HCAD_EXTRACT_DIR)
-            has_files = (
-                (extract_dir / "Real_acct_owner").exists()
-                and (extract_dir / "Real_building_land").exists()
-                and (extract_dir / "Parcels").exists()
+            has_files = all(
+                (extract_dir / DEFAULT_HCAD_SOURCE_CATALOG.extract_dirname(source_id)).exists()
+                for source_id in _LOCAL_SOURCES
             )
 
             import_options = {}
