@@ -354,7 +354,26 @@ class ImportRecoveryTests(TransactionTestCase):
                 ).status_code,
                 302,
             )
-            candidate = ImportOperation.objects.get(origin="admin_recovery").candidate
+            recovery = ImportOperation.objects.get(origin="admin_recovery")
+            candidate = recovery.candidate
+            # Retained-source bindings match on these extracted directory names.
+            replayed = Path(root) / "extracted" / ".imports" / str(recovery.pk)
+            self.assertEqual(
+                {path.name for path in replayed.iterdir()},
+                {"Real_acct_owner", "Real_building_land", "Parcels"},
+            )
+            self.assertEqual(
+                {
+                    (item["source_id"], Path(item["path"]).relative_to(replayed).parts[0])
+                    for item in candidate.sources
+                    if Path(item["path"]).is_relative_to(replayed)
+                },
+                {
+                    ("real-account-owner", "Real_acct_owner"),
+                    ("real-building-land", "Real_building_land"),
+                    ("gis-parcels", "Parcels"),
+                },
+            )
             self.assertEqual(BuildingDetail.objects.get().heat_area, 1900)
             self.assertEqual(
                 self.client.post(
