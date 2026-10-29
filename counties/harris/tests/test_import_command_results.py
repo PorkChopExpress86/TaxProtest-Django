@@ -6,7 +6,6 @@ Celery result keys before adapters classify through the Import disposition (ADR-
 
 import tempfile
 from io import StringIO
-from pathlib import Path
 from unittest.mock import patch
 
 from django.core.management import call_command
@@ -18,9 +17,11 @@ from counties.common.models import ImportCandidate, ImportOperation
 from counties.harris.etl_pipeline.tests.test_harris_import import (
     _runtime_settings,
     _write_property_source,
+    extracted,
 )
 from counties.harris.etl_pipeline.tests.test_import_publication import harris_request
 from counties.harris.models import BuildingDetail, PropertyRecord
+from counties.harris.source_catalog import HcadSourceId
 from counties.harris.tasks_new import run_etl_pipeline
 
 REUSE = ("--skip-download", "--skip-extract")
@@ -70,7 +71,7 @@ class HarrisImportResultTestCase(TransactionTestCase):
 
     def write_property_source(self, **kwargs):
         _write_property_source(self.root, **kwargs)
-        return str(Path(self.root) / "extracted/Real_acct_owner/real_acct.txt")
+        return str(extracted(self.root, HcadSourceId.REAL_ACCOUNT_OWNER) / "real_acct.txt")
 
     def publish_baseline(self, *accounts):
         for account in accounts:

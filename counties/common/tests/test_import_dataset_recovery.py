@@ -317,9 +317,13 @@ class ImportRecoveryTests(TransactionTestCase):
 
     def test_harris_recovery_replays_full_inputs_without_current_facts(self):
         from counties.harris.etl_pipeline import HarrisPropertyFile, run_harris_import
-        from counties.harris.etl_pipeline.tests.test_harris_import import _runtime_settings
+        from counties.harris.etl_pipeline.tests.test_harris_import import (
+            _runtime_settings,
+            extracted,
+        )
         from counties.harris.etl_pipeline.tests.test_import_publication import harris_request
         from counties.harris.models import BuildingDetail
+        from counties.harris.source_catalog import HcadSourceId
 
         prop = PropertyRecord.objects.create(
             account_number="P100",
@@ -339,7 +343,7 @@ class ImportRecoveryTests(TransactionTestCase):
         with tempfile.TemporaryDirectory() as root, self.settings(**_runtime_settings(root)):
             request = harris_request(root)
             first = run_harris_import(request)
-            building = Path(root) / "extracted/Real_building_land/building_res.txt"
+            building = extracted(root, HcadSourceId.REAL_BUILDING_LAND) / "building_res.txt"
             building.write_text(building.read_text().replace("1800", "1900"))
             run_harris_import(request)
             self.assertEqual(BuildingDetail.objects.get().heat_area, 1900)

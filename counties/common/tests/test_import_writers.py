@@ -44,7 +44,9 @@ from counties.harris.etl_pipeline.import_plan import HarrisImportPlan
 from counties.harris.etl_pipeline.tests.test_harris_import import (
     _runtime_settings,
     _write_property_source,
+    extracted,
 )
+from counties.harris.source_catalog import HcadSourceId
 
 
 class ImportWriterTests(TransactionTestCase):
@@ -185,7 +187,9 @@ class ImportWriterTests(TransactionTestCase):
                 BCAD_EXTRACT_DIR=str(Path(root) / "brazos" / "extracted"),
             ),
         ):
-            source = Path(root) / "harris" / "extracted" / "Real_acct_owner" / "real_acct.txt"
+            source = (
+                extracted(Path(root) / "harris", HcadSourceId.REAL_ACCOUNT_OWNER) / "real_acct.txt"
+            )
             source.parent.mkdir(parents=True)
             source.write_text("acct\tstate_class\nP100\tA1\n", encoding="latin-1")
             _stage_complete_pacs_export(Path(root) / "brazos", 2026)
