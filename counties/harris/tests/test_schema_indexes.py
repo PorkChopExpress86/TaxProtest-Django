@@ -7,33 +7,22 @@ those plain indexes served must still be index-backed.
 
 from __future__ import annotations
 
-from django.db import connection
+from django.db import connection, models
 from django.test import TestCase
 
 from counties.harris.models import BuildingDetail, ExtraFeature
 
 
-def _indexes(table: str) -> list[tuple[str, bool, list[str]]]:
-    """Return (name, is_unique, ordered columns) for every index on ``table``."""
+def _index_columns(model: type[models.Model], *, unique: bool) -> list[list[str]]:
+    """Return the ordered columns of each unique, or each plain, index on ``model``."""
     with connection.cursor() as cursor:
-        cursor.execute(
-            """
-            SELECT i.relname, ix.indisunique,
-                   array_agg(a.attname ORDER BY k.ord)
-            FROM pg_index ix
-            JOIN pg_class t ON t.oid = ix.indrelid
-            JOIN pg_class i ON i.oid = ix.indexrelid
-            CROSS JOIN LATERAL unnest(ix.indkey) WITH ORDINALITY AS k(attnum, ord)
-            JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = k.attnum
-            WHERE t.relname = %s AND t.relnamespace = to_regnamespace(current_schema())
-            GROUP BY i.relname, ix.indisunique
-            """,
-            [table],
-        )
-        return [(name, unique, list(cols)) for name, unique, cols in cursor.fetchall()]
+        constraints = connection.introspection.get_constraints(cursor, model._meta.db_table)
+    if unique:
+        return [c["columns"] for c in constraints.values() if c["unique"]]
+    return [c["columns"] for c in constraints.values() if c["index"] and not c["unique"]]
 
 
-def _plan(sql: str, params: list[object]) -> str:
+def _query_plan(sql: str, params: list[object]) -> str:
     with connection.cursor() as cursor:
         cursor.execute("SET LOCAL enable_seqscan = off")
         cursor.execute(f"EXPLAIN {sql}", params)
@@ -47,9 +36,8 @@ class RedundantIndexTests(TestCase):
             ExtraFeature: ["account_number", "feature_code"],
         }
         for model, columns in duplicated_prefixes.items():
-            plain = [cols for _, unique, cols in _indexes(model._meta.db_table) if not unique]
             with self.subTest(table=model._meta.db_table):
-                self.assertNotIn(columns, plain)
+                self.assertNotIn(columns, _index_columns(model, unique=False))
 
     def test_unique_constraints_are_unchanged(self) -> None:
         expected = {
@@ -58,10 +46,7 @@ class RedundantIndexTests(TestCase):
         }
         for model, columns in expected.items():
             with self.subTest(table=model._meta.db_table):
-                self.assertIn(
-                    columns,
-                    [cols for _, unique, cols in _indexes(model._meta.db_table) if unique],
-                )
+                self.assertIn(columns, _index_columns(model, unique=True))
 
     def test_lookups_on_former_index_columns_still_use_an_index(self) -> None:
         lookups = [
@@ -78,5 +63,5 @@ class RedundantIndexTests(TestCase):
         ]
         for sql, params in lookups:
             with self.subTest(sql=sql):
-                plan = _plan(sql, params)
+                plan = _query_plan(sql, params)
                 self.assertRegex(plan, r"Index (Only )?Scan|Bitmap Index Scan", plan)
