@@ -87,3 +87,58 @@ class RowReaderTests(SimpleTestCase):
         self.assertEqual(record["feature_description"], "Gunite Pool")
         self.assertEqual(record["area"], 231.0)
         self.assertEqual(record["value"], 10589.0)
+
+    def test_repeated_feature_identities_are_numbered_in_source_order_across_files(self) -> None:
+        header = "acct\tbld_num\tcd\tlength\n"
+        with TemporaryDirectory() as directory:
+            first = self._write(
+                directory,
+                "extra_features_detail1.txt",
+                header + "P1\t0\tRRS1\t10\nP1\t0\tRRS1\t13\nNOPE\t0\tRRS1\t9\nP1\t0\tRRC1\t20\n",
+            )
+            second = self._write(
+                directory, "extra_features_detail2.txt", header + "P1\t0\tRRS1\t8\n"
+            )
+            ordinals: dict[tuple[str, str, int], int] = {}
+            rows = [
+                row
+                for path in (first, second)
+                for row in iter_extra_feature_rows(path, {"P1": 42}, ordinals=ordinals)
+                if row.is_loadable
+            ]
+
+        self.assertEqual(
+            [
+                (record["feature_code"], record["length"], record["source_ordinal"])
+                for record in (row.as_dict() for row in rows)
+            ],
+            [("RRS1", 10.0, 1), ("RRS1", 13.0, 2), ("RRC1", 20.0, 1), ("RRS1", 8.0, 3)],
+        )
+
+    def test_rows_that_do_not_match_the_header_are_invalid_rather_than_read_shifted(self) -> None:
+        # A stray tab in the owner's mailing address shifts every later field one column right.
+        with TemporaryDirectory() as directory:
+            property_path = self._write(
+                directory,
+                "real_acct.txt",
+                "acct\tmailto\tsite_addr_1\tstate_class\ttot_appr_val\n"
+                "P1\tOwner\t\t100 MAIN ST\tA1\t250000\n"
+                "\n",
+            )
+            building_path = self._write(
+                directory, "building_res.txt", "acct\tbld_num\theat_ar\nP1\t1\n"
+            )
+            # A line break inside dscr splits one feature record in two.
+            feature_path = self._write(
+                directory,
+                "extra_features_detail2.txt",
+                "acct\tcd\tdscr\tbld_num\tasd_val\nP1\tCKGK\tTank\n\t0\t42592\n",
+            )
+            property_rows = list(iter_property_rows(property_path))
+            building_rows = list(iter_building_rows(building_path, {"P1": 42}, _EmptyFixtures()))
+            feature_rows = list(iter_extra_feature_rows(feature_path, {"P1": 42}))
+
+        self.assertEqual([row.invalid for row in property_rows], [True, False])
+        self.assertTrue(property_rows[1].skip)
+        self.assertEqual([row.invalid for row in building_rows], [True])
+        self.assertEqual([row.invalid for row in feature_rows], [True, True])

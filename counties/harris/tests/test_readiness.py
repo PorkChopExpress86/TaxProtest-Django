@@ -117,6 +117,23 @@ class HarrisReadinessContractTests(TestCase):
         self.assertContains(response, "Positive assessed value, living area and coordinates")
         self.assertIsNone(response.context.get("dossier"))
 
+    def test_a_house_without_coordinates_is_searchable_and_its_report_names_the_gap(self):
+        capabilities = adapter.capabilities("NO-COORDINATES")
+        self.assertTrue(capabilities.search_ready)
+        self.assertFalse(capabilities.comparable_ready)
+        self.assertFalse(capabilities.report_ready)
+        self.assertEqual(
+            capabilities.reasons["report"],
+            "This property does not have location data required for similarity search.",
+        )
+        response = self.client.get(reverse("protest_analysis", args=["NO-COORDINATES"]))
+        self.assertContains(response, "does not have location data")
+        self.assertIsNone(response.context.get("dossier"))
+
+    def test_missing_coordinates_never_explain_an_unready_record(self):
+        reasons = adapter.capabilities("INCOMPLETE").reasons
+        self.assertEqual(reasons["search"], "Active bedroom/bathroom facts unavailable")
+
 
 class HarrisCompleteReadinessRuleTests(TestCase):
     def setUp(self):

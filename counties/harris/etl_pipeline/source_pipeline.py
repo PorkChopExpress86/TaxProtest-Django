@@ -136,6 +136,8 @@ class HarrisSourcePipeline:
         self,
         schema_name: str,
         file_path: Path,
+        *,
+        feature_ordinals: dict[tuple[str, str, int], int] | None = None,
     ) -> Iterator[RowResult]:
         """Return the shared translation stream for one supported source file."""
         if schema_name == "real_acct":
@@ -149,7 +151,7 @@ class HarrisSourcePipeline:
                 self.fixtures_aggregator,
             )
         if schema_name == "extra_features":
-            return iter_extra_feature_rows(file_path, account_map)
+            return iter_extra_feature_rows(file_path, account_map, ordinals=feature_ordinals)
         raise ValueError(f"Unsupported translated schema: {schema_name}")
 
     def process_data_file(
@@ -229,8 +231,11 @@ class HarrisSourcePipeline:
         """Persist every selected Extra Feature source as one logical dataset."""
 
         def translated_rows() -> Iterator[RowResult]:
+            ordinals: dict[tuple[str, str, int], int] = {}
             for file_path in file_paths:
-                yield from self.iter_translated_rows("extra_features", file_path)
+                yield from self.iter_translated_rows(
+                    "extra_features", file_path, feature_ordinals=ordinals
+                )
 
         rows = translated_rows()
         if skip_load:

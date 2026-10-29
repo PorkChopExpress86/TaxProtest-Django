@@ -17,27 +17,8 @@ if ! command -v docker &> /dev/null; then
     exit 1
 fi
 
-# Check for .env file
-if [ ! -f .env ]; then
-    echo -e "${YELLOW}Creating .env file from .env.example...${NC}"
-    cp .env.example .env
-    # Generate secret key and update .env
-    SECRET_KEY=$(python3 -c "import secrets; print(secrets.token_urlsafe(64))")
-    
-    # Use sed to replace the placeholder or append if not found
-    if grep -q "DJANGO_SECRET_KEY=" .env; then
-         # simplistic replacement, might fail if key has special chars for sed, 
-         # but token_urlsafe is usually safe-ish.
-         # Ideally we'd ensure the .env.example has a specific placeholder.
-         # For now, let's just warn user to check it.
-         echo -e "${YELLOW}Please check .env and set DJANGO_SECRET_KEY and DB password.${NC}"
-    else
-         echo "DJANGO_SECRET_KEY=$SECRET_KEY" >> .env
-    fi
-    echo -e "${GREEN}.env created.${NC}"
-else
-    echo -e "${GREEN}.env file found.${NC}"
-fi
+# Create .env, or fill any generated secret it is missing
+python3 scripts/env_setup.py || exit 1
 
 # Build and Start Containers
 echo -e "\n${YELLOW}Deploying for Production? (y/N)${NC}"

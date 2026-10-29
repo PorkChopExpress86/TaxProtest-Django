@@ -25,18 +25,16 @@ adapter, not a new set of views and templates.
 
 ## Quick start (Docker Compose)
 
-1) Create an environment file and secret key
+1) Create an environment file with generated secrets
 
 ```bash
-cp .env.example .env
-python3 -c "import secrets; print(secrets.token_urlsafe(64))"
+python3 scripts/env_setup.py
 ```
 
-Add DJANGO_SECRET_KEY to your .env:
-
-```bash
-echo "DJANGO_SECRET_KEY=<your-generated-key>" >> .env
-```
+This copies `.env.example` to `.env` and generates `DJANGO_SECRET_KEY` and
+`POSTGRES_PASSWORD`. Run it again at any time: it keeps real values and only fills missing
+ones. `python3 scripts/env_setup.py --rotate` replaces the generated secrets (see
+[SETUP.md](docs/guides/SETUP.md#2-create-environment-file)).
 
 2) Start services (web, Postgres, Redis, Celery)
 

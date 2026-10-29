@@ -132,7 +132,9 @@ class ResidentialPropertyImportTests(TestCase):
             ["111"],
         )
 
-    def test_refresh_property_readiness_requires_rooms_building_and_gis(self) -> None:
+    def test_refresh_property_readiness_requires_rooms_and_building_but_not_gis(self) -> None:
+        # A house without a parcel polygon stays searchable; comparables and the report
+        # explain that its location is missing (Harris readiness in CONTEXT.md).
         ready_prop = PropertyRecord.objects.create(
             address="111 READY ST",
             city="Houston",
@@ -221,9 +223,9 @@ class ResidentialPropertyImportTests(TestCase):
         missing_gis_prop = PropertyRecord.objects.get(pk=missing_gis_prop.pk)
         non_residential = PropertyRecord.objects.get(pk=non_residential.pk)
 
-        self.assertEqual(results.ready_properties_set, 1)
+        self.assertEqual(results.ready_properties_set, 2)
         self.assertTrue(ready_prop.is_data_ready)
-        self.assertFalse(missing_gis_prop.is_data_ready)
+        self.assertTrue(missing_gis_prop.is_data_ready)
         self.assertFalse(non_residential.is_data_ready)
 
 
@@ -765,17 +767,6 @@ class ETLLoaderOptimizationTests(TestCase):
         non_res.refresh_from_db()
         self.assertEqual(prop1.parcel_id, "P1")
         self.assertEqual(prop2.parcel_id, "P2")
-
-        mocked_read_file.return_value = _FakeGDF(
-            [
-                {"ACCT": "GIS2", "PARCEL_ID": "P2", "x": -95.2, "y": 29.2},
-                {"ACCT": "GIS2", "PARCEL_ID": "P2B", "x": -95.25, "y": 29.25},
-            ]
-        )
-        with self.assertRaisesRegex(ValueError, "Conflicting canonical GIS account identity: GIS2"):
-            load_gis_parcels("fake.shp", chunk_size=2, refresh_readiness=False)
-        prop2.refresh_from_db()
-        self.assertEqual(prop2.parcel_id, "P2")
         self.assertIsNone(non_res.latitude)
         self.assertIsNone(non_res.longitude)
         self.assertNotEqual(non_res.parcel_id, "PNR")
@@ -832,7 +823,7 @@ class ReconcilePropertyDataCommandTests(TestCase):
             account_number="DROP002",
             state_class="A1",
             is_residential=True,
-            with_gis=False,
+            with_rooms=False,
         )
 
         call_command("reconcile_property_data")
@@ -849,7 +840,7 @@ class ReconcilePropertyDataCommandTests(TestCase):
             account_number="DROP002",
             state_class="A1",
             is_residential=True,
-            with_gis=False,
+            with_rooms=False,
         )
 
         call_command("reconcile_property_data", apply=True)

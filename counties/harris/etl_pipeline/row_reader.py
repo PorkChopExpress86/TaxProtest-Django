@@ -14,7 +14,7 @@ property carry an explicit status rather than being silently discarded.
 from __future__ import annotations
 
 import csv
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping, MutableMapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, TextIO, TypeAlias
@@ -40,7 +40,8 @@ class RowResult:
 
     ``values`` match ``field_names`` in order and contain database-neutral
     Python values. ``skip`` represents an intentional filter and ``invalid``
-    means the source row cannot be linked to a residential property.
+    means the source row cannot be linked to a residential property or does not
+    match its header's layout.
     """
 
     values: tuple[RowValue, ...]
@@ -193,6 +194,7 @@ EXTRA_FEATURE_FIELD_ORDER = (
     "year_built",
     "value",
     "is_active",
+    "source_ordinal",
 )
 
 
@@ -279,6 +281,11 @@ def _resolve_indices(header: list[str], source_names: Mapping[str, list[str]]) -
     return indices
 
 
+def _misaligned(row: list[str], header: list[str]) -> bool:
+    """A non-blank row whose field count differs from its header cannot be read by position."""
+    return len(row) != len(header) and any(value.strip() for value in row)
+
+
 def _make_getter(idx: Mapping[str, int]):
     """Return a positional accessor for a resolved column-index map."""
 
@@ -312,6 +319,9 @@ def iter_property_rows(filepath: Path) -> Iterator[RowResult]:
         get = _make_getter(idx)
 
         for row in reader:
+            if _misaligned(row, header):
+                yield RowResult(values=(), field_names=field_names, invalid=True)
+                continue
             acct = coerce_str(get(row, "account_number"), 20)
             if not acct:
                 yield RowResult(values=(), field_names=field_names, skip=True)
@@ -382,6 +392,9 @@ def iter_building_rows(
         get = _make_getter(idx)
 
         for row in reader:
+            if _misaligned(row, header):
+                yield RowResult(values=(), field_names=field_names, invalid=True)
+                continue
             acct = coerce_str(get(row, "account_number"), 20)
             if not acct:
                 yield RowResult(values=(), field_names=field_names, skip=True)
@@ -458,13 +471,21 @@ def iter_building_rows(
 def iter_extra_feature_rows(
     filepath: Path,
     account_map: Mapping[str, int],
+    *,
+    ordinals: MutableMapping[tuple[str, str, int], int] | None = None,
 ) -> Iterator[RowResult]:
     """Yield RowResults for ExtraFeature rows from extra_features.txt.
 
     ``account_map`` maps account numbers to PropertyRecord ids (residential
     only). Rows whose account is not in ``account_map`` are yielded with
     ``invalid=True``.
+
+    ``ordinals`` counts the loadable rows seen for each (account, code, number);
+    pass the same mapping for every file of one logical dataset so a feature's
+    ``source_ordinal`` continues across them.
     """
+    if ordinals is None:
+        ordinals = {}
     reader, fh = _open_text(filepath)
     field_names = EXTRA_FEATURE_FIELD_ORDER
     try:
@@ -475,6 +496,9 @@ def iter_extra_feature_rows(
         get = _make_getter(idx)
 
         for row in reader:
+            if _misaligned(row, header):
+                yield RowResult(values=(), field_names=field_names, invalid=True)
+                continue
             acct = coerce_str(get(row, "account_number"), 20)
             if not acct:
                 yield RowResult(values=(), field_names=field_names, invalid=True)
@@ -490,6 +514,8 @@ def iter_extra_feature_rows(
             if feature_number is None or not feature_code:
                 yield RowResult(values=(), field_names=field_names, invalid=True)
                 continue
+            identity = (acct, feature_code, feature_number)
+            ordinals[identity] = ordinals.get(identity, 0) + 1
 
             values = (
                 property_id,
@@ -506,6 +532,7 @@ def iter_extra_feature_rows(
                 coerce_int(get(row, "year_built")),
                 coerce_decimal(get(row, "value")),
                 True,  # is_active
+                ordinals[identity],
             )
             yield RowResult(values=values, field_names=field_names)
     finally:
