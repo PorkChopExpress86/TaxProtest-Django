@@ -2,6 +2,8 @@
 
 This module is deliberately Django-free so build-time and runtime import paths
 can agree on source identity, archive URLs, requiredness, and fallback years.
+It also declares each archive's extracted layout (directory name and members)
+relative to whatever root a caller owns; it never reads settings or a root.
 """
 
 from __future__ import annotations
@@ -12,6 +14,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import Enum, StrEnum
 from fnmatch import fnmatch
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -59,6 +62,22 @@ class HcadSourceId(StrEnum):
     GIS_PARCELS = "gis-parcels"
 
 
+@dataclass(frozen=True)
+class SourceMember:
+    """A file an extracted HCAD archive holds, named relative to its extract directory.
+
+    ``patterns`` are lower-case basename globs; any match satisfies the member.
+    """
+
+    label: str
+    patterns: tuple[str, ...]
+    required: bool = True
+
+
+def _member(name: str, *, required: bool = True) -> SourceMember:
+    return SourceMember(label=name, patterns=(name,), required=required)
+
+
 @dataclass
 class DataSource:
     """Configuration for one HCAD source archive."""
@@ -77,6 +96,9 @@ class DataSource:
     download_timeout: int = 300
     # A yearless URL tried after the requested year's archive, instead of the prior year.
     fallback_url: str | None = None
+    # The archive's extract-directory name, relative to whichever root a caller owns.
+    extract_dirname: str | None = None
+    members: tuple[SourceMember, ...] = ()
 
     def get_url(self, year: int | None = None) -> str:
         """Return the source URL for a given CAMA year."""
@@ -180,6 +202,42 @@ class HcadSourceCatalog:
     def is_source(self, source: DataSource, source_id: HcadSourceId) -> bool:
         return self.source_id_for(source) is source_id
 
+    def extract_dirname(self, source_id: HcadSourceId) -> str:
+        """Return the root-relative directory name a source's archive extracts into."""
+        dirname = self._catalog_source(source_id).extract_dirname
+        if not dirname:
+            raise ValueError(f"HCAD source {source_id} declares no extract directory name")
+        return dirname
+
+    def members(self, source_id: HcadSourceId) -> tuple[SourceMember, ...]:
+        """Return the declared members of a source's extract directory."""
+        return self._catalog_source(source_id).members
+
+    def missing_required_members(self, source_id: HcadSourceId, directory: Path) -> list[str]:
+        """Return labels of required members with no matching file under ``directory``.
+
+        Files are matched by lower-cased basename anywhere below ``directory``, the same
+        rule ``missing_required_files`` applies to a recursive listing. An absent
+        directory is missing every required member.
+        """
+        names = (
+            [path.name.lower() for path in directory.rglob("*") if path.is_file()]
+            if directory.is_dir()
+            else []
+        )
+        return [
+            member.label
+            for member in self.members(source_id)
+            if member.required
+            and not any(fnmatch(name, pattern) for name in names for pattern in member.patterns)
+        ]
+
+    def _catalog_source(self, source_id: HcadSourceId) -> DataSource:
+        for source in self.sources:
+            if source.source_id is source_id:
+                return source
+        raise KeyError(f"Unknown HCAD source id: {source_id}")
+
     def candidate_years(self, reference_year: int | None = None) -> list[int]:
         """Prefer the requested CAMA year and then its predecessor."""
         year = reference_year or datetime.now().year
@@ -232,6 +290,12 @@ DEFAULT_HCAD_SOURCE_CATALOG = HcadSourceCatalog(
             name="Real Account Owner",
             url_template="https://download.hcad.org/data/CAMA/{year}/Real_acct_owner.zip",
             filename="Real_acct_owner.zip",
+            extract_dirname="Real_acct_owner",
+            members=(
+                _member("real_acct.txt"),
+                _member("owners.txt", required=False),
+                _member("deeds.txt", required=False),
+            ),
             source_type=DataSourceType.PROPERTY_DATA,
             extract_patterns=["real_acct.txt", "owners.txt", "deeds.txt"],
             priority=10,
@@ -242,6 +306,8 @@ DEFAULT_HCAD_SOURCE_CATALOG = HcadSourceCatalog(
             name="Real Account Ownership History",
             url_template="https://download.hcad.org/data/CAMA/{year}/Real_acct_ownership_history.zip",
             filename="Real_acct_ownership_history.zip",
+            extract_dirname="Real_acct_ownership_history",
+            members=(),
             source_type=DataSourceType.PROPERTY_DATA,
             required=False,
             priority=90,
@@ -251,6 +317,16 @@ DEFAULT_HCAD_SOURCE_CATALOG = HcadSourceCatalog(
             name="Real Building Land",
             url_template="https://download.hcad.org/data/CAMA/{year}/Real_building_land.zip",
             filename="Real_building_land.zip",
+            extract_dirname="Real_building_land",
+            members=(
+                _member("building_res.txt"),
+                _member("fixtures.txt"),
+                SourceMember(
+                    label="extra_features*.txt",
+                    patterns=("extra_features.txt", "extra_features_detail*.txt"),
+                ),
+                _member("land.txt", required=False),
+            ),
             source_type=DataSourceType.PROPERTY_DATA,
             extract_patterns=[
                 "building_res.txt",
@@ -267,6 +343,13 @@ DEFAULT_HCAD_SOURCE_CATALOG = HcadSourceCatalog(
             name="Real Jur Exempt",
             url_template="https://download.hcad.org/data/CAMA/{year}/Real_jur_exempt.zip",
             filename="Real_jur_exempt.zip",
+            extract_dirname="Real_jur_exempt",
+            members=(
+                _member("jur_value.txt"),
+                _member("jur_exempt.txt"),
+                _member("jur_tax_dist_exempt_value_rate.txt"),
+                _member("jur_exemption_dscr.txt", required=False),
+            ),
             source_type=DataSourceType.PROPERTY_DATA,
             required=False,
             priority=80,
@@ -276,6 +359,8 @@ DEFAULT_HCAD_SOURCE_CATALOG = HcadSourceCatalog(
             name="Code Description Real",
             url_template="https://download.hcad.org/data/CAMA/{year}/Code_description_real.zip",
             filename="Code_description_real.zip",
+            extract_dirname="Code_description_real",
+            members=(),
             source_type=DataSourceType.CODE_DESCRIPTIONS,
             required=False,
             priority=5,
@@ -286,6 +371,8 @@ DEFAULT_HCAD_SOURCE_CATALOG = HcadSourceCatalog(
             name="PP Files",
             url_template="https://download.hcad.org/data/CAMA/{year}/PP_files.zip",
             filename="PP_files.zip",
+            extract_dirname="PP_files",
+            members=(),
             source_type=DataSourceType.PROPERTY_DATA,
             required=False,
             priority=85,
@@ -295,6 +382,8 @@ DEFAULT_HCAD_SOURCE_CATALOG = HcadSourceCatalog(
             name="Code Description PP",
             url_template="https://download.hcad.org/data/CAMA/{year}/Code_description_pp.zip",
             filename="Code_description_pp.zip",
+            extract_dirname="Code_description_pp",
+            members=(),
             source_type=DataSourceType.CODE_DESCRIPTIONS,
             required=False,
             priority=6,
@@ -305,6 +394,9 @@ DEFAULT_HCAD_SOURCE_CATALOG = HcadSourceCatalog(
             name="Hearing Files",
             url_template="https://download.hcad.org/data/CAMA/{year}/Hearing_files.zip",
             filename="Hearing_files.zip",
+            extract_dirname="Hearing_files",
+            # The assessment-history importer reads hearings only when the file exists.
+            members=(_member("arb_hearings_real.txt", required=False),),
             source_type=DataSourceType.HEARING_DATA,
             required=False,
             priority=95,
@@ -317,6 +409,8 @@ DEFAULT_HCAD_SOURCE_CATALOG = HcadSourceCatalog(
             url_template="https://download.hcad.org/data/GIS/Parcels_{year}_Oct.zip",
             fallback_url="https://download.hcad.org/data/GIS/Parcels.zip",
             filename="Parcels.zip",
+            extract_dirname="Parcels",
+            members=(),
             source_type=DataSourceType.GIS_DATA,
             priority=50,
             source_id=HcadSourceId.GIS_PARCELS,
@@ -342,4 +436,5 @@ __all__ = [
     "HarrisImportStage",
     "HcadSourceId",
     "HcadSourceCatalog",
+    "SourceMember",
 ]
