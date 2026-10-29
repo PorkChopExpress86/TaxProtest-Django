@@ -137,6 +137,9 @@ class ExtraFeature(models.Model):
     # Feature identification
     feature_number = models.IntegerField(null=True, blank=True)
     feature_code = models.CharField(max_length=10, db_index=True)  # Pool, garage, etc.
+    # HCAD has no feature sequence: two sheds on one lot share account, code and
+    # bld_num. The 1-based source position among those rows tells them apart.
+    source_ordinal = models.PositiveIntegerField(default=1)
     feature_description = models.CharField(max_length=255, blank=True)
 
     # Feature details
@@ -168,7 +171,7 @@ class ExtraFeature(models.Model):
         ]
         constraints = [
             models.UniqueConstraint(
-                fields=["account_number", "feature_code", "feature_number"],
+                fields=["account_number", "feature_code", "feature_number", "source_ordinal"],
                 name="unique_feature_per_account",
             )
         ]

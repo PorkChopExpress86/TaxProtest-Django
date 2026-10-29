@@ -235,10 +235,10 @@ class Command(BaseCommand):
         # ------------------------------------------------------------------
         # 5. Duplicate ExtraFeatures
         # ------------------------------------------------------------------
-        self._section("Duplicate ExtraFeatures (by account + code + number)")
+        self._section("Duplicate ExtraFeatures (by account + code + number + source ordinal)")
         dup_feats = (
             ExtraFeature.objects.filter(is_active=True)
-            .values("account_number", "feature_code", "feature_number")
+            .values("account_number", "feature_code", "feature_number", "source_ordinal")
             .annotate(cnt=Count("id"))
             .filter(cnt__gt=1)
         )

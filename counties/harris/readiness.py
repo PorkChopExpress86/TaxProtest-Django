@@ -37,7 +37,6 @@ _RECORD_FIELDS = (
 )
 
 NOT_RESIDENTIAL = "Not residential under Harris source classification"
-NO_COORDINATES = "Coordinates unavailable"
 NO_ROOM_FACTS = "Active bedroom/bathroom facts unavailable"
 READINESS_INCOMPLETE = "Harris data readiness incomplete"
 NO_LOCATION = "This property does not have location data required for similarity search."
@@ -118,8 +117,6 @@ def readiness(
     if not record.is_residential:
         base.append(NOT_RESIDENTIAL)
     if not record.is_data_ready:
-        if not record.has_coordinates:
-            base.append(NO_COORDINATES)
         if not record.has_room_facts:
             base.append(NO_ROOM_FACTS)
         if not base:

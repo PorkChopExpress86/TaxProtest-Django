@@ -187,7 +187,7 @@ class Command(BaseCommand):
         )
 
         queryset = PropertyRecord.objects.annotate(has_ready_building=Exists(ready_buildings)).only(
-            "pk", "state_class", "is_residential", "latitude", "longitude"
+            "pk", "state_class", "is_residential"
         )
 
         results = {
@@ -205,11 +205,8 @@ class Command(BaseCommand):
         for prop in queryset.iterator(chunk_size=chunk_size):
             normalized_state_class = normalize_state_class(prop.state_class)
             effective_is_residential = is_residential_state_class(normalized_state_class)
-            has_coords = prop.latitude is not None and prop.longitude is not None
-            effective_is_ready = (
-                effective_is_residential
-                and bool(getattr(prop, "has_ready_building", False))
-                and has_coords
+            effective_is_ready = effective_is_residential and bool(
+                getattr(prop, "has_ready_building", False)
             )
 
             results["properties_examined"] += 1

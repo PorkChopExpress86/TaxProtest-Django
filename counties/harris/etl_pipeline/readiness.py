@@ -35,7 +35,11 @@ class ReadinessSummary:
 
 
 def refresh_property_readiness() -> ReadinessSummary:
-    """Recompute PropertyRecord.is_data_ready based on building, room, and GIS completeness."""
+    """Recompute PropertyRecord.is_data_ready from building and room completeness.
+
+    Coordinates are not required: a house without a parcel polygon stays searchable,
+    and only its comparable and report readiness wait for a location.
+    """
     ready_buildings = BuildingDetail.objects.filter(
         property_id=OuterRef("pk"),
         is_active=True,
@@ -67,20 +71,14 @@ def refresh_property_readiness() -> ReadinessSummary:
                       AND bathrooms IS NOT NULL
                 ) b
                 WHERE data_propertyrecord.id = b.property_id
-                  AND data_propertyrecord.is_residential = true
-                  AND data_propertyrecord.latitude IS NOT NULL
-                  AND data_propertyrecord.longitude IS NOT NULL;
+                  AND data_propertyrecord.is_residential = true;
             """)
             ready = cursor.rowcount
     else:
         cleared = PropertyRecord.objects.filter(is_data_ready=True).update(is_data_ready=False)
 
         ready = (
-            residential_properties.filter(
-                latitude__isnull=False,
-                longitude__isnull=False,
-            )
-            .annotate(has_ready_building=Exists(ready_buildings))
+            residential_properties.annotate(has_ready_building=Exists(ready_buildings))
             .filter(has_ready_building=True)
             .update(is_data_ready=True)
         )

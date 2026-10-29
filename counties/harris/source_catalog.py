@@ -75,6 +75,8 @@ class DataSource:
     source_id: HcadSourceId | None = None
     import_stages: frozenset[HarrisImportStage] = field(default_factory=frozenset)
     download_timeout: int = 300
+    # A yearless URL tried after the requested year's archive, instead of the prior year.
+    fallback_url: str | None = None
 
     def get_url(self, year: int | None = None) -> str:
         """Return the source URL for a given CAMA year."""
@@ -187,6 +189,8 @@ class HcadSourceCatalog:
         """Return the acquisition URLs in the canonical fallback order."""
         if "{year}" not in source.url_template:
             return [source.get_url(reference_year)]
+        if source.fallback_url:
+            return [source.get_url(reference_year), source.fallback_url]
         return [source.get_url(year) for year in self.candidate_years(reference_year)]
 
     def legacy_archives(self) -> list[dict[str, Any]]:
@@ -308,7 +312,10 @@ DEFAULT_HCAD_SOURCE_CATALOG = HcadSourceCatalog(
         ),
         DataSource(
             name="GIS Parcels",
-            url_template="https://download.hcad.org/data/GIS/Parcels.zip",
+            # HCAD posts each year's parcels as of October late in that year. Until then the
+            # current Parcels.zip is used and its year is recorded as unconfirmed.
+            url_template="https://download.hcad.org/data/GIS/Parcels_{year}_Oct.zip",
+            fallback_url="https://download.hcad.org/data/GIS/Parcels.zip",
             filename="Parcels.zip",
             source_type=DataSourceType.GIS_DATA,
             priority=50,

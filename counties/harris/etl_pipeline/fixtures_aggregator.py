@@ -20,11 +20,19 @@ class FixturesAggregator:
     BEDROOM_CODE = "RMB"  # Room: Bedroom
     FULL_BATH_CODE = "RMF"  # Room: Full Bath
     HALF_BATH_CODE = "RMH"  # Room: Half Bath
+    ROOM_CODES = {
+        BEDROOM_CODE: "bedrooms",
+        FULL_BATH_CODE: "full_baths",
+        HALF_BATH_CODE: "half_baths",
+    }
 
     def __init__(self):
         """Initialize the fixtures aggregator."""
         self.fixtures_cache: dict[tuple[str, int], dict[str, float]] = {}
+        # Fields the file gives one value for. HCAD sometimes repeats a building's
+        # room type with different units; that count is unknown, not last-wins.
         self.fixture_fields: dict[tuple[str, int], frozenset[str]] = {}
+        self.conflicting_fields: dict[tuple[str, int], frozenset[str]] = {}
         self.total_fixture_records = 0
         self.room_records_found = 0
 
@@ -44,12 +52,14 @@ class FixturesAggregator:
         logger.info(f"Loading fixtures from {file_path}")
         self.fixtures_cache = {}
         self.fixture_fields = {}
+        self.conflicting_fields = {}
         self.total_fixture_records = 0
         self.room_records_found = 0
 
         # Use defaultdict to accumulate fixture counts
         fixtures_data = defaultdict(lambda: {"bedrooms": 0.0, "full_baths": 0.0, "half_baths": 0.0})
         fixture_fields: defaultdict[tuple[str, int], set[str]] = defaultdict(set)
+        conflicting_fields: defaultdict[tuple[str, int], set[str]] = defaultdict(set)
 
         line_count = 0
         processed_count = 0
@@ -85,24 +95,17 @@ class FixturesAggregator:
                         units = float(parts[field_positions["units"]].strip())
 
                         # Only process bedroom/bathroom fixture types
-                        if fixture_type not in (
-                            self.BEDROOM_CODE,
-                            self.FULL_BATH_CODE,
-                            self.HALF_BATH_CODE,
-                        ):
+                        room_field = self.ROOM_CODES.get(fixture_type)
+                        if room_field is None:
                             continue
 
                         key = (account_num, building_num)
-
-                        if fixture_type == self.BEDROOM_CODE:
-                            fixtures_data[key]["bedrooms"] = units
-                            fixture_fields[key].add("bedrooms")
-                        elif fixture_type == self.FULL_BATH_CODE:
-                            fixtures_data[key]["full_baths"] = units
-                            fixture_fields[key].add("full_baths")
-                        elif fixture_type == self.HALF_BATH_CODE:
-                            fixtures_data[key]["half_baths"] = units
-                            fixture_fields[key].add("half_baths")
+                        if room_field in fixture_fields[key] and (
+                            fixtures_data[key][room_field] != units
+                        ):
+                            conflicting_fields[key].add(room_field)
+                        fixtures_data[key][room_field] = units
+                        fixture_fields[key].add(room_field)
 
                         processed_count += 1
 
@@ -117,9 +120,17 @@ class FixturesAggregator:
             logger.error(f"Error reading fixtures file: {e}")
             return
 
+        for key, fields in conflicting_fields.items():
+            for room_field in fields:
+                fixtures_data[key][room_field] = 0.0
+            fixture_fields[key] -= fields
+
         # Convert defaultdict to regular dict and cache
         self.fixtures_cache = dict(fixtures_data)
         self.fixture_fields = {key: frozenset(fields) for key, fields in fixture_fields.items()}
+        self.conflicting_fields = {
+            key: frozenset(fields) for key, fields in conflicting_fields.items()
+        }
         self.total_fixture_records = line_count
         self.room_records_found = processed_count
 
@@ -151,8 +162,12 @@ class FixturesAggregator:
         """
         Get total bathroom count for a building.
 
-        Total bathrooms = full_baths + (half_baths * 0.5)
+        Total bathrooms = full_baths + (half_baths * 0.5), or 0.0 (unknown) when
+        either count conflicts.
         """
+        conflicting = self.conflicting_fields.get((account_number, building_number), frozenset())
+        if {"full_baths", "half_baths"} & conflicting:
+            return 0.0
         fixtures = self.get_fixtures(account_number, building_number)
         full = fixtures["full_baths"]
         half = fixtures["half_baths"]
@@ -261,9 +276,13 @@ def update_building_room_counts(
             if "bedrooms" in fixture_fields and building.bedrooms != bedrooms:
                 building.bedrooms = bedrooms
                 changed = True
-            if {"full_baths", "half_baths"}.intersection(
-                fixture_fields
-            ) and building.bathrooms != bathrooms:
+            if (
+                {"full_baths", "half_baths"}.intersection(fixture_fields)
+                and not {"full_baths", "half_baths"}.intersection(
+                    aggregator.conflicting_fields.get(key, frozenset())
+                )
+                and building.bathrooms != bathrooms
+            ):
                 building.bathrooms = bathrooms
                 changed = True
             if "half_baths" in fixture_fields and building.half_baths != half_baths:

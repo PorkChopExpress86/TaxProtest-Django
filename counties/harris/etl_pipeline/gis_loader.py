@@ -89,6 +89,8 @@ class GisParcelInspection:
     invalid: int
     skipped: int
     source_years: tuple[int, ...]
+    # Accounts HCAD splits across differing shapes; each takes its union's centroid.
+    merged_accounts: tuple[str, ...] = ()
 
 
 def inspect_gis_parcels(
@@ -114,7 +116,9 @@ def inspect_gis_parcels(
         (
             column
             for column in gdf.columns
-            if column.upper() in {"HCAD_NUM", "ACCT", "ACCOUNT", "ACCOUNT_NUM", "ACCT_NUM"}
+            # HCAD renamed HCAD_NUM to HCAD_NUM_1 in its October 2026 parcel layer.
+            if column.upper()
+            in {"HCAD_NUM", "HCAD_NUM_1", "ACCT", "ACCOUNT", "ACCOUNT_NUM", "ACCT_NUM"}
         ),
         None,
     )
@@ -127,7 +131,7 @@ def inspect_gis_parcels(
         (
             column
             for column in gdf.columns
-            if column.upper() in {"PARCEL_ID", "PARCELID", "PRCL_ID", "HCAD_NUM"}
+            if column.upper() in {"PARCEL_ID", "PARCELID", "PRCL_ID", "HCAD_NUM", "HCAD_NUM_1"}
         ),
         None,
     )
@@ -143,7 +147,9 @@ def inspect_gis_parcels(
         ),
         None,
     )
-    for row in gdf.itertuples(index=False):
+    first_positions: dict[str, int] = {}
+    split_positions: dict[str, list[int]] = {}
+    for position, row in enumerate(gdf.itertuples(index=False)):
         if year_column is not None:
             raw_year = getattr(row, year_column)
             if raw_year is not None and str(raw_year).strip().lower() not in (
@@ -182,13 +188,47 @@ def inspect_gis_parcels(
         parcel_raw = getattr(row, parcel_col) if parcel_col else ""
         parcel_id = str(parcel_raw).strip() if parcel_raw is not None else ""
         coordinates = (lat, lon, parcel_id)
-        if account_num in updates_by_account and updates_by_account[account_num] != coordinates:
-            raise ValueError(f"Conflicting canonical GIS account identity: {account_num}")
-        if account_num in updates_by_account:
-            skipped += 1
-        updates_by_account[account_num] = coordinates
+        if account_num not in updates_by_account:
+            updates_by_account[account_num] = coordinates
+            first_positions[account_num] = position
+            continue
+        skipped += 1
+        if account_num in split_positions:
+            split_positions[account_num].append(position)
+        elif updates_by_account[account_num] != coordinates:
+            split_positions[account_num] = [first_positions[account_num], position]
 
-    return GisParcelInspection(updates_by_account, invalid, skipped, tuple(sorted(source_years)))
+    for account_num, positions in split_positions.items():
+        updates_by_account[account_num] = _merged_coordinates(
+            gdf, positions, parcel_col, crs_is_wgs84=gdf.crs.to_epsg() == 4326
+        )
+
+    return GisParcelInspection(
+        updates_by_account,
+        invalid,
+        skipped,
+        tuple(sorted(source_years)),
+        tuple(sorted(split_positions)),
+    )
+
+
+def _merged_coordinates(
+    gdf, positions: list[int], parcel_col: str | None, *, crs_is_wgs84: bool
+) -> tuple[float, float, str]:
+    """The centroid of the union of an account's distinct shapes, independent of file order."""
+    import shapely
+
+    shapes = {shape.wkb: shape for shape in gdf.geometry.iloc[positions]}
+    union = shapely.union_all([shapes[key] for key in sorted(shapes)])
+    centroid = union.centroid
+    if not crs_is_wgs84:
+        centroid = gpd.GeoSeries([centroid], crs=gdf.crs).to_crs(epsg=4326).iloc[0]
+    parcel_ids = (
+        sorted(str(gdf[parcel_col].iloc[position]).strip() for position in positions)
+        if parcel_col
+        else [""]
+    )
+    return (centroid.y, centroid.x, parcel_ids[0])
 
 
 def translate_gis_parcels(shapefile_path: str) -> dict[str, tuple[float, float, str]]:

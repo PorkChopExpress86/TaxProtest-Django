@@ -320,6 +320,26 @@ class HarrisPublicationTests(TransactionTestCase):
             self.assertEqual(candidate.state, "published")
             self.assertEqual(PropertyRecord.objects.get().account_number, "P100")
 
+    def test_review_report_flags_accounts_whose_split_gis_parcels_were_merged(self):
+        import geopandas as gpd
+        from shapely.geometry import Point
+
+        user = get_user_model().objects.create_superuser("operator", password="test")
+        self.client.force_login(user)
+        with tempfile.TemporaryDirectory() as root, self.settings(**_runtime_settings(root)):
+            request = harris_request(root)
+            gpd.GeoDataFrame(
+                {"ACCT": ["P100", "P100"]},
+                geometry=[Point(3100000, 13800000), Point(3101000, 13800000)],
+                crs="EPSG:2278",
+            ).to_file(Path(root) / "extracted" / "Parcels" / "parcels.shp")
+            result = run_harris_import(request)
+            self.assertEqual(result.status, HarrisImportStatus.AWAITING_REVIEW)
+            page = self.client.get(
+                reverse("admin:data_importcandidate_review", args=[result.candidate_id])
+            )
+            self.assertContains(page, "&#x27;merged_accounts&#x27;: [&#x27;P100&#x27;]")
+
     def test_database_failure_preserves_previous_rows_and_candidate(self):
         self.baseline()
         with tempfile.TemporaryDirectory() as root, self.settings(**_runtime_settings(root)):

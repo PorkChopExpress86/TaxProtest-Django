@@ -34,7 +34,9 @@ class HarrisSourceValidation:
     translated: dict[str, dict[str, int]] = field(default_factory=dict)
     account_map: dict[str, int] = field(default_factory=dict)
     files: list[dict[str, Any]] = field(default_factory=list)
-    fixture_units: dict[tuple[str, int, str], Decimal] = field(default_factory=dict)
+    # Room-count units and row counts per (acct, bld_num, type), for conflict accounting.
+    fixture_units: dict[tuple[str, int, str], tuple[Decimal, int]] = field(default_factory=dict)
+    conflicting_fixtures: set[tuple[str, int, str]] = field(default_factory=set)
 
     def evidence(self):
         return {
@@ -146,6 +148,10 @@ def _inspect_layout(path: Path, schema: str, year: int, result: HarrisSourceVali
     aliases, required = _LAYOUTS[schema]
     count = invalid = 0
     years: set[int] = set()
+    # Rows read by position are unreadable once a stray tab or line break shifts their
+    # fields; they are left out of the load and counted as invalid rather than failing
+    # the source.
+    misaligned = 0
     with path.open(encoding="latin-1", newline="") as stream:
         reader = csv.reader(stream, delimiter="\t", quoting=csv.QUOTE_NONE)
         header = next(reader, [])
@@ -171,65 +177,80 @@ def _inspect_layout(path: Path, schema: str, year: int, result: HarrisSourceVali
             count += 1
             problems = []
             if len(row) != len(header):
-                problems.append("row does not match header layout")
-            else:
-                account_field = "acct" if schema == "fixtures" else "account_number"
-                account_index = indices.get(account_field)
-                account = row[account_index].strip() if account_index is not None else ""
-                if not account or len(account) > 20:
-                    problems.append("missing or overlong canonical account identity")
-                if schema == "fixtures" and any(
-                    indices[field] is not None and not row[indices[field]].strip()
-                    for field in required
-                ):
-                    problems.append("missing canonical fixture fields")
-                for field_name, index in indices.items():
-                    if index is None or field_name in _TEXT_FIELDS or not row[index].strip():
+                invalid += 1
+                misaligned += 1
+                continue
+            # HCAD writes a few fixture rows with no type; no room count reads them.
+            type_index = indices.get("type") if schema == "fixtures" else None
+            if type_index is not None and not row[type_index].strip():
+                invalid += 1
+                continue
+            account_field = "acct" if schema == "fixtures" else "account_number"
+            account_index = indices.get(account_field)
+            account = row[account_index].strip() if account_index is not None else ""
+            if not account or len(account) > 20:
+                problems.append("missing or overlong canonical account identity")
+            if schema == "fixtures" and any(
+                indices[field] is not None and not row[indices[field]].strip() for field in required
+            ):
+                problems.append("missing canonical fixture fields")
+            for field_name, index in indices.items():
+                if index is None or field_name in _TEXT_FIELDS or not row[index].strip():
+                    continue
+                # HCAD writes "Pending" for a feature it has not appraised yet.
+                if schema == "extra_features" and field_name == "value":
+                    if row[index].strip() == "Pending":
                         continue
-                    try:
-                        raw_value = row[index].strip()
-                        value = Decimal(
-                            raw_value
-                            if field_name in ("building_number", "feature_number", "bld_num")
-                            else raw_value.replace("$", "").replace(",", "")
-                        )
-                        if not value.is_finite() or not math.isfinite(float(value)):
-                            raise InvalidOperation
-                        if field_name in ("building_number", "feature_number", "bld_num") and (
-                            value != value.to_integral_value() or value < 1
-                        ):
-                            raise InvalidOperation
-                        if field_name == "bld_num":
-                            int(raw_value)  # FixturesAggregator uses integer lexical parsing.
-                    except (InvalidOperation, ValueError):
-                        problems.append(f"invalid numeric {field_name}")
-                if year_index is not None:
-                    try:
-                        actual_year = int(row[year_index].strip())
-                        years.add(actual_year)
-                        if actual_year != year:
-                            problems.append(
-                                f"source year {actual_year} differs from requested {year}"
-                            )
-                    except ValueError:
-                        problems.append("invalid source year")
-                if schema == "fixtures" and not problems and not missing:
-                    key = (
-                        account,
-                        int(Decimal(row[indices["bld_num"]])),
-                        row[indices["type"]].strip(),
+                try:
+                    raw_value = row[index].strip()
+                    value = Decimal(
+                        raw_value
+                        if field_name in ("building_number", "feature_number", "bld_num")
+                        else raw_value.replace("$", "").replace(",", "")
                     )
-                    units = Decimal(row[indices["units"]])
-                    previous = result.fixture_units.get(key)
-                    if previous is not None and previous != units:
-                        problems.append("conflicting canonical identity")
-                    result.fixture_units[key] = units
+                    if not value.is_finite() or not math.isfinite(float(value)):
+                        raise InvalidOperation
+                    # HCAD numbers features that belong to no building as bld_num 0.
+                    lowest = 0 if field_name == "feature_number" else 1
+                    if field_name in ("building_number", "feature_number", "bld_num") and (
+                        value != value.to_integral_value() or value < lowest
+                    ):
+                        raise InvalidOperation
+                    if field_name == "bld_num":
+                        int(raw_value)  # FixturesAggregator uses integer lexical parsing.
+                except (InvalidOperation, ValueError):
+                    problems.append(f"invalid numeric {field_name}")
+            if year_index is not None:
+                try:
+                    actual_year = int(row[year_index].strip())
+                    years.add(actual_year)
+                    if actual_year != year:
+                        problems.append(f"source year {actual_year} differs from requested {year}")
+                except ValueError:
+                    problems.append("invalid source year")
+            fixture_type = (
+                row[indices["type"]].strip() if schema == "fixtures" and not missing else ""
+            )
+            if fixture_type in FixturesAggregator.ROOM_CODES and not problems:
+                # A room type HCAD repeats with different units has no knowable count:
+                # FixturesAggregator leaves it unknown, and every row of it is invalid.
+                key = (account, int(Decimal(row[indices["bld_num"]])), fixture_type)
+                units = Decimal(row[indices["units"]])
+                previous, rows_seen = result.fixture_units.get(key, (units, 0))
+                result.fixture_units[key] = (previous, rows_seen + 1)
+                if key in result.conflicting_fixtures:
+                    invalid += 1
+                elif previous != units:
+                    result.conflicting_fixtures.add(key)
+                    invalid += rows_seen + 1
             if problems:
                 invalid += 1
                 if len(result.errors) < 50:
                     result.errors.append(f"{path.name}:{number}: {'; '.join(problems)}")
         if count == 0 and schema in ("real_acct", "building_res"):
             result.errors.append(f"{path.name}: required source contains no records")
+        elif count and misaligned == count:
+            result.errors.append(f"{path.name}: no row matches the header layout")
     result.files.append(
         {
             "path": str(path),
@@ -248,6 +269,7 @@ def validate_harris_sources(
     manager = ExtractManager(config)
     selected: dict[str, list[Path]] = {schema: [] for schema in _LAYOUTS}
     gis_paths = []
+    unconfirmed_years: set[Path] = set()
     for source in sources:
         root = manager.get_extract_path(source)
         archive = config.download_dir / source.filename
@@ -295,8 +317,11 @@ def validate_harris_sources(
                     paths,
                     source_id=source.source_id.value if source.source_id else source.name,
                     requested_year=year,
-                    source_year=None,
+                    source_year=acquired.get("source_year"),
                 )
+                # The parcel layer carries no tax year; a yearless download cannot be dated.
+                if source.fallback_url and acquired.get("source_url") == source.fallback_url:
+                    unconfirmed_years.add(layer)
                 _check_archive_inputs(archive, paths, operation, result, relative_to=layer.parent)
             continue
         files = sorted(root.rglob("*.txt"))
@@ -332,6 +357,7 @@ def validate_harris_sources(
             PropertyRecord.objects.filter(is_residential=True).values_list("account_number", "pk")
         )
     seen: dict[str, dict[tuple, bytes]] = {schema: {} for schema in selected}
+    feature_ordinals: dict[tuple[str, str, int], int] = {}
     for schema in ("real_acct", "building_res", "extra_features"):
         counts = {"loaded": 0, "invalid": 0, "skipped": 0}
         for path in selected[schema]:
@@ -341,7 +367,9 @@ def validate_harris_sources(
                 else (
                     iter_building_rows(path, result.account_map, fixtures)
                     if schema == "building_res"
-                    else iter_extra_feature_rows(path, result.account_map)
+                    else iter_extra_feature_rows(
+                        path, result.account_map, ordinals=feature_ordinals
+                    )
                 )
             )
             for row in rows:
@@ -357,7 +385,12 @@ def validate_harris_sources(
                         else (
                             ("account_number", "building_number")
                             if schema == "building_res"
-                            else ("account_number", "feature_code", "feature_number")
+                            else (
+                                "account_number",
+                                "feature_code",
+                                "feature_number",
+                                "source_ordinal",
+                            )
                         )
                     )
                     identity = tuple(record[field] for field in fields)
@@ -383,15 +416,20 @@ def validate_harris_sources(
                 "invalid": inspection.invalid,
                 "skipped": inspection.skipped,
             }
-            result.files.append(
-                {
-                    "path": str(path),
-                    "schema": "gis",
-                    "records": len(coordinates) + inspection.invalid + inspection.skipped,
-                    "invalid": inspection.invalid,
-                    "observed_source_years": list(inspection.source_years),
-                }
-            )
+            gis_file: dict[str, Any] = {
+                "path": str(path),
+                "schema": "gis",
+                "records": len(coordinates) + inspection.invalid + inspection.skipped,
+                "invalid": inspection.invalid,
+                "observed_source_years": list(inspection.source_years),
+            }
+            # Present only when parcels were merged, so evidence without merges keeps
+            # its ADR-0024 pinned bytes.
+            if inspection.merged_accounts:
+                gis_file["merged_accounts"] = list(inspection.merged_accounts)
+            if path in unconfirmed_years:
+                gis_file["source_year_unconfirmed"] = True
+            result.files.append(gis_file)
             if not coordinates:
                 result.errors.append(f"{path.name}: requested GIS has no usable coordinates")
         except Exception as exc:

@@ -77,7 +77,10 @@ class HcadSourceCatalogTests(SimpleTestCase):
         )
         self.assertEqual(
             DEFAULT_HCAD_SOURCE_CATALOG.candidate_urls(gis, reference_year=2026),
-            ["https://download.hcad.org/data/GIS/Parcels.zip"],
+            [
+                "https://download.hcad.org/data/GIS/Parcels_2026_Oct.zip",
+                "https://download.hcad.org/data/GIS/Parcels.zip",
+            ],
         )
 
     def test_legacy_manifest_is_derived_from_catalog_facts(self):

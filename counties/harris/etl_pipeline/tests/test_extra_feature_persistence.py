@@ -49,6 +49,7 @@ class ExtraFeaturePersistenceContractTests(TestCase):
         feature_code: str = "POOL",
         *,
         description: str = "Pool",
+        source_ordinal: int = 1,
     ) -> RowResult:
         return RowResult(
             values=(
@@ -66,6 +67,7 @@ class ExtraFeaturePersistenceContractTests(TestCase):
                 2018,
                 5000.0,
                 True,
+                source_ordinal,
             ),
             field_names=EXTRA_FEATURE_FIELD_ORDER,
         )
@@ -196,6 +198,39 @@ class ExtraFeaturePersistenceContractTests(TestCase):
         self.assertEqual((result.loaded, result.invalid, result.skipped), (1, 0, 2))
         self.assertEqual(existing.feature_description, "Original pool")
         self.assertEqual(existing.import_batch_id, "existing-batch")
+
+    def _assert_sheds_persist_by_source_ordinal(
+        self, adapter: OrmPersistenceAdapter | CopyPersistenceAdapter
+    ) -> None:
+        result = self._persist(
+            adapter,
+            iter(
+                [
+                    self._feature_row(feature_number=0, description="First shed"),
+                    self._feature_row(
+                        feature_number=0, description="Second shed", source_ordinal=2
+                    ),
+                ]
+            ),
+            write_mode=PersistenceWriteMode.REPLACE,
+        )
+
+        self.assertEqual((result.loaded, result.invalid, result.skipped), (2, 0, 0))
+        self.assertEqual(
+            list(
+                ExtraFeature.objects.order_by("source_ordinal").values_list(
+                    "source_ordinal", "feature_description"
+                )
+            ),
+            [(1, "First shed"), (2, "Second shed")],
+        )
+
+    def test_features_sharing_code_and_number_persist_by_source_ordinal(self) -> None:
+        self._assert_sheds_persist_by_source_ordinal(OrmPersistenceAdapter())
+
+    @skipUnless(connection.vendor == "postgresql", "COPY requires PostgreSQL")
+    def test_copy_persists_features_sharing_code_and_number_by_source_ordinal(self) -> None:
+        self._assert_sheds_persist_by_source_ordinal(CopyPersistenceAdapter())
 
     def test_chained_physical_streams_are_one_logical_replacement(self) -> None:
         result = self._persist(

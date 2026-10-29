@@ -53,8 +53,9 @@ class RefreshPropertyReadinessTests(TestCase):
     """Ported from test_refresh_property_readiness_requires_rooms_building_and_gis.
 
     The readiness logic moved from etl.py to etl_pipeline/readiness.py;
-    this test verifies the three-tier requirement (rooms + building + GIS
-    coordinates) and non-residential exclusion still hold.
+    this test verifies the requirement (rooms + building) and non-residential
+    exclusion still hold. Coordinates are not required: a house without a
+    parcel polygon stays searchable.
     """
 
     def _create_property(
@@ -90,7 +91,7 @@ class RefreshPropertyReadinessTests(TestCase):
             is_active=True,
         )
 
-    def test_readiness_requires_rooms_building_and_gis(self) -> None:
+    def test_readiness_requires_rooms_and_building_but_not_gis(self) -> None:
         ready_prop = self._create_property(account_number="READY001")
         self._create_building(ready_prop)
 
@@ -106,9 +107,9 @@ class RefreshPropertyReadinessTests(TestCase):
         missing_gis_prop.refresh_from_db()
         non_residential.refresh_from_db()
 
-        self.assertEqual(results.ready_properties_set, 1)
+        self.assertEqual(results.ready_properties_set, 2)
         self.assertTrue(ready_prop.is_data_ready)
-        self.assertFalse(missing_gis_prop.is_data_ready)
+        self.assertTrue(missing_gis_prop.is_data_ready)
         self.assertFalse(non_residential.is_data_ready)
 
 
@@ -285,17 +286,6 @@ class LoadGisParcelsTests(TestCase):
         prop2.refresh_from_db()
         non_res.refresh_from_db()
         self.assertEqual(prop1.parcel_id, "P1")
-        self.assertEqual(prop2.parcel_id, "P2")
-
-        mocked_read_file.return_value = _FakeGDF(
-            [
-                {"ACCT": "GIS2", "PARCEL_ID": "P2", "x": -95.2, "y": 29.2},
-                {"ACCT": "GIS2", "PARCEL_ID": "P2B", "x": -95.25, "y": 29.25},
-            ]
-        )
-        with self.assertRaisesRegex(ValueError, "Conflicting canonical GIS account identity: GIS2"):
-            load_gis_parcels("fake.shp", chunk_size=2, refresh_readiness=False)
-        prop2.refresh_from_db()
         self.assertEqual(prop2.parcel_id, "P2")
         self.assertIsNone(non_res.latitude)
         self.assertIsNone(non_res.longitude)

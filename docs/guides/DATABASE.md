@@ -58,7 +58,7 @@ Database tables use the `data_` prefix (app label `data`):
 - `assessed_value`, `building_area`, `land_area`.
 - `state_class`: Property use classification (e.g. `A1` single-family residential).
 - `is_residential` (`BooleanField`): Filtered flag derived from residential state classes.
-- `is_data_ready` (`BooleanField`): `True` when residential building, room-count, and GIS coordinates are fully populated.
+- `is_data_ready` (`BooleanField`): `True` when residential building and room-count facts are populated. Coordinates are not required; a property without them is searchable, and its comparables and report say it lacks location data.
 - `latitude`, `longitude` (`FloatField`): GIS coordinates calculated from parcel centroids.
 - `parcel_id` (`CharField(30)`): GIS parcel identifier.
 
@@ -220,6 +220,8 @@ Source Files (.txt / .shp)
 
 ### Extra Feature Detail Ingestion
 Detail files (`extra_features_detail1.txt`, `extra_features_detail2.txt`) take priority to capture human-readable descriptions (`Gunite Pool`, `Frame Detached Garage`, etc.), physical dimensions (`length`, `width`), and appraised feature values.
+
+HCAD has no per-feature sequence: one lot can carry two `RRS1` sheds with the same `bld_num`. Each `ExtraFeature` therefore carries a `source_ordinal`, its 1-based position among rows with the same account, code, and `bld_num`, counted in file order across the detail files. The unique key is (account, code, `feature_number`, `source_ordinal`).
 
 ---
 

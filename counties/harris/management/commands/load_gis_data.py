@@ -54,7 +54,7 @@ class Command(BaseCommand):
         config.extract_dir = working_source_root(config.extract_dir)
         source = DEFAULT_HCAD_SOURCE_CATALOG.source_for_id(HcadSourceId.GIS_PARCELS)
         if options["url"] != source.url_template:
-            source = replace(source, url_template=options["url"])
+            source = replace(source, url_template=options["url"], fallback_url=None)
 
         logger = ETLLogger(name="etl_orchestrator", operation_id=str(operation.pk))
         download_manager = DownloadManager(config, logger)

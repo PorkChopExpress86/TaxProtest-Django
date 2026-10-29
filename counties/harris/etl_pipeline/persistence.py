@@ -143,7 +143,7 @@ _DATASET_CONTRACTS: dict[PersistenceDataset, _DatasetContract] = {
     ),
     PersistenceDataset.EXTRA_FEATURE: _DatasetContract(
         field_order=EXTRA_FEATURE_FIELD_ORDER,
-        identity_fields=("account_number", "feature_code", "feature_number"),
+        identity_fields=("account_number", "feature_code", "feature_number", "source_ordinal"),
         metadata_fields=("import_date", "import_batch_id", "created_at", "updated_at"),
         staging_table="harris_extra_feature_persistence_stage",
     ),

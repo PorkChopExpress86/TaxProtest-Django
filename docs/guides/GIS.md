@@ -32,7 +32,12 @@ The TaxProtest-Django application uses GIS data to:
 
 ### Harris County (HCAD)
 - **Source:** Harris County Appraisal District GIS Data
-- **URL:** `https://download.hcad.org/GIS/` (`Parcels.zip`)
+- **URL:** `https://download.hcad.org/data/GIS/Parcels_{year}_Oct.zip`, the parcels as of October
+  of the requested year (listed on HCAD's GIS downloads page). HCAD posts it late in that year;
+  until then the import falls back to the current `Parcels.zip` and marks the GIS file
+  `source_year_unconfirmed` in its validation evidence, because the layer has no tax-year column.
+- **Missing parcels:** a residential account without a parcel polygon stays searchable. Its
+  comparables and report state that it has no location data.
 - **Format:** ESRI Shapefiles (`ParcelsCity.shp`, `.dbf`, `.shx`, `.prj`)
 - **Source Projection:** NAD83 / Texas South Central (EPSG:32039)
 - **Target Coordinate System:** WGS84 (EPSG:4326) for web compatibility

@@ -280,7 +280,7 @@ Validation enforces the residential-only, data-ready contract:
 - residential properties only
 - active residential building records present
 - bedroom and bathroom counts populated
-- GIS coordinates present
+- GIS coordinate coverage within tolerance (a house without coordinates stays searchable)
 
 ### Step 3: Clean Up Older Mixed/Incomplete Rows (If Needed)
 
