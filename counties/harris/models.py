@@ -113,7 +113,6 @@ class BuildingDetail(models.Model):
 
     class Meta:
         indexes = [
-            models.Index(fields=["account_number", "building_number"]),
             models.Index(fields=["is_active", "import_date"]),
         ]
         constraints = [
@@ -166,7 +165,6 @@ class ExtraFeature(models.Model):
 
     class Meta:
         indexes = [
-            models.Index(fields=["account_number", "feature_code"]),
             models.Index(fields=["is_active", "import_date"]),
         ]
         constraints = [
