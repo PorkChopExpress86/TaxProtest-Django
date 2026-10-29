@@ -28,6 +28,8 @@ from counties.harris.etl_pipeline import (
     run_harris_import,
 )
 from counties.harris.etl_pipeline.import_plan import HarrisImportPlan
+from counties.harris.etl_pipeline.tests.test_harris_import import extracted
+from counties.harris.source_catalog import HcadSourceId
 
 
 class ImportAdminTests(TestCase):
@@ -145,7 +147,7 @@ class ImportAdminTests(TestCase):
 
     def test_preview_evidence_survives_a_new_admin_session(self):
         with tempfile.TemporaryDirectory() as root:
-            source = Path(root) / "extracted" / "Real_acct_owner" / "real_acct.txt"
+            source = extracted(root, HcadSourceId.REAL_ACCOUNT_OWNER) / "real_acct.txt"
             source.parent.mkdir(parents=True)
             source.write_text(
                 "acct\tsite_addr_1\tstate_class\nP100\t100 MAIN ST\tA1\n",

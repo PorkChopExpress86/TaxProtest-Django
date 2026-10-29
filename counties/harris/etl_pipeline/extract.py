@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from fnmatch import fnmatch
 from pathlib import Path
 
+from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG
+
 from .config import DataSource, ETLConfig
 from .logging import ETLLogger
 
@@ -74,8 +76,10 @@ class ExtractManager:
         self.logger = logger or ETLLogger(name="extract_manager")
 
     def _get_extract_path(self, source: DataSource) -> Path:
-        """Get the extraction directory for a source."""
-        # Use filename without extension as directory name
+        """Get the extraction directory for a source: the configured root plus the catalog name."""
+        if source.source_id is not None:
+            return self.extract_dir / DEFAULT_HCAD_SOURCE_CATALOG.extract_dirname(source.source_id)
+        # A source with no catalog identity keeps the filename-stem rule until #123 rejects it.
         base_name = source.filename
         for ext in [".zip", ".tar.gz", ".tar", ".gz"]:
             if base_name.lower().endswith(ext):
@@ -264,7 +268,7 @@ class ExtractManager:
         Returns:
             ExtractResult with extraction status and metadata
         """
-        archive_path = archive_path or (self.download_dir / source.filename)
+        archive_path = archive_path or self.get_archive_path(source)
         dest_dir = dest_dir or self._get_extract_path(source)
         validate = validate if validate is not None else self.extract_config.validate_archive
 
@@ -352,7 +356,7 @@ class ExtractManager:
             if progress_callback:
                 progress_callback(source.name, idx, len(sources))
 
-            archive_path = self.download_dir / source.filename
+            archive_path = self.get_archive_path(source)
             if not archive_path.exists():
                 self.logger.warning(f"Archive not found: {archive_path}")
                 results.append(
@@ -415,6 +419,10 @@ class ExtractManager:
     def get_extract_path(self, source: DataSource) -> Path:
         """Get the extraction directory for a source."""
         return self._get_extract_path(source)
+
+    def get_archive_path(self, source: DataSource) -> Path:
+        """Get the downloaded archive a source extracts from."""
+        return self.download_dir / source.filename
 
     def is_extracted(self, source: DataSource) -> bool:
         """Check if a source has been extracted."""

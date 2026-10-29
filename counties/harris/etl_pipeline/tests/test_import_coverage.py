@@ -1,7 +1,6 @@
 """Identity-based coverage is measured through real Harris candidates."""
 
 import tempfile
-from pathlib import Path
 from uuid import uuid4
 
 from django.db import connection
@@ -17,8 +16,9 @@ from counties.harris.etl_pipeline import (
     run_harris_import,
 )
 from counties.harris.etl_pipeline.import_plan import HarrisImportPlan
-from counties.harris.etl_pipeline.tests.test_harris_import import _runtime_settings
+from counties.harris.etl_pipeline.tests.test_harris_import import _runtime_settings, extracted
 from counties.harris.models import BuildingDetail, PropertyRecord
+from counties.harris.source_catalog import HcadSourceId
 
 
 class HarrisCoverageTests(TransactionTestCase):
@@ -32,11 +32,10 @@ class HarrisCoverageTests(TransactionTestCase):
         import geopandas as gpd
         from shapely.geometry import Point
 
-        base = Path(root) / "extracted"
         accounts, buildings, gis = (
-            base / "Real_acct_owner",
-            base / "Real_building_land",
-            base / "Parcels",
+            extracted(root, HcadSourceId.REAL_ACCOUNT_OWNER),
+            extracted(root, HcadSourceId.REAL_BUILDING_LAND),
+            extracted(root, HcadSourceId.GIS_PARCELS),
         )
         for directory in (accounts, buildings, gis):
             directory.mkdir(parents=True)

@@ -26,8 +26,10 @@ from counties.harris.etl_pipeline.tests.test_harris_import import (
     _runtime_settings,
     _write_building_sources,
     _write_property_source,
+    extracted,
 )
 from counties.harris.models import PropertyRecord
+from counties.harris.source_catalog import HcadSourceId
 
 
 class HarrisValidatedPreviewTests(TestCase):
@@ -48,7 +50,7 @@ class HarrisValidatedPreviewTests(TestCase):
             ):
                 _write_property_source(root)
                 _write_building_sources(root, "P100")
-                fixtures = Path(root) / "extracted" / "Real_building_land" / "fixtures.txt"
+                fixtures = extracted(root, HcadSourceId.REAL_BUILDING_LAND) / "fixtures.txt"
                 fixtures.write_text(fixtures_text)
                 result = run_harris_import(
                     replace(
@@ -91,7 +93,7 @@ class HarrisValidatedPreviewTests(TestCase):
         from shapely.geometry import Point
 
         with tempfile.TemporaryDirectory() as root, self.settings(**_runtime_settings(root)):
-            source = Path(root) / "extracted" / "Parcels" / "parcels.shp"
+            source = extracted(root, HcadSourceId.GIS_PARCELS) / "parcels.shp"
             source.parent.mkdir(parents=True)
             gpd.GeoDataFrame(
                 {"ACCT": ["P100"]}, geometry=[Point(3100000, 13800000)], crs="EPSG:2278"
@@ -154,7 +156,7 @@ class HarrisValidatedPreviewTests(TestCase):
         from shapely.geometry import Point
 
         with tempfile.TemporaryDirectory() as root, self.settings(**_runtime_settings(root)):
-            source = Path(root) / "extracted" / "Parcels" / "parcels.shp"
+            source = extracted(root, HcadSourceId.GIS_PARCELS) / "parcels.shp"
             source.parent.mkdir(parents=True)
             gpd.GeoDataFrame(
                 {"ACCT": ["P200", "P100", "P100"]},
@@ -255,7 +257,7 @@ class HarrisValidatedPreviewTests(TestCase):
                 tempfile.TemporaryDirectory() as root,
                 self.settings(**_runtime_settings(root)),
             ):
-                source = Path(root) / "extracted" / "Parcels" / "parcels.shp"
+                source = extracted(root, HcadSourceId.GIS_PARCELS) / "parcels.shp"
                 source.parent.mkdir(parents=True)
                 gpd.GeoDataFrame(
                     {"ACCT": ["P100"] * len(coordinates), "TaxYear": years},

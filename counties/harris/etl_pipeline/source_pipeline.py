@@ -26,6 +26,14 @@ from .persistence import (
 from .row_reader import RowResult, iter_building_rows, iter_extra_feature_rows, iter_property_rows
 
 
+def declared_member(source_id: HcadSourceId, label: str) -> str:
+    """Return the file name of a member the catalog declares for ``source_id``."""
+    for member in DEFAULT_HCAD_SOURCE_CATALOG.members(source_id):
+        if member.label == label:
+            return member.label
+    raise LookupError(f"HCAD source {source_id} declares no member {label}")
+
+
 def resolve_schema_name(filename_stem: str) -> str | None:
     """Map a source filename stem to a transform schema name."""
     filename = filename_stem.lower()
@@ -107,7 +115,9 @@ class HarrisSourcePipeline:
         for source in sources:
             if DEFAULT_HCAD_SOURCE_CATALOG.is_source(source, HcadSourceId.REAL_BUILDING_LAND):
                 extract_path = self.extract_manager.get_extract_path(source)
-                fixtures_path = extract_path / "fixtures.txt"
+                fixtures_path = extract_path / declared_member(
+                    HcadSourceId.REAL_BUILDING_LAND, "fixtures.txt"
+                )
 
                 if fixtures_path.exists():
                     try:

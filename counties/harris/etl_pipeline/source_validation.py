@@ -272,7 +272,7 @@ def validate_harris_sources(
     unconfirmed_years: set[Path] = set()
     for source in sources:
         root = manager.get_extract_path(source)
-        archive = config.download_dir / source.filename
+        archive = manager.get_archive_path(source)
         acquired = operation.evidence.get("acquired_sources", {}).get(source.filename, {})
         previous_download = operation.evidence.get("reused_from", {}).get(
             str(config.download_dir.parent.parent)

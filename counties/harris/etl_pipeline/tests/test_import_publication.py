@@ -30,31 +30,28 @@ from counties.harris.etl_pipeline import (
     run_harris_import,
 )
 from counties.harris.etl_pipeline.import_plan import HarrisImportPlan
-from counties.harris.etl_pipeline.tests.test_harris_import import _runtime_settings
+from counties.harris.etl_pipeline.tests.test_harris_import import _runtime_settings, extracted
 from counties.harris.models import BuildingDetail, PropertyRecord
+from counties.harris.source_catalog import HcadSourceId
 
 
 def harris_request(root, key="P100", *, prepare=False):
     import geopandas as gpd
     from shapely.geometry import Point
 
-    base = Path(root) / "extracted"
-    for name in ("Real_acct_owner", "Real_building_land", "Parcels"):
-        (base / name).mkdir(parents=True, exist_ok=True)
-    (base / "Real_acct_owner/real_acct.txt").write_text(
-        f"acct\tstate_class\ttot_appr_val\n{key}\tA1\t250000\n"
-    )
-    (base / "Real_building_land/building_res.txt").write_text(
-        f"acct\tbld_num\theat_ar\n{key}\t1\t1800\n"
-    )
-    (base / "Real_building_land/fixtures.txt").write_text(
+    owners = extracted(root, HcadSourceId.REAL_ACCOUNT_OWNER)
+    buildings = extracted(root, HcadSourceId.REAL_BUILDING_LAND)
+    parcels = extracted(root, HcadSourceId.GIS_PARCELS)
+    for directory in (owners, buildings, parcels):
+        directory.mkdir(parents=True, exist_ok=True)
+    (owners / "real_acct.txt").write_text(f"acct\tstate_class\ttot_appr_val\n{key}\tA1\t250000\n")
+    (buildings / "building_res.txt").write_text(f"acct\tbld_num\theat_ar\n{key}\t1\t1800\n")
+    (buildings / "fixtures.txt").write_text(
         f"acct\tbld_num\ttype\tunits\n{key}\t1\tRMB\t3\n{key}\t1\tRMF\t2\n"
     )
-    (base / "Real_building_land/extra_features.txt").write_text(
-        f"acct\tbld_num\tcd\n{key}\t1\tGAR\n"
-    )
+    (buildings / "extra_features.txt").write_text(f"acct\tbld_num\tcd\n{key}\t1\tGAR\n")
     gpd.GeoDataFrame({"ACCT": [key]}, geometry=[Point(3100000, 13800000)], crs="EPSG:2278").to_file(
-        base / "Parcels/parcels.shp"
+        parcels / "parcels.shp"
     )
     return HarrisImportRequest(
         plan=HarrisImportPlan.from_legacy_scope("full"),
@@ -168,27 +165,28 @@ class HarrisPublicationTests(TransactionTestCase):
         )
         with tempfile.TemporaryDirectory() as root, self.settings(**_runtime_settings(root)):
             request = replace(harris_request(root), data_year=2025)
-            base = Path(root) / "extracted"
+            owners = extracted(root, HcadSourceId.REAL_ACCOUNT_OWNER)
+            buildings = extracted(root, HcadSourceId.REAL_BUILDING_LAND)
             keys = [f"P{number}" for number in range(4)]
-            (base / "Real_acct_owner/real_acct.txt").write_text(
+            (owners / "real_acct.txt").write_text(
                 "acct\tstate_class\ttot_appr_val\n"
                 + "".join(f"{key}\tA1\t250000\n" for key in keys)
             )
-            (base / "Real_building_land/building_res.txt").write_text(
+            (buildings / "building_res.txt").write_text(
                 "acct\tbld_num\theat_ar\n" + "".join(f"{key}\t1\t1800\n" for key in keys)
             )
-            (base / "Real_building_land/fixtures.txt").write_text(
+            (buildings / "fixtures.txt").write_text(
                 "acct\tbld_num\ttype\tunits\n"
                 + "".join(f"{key}\t1\tRMB\t3\n{key}\t1\tRMF\t2\n" for key in keys)
             )
-            (base / "Real_building_land/extra_features.txt").write_text(
+            (buildings / "extra_features.txt").write_text(
                 "acct\tbld_num\tcd\n" + "".join(f"{key}\t1\tGAR\n" for key in keys)
             )
             gpd.GeoDataFrame(
                 {"ACCT": keys},
                 geometry=[Point(3100000 + i, 13800000) for i in range(4)],
                 crs="EPSG:2278",
-            ).to_file(base / "Parcels/parcels.shp")
+            ).to_file(extracted(root, HcadSourceId.GIS_PARCELS) / "parcels.shp")
             first = run_harris_import(request)
             review = reverse("admin:data_importcandidate_review", args=[first.candidate_id])
             binding = self.client.get(review).context["form"]["binding"].value()
@@ -332,7 +330,7 @@ class HarrisPublicationTests(TransactionTestCase):
                 {"ACCT": ["P100", "P100"]},
                 geometry=[Point(3100000, 13800000), Point(3101000, 13800000)],
                 crs="EPSG:2278",
-            ).to_file(Path(root) / "extracted" / "Parcels" / "parcels.shp")
+            ).to_file(extracted(root, HcadSourceId.GIS_PARCELS) / "parcels.shp")
             result = run_harris_import(request)
             self.assertEqual(result.status, HarrisImportStatus.AWAITING_REVIEW)
             page = self.client.get(
@@ -415,7 +413,7 @@ class HarrisPublicationTests(TransactionTestCase):
             output = StringIO()
             call_command(
                 "load_hcad_real_acct",
-                str(Path(root) / "extracted/Real_acct_owner/real_acct.txt"),
+                str(extracted(root, HcadSourceId.REAL_ACCOUNT_OWNER) / "real_acct.txt"),
                 stdout=output,
             )
             self.assertIn("Harris import blocked; published data unchanged", output.getvalue())

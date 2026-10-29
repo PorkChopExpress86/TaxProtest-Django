@@ -26,6 +26,7 @@ from counties.harris.etl_pipeline import (
 )
 from counties.harris.etl_pipeline.import_plan import HarrisImportPlan
 from counties.harris.models import BuildingDetail, ExtraFeature, PropertyRecord
+from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG, HcadSourceId
 
 
 def _runtime_settings(root: str) -> dict[str, str]:
@@ -38,6 +39,11 @@ def _runtime_settings(root: str) -> dict[str, str]:
     }
 
 
+def extracted(root: str | Path, source_id: HcadSourceId) -> Path:
+    """Return a source's extract directory under the test's base extract root."""
+    return Path(root) / "extracted" / DEFAULT_HCAD_SOURCE_CATALOG.extract_dirname(source_id)
+
+
 def _property_plan() -> HarrisImportPlan:
     return HarrisImportPlan.from_legacy_scope("property-only")
 
@@ -47,7 +53,7 @@ def _write_property_source(
     account: str = "P100",
     state_class: str = "A1",
 ) -> Path:
-    source_dir = Path(root) / "extracted" / "Real_acct_owner"
+    source_dir = extracted(root, HcadSourceId.REAL_ACCOUNT_OWNER)
     source_dir.mkdir(parents=True, exist_ok=True)
     source = source_dir / "real_acct.txt"
     source.write_text(
@@ -59,7 +65,7 @@ def _write_property_source(
 
 
 def _write_building_sources(root: str, account: str) -> Path:
-    source_dir = Path(root) / "extracted" / "Real_building_land"
+    source_dir = extracted(root, HcadSourceId.REAL_BUILDING_LAND)
     source_dir.mkdir(parents=True, exist_ok=True)
     building_source = source_dir / "building_res.txt"
     building_source.write_text(
@@ -78,7 +84,7 @@ def _write_building_sources(root: str, account: str) -> Path:
 
 
 def _write_extra_feature_detail_sources(root: str, account: str) -> None:
-    source_dir = Path(root) / "extracted" / "Real_building_land"
+    source_dir = extracted(root, HcadSourceId.REAL_BUILDING_LAND)
     for filename, feature_code, description in (
         ("extra_features_detail_a.txt", "POOL", "Pool"),
         ("extra_features_detail_b.txt", "GAR", "Garage"),
@@ -132,7 +138,7 @@ class HarrisImportBoundaryTests(TestCase):
             override_settings(**_runtime_settings(root)),
             patch("counties.harris.etl_pipeline.gis_loader.load_gis_parcels") as load,
         ):
-            source_dir = Path(root) / "extracted" / "Parcels"
+            source_dir = extracted(root, HcadSourceId.GIS_PARCELS)
             source_dir.mkdir(parents=True)
             shapefile = source_dir / "Parcels.shp"
             gpd.GeoDataFrame(

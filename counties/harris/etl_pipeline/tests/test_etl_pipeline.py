@@ -6,6 +6,7 @@ import os
 import tempfile
 import unittest
 import zipfile
+from dataclasses import replace
 from email.utils import formatdate
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -29,7 +30,7 @@ from counties.harris.etl_pipeline.transform import (
     FieldSchema,
     TableSchema,
 )
-from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG
+from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG, HcadSourceId
 
 
 class TestETLConfig:
@@ -322,6 +323,26 @@ class TestExtractManager:
 
         path = manager._get_extract_path(source)
         assert path.name == "test_data"
+
+    def test_catalog_source_extracts_under_its_catalog_name_not_its_filename(self):
+        """The extract directory is the configured root plus the catalog's name."""
+        config = ETLConfig()
+        config.extract_dir = Path("/srv/extracted")
+        manager = ExtractManager(config)
+        source = replace(
+            DEFAULT_HCAD_SOURCE_CATALOG.source_for_id(HcadSourceId.GIS_PARCELS),
+            filename="Parcels_2026_Oct.zip",
+        )
+
+        assert manager.get_extract_path(source) == Path("/srv/extracted/Parcels")
+
+    def test_archive_path_is_the_download_root_plus_the_archive_filename(self):
+        config = ETLConfig()
+        config.download_dir = Path("/srv/downloads")
+        manager = ExtractManager(config)
+        source = DEFAULT_HCAD_SOURCE_CATALOG.source_for_id(HcadSourceId.REAL_BUILDING_LAND)
+
+        assert manager.get_archive_path(source) == Path("/srv/downloads/Real_building_land.zip")
 
     def test_validate_zip_valid(self):
         """Test ZIP validation with valid archive."""

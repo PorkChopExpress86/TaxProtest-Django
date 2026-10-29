@@ -25,7 +25,11 @@ from counties.common.import_writers import fenced_write, working_source_root
 from counties.common.models import ImportCandidate, ImportOperation
 from counties.harris.models import BuildingDetail, ExtraFeature, PropertyRecord
 from counties.harris.readiness import published_year
-from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG, HarrisImportStage
+from counties.harris.source_catalog import (
+    DEFAULT_HCAD_SOURCE_CATALOG,
+    HarrisImportStage,
+    HcadSourceId,
+)
 
 from .config import DataSource, DataSourceType, ETLConfig
 from .download import DownloadManager
@@ -33,7 +37,7 @@ from .extract import ExtractManager
 from .fixtures_aggregator import FixturesAggregator
 from .import_plan import HarrisImportPlan
 from .logging import ETLLogger
-from .source_pipeline import HarrisSourcePipeline, resolve_schema_name
+from .source_pipeline import HarrisSourcePipeline, declared_member, resolve_schema_name
 
 
 class HarrisImportPhase(Enum):
@@ -328,9 +332,12 @@ class _HarrisImportExecution:
             assert operation is not None
             seed_sources(self.config, sources, replayed, operation)
         if request.property_file is not None:
-            directory = self.config.extract_dir / "Real_acct_owner"
+            owner = HcadSourceId.REAL_ACCOUNT_OWNER
+            directory = self.config.extract_dir / DEFAULT_HCAD_SOURCE_CATALOG.extract_dirname(owner)
             directory.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(request.property_file.path, directory / "real_acct.txt")
+            shutil.copy2(
+                request.property_file.path, directory / declared_member(owner, "real_acct.txt")
+            )
         self.logger = logger or ETLLogger(
             name="etl_orchestrator",
             log_dir=self.config.log_dir,
@@ -970,7 +977,7 @@ def seed_sources(config, sources, replayed: ImportCandidate, operation: ImportOp
     owners = {
         item.get("source_operation_id") or str(replayed.operation_id)
         for item in retained
-        if item.get("source_id") == "real-account-owner"
+        if item.get("source_id") == HcadSourceId.REAL_ACCOUNT_OWNER.value
     }
     for owner in ImportCandidate.objects.filter(county="harris", operation_id__in=owners):
         options = owner.request.get("property_file", {})
@@ -991,7 +998,7 @@ def seed_sources(config, sources, replayed: ImportCandidate, operation: ImportOp
         for item in selected:
             original = Path(item["path"])
             if original.suffix.lower() == ".zip":
-                destination = config.download_dir / source.filename
+                destination = manager.get_archive_path(source)
             else:
                 parent = next(
                     (parent for parent in original.parents if parent.name == root.name), None
