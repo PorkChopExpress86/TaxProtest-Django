@@ -21,11 +21,14 @@ from counties.brazos.tests.test_import_brazos_tax_rates import FIXTURE_HTML, _mo
 from counties.common.import_writers import WriterConflict
 from counties.common.models import CountyWriter, ImportOperation
 from counties.common.tax_models import AssessmentHistory, TaxUnitRate
+from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG, HcadSourceId
 from counties.harris.tests.test_import_hcad_jur_exempt import (
     EXEMPT_HEADER,
     RATE_HEADER,
     VALUE_HEADER,
 )
+
+REAL_ACCT_DIR = DEFAULT_HCAD_SOURCE_CATALOG.extract_dirname(HcadSourceId.REAL_ACCOUNT_OWNER)
 
 
 class SpecializedImportTests(TransactionTestCase):
@@ -79,7 +82,7 @@ class SpecializedImportTests(TransactionTestCase):
 
     def test_history_source_year_evidence_does_not_invent_requested_year(self):
         with tempfile.TemporaryDirectory() as root:
-            source = Path(root) / "extracted" / "2026" / "Real_acct_owner" / "real_acct.txt"
+            source = Path(root) / "extracted" / "2026" / REAL_ACCT_DIR / "real_acct.txt"
             source.parent.mkdir(parents=True)
             source.write_text("acct\tyr\tassessed_val\nPRIOR\t2025\t250000\n")
             call_command(
@@ -191,7 +194,7 @@ class SpecializedImportTests(TransactionTestCase):
 
     def test_history_command_audits_exact_source_and_keeps_other_county_history(self):
         with tempfile.TemporaryDirectory() as root:
-            source = Path(root) / "extracted" / "2026" / "Real_acct_owner" / "real_acct.txt"
+            source = Path(root) / "extracted" / "2026" / REAL_ACCT_DIR / "real_acct.txt"
             source.parent.mkdir(parents=True)
             source.write_text("acct\tyr\tassessed_val\nSAME\t2026\t250000\n")
             digest = hashlib.sha256(source.read_bytes()).hexdigest()

@@ -13,6 +13,11 @@ from counties.harris.assessment_history import AssessmentHistoryImporter
 from counties.harris.etl_pipeline import DownloadManager, ETLConfig, ExtractManager
 from counties.harris.etl_pipeline.config import DataSource
 from counties.harris.etl_pipeline.logging import ETLLogger
+from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG, HcadSourceId
+
+#: The history sources, in download order; only the real-account archive is required.
+HISTORY_SOURCES = (HcadSourceId.REAL_ACCOUNT_OWNER, HcadSourceId.HEARING_FILES)
+REQUIRED_SOURCE = HcadSourceId.REAL_ACCOUNT_OWNER
 
 
 class Command(BaseCommand):
@@ -137,7 +142,7 @@ class Command(BaseCommand):
             failed_required = [
                 result
                 for result in results
-                if not result.success and result.source.name == "Real Account Owner"
+                if not result.success and result.source.source_id is REQUIRED_SOURCE
             ]
             if failed_required:
                 raise CommandError(f"Failed to download Real Account Owner for {year}")
@@ -148,26 +153,13 @@ class Command(BaseCommand):
             failed_required = [
                 result
                 for result in results
-                if not result.success and result.source.name == "Real Account Owner"
+                if not result.success and result.source.source_id is REQUIRED_SOURCE
             ]
             if failed_required:
                 raise CommandError(f"Failed to extract Real Account Owner for {year}")
 
     @staticmethod
     def _history_sources() -> list[DataSource]:
-        from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG
-
-        sources: list[DataSource] = []
-        for name in ("Real Account Owner", "Hearing Files"):
-            source = next(
-                (
-                    candidate
-                    for candidate in DEFAULT_HCAD_SOURCE_CATALOG.all_sources()
-                    if candidate.name == name
-                ),
-                None,
-            )
-            if source is None:
-                raise CommandError(f"Missing ETL source definition: {name}")
-            sources.append(source)
-        return sources
+        return [
+            DEFAULT_HCAD_SOURCE_CATALOG.source_for_id(source_id) for source_id in HISTORY_SOURCES
+        ]

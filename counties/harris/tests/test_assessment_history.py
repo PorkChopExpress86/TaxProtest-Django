@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import dataclasses
 import tempfile
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import patch
 
 from django.core.management import call_command
 from django.db import IntegrityError
@@ -12,6 +14,14 @@ from counties.common.tax_models import AssessmentHistory
 from counties.harris.etl_pipeline.row_reader import SourceLayoutError
 from counties.harris.models import PropertyRecord
 from counties.harris.replacement_guard import ReplacementShrinkError
+from counties.harris.source_catalog import (
+    DEFAULT_HCAD_SOURCE_CATALOG,
+    HcadSourceCatalog,
+    HcadSourceId,
+)
+
+REAL_ACCT_DIR = DEFAULT_HCAD_SOURCE_CATALOG.extract_dirname(HcadSourceId.REAL_ACCOUNT_OWNER)
+HEARING_DIR = DEFAULT_HCAD_SOURCE_CATALOG.extract_dirname(HcadSourceId.HEARING_FILES)
 
 
 class AssessmentHistoryModelTests(TestCase):
@@ -75,7 +85,7 @@ class ImportAssessmentHistoryCommandTests(TestCase):
         real_rows: list[str],
         hearing_rows: list[str] | None = None,
     ) -> None:
-        real_dir = self.extract_root / str(year) / "Real_acct_owner"
+        real_dir = self.extract_root / str(year) / REAL_ACCT_DIR
         real_dir.mkdir(parents=True, exist_ok=True)
         (real_dir / "real_acct.txt").write_text(
             "acct\tyr\tassessed_val\ttot_appr_val\ttot_mkt_val\tprior_tot_appr_val\tprior_tot_mkt_val\tnew_construction_val\tCap_acct\tprotested\n"
@@ -85,7 +95,7 @@ class ImportAssessmentHistoryCommandTests(TestCase):
         )
 
         if hearing_rows is not None:
-            hearing_dir = self.extract_root / str(year) / "Hearing_files"
+            hearing_dir = self.extract_root / str(year) / HEARING_DIR
             hearing_dir.mkdir(parents=True, exist_ok=True)
             (hearing_dir / "arb_hearings_real.txt").write_text(
                 "acct\tTax_Year\tHearing_Type\tScheduled_for_Date\tActual_Hearing_Date\tRelease_Date\tInitial_Appraised_Value\tFinal_Appraised_Value\n"
@@ -120,7 +130,7 @@ class ImportAssessmentHistoryCommandTests(TestCase):
 
     def test_renamed_acct_column_raises_and_keeps_the_existing_year(self):
         self._seed_history(2026, ["HIST300", "HIST301"])
-        real_dir = self.extract_root / "2026" / "Real_acct_owner"
+        real_dir = self.extract_root / "2026" / REAL_ACCT_DIR
         real_dir.mkdir(parents=True)
         (real_dir / "real_acct.txt").write_text(
             "account\tyr\tassessed_val\nHIST300\t2026\t310000\nHIST301\t2026\t220000\n",
@@ -351,4 +361,28 @@ class ImportAssessmentHistoryCommandTests(TestCase):
         self.assertEqual(
             AssessmentHistory.objects.get(account_number="HIST300", tax_year=2026).assessed_value,
             Decimal("295000"),
+        )
+
+    def test_import_selects_sources_by_id_not_display_name(self):
+        renamed = HcadSourceCatalog(
+            sources=tuple(
+                dataclasses.replace(source, name=f"Renamed {source.name}")
+                for source in DEFAULT_HCAD_SOURCE_CATALOG.sources
+            )
+        )
+        self._write_year_files(
+            2026,
+            real_rows=["HIST300\t2026\t310000\t320000\t325000\t280000\t300000\t5000\tY\tY"],
+        )
+
+        with patch(
+            "counties.harris.management.commands.import_assessment_history"
+            ".DEFAULT_HCAD_SOURCE_CATALOG",
+            renamed,
+        ):
+            self._import(2026, 2026)
+
+        self.assertEqual(
+            AssessmentHistory.objects.get(account_number="HIST300", tax_year=2026).assessed_value,
+            Decimal("310000"),
         )
