@@ -66,15 +66,28 @@ cd TaxProtest-Django
 ### 2. Create Environment File
 
 ```bash
-# Copy example environment file
-cp .env.example .env
-
-# Generate a secure secret key
-python3 -c "import secrets; print(secrets.token_urlsafe(64))"
-
-# Edit .env and add the generated key
-nano .env  # or use your favorite editor
+python3 scripts/env_setup.py
 ```
+
+`scripts/env_setup.py` copies `.env.example` to `.env` when there is none, and generates
+`DJANGO_SECRET_KEY` and `POSTGRES_PASSWORD` wherever they are missing, blank or still
+`change-me`. Other values and comments are kept, the file is written with mode 0600, and no
+secret is printed. It is safe to run at any time.
+
+To replace the generated secrets, for example after one leaks:
+
+```bash
+python3 scripts/env_setup.py --rotate                     # both
+python3 scripts/env_setup.py --rotate POSTGRES_PASSWORD   # just one
+python3 scripts/env_setup.py -f docker-compose.prod.yml --rotate   # production stack
+```
+
+Postgres reads `POSTGRES_PASSWORD` only when it creates the `pgdata` volume, so rotation
+first changes the database role's password (the `postgres` service must be running) and
+leaves `.env` unchanged if that fails. It then recreates the running app services so they
+use the new values. A new `DJANGO_SECRET_KEY` signs everyone out. Pass `--no-restart` to
+print the recreate command instead. The Django admin password is stored in the database:
+change it with `docker compose exec web python manage.py changepassword <username>`.
 
 **Required `.env` variables** (Compose refuses to start if either is unset):
 ```bash

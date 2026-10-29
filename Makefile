@@ -1,7 +1,8 @@
-.PHONY: help build up dev down test lint fmt type check migrations-check ingest refresh shell logs clean
+.PHONY: help env build up dev down test lint fmt type check migrations-check ingest refresh shell logs clean
 
 help:
 	@echo "Docker-first commands:"
+	@echo "  make env       - create .env and generate missing secrets"
 	@echo "  make build     - build Docker images"
 	@echo "  make up        - start postgres + production app"
 	@echo "  make dev       - start postgres + dev app"
@@ -15,6 +16,9 @@ help:
 	@echo "  make refresh   - run refresh container"
 	@echo "  make shell     - open shell in dev container"
 	@echo "  make logs      - follow dev app logs"
+
+env:
+	python3 scripts/env_setup.py
 
 build:
 	SKIP_DATA_DOWNLOAD=1 docker compose build
