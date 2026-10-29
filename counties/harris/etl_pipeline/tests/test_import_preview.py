@@ -366,6 +366,19 @@ class HarrisValidatedPreviewTests(TestCase):
             self.assertEqual(source["invalid"], 1)
             self.assertEqual(validation["translated"]["real_acct"]["loaded"], 1)
 
+    def test_a_source_in_which_no_row_matches_the_header_fails(self):
+        with tempfile.TemporaryDirectory() as root, self.settings(**_runtime_settings(root)):
+            _write_property_source(root).write_text(
+                "acct\tsite_addr_1\tstate_class\ttot_appr_val\n"
+                "P100\t\t100 MAIN ST\tA1\t250000\n"
+                "P200\t200 MAIN ST\n",
+                encoding="latin-1",
+            )
+            result = run_harris_import(self.request())
+            self.assertFalse(result.success)
+            self.assertIn("real_acct.txt: no row matches the header layout", result.errors)
+            self.assertFalse(PropertyRecord.objects.exists())
+
     def test_preview_binds_exact_content_and_building_translation_to_selected_new_accounts(self):
         with tempfile.TemporaryDirectory() as root, self.settings(**_runtime_settings(root)):
             source = _write_property_source(root)

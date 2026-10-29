@@ -65,6 +65,21 @@ class ConflictingRoomCountTests(SimpleTestCase):
 
         self.assertEqual(aggregator.get_bedroom_count("P1", 1), 3)
 
+    def test_a_row_that_does_not_match_the_header_is_left_out_like_validation_does(
+        self,
+    ) -> None:
+        # A row with a stray extra field still has a number in the units column, but
+        # validation counts it invalid, so it must not set or conflict a room count.
+        aggregator = self._aggregate(
+            "P1\t1\tRMB\tRoom:  Bedroom\t3.00\n"
+            "P1\t1\tRMB\tRoom:  Bedroom\t5.00\tstray\n"
+            "P2\t1\tRMB\tRoom:  Bedroom\t4.00\tstray\n"
+        )
+
+        self.assertEqual(aggregator.get_bedroom_count("P1", 1), 3)
+        self.assertEqual(aggregator.conflicting_fields, {})
+        self.assertNotIn(("P2", 1), aggregator.fixture_fields)
+
 
 class ConflictingRoomCountRefreshTests(TestCase):
     def test_refresh_leaves_counts_it_cannot_know_unchanged(self) -> None:

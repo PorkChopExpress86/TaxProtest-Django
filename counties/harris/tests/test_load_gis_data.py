@@ -1,9 +1,13 @@
 import tempfile
 import warnings
+from datetime import datetime
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
+from django.core.management import call_command
 from django.test import SimpleTestCase, TestCase
 
+from counties.common.models import ImportOperation
 from counties.harris.management.commands.load_gis_data import find_preferred_shapefile
 from counties.harris.models import PropertyRecord
 
@@ -88,3 +92,50 @@ class CentroidCrsTests(TestCase):
         record = PropertyRecord.objects.get(account_number="GISCRS001")
         self.assertAlmostEqual(float(record.latitude), float(expected.y.iloc[0]), places=6)
         self.assertAlmostEqual(float(record.longitude), float(expected.x.iloc[0]), places=6)
+
+
+class LoadGisDataProvenanceTests(TestCase):
+    """The command records the parcel URL it downloaded and the year that URL names."""
+
+    def _run(self, downloaded_url: str) -> ImportOperation:
+        import geopandas as gpd
+        from shapely.geometry import Point
+
+        with tempfile.TemporaryDirectory() as tmp:
+            layer = Path(tmp) / "Parcels" / "parcels.shp"
+            layer.parent.mkdir()
+            gpd.GeoDataFrame(
+                {"ACCT": ["GIS001"]}, geometry=[Point(3100000, 13800000)], crs="EPSG:2278"
+            ).to_file(layer)
+            downloads = MagicMock()
+            downloads.download_file.return_value = MagicMock(
+                success=True, local_path=Path(tmp) / "Parcels.zip", source_url=downloaded_url
+            )
+            extracts = MagicMock()
+            extracts.extract_archive.return_value = MagicMock(success=True)
+            extracts.get_extract_path.return_value = layer.parent
+            module = "counties.harris.management.commands.load_gis_data"
+            with (
+                patch(f"{module}.DownloadManager", return_value=downloads),
+                patch(f"{module}.ExtractManager", return_value=extracts),
+                patch(f"{module}.load_gis_parcels", return_value=0),
+            ):
+                call_command("load_gis_data")
+        return ImportOperation.objects.get(intent="gis_coordinates")
+
+    def test_a_yearly_download_records_its_year(self) -> None:
+        year = datetime.now().year
+        url = f"https://download.hcad.org/data/GIS/Parcels_{year}_Oct.zip"
+        operation = self._run(url)
+
+        self.assertEqual({s["source_url"] for s in operation.evidence["sources"]}, {url})
+        self.assertEqual({s["source_year"] for s in operation.evidence["sources"]}, {year})
+        self.assertNotIn("source_year_unconfirmed", operation.evidence)
+
+    def test_the_current_file_fallback_is_flagged_unconfirmed(self) -> None:
+        url = "https://download.hcad.org/data/GIS/Parcels.zip"
+        operation = self._run(url)
+
+        self.assertEqual({s["source_url"] for s in operation.evidence["sources"]}, {url})
+        self.assertEqual({s["source_year"] for s in operation.evidence["sources"]}, {None})
+        self.assertIs(operation.evidence["source_year_unconfirmed"], True)

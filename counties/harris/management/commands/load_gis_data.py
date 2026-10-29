@@ -1,6 +1,7 @@
 """Load GIS parcel coordinates through the authoritative Harris pipeline."""
 
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 
 from django.core.management.base import BaseCommand, CommandError
@@ -57,7 +58,9 @@ class Command(BaseCommand):
             source = replace(source, url_template=options["url"], fallback_url=None)
 
         logger = ETLLogger(name="etl_orchestrator", operation_id=str(operation.pk))
-        download_manager = DownloadManager(config, logger)
+        year = datetime.now().year
+        download_manager = DownloadManager(config, logger, data_year=year)
+        source_url = source_year = None
         extract_manager = ExtractManager(config, logger)
         if not options["skip_download"]:
             self.stdout.write(
@@ -66,6 +69,10 @@ class Command(BaseCommand):
             download_result = download_manager.download_file(source)
             if not download_result.success or download_result.local_path is None:
                 raise CommandError(f"GIS download failed: {download_result.error}")
+            source_url = download_result.source_url
+            # The parcel layer has no tax-year column; only a yearly archive name dates it.
+            if "{year}" in source.url_template and source_url == source.get_url(year):
+                source_year = year
 
             self.stdout.write(self.style.SUCCESS(f"Extracting {source.filename}..."))
             extract_result = extract_manager.extract_archive(source, download_result.local_path)
@@ -88,10 +95,12 @@ class Command(BaseCommand):
         record_sources(
             operation,
             sorted(shapefile.parent.glob("*")),
-            source_year=None,
+            source_year=source_year,
             target_year=None,
-            source_url=source.url_template,
+            source_url=source_url,
         )
+        if source_year is None:
+            operation.evidence["source_year_unconfirmed"] = True
         self.stdout.write(self.style.SUCCESS(f"Found shapefile: {shapefile_path}"))
         self.stdout.write(self.style.SUCCESS("Loading GIS data into database..."))
 

@@ -66,17 +66,12 @@ class FixturesAggregator:
 
         try:
             with open(file_path, encoding="utf-8", errors="ignore") as f:
-                header = next(f, "")
-                field_positions = {
-                    name.strip().lower(): index
-                    for index, name in enumerate(header.rstrip("\n").split("\t"))
-                }
+                header = next(f, "").rstrip("\r\n").split("\t")
+                field_positions = {name.strip().lower(): index for index, name in enumerate(header)}
                 required_fields = ("acct", "bld_num", "type", "units")
                 if any(field not in field_positions for field in required_fields):
                     logger.warning("Fixtures file has no usable room-count columns: %s", file_path)
                     return
-                max_position = max(field_positions[field] for field in required_fields)
-
                 for line in f:
                     line_count += 1
 
@@ -85,8 +80,10 @@ class FixturesAggregator:
                         logger.info(f"Processed {line_count:,} fixture lines...")
 
                     try:
-                        parts = line.strip().split("\t")
-                        if len(parts) <= max_position:
+                        parts = line.rstrip("\r\n").split("\t")
+                        # Source validation counts a row that does not match the header
+                        # invalid; it cannot be read by position, so it sets no count.
+                        if len(parts) != len(header):
                             continue
 
                         account_num = parts[field_positions["acct"]].strip()
