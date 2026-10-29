@@ -206,7 +206,7 @@ class DownloadManager:
         """
         url = self._resolve_download_url(source)
 
-        dest_path = dest_path or (self.download_dir / source.filename)
+        dest_path = dest_path or self.get_local_path(source)
 
         start_time = time.time()
 
