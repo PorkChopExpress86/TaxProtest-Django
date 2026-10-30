@@ -777,14 +777,6 @@ class _HarrisImportExecution:
             return {"loaded": 0, "invalid": 0, "skipped": 0, "failed": 1, "source_error": str(e)}
 
     @staticmethod
-    def _missing_required_files(source: DataSource, data_files: list[Path]) -> list[str]:
-        """Return missing required files for core required property sources."""
-        return DEFAULT_HCAD_SOURCE_CATALOG.missing_required_files(
-            source,
-            [str(path) for path in data_files],
-        )
-
-    @staticmethod
     def _select_preferred_gis_shapefile(search_roots: list[Path]) -> Path | None:
         """Compatibility adapter for the shared GIS selection rule."""
         from .gis_loader import select_preferred_gis_shapefile

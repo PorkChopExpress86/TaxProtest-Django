@@ -146,61 +146,56 @@ def test_member_names_are_root_relative_file_names() -> None:
                 assert "/" not in name and "\\" not in name
 
 
+def _required_labels(source_id: HcadSourceId) -> list[str]:
+    return [label for label, _, required in EXPECTED_MEMBERS[source_id] if required]
+
+
 @pytest.mark.parametrize("source_id", list(HcadSourceId))
-def test_empty_directory_reports_every_required_member(
-    source_id: HcadSourceId, tmp_path: Path
+def test_no_files_reports_every_required_member_of_a_required_source(
+    source_id: HcadSourceId,
 ) -> None:
-    expected = [label for label, _, required in EXPECTED_MEMBERS[source_id] if required]
+    required_source = DEFAULT_HCAD_SOURCE_CATALOG.source_for_id(source_id).required
+    expected = _required_labels(source_id) if required_source else []
 
-    assert DEFAULT_HCAD_SOURCE_CATALOG.missing_required_members(source_id, tmp_path) == expected
+    assert DEFAULT_HCAD_SOURCE_CATALOG.missing_required_members(source_id, []) == expected
 
 
-def test_jurisdiction_directory_without_optional_description_is_complete(tmp_path: Path) -> None:
-    for name in ("jur_value.txt", "jur_exempt.txt", "jur_tax_dist_exempt_value_rate.txt"):
-        (tmp_path / name).write_text("")
+def test_an_optional_source_demands_none_of_its_members() -> None:
+    """The jurisdiction-exemption command checks its own members; the import does not."""
+    assert not DEFAULT_HCAD_SOURCE_CATALOG.source_for_id(HcadSourceId.REAL_JUR_EXEMPT).required
+    assert _required_labels(HcadSourceId.REAL_JUR_EXEMPT)
 
-    missing = DEFAULT_HCAD_SOURCE_CATALOG.missing_required_members(
-        HcadSourceId.REAL_JUR_EXEMPT, tmp_path
+    assert (
+        DEFAULT_HCAD_SOURCE_CATALOG.missing_required_members(HcadSourceId.REAL_JUR_EXEMPT, []) == []
     )
-
-    assert missing == []
-
-
-def test_jurisdiction_directory_reports_only_absent_required_members(tmp_path: Path) -> None:
-    (tmp_path / "jur_value.txt").write_text("")
-    (tmp_path / "jur_exemption_dscr.txt").write_text("")
-
-    missing = DEFAULT_HCAD_SOURCE_CATALOG.missing_required_members(
-        HcadSourceId.REAL_JUR_EXEMPT, tmp_path
-    )
-
-    assert missing == ["jur_exempt.txt", "jur_tax_dist_exempt_value_rate.txt"]
 
 
 def test_check_matches_nested_members_case_insensitively(tmp_path: Path) -> None:
-    """Same matching as missing_required_files over a recursive listing."""
-    nested = tmp_path / "nested"
-    nested.mkdir()
-    (tmp_path / "Building_Res.txt").write_text("")
-    (tmp_path / "fixtures.txt").write_text("")
-    (nested / "extra_features_detail1.txt").write_text("")
+    files = [
+        tmp_path / "Building_Res.txt",
+        tmp_path / "fixtures.txt",
+        tmp_path / "nested" / "extra_features_detail1.txt",
+    ]
 
     missing = DEFAULT_HCAD_SOURCE_CATALOG.missing_required_members(
-        HcadSourceId.REAL_BUILDING_LAND, tmp_path
+        HcadSourceId.REAL_BUILDING_LAND, files
     )
 
     assert missing == []
 
 
-def test_absent_directory_reports_every_required_member(tmp_path: Path) -> None:
+def test_check_reports_only_absent_required_members(tmp_path: Path) -> None:
+    files = [tmp_path / "building_res.txt", tmp_path / "land.txt"]
+
     missing = DEFAULT_HCAD_SOURCE_CATALOG.missing_required_members(
-        HcadSourceId.REAL_ACCOUNT_OWNER, tmp_path / "Real_acct_owner"
+        HcadSourceId.REAL_BUILDING_LAND, files
     )
 
-    assert missing == ["real_acct.txt"]
+    assert missing == ["fixtures.txt", "extra_features*.txt"]
 
 
-# Behaviour callers rely on today, which this expansion must not change.
+# Behaviour callers relied on before members became the only declaration: the old
+# required-file table and extract patterns, written out literally.
 
 LEGACY_REQUIRED_FILES = {
     HcadSourceId.REAL_ACCOUNT_OWNER: ["real_acct.txt"],
@@ -209,14 +204,18 @@ LEGACY_REQUIRED_FILES = {
 
 
 @pytest.mark.parametrize("source_id", list(HcadSourceId))
-def test_missing_required_files_is_unchanged(source_id: HcadSourceId) -> None:
-    source = DEFAULT_HCAD_SOURCE_CATALOG.source_for_id(source_id)
-    core_files = ["x/real_acct.txt", "x/building_res.txt", "x/fixtures.txt", "x/extra_features.txt"]
+def test_required_check_is_unchanged(source_id: HcadSourceId) -> None:
+    core_files = [
+        Path("x/real_acct.txt"),
+        Path("x/building_res.txt"),
+        Path("x/fixtures.txt"),
+        Path("x/extra_features.txt"),
+    ]
 
-    assert DEFAULT_HCAD_SOURCE_CATALOG.missing_required_files(
-        source, []
+    assert DEFAULT_HCAD_SOURCE_CATALOG.missing_required_members(
+        source_id, []
     ) == LEGACY_REQUIRED_FILES.get(source_id, [])
-    assert DEFAULT_HCAD_SOURCE_CATALOG.missing_required_files(source, core_files) == []
+    assert DEFAULT_HCAD_SOURCE_CATALOG.missing_required_members(source_id, core_files) == []
 
 
 EXPECTED_EXTRACT_PATTERNS = {

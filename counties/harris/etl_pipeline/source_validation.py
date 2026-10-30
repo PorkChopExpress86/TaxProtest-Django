@@ -323,9 +323,7 @@ def validate_harris_sources(
                 _check_archive_inputs(archive, paths, operation, result, relative_to=layer.parent)
             continue
         files = sorted(root.rglob("*.txt"))
-        missing = DEFAULT_HCAD_SOURCE_CATALOG.missing_required_files(
-            source, [str(path) for path in files]
-        )
+        missing = DEFAULT_HCAD_SOURCE_CATALOG.missing_required_members(source.source_id, files)
         if missing:
             result.errors.append(f"{source.name}: required files missing: {', '.join(missing)}")
         detailed = any(path.stem.lower().startswith("extra_features_detail") for path in files)
