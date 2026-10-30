@@ -301,7 +301,11 @@ def validate_harris_sources(
                 result.errors.append(f"{archive.name}: archive integrity unavailable: {exc}")
         if source.source_type == DataSourceType.GIS_DATA:
             layer = select_preferred_gis_shapefile(
-                [root, config.download_dir / Path(source.filename).stem]
+                [
+                    root,
+                    config.download_dir
+                    / DEFAULT_HCAD_SOURCE_CATALOG.extract_dirname(source.source_id),
+                ]
             )
             if layer is None:
                 result.errors.append(f"{source.name}: no requested GIS layer")
@@ -323,9 +327,7 @@ def validate_harris_sources(
                 _check_archive_inputs(archive, paths, operation, result, relative_to=layer.parent)
             continue
         files = sorted(root.rglob("*.txt"))
-        missing = DEFAULT_HCAD_SOURCE_CATALOG.missing_required_files(
-            source, [str(path) for path in files]
-        )
+        missing = DEFAULT_HCAD_SOURCE_CATALOG.missing_required_members(source.source_id, files)
         if missing:
             result.errors.append(f"{source.name}: required files missing: {', '.join(missing)}")
         detailed = any(path.stem.lower().startswith("extra_features_detail") for path in files)

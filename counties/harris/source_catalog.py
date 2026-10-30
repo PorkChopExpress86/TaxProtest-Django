@@ -9,7 +9,7 @@ relative to whatever root a caller owns; it never reads settings or a root.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import Enum, StrEnum
@@ -91,7 +91,6 @@ class DataSource:
     file_format: FileFormat = FileFormat.ZIP
     required: bool = True
     checksum: str | None = None
-    extract_patterns: list[str] = field(default_factory=list)
     priority: int = 100
     import_stages: frozenset[HarrisImportStage] = field(default_factory=frozenset)
     download_timeout: int = 300
@@ -100,6 +99,15 @@ class DataSource:
     # The archive's extract-directory name, relative to whichever root a caller owns.
     extract_dirname: str | None = None
     members: tuple[SourceMember, ...] = ()
+    # Extract only files matching a declared member; otherwise the whole archive is extracted.
+    extract_members_only: bool = False
+
+    @property
+    def extract_patterns(self) -> list[str]:
+        """Return the basename globs extraction keeps; empty means keep every file."""
+        if not self.extract_members_only:
+            return []
+        return [pattern for member in self.members for pattern in member.patterns]
 
     def get_url(self, year: int | None = None) -> str:
         """Return the source URL for a given CAMA year."""
@@ -109,11 +117,7 @@ class DataSource:
 
     def clone(self) -> DataSource:
         """Return a mutable copy suitable for a caller-owned configuration."""
-        return replace(
-            self,
-            extract_patterns=list(self.extract_patterns),
-            import_stages=frozenset(self.import_stages),
-        )
+        return replace(self, import_stages=frozenset(self.import_stages))
 
     def __post_init__(self) -> None:
         if not isinstance(self.source_id, HcadSourceId):
@@ -202,18 +206,15 @@ class HcadSourceCatalog:
             raise LookupError(f"HCAD source {source_id} declares no member {label}")
         return Path(self.extract_dirname(source_id)) / label
 
-    def missing_required_members(self, source_id: HcadSourceId, directory: Path) -> list[str]:
-        """Return labels of required members with no matching file under ``directory``.
+    def missing_required_members(self, source_id: HcadSourceId, files: Iterable[Path]) -> list[str]:
+        """Return labels of a required source's required members that no file in ``files`` matches.
 
-        Files are matched by lower-cased basename anywhere below ``directory``, the same
-        rule ``missing_required_files`` applies to a recursive listing. An absent
-        directory is missing every required member.
+        Files match by lower-cased basename. An optional source is never demanded here, so it
+        reports nothing; a command that reads one checks its members itself.
         """
-        names = (
-            [path.name.lower() for path in directory.rglob("*") if path.is_file()]
-            if directory.is_dir()
-            else []
-        )
+        if not self._catalog_source(source_id).required:
+            return []
+        names = [path.name.lower() for path in files]
         return [
             member.label
             for member in self.members(source_id)
@@ -252,25 +253,6 @@ class HcadSourceCatalog:
             for source in self.sources
         ]
 
-    def missing_required_files(self, source: DataSource, file_paths: list[str]) -> list[str]:
-        """Return core translated-row files absent from an extracted source."""
-        requirements: dict[HcadSourceId, tuple[tuple[str, tuple[str, ...]], ...]] = {
-            HcadSourceId.REAL_ACCOUNT_OWNER: (("real_acct.txt", ("real_acct.txt",)),),
-            HcadSourceId.REAL_BUILDING_LAND: (
-                ("building_res.txt", ("building_res.txt",)),
-                ("fixtures.txt", ("fixtures.txt",)),
-                ("extra_features*.txt", ("extra_features.txt", "extra_features_detail*.txt")),
-            ),
-        }
-        normalized_names = [
-            path.replace("\\", "/").rsplit("/", 1)[-1].lower() for path in file_paths
-        ]
-        missing: list[str] = []
-        for label, patterns in requirements.get(source.source_id, ()):
-            if not any(fnmatch(name, pattern) for name in normalized_names for pattern in patterns):
-                missing.append(label)
-        return missing
-
 
 DEFAULT_HCAD_SOURCE_CATALOG = HcadSourceCatalog(
     sources=(
@@ -284,8 +266,8 @@ DEFAULT_HCAD_SOURCE_CATALOG = HcadSourceCatalog(
                 _member("owners.txt", required=False),
                 _member("deeds.txt", required=False),
             ),
+            extract_members_only=True,
             source_type=DataSourceType.PROPERTY_DATA,
-            extract_patterns=["real_acct.txt", "owners.txt", "deeds.txt"],
             priority=10,
             source_id=HcadSourceId.REAL_ACCOUNT_OWNER,
             import_stages=frozenset({HarrisImportStage.PROPERTY}),
@@ -315,14 +297,8 @@ DEFAULT_HCAD_SOURCE_CATALOG = HcadSourceCatalog(
                 ),
                 _member("land.txt", required=False),
             ),
+            extract_members_only=True,
             source_type=DataSourceType.PROPERTY_DATA,
-            extract_patterns=[
-                "building_res.txt",
-                "fixtures.txt",
-                "extra_features.txt",
-                "extra_features_detail*.txt",
-                "land.txt",
-            ],
             priority=20,
             source_id=HcadSourceId.REAL_BUILDING_LAND,
             import_stages=frozenset({HarrisImportStage.BUILDING}),
@@ -413,6 +389,11 @@ DEFAULT_HCAD_SOURCE_CATALOG = HcadSourceCatalog(
 DEFAULT_PROPERTY_SOURCES = DEFAULT_HCAD_SOURCE_CATALOG.property_sources()
 DEFAULT_GIS_SOURCES = DEFAULT_HCAD_SOURCE_CATALOG.gis_sources()
 
+# The real-account property file, relative to whichever root holds its extract directory.
+REAL_ACCT_MEMBER_PATH = DEFAULT_HCAD_SOURCE_CATALOG.member_path(
+    HcadSourceId.REAL_ACCOUNT_OWNER, "real_acct.txt"
+)
+
 
 __all__ = [
     "DEFAULT_GIS_SOURCES",
@@ -424,5 +405,6 @@ __all__ = [
     "HarrisImportStage",
     "HcadSourceId",
     "HcadSourceCatalog",
+    "REAL_ACCT_MEMBER_PATH",
     "SourceMember",
 ]

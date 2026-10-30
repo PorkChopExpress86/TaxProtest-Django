@@ -5,7 +5,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from counties.harris.etl_pipeline.config import DataSource, DataSourceType
+from counties.harris.etl_pipeline.config import DataSource, DataSourceType, ETLConfig
+from counties.harris.etl_pipeline.extract import ExtractManager
 from counties.harris.etl_pipeline.fixtures_aggregator import FixturesAggregator
 from counties.harris.etl_pipeline.source_pipeline import (
     HarrisSourcePipeline,
@@ -73,6 +74,16 @@ def test_source_pipeline_missing_extract_path_optional(tmp_path: Path):
     assert "Extract path not found" in result.warnings[0]
 
 
+def _extract_manager(root: Path) -> ExtractManager:
+    return ExtractManager(
+        ETLConfig(
+            download_dir=root / "downloads",
+            extract_dir=root / "extracted",
+            log_dir=root / "logs",
+        )
+    )
+
+
 def test_source_pipeline_preload_fixtures_when_file_missing(tmp_path: Path):
     source = DataSource(
         name="real_building_land",
@@ -82,10 +93,8 @@ def test_source_pipeline_preload_fixtures_when_file_missing(tmp_path: Path):
         source_id=HcadSourceId.REAL_BUILDING_LAND,
         required=True,
     )
-    extract_dir = tmp_path / "extracted"
-    extract_dir.mkdir()
-    extract_manager = MagicMock()
-    extract_manager.extract_dir = extract_dir
+    (tmp_path / "extracted").mkdir()
+    extract_manager = _extract_manager(tmp_path)
 
     aggregator = FixturesAggregator()
     pipeline = HarrisSourcePipeline(
@@ -104,8 +113,7 @@ def test_source_pipeline_preloads_fixtures_from_the_catalog_layout(tmp_path: Pat
     (building_dir / "fixtures.txt").write_text(
         "acct\tbld_num\ttype\ttype_dscr\tunits\n1234567890123\t1\tRMB\tRoom: Bedroom\t3.00\n"
     )
-    extract_manager = MagicMock()
-    extract_manager.extract_dir = extract_root
+    extract_manager = _extract_manager(tmp_path)
 
     aggregator = FixturesAggregator()
     pipeline = HarrisSourcePipeline(

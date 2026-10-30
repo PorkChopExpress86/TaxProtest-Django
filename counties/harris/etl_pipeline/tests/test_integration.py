@@ -36,7 +36,7 @@ from counties.harris.etl_pipeline.transform import (
     DataTransformer,
 )
 from counties.harris.models import BuildingDetail, ExtraFeature, PropertyRecord
-from counties.harris.source_catalog import HcadSourceId
+from counties.harris.source_catalog import HcadSourceId, SourceMember
 
 
 def _persist_replacement(dataset: PersistenceDataset, rows):
@@ -193,7 +193,8 @@ class TestExtractManagerIntegration(TestCase):
             filename="test.zip",
             source_type=DataSourceType.PROPERTY_DATA,
             source_id=HcadSourceId.REAL_ACCOUNT_OWNER,
-            extract_patterns=["*.txt"],
+            members=(SourceMember(label="*.txt", patterns=("*.txt",)),),
+            extract_members_only=True,
         )
 
         manager = ExtractManager(self.config)

@@ -27,6 +27,7 @@ from counties.harris.models import BuildingDetail, ExtraFeature, PropertyRecord
 from counties.harris.readiness import published_year
 from counties.harris.source_catalog import (
     DEFAULT_HCAD_SOURCE_CATALOG,
+    REAL_ACCT_MEMBER_PATH,
     HarrisImportStage,
     HcadSourceId,
 )
@@ -332,9 +333,7 @@ class _HarrisImportExecution:
             assert operation is not None
             seed_sources(self.config, sources, replayed, operation)
         if request.property_file is not None:
-            destination = self.config.extract_dir / DEFAULT_HCAD_SOURCE_CATALOG.member_path(
-                HcadSourceId.REAL_ACCOUNT_OWNER, "real_acct.txt"
-            )
+            destination = self.config.extract_dir / REAL_ACCT_MEMBER_PATH
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(request.property_file.path, destination)
         self.logger = logger or ETLLogger(
@@ -736,8 +735,9 @@ class _HarrisImportExecution:
 
         # Legacy extracts often lived under the download tree. Include that
         # location as a fallback so modern and legacy commands pick equivalent data.
-        archive_base = Path(source.filename).name.rsplit(".", 1)[0]
-        legacy_extract_path = self.config.download_dir / archive_base
+        legacy_extract_path = (
+            self.config.download_dir / DEFAULT_HCAD_SOURCE_CATALOG.extract_dirname(source.source_id)
+        )
 
         candidate_roots = [extract_path]
         if legacy_extract_path.exists() and legacy_extract_path != extract_path:
@@ -775,14 +775,6 @@ class _HarrisImportExecution:
         except (DatabaseError, OSError, ValueError) as e:
             self.logger.exception(f"Error processing GIS data: {e}")
             return {"loaded": 0, "invalid": 0, "skipped": 0, "failed": 1, "source_error": str(e)}
-
-    @staticmethod
-    def _missing_required_files(source: DataSource, data_files: list[Path]) -> list[str]:
-        """Return missing required files for core required property sources."""
-        return DEFAULT_HCAD_SOURCE_CATALOG.missing_required_files(
-            source,
-            [str(path) for path in data_files],
-        )
 
     @staticmethod
     def _select_preferred_gis_shapefile(search_roots: list[Path]) -> Path | None:
