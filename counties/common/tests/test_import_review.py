@@ -181,7 +181,10 @@ class ImportReviewTests(TransactionTestCase):
             latest = executor.loader.graph.leaf_nodes()
             try:
                 executor.migrate([("data", "0024_import_dataset_recovery_permission")])
-                legacy = ImportOperation.objects.get(pk=candidate.operation_id).evidence
+                # Only the evidence column: the current model has columns 0024 lacks.
+                legacy = ImportOperation.objects.values_list("evidence", flat=True).get(
+                    pk=candidate.operation_id
+                )
                 self.assertEqual(legacy["source_validation"], evidence["validation"])
                 self.assertNotIn("validation", legacy)
             finally:

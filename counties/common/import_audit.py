@@ -4,6 +4,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+from django.db.models import Q
 from django.utils import timezone
 
 from counties.common.candidate_staging import drop_candidate_schema
@@ -11,13 +12,13 @@ from counties.common.county_registry import registration_for
 from counties.common.import_logging import import_warnings
 from counties.common.import_source_digests import digest_once, file_digest, is_source_file
 from counties.common.import_states import CandidateState, OperationStatus
-from counties.common.import_writers import county_writer, fenced_write
-from counties.common.models import ImportAuditEntry, ImportOperation
-
-DEAD_OPERATION_ERROR = (
-    "Import operation never finished: its worker stopped, and another Import operation "
-    "has since held the county writer"
+from counties.common.import_writers import (
+    DEAD_OPERATION_ERROR,
+    county_writer,
+    ensure_writer_free,
+    fenced_write,
 )
+from counties.common.models import ImportAuditEntry, ImportCandidate, ImportOperation
 
 
 def record_sources(operation: ImportOperation, paths: list[Path], **identity) -> None:
@@ -97,23 +98,39 @@ def audited_operation(
 
 
 def reconcile_dead_operations(county: str, *, actor: str) -> None:
-    """Take ``county``'s writer when a preparation may have died, so acquiring it reconciles.
+    """Take ``county``'s writer when an operation may have died, so acquiring it reconciles.
 
-    Raises ``WriterConflict`` while another operation still holds the writer.
+    Raises ``WriterConflict``, and records no operation, while another operation still
+    holds the writer.
     """
-    if _unfinished_preparations(county).exists():
+    if _dead_operations(county).exists() or _abandoned_candidates(county).exists():
+        ensure_writer_free(county)
         with audited_operation(county, "operation_reconciliation", actor=actor):
             pass
 
 
-def _unfinished_preparations(county: str):
-    # Only preparation creates a candidate, inside its operation's writer reservation,
-    # and it leaves one preparing or blocked only when it did not record how it ended.
-    return ImportOperation.objects.filter(
-        county=county,
-        status=OperationStatus.RUNNING,
-        candidate__state__in=(CandidateState.PREPARING, CandidateState.BLOCKED),
+def _dead_operations(county: str):
+    # Unfinished operations that held the county writer: preparation creates a candidate
+    # only inside that reservation and leaves it preparing or blocked only when it did
+    # not record how it ended; any other operation records when it took the writer.
+    return ImportOperation.objects.filter(county=county, finished_at__isnull=True).filter(
+        Q(candidate__state__in=(CandidateState.PREPARING, CandidateState.BLOCKED))
+        | Q(candidate__isnull=True, writer_held_at__isnull=False)
     )
+
+
+def _abandoned_candidates(county: str):
+    # A preparing candidate whose operation recorded an ending will never be prepared.
+    return ImportCandidate.objects.filter(
+        county=county, state=CandidateState.PREPARING, operation__finished_at__isnull=False
+    )
+
+
+def _block(candidate: ImportCandidate) -> None:
+    if candidate.state == CandidateState.PREPARING:
+        candidate.state = CandidateState.BLOCKED
+        candidate.evidence["error"] = DEAD_OPERATION_ERROR
+        candidate.save(update_fields=["state", "evidence"])
 
 
 def _reconcile_dead_operations(operation: ImportOperation) -> None:
@@ -122,32 +139,51 @@ def _reconcile_dead_operations(operation: ImportOperation) -> None:
     ``operation`` now holds the writer, so an earlier holder is fenced for good: its
     worker died before its own cleanup recorded how it ended.
     """
-    unfinished = _unfinished_preparations(operation.county).exclude(pk=operation.pk)
+    unfinished = _dead_operations(operation.county).exclude(pk=operation.pk)
     for pk in unfinished.values_list("pk", flat=True):
+        candidate = None
         with fenced_write():
             dead = unfinished.select_for_update(of=("self",)).filter(pk=pk).first()
             if dead is None:
                 continue  # its worker recorded how it ended after all
-            candidate = dead.candidate
-            state_before = candidate.state
             dead.status = OperationStatus.FAILED
             dead.errors.append(DEAD_OPERATION_ERROR)
             dead.finished_at = timezone.now()
             dead.save(update_fields=["status", "errors", "finished_at"])
-            if candidate.state == CandidateState.PREPARING:
-                candidate.state = CandidateState.BLOCKED
-                candidate.evidence["error"] = DEAD_OPERATION_ERROR
-                candidate.save(update_fields=["state", "evidence"])
+            evidence = {"reconciled_by": str(operation.pk)}
+            candidate = ImportCandidate.objects.filter(operation=dead).first()
+            if candidate is not None:
+                evidence.update(
+                    candidate_id=str(candidate.pk), candidate_state_before=candidate.state
+                )
+                _block(candidate)
             ImportAuditEntry.objects.create(
                 operation=dead,
+                kind="operation_reconciliation",
+                actor=operation.actor,
+                reason=DEAD_OPERATION_ERROR,
+                evidence=evidence,
+                result=OperationStatus.FAILED,
+            )
+        if candidate is not None:
+            drop_candidate_schema(candidate)
+    abandoned = _abandoned_candidates(operation.county).exclude(operation=operation)
+    for pk in abandoned.values_list("pk", flat=True):
+        with fenced_write():
+            candidate = abandoned.select_for_update(of=("self",)).filter(pk=pk).first()
+            if candidate is None:
+                continue
+            ImportAuditEntry.objects.create(
+                operation=candidate.operation,
                 kind="operation_reconciliation",
                 actor=operation.actor,
                 reason=DEAD_OPERATION_ERROR,
                 evidence={
                     "reconciled_by": str(operation.pk),
                     "candidate_id": str(candidate.pk),
-                    "candidate_state_before": state_before,
+                    "candidate_state_before": candidate.state,
                 },
-                result=OperationStatus.FAILED,
+                result=CandidateState.BLOCKED,
             )
+            _block(candidate)
         drop_candidate_schema(candidate)

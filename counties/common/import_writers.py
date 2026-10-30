@@ -9,6 +9,7 @@ from typing import NamedTuple
 from uuid import UUID
 
 from django.db import DatabaseError, connection, transaction
+from django.utils import timezone
 
 from counties.common.county_registry import registration_for
 from counties.common.import_source_digests import carry_digests, tree_digests
@@ -16,6 +17,12 @@ from counties.common.import_states import CandidateState, LegacyOperationStatus,
 from counties.common.models import CountyWriter, ImportAuditEntry, ImportOperation
 
 _CURRENT_WRITER: ContextVar[ImportOperation | None] = ContextVar("county_writer", default=None)
+
+
+DEAD_OPERATION_ERROR = (
+    "Import operation never finished: its worker stopped, and another Import operation "
+    "has since held the county writer"
+)
 
 
 class FencedWriter(RuntimeError):
@@ -147,6 +154,15 @@ def _lock_held(county: str, pid: int | None) -> bool:
         return bool(cursor.fetchone()[0])
 
 
+def ensure_writer_free(county: str) -> None:
+    """Raise ``WriterConflict`` while an operation holds or uncertainly holds ``county``."""
+    writer = CountyWriter.objects.filter(county=county, operation__isnull=False).first()
+    if writer is not None:
+        raise WriterConflict(
+            county, writer.operation_id, uncertain=not _lock_held(county, writer.backend_pid)
+        )
+
+
 @contextmanager
 def county_writer(operation: ImportOperation) -> Iterator[None]:
     county = operation.county
@@ -161,10 +177,7 @@ def county_writer(operation: ImportOperation) -> Iterator[None]:
     token = None
     try:
         writer, _ = CountyWriter.objects.get_or_create(county=county)
-        if writer.operation_id is not None:
-            raise WriterConflict(
-                county, writer.operation_id, uncertain=not _lock_held(county, writer.backend_pid)
-            )
+        ensure_writer_free(county)
         while not reserved:
             reserved = bool(
                 CountyWriter.objects.filter(county=county, operation__isnull=True).update(
@@ -183,7 +196,16 @@ def county_writer(operation: ImportOperation) -> Iterator[None]:
                 cursor.execute("SELECT pg_try_advisory_lock(%s)", [key])
                 locked = cursor.fetchone()[0]
             if not locked:
+                # Holding no lock, this attempt fenced nobody, so its reservation goes too.
+                CountyWriter.objects.filter(county=county, operation=operation).update(
+                    operation=None, backend_pid=None
+                )
+                reserved = False
                 raise WriterConflict(county, operation.pk, uncertain=True)
+        operation.writer_held_at = timezone.now()
+        ImportOperation.objects.filter(pk=operation.pk).update(
+            writer_held_at=operation.writer_held_at
+        )
         token = _CURRENT_WRITER.set(operation)
         yield
     finally:
@@ -268,6 +290,12 @@ def recover_writer(operation: ImportOperation, *, actor: str, reason: str) -> No
             writer.operation = None
             writer.backend_pid = None
             writer.save()
+            fenced = ImportOperation.objects.select_for_update().get(pk=operation.pk)
+            if fenced.finished_at is None:
+                fenced.status = OperationStatus.FAILED
+                fenced.errors.append(DEAD_OPERATION_ERROR)
+                fenced.finished_at = timezone.now()
+                fenced.save(update_fields=["status", "errors", "finished_at"])
             ImportAuditEntry.objects.create(
                 operation=operation,
                 kind="writer_recovery",
