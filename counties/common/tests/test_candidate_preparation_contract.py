@@ -53,6 +53,24 @@ class PreparationContract:
         self.assertEqual(candidate.state, "blocked")
         self.assertIn("too large", candidate.evidence["error"])
 
+    def test_only_a_load_that_keeps_published_rows_is_seeded_with_them(self):
+        for replaces_published, staged in ((False, ["PUBLISHED"]), (True, [])):
+            with self.subTest(replaces_published=replaces_published):
+                seen = []
+                with audited_operation(self.county, "fixture", actor="operator") as operation:
+                    load = self.fixture_load(operation)
+
+                    def run(candidate, operation, write=load.run, seen=seen):
+                        seen.extend(self.published_keys())
+                        return write(candidate, operation)
+
+                    prepare(
+                        operation,
+                        replace(load, run=run, replaces_published=replaces_published),
+                    )
+                self.assertEqual(seen, staged)
+                self.assertEqual(self.published_keys(), ["PUBLISHED"])
+
     def test_first_import_awaits_review(self):
         before = published_identity(self.county)
         operation, candidate = self.prepare_fixture()

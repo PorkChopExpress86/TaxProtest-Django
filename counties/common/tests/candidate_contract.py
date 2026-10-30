@@ -66,7 +66,8 @@ class CandidateContract:
             self.write_candidate_rows(ready=ready)
             return Loaded(complete=True, evidence={"fixture": "rows written"})
 
-        return replace(self.candidate_load(operation), run=write)
+        # The fixture writer adds to the staged rows instead of replacing them.
+        return replace(self.candidate_load(operation), run=write, replaces_published=False)
 
     def setUp(self):
         super().setUp()
