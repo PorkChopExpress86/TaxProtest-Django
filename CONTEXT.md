@@ -32,9 +32,12 @@ refresh, including the completeness expectations appropriate to that selection.
 _Avoid_: scope string, flag combination
 
 **HCAD source catalog**:
-The authoritative identity and acquisition facts for HCAD source archives used
-by build-time and runtime Harris imports.
-_Avoid_: per-caller archive manifest, hard-coded source alias
+The authoritative identity, acquisition and extracted-layout facts for HCAD
+source archives used by build-time and runtime Harris imports: each source's
+catalog id, archive, extract-directory name and declared members, relative to
+any root a caller holds. A source with no catalog id is rejected.
+_Avoid_: per-caller archive manifest, hard-coded source alias, per-caller
+directory name
 
 ## Brazos annual refresh
 
