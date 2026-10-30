@@ -14,13 +14,13 @@ from counties.harris.etl_pipeline import (
     run_harris_import,
 )
 from counties.harris.etl_pipeline.import_plan import HarrisImportPlan
+from counties.harris.source_catalog import REAL_ACCT_MEMBER_PATH
 
 
 def write_synthetic_real_acct(root: str | Path, count: int) -> Path:
-    """Write ``count`` residential accounts to ``<root>/extracted/Real_acct_owner/real_acct.txt``."""
-    source_dir = Path(root) / "extracted" / "Real_acct_owner"
-    source_dir.mkdir(parents=True, exist_ok=True)
-    source = source_dir / "real_acct.txt"
+    """Write ``count`` residential accounts as the catalog's property member under ``extracted``."""
+    source = Path(root) / "extracted" / REAL_ACCT_MEMBER_PATH
+    source.parent.mkdir(parents=True, exist_ok=True)
     lines = ["acct\tsite_addr_1\tsite_addr_3\tstate_class\ttot_appr_val"]
     for i in range(count):
         acct = f"P{i:07d}"

@@ -317,9 +317,13 @@ class ImportRecoveryTests(TransactionTestCase):
 
     def test_harris_recovery_replays_full_inputs_without_current_facts(self):
         from counties.harris.etl_pipeline import HarrisPropertyFile, run_harris_import
-        from counties.harris.etl_pipeline.tests.test_harris_import import _runtime_settings
+        from counties.harris.etl_pipeline.tests.test_harris_import import (
+            _runtime_settings,
+            extracted,
+        )
         from counties.harris.etl_pipeline.tests.test_import_publication import harris_request
         from counties.harris.models import BuildingDetail
+        from counties.harris.source_catalog import HcadSourceId
 
         prop = PropertyRecord.objects.create(
             account_number="P100",
@@ -339,7 +343,7 @@ class ImportRecoveryTests(TransactionTestCase):
         with tempfile.TemporaryDirectory() as root, self.settings(**_runtime_settings(root)):
             request = harris_request(root)
             first = run_harris_import(request)
-            building = Path(root) / "extracted/Real_building_land/building_res.txt"
+            building = extracted(root, HcadSourceId.REAL_BUILDING_LAND) / "building_res.txt"
             building.write_text(building.read_text().replace("1800", "1900"))
             run_harris_import(request)
             self.assertEqual(BuildingDetail.objects.get().heat_area, 1900)
@@ -354,7 +358,26 @@ class ImportRecoveryTests(TransactionTestCase):
                 ).status_code,
                 302,
             )
-            candidate = ImportOperation.objects.get(origin="admin_recovery").candidate
+            recovery = ImportOperation.objects.get(origin="admin_recovery")
+            candidate = recovery.candidate
+            # Retained-source bindings match on these extracted directory names.
+            replayed = Path(root) / "extracted" / ".imports" / str(recovery.pk)
+            self.assertEqual(
+                {path.name for path in replayed.iterdir()},
+                {"Real_acct_owner", "Real_building_land", "Parcels"},
+            )
+            self.assertEqual(
+                {
+                    (item["source_id"], Path(item["path"]).relative_to(replayed).parts[0])
+                    for item in candidate.sources
+                    if Path(item["path"]).is_relative_to(replayed)
+                },
+                {
+                    ("real-account-owner", "Real_acct_owner"),
+                    ("real-building-land", "Real_building_land"),
+                    ("gis-parcels", "Parcels"),
+                },
+            )
             self.assertEqual(BuildingDetail.objects.get().heat_area, 1900)
             self.assertEqual(
                 self.client.post(

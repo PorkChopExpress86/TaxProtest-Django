@@ -11,9 +11,20 @@ from django.db.models import Count
 from counties.common.tax_models import AssessmentHistory
 from counties.harris.etl_pipeline.row_reader import iter_dict_rows
 from counties.harris.replacement_guard import check_replacement
+from counties.harris.source_catalog import (
+    DEFAULT_HCAD_SOURCE_CATALOG,
+    REAL_ACCT_MEMBER_PATH,
+    HcadSourceId,
+)
 
 REAL_ACCT_REQUIRED = ("acct", "assessed_val")
 HEARING_REQUIRED = ("acct", "Final_Appraised_Value")
+
+
+# The hearing member path relative to a year root.
+HEARING_MEMBER = DEFAULT_HCAD_SOURCE_CATALOG.member_path(
+    HcadSourceId.HEARING_FILES, "arb_hearings_real.txt"
+)
 
 
 def _parse_decimal(value: Any) -> Decimal | None:
@@ -80,8 +91,8 @@ class AssessmentHistoryImporter:
         return counts
 
     def import_year(self, year: int, year_root: Path) -> int:
-        real_acct_path = year_root / "Real_acct_owner" / "real_acct.txt"
-        hearing_path = year_root / "Hearing_files" / "arb_hearings_real.txt"
+        real_acct_path = year_root / REAL_ACCT_MEMBER_PATH
+        hearing_path = year_root / HEARING_MEMBER
 
         if not real_acct_path.exists():
             raise FileNotFoundError(f"Missing real account file for {year}: {real_acct_path}")

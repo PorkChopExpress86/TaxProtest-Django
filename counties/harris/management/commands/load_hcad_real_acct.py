@@ -13,6 +13,12 @@ from counties.harris.etl_pipeline import (
     run_harris_import,
 )
 from counties.harris.etl_pipeline.orchestrator import HarrisPropertyFile
+from counties.harris.source_catalog import REAL_ACCT_MEMBER_PATH
+
+
+def default_real_acct_path() -> Path:
+    """Return the catalog's property member under the configured extract root."""
+    return Path(settings.HCAD_EXTRACT_DIR) / REAL_ACCT_MEMBER_PATH
 
 
 class Command(BaseCommand):
@@ -23,7 +29,8 @@ class Command(BaseCommand):
         parser.add_argument(
             "filepath",
             nargs="?",
-            help="Path to real_acct.txt (default: <HCAD_EXTRACT_DIR>/Real_acct_owner/real_acct.txt)",
+            help="Path to real_acct.txt (default: its HCAD source catalog path under "
+            "HCAD_EXTRACT_DIR)",
         )
         parser.add_argument("--chunk", type=int, default=5000, help="Bulk insert chunk size")
         parser.add_argument(
@@ -50,7 +57,7 @@ class Command(BaseCommand):
         if options.get("filepath"):
             filepath = Path(options["filepath"])
         else:
-            filepath = Path(settings.HCAD_EXTRACT_DIR) / "Real_acct_owner" / "real_acct.txt"
+            filepath = default_real_acct_path()
         if not filepath.is_absolute():
             filepath = Path(settings.BASE_DIR) / filepath
         if not filepath.exists():

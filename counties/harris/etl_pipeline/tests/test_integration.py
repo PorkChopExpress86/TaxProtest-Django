@@ -36,6 +36,7 @@ from counties.harris.etl_pipeline.transform import (
     DataTransformer,
 )
 from counties.harris.models import BuildingDetail, ExtraFeature, PropertyRecord
+from counties.harris.source_catalog import HcadSourceId, SourceMember
 
 
 def _persist_replacement(dataset: PersistenceDataset, rows):
@@ -111,6 +112,7 @@ class TestDownloadManagerIntegration(TestCase):
             url_template="https://example.com/test.zip",
             filename="test.zip",
             source_type=DataSourceType.PROPERTY_DATA,
+            source_id=HcadSourceId.REAL_ACCOUNT_OWNER,
         )
 
         manager = DownloadManager(self.config)
@@ -165,6 +167,7 @@ class TestExtractManagerIntegration(TestCase):
             url_template="https://example.com/test.zip",
             filename="test.zip",
             source_type=DataSourceType.PROPERTY_DATA,
+            source_id=HcadSourceId.REAL_ACCOUNT_OWNER,
         )
 
         manager = ExtractManager(self.config)
@@ -189,7 +192,9 @@ class TestExtractManagerIntegration(TestCase):
             url_template="https://example.com/test.zip",
             filename="test.zip",
             source_type=DataSourceType.PROPERTY_DATA,
-            extract_patterns=["*.txt"],
+            source_id=HcadSourceId.REAL_ACCOUNT_OWNER,
+            members=(SourceMember(label="*.txt", patterns=("*.txt",)),),
+            extract_members_only=True,
         )
 
         manager = ExtractManager(self.config)
@@ -392,6 +397,7 @@ class TestEndToEndPipeline(TestCase):
             url_template="https://example.com/test.zip",
             filename="test.zip",
             source_type=DataSourceType.PROPERTY_DATA,
+            source_id=HcadSourceId.REAL_ACCOUNT_OWNER,
         )
 
         # Download

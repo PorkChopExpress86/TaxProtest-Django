@@ -26,6 +26,7 @@ from counties.common.import_writers import (
     FencedWriter,
     WriterConflict,
     fenced_write,
+    reused_source,
     working_source_root,
 )
 from counties.common.models import CountyWriter, ImportOperation
@@ -44,7 +45,9 @@ from counties.harris.etl_pipeline.import_plan import HarrisImportPlan
 from counties.harris.etl_pipeline.tests.test_harris_import import (
     _runtime_settings,
     _write_property_source,
+    extracted,
 )
+from counties.harris.source_catalog import HcadSourceId
 
 
 class ImportWriterTests(TransactionTestCase):
@@ -185,7 +188,9 @@ class ImportWriterTests(TransactionTestCase):
                 BCAD_EXTRACT_DIR=str(Path(root) / "brazos" / "extracted"),
             ),
         ):
-            source = Path(root) / "harris" / "extracted" / "Real_acct_owner" / "real_acct.txt"
+            source = (
+                extracted(Path(root) / "harris", HcadSourceId.REAL_ACCOUNT_OWNER) / "real_acct.txt"
+            )
             source.parent.mkdir(parents=True)
             source.write_text("acct\tstate_class\nP100\tA1\n", encoding="latin-1")
             _stage_complete_pacs_export(Path(root) / "brazos", 2026)
@@ -305,3 +310,22 @@ class WorkingSourceRootTests(TransactionTestCase):
         operation, working = self.working_copy()
         self.assertEqual(self.contents(working), self.BASE)
         self.assertEqual(operation.status, "completed")
+
+    def test_a_working_root_names_the_base_root_and_prior_operation_it_reuses(self):
+        prior, _ = self.working_copy()
+        operation, working = self.working_copy()
+        reused = reused_source(operation, working)
+        self.assertIsNotNone(reused)
+        self.assertEqual(reused.base_root, self.root)
+        self.assertEqual(reused.prior.pk, prior.pk)
+
+    def test_a_working_root_copied_from_the_base_root_reuses_nothing(self):
+        operation, working = self.working_copy()
+        self.assertIsNone(reused_source(operation, working))
+
+    def test_a_path_that_is_not_the_operations_working_root_is_rejected(self):
+        prior, retained = self.working_copy()
+        operation, working = self.working_copy()
+        for path in (self.root, working / "nested", retained):
+            with self.subTest(path=path), self.assertRaisesMessage(ValueError, str(operation.pk)):
+                reused_source(operation, path)

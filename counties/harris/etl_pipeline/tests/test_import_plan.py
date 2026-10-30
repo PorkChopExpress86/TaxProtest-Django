@@ -96,6 +96,8 @@ class HcadSourceCatalogTests(SimpleTestCase):
         first = DEFAULT_HCAD_SOURCE_CATALOG.source_for_id(HcadSourceId.REAL_BUILDING_LAND)
         second = DEFAULT_HCAD_SOURCE_CATALOG.source_for_id(HcadSourceId.REAL_BUILDING_LAND)
 
-        first.extract_patterns.append("local-only.txt")
+        first.import_stages |= {HarrisImportStage.GIS}
+        first.required = False
 
-        self.assertNotIn("local-only.txt", second.extract_patterns)
+        self.assertNotIn(HarrisImportStage.GIS, second.import_stages)
+        self.assertTrue(second.required)

@@ -6,10 +6,12 @@ import os
 import tempfile
 import unittest
 import zipfile
+from dataclasses import replace
 from email.utils import formatdate
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
 import requests
 from requests.structures import CaseInsensitiveDict
 
@@ -29,7 +31,7 @@ from counties.harris.etl_pipeline.transform import (
     FieldSchema,
     TableSchema,
 )
-from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG
+from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG, HcadSourceId
 
 
 class TestETLConfig:
@@ -51,6 +53,7 @@ class TestETLConfig:
             url_template="https://example.com/{year}/data.zip",
             filename="data.zip",
             source_type=DataSourceType.PROPERTY_DATA,
+            source_id=HcadSourceId.REAL_ACCOUNT_OWNER,
         )
 
         assert source.get_url(2025) == "https://example.com/2025/data.zip"
@@ -308,9 +311,10 @@ class TestDataTransformer:
 class TestExtractManager:
     """Tests for extract manager."""
 
-    def test_extract_path_generation(self):
-        """Test extraction path generation."""
+    def test_extract_path_ignores_the_archive_filename(self):
+        """No filename-stem rule: a renamed archive still extracts under its catalog name."""
         config = ETLConfig()
+        config.extract_dir = Path("/srv/extracted")
         manager = ExtractManager(config)
 
         source = DataSource(
@@ -318,10 +322,40 @@ class TestExtractManager:
             url_template="http://example.com/test.zip",
             filename="test_data.zip",
             source_type=DataSourceType.PROPERTY_DATA,
+            source_id=HcadSourceId.REAL_ACCOUNT_OWNER,
         )
 
-        path = manager._get_extract_path(source)
-        assert path.name == "test_data"
+        assert manager.get_extract_path(source) == Path("/srv/extracted/Real_acct_owner")
+
+    def test_a_source_without_a_catalog_id_never_reaches_the_manager(self):
+        """Identity is required at construction, so no manager guesses it from the filename."""
+        with pytest.raises(TypeError):
+            DataSource(  # type: ignore[call-arg]
+                name="Test",
+                url_template="http://example.com/test.zip",
+                filename="test_data.zip",
+                source_type=DataSourceType.PROPERTY_DATA,
+            )
+
+    def test_catalog_source_extracts_under_its_catalog_name_not_its_filename(self):
+        """The extract directory is the configured root plus the catalog's name."""
+        config = ETLConfig()
+        config.extract_dir = Path("/srv/extracted")
+        manager = ExtractManager(config)
+        source = replace(
+            DEFAULT_HCAD_SOURCE_CATALOG.source_for_id(HcadSourceId.GIS_PARCELS),
+            filename="Parcels_2026_Oct.zip",
+        )
+
+        assert manager.get_extract_path(source) == Path("/srv/extracted/Parcels")
+
+    def test_archive_path_is_the_download_root_plus_the_archive_filename(self):
+        config = ETLConfig()
+        config.download_dir = Path("/srv/downloads")
+        manager = ExtractManager(config)
+        source = DEFAULT_HCAD_SOURCE_CATALOG.source_for_id(HcadSourceId.REAL_BUILDING_LAND)
+
+        assert manager.get_archive_path(source) == Path("/srv/downloads/Real_building_land.zip")
 
     def test_validate_zip_valid(self):
         """Test ZIP validation with valid archive."""
@@ -385,6 +419,7 @@ class TestDownloadResult:
             url_template="http://example.com/test.zip",
             filename="test.zip",
             source_type=DataSourceType.PROPERTY_DATA,
+            source_id=HcadSourceId.REAL_ACCOUNT_OWNER,
         )
 
         result = DownloadResult(source=source, success=True)
@@ -404,6 +439,7 @@ class TestExtractResult:
             url_template="http://example.com/test.zip",
             filename="test.zip",
             source_type=DataSourceType.PROPERTY_DATA,
+            source_id=HcadSourceId.REAL_ACCOUNT_OWNER,
         )
 
         result = ExtractResult(
@@ -461,6 +497,7 @@ class TestConditionalDownload(unittest.TestCase):
             url_template="https://example.com/test.zip",
             filename="test.zip",
             source_type=DataSourceType.PROPERTY_DATA,
+            source_id=HcadSourceId.REAL_ACCOUNT_OWNER,
         )
 
     def test_parse_last_modified_roundtrip(self):
@@ -584,6 +621,7 @@ class TestAtomicDownload(unittest.TestCase):
                 url_template="https://example.com/test.zip",
                 filename="test.zip",
                 source_type=DataSourceType.PROPERTY_DATA,
+                source_id=HcadSourceId.REAL_ACCOUNT_OWNER,
             )
 
             failed = manager.download_file(source)

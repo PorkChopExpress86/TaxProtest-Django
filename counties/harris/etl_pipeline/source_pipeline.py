@@ -106,8 +106,8 @@ class HarrisSourcePipeline:
 
         for source in sources:
             if DEFAULT_HCAD_SOURCE_CATALOG.is_source(source, HcadSourceId.REAL_BUILDING_LAND):
-                extract_path = self.extract_manager.get_extract_path(source)
-                fixtures_path = extract_path / "fixtures.txt"
+                # fixtures.txt is a declared member of the building-land source.
+                fixtures_path = self.extract_manager.get_extract_path(source) / "fixtures.txt"
 
                 if fixtures_path.exists():
                     try:
@@ -293,14 +293,9 @@ class HarrisSourcePipeline:
             return self._record_source_failure(source, msg, strict=strict)
 
         data_files = sorted(extract_path.rglob("*.txt"))
-        missing_required_files = DEFAULT_HCAD_SOURCE_CATALOG.missing_required_files(
-            source,
-            [str(path) for path in data_files],
-        )
-        if missing_required_files:
-            msg = (
-                f"Required files missing for {source.name}: " f"{', '.join(missing_required_files)}"
-            )
+        missing = DEFAULT_HCAD_SOURCE_CATALOG.missing_required_members(source.source_id, data_files)
+        if missing:
+            msg = f"Required files missing for {source.name}: {', '.join(missing)}"
             return self._record_source_failure(source, msg, strict=strict)
 
         if DEFAULT_HCAD_SOURCE_CATALOG.is_source(source, HcadSourceId.REAL_BUILDING_LAND):

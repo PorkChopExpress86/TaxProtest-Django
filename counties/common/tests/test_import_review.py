@@ -116,15 +116,18 @@ class ImportReviewTests(TransactionTestCase):
             run_harris_import,
         )
         from counties.harris.etl_pipeline.import_plan import HarrisImportPlan
-        from counties.harris.etl_pipeline.tests.test_harris_import import _runtime_settings
+        from counties.harris.etl_pipeline.tests.test_harris_import import (
+            _runtime_settings,
+            extracted,
+        )
         from counties.harris.models import PropertyRecord
+        from counties.harris.source_catalog import HcadSourceId
 
         self.client.force_login(self.reviewer())
         with tempfile.TemporaryDirectory() as temp, self.settings(**_runtime_settings(temp)):
-            extracted = Path(temp) / "extracted"
-            accounts = extracted / "Real_acct_owner"
-            buildings = extracted / "Real_building_land"
-            gis = extracted / "Parcels"
+            accounts = extracted(temp, HcadSourceId.REAL_ACCOUNT_OWNER)
+            buildings = extracted(temp, HcadSourceId.REAL_BUILDING_LAND)
+            gis = extracted(temp, HcadSourceId.GIS_PARCELS)
             for directory in (accounts, buildings, gis):
                 directory.mkdir(parents=True)
             (accounts / "real_acct.txt").write_text("acct\tstate_class\nP100\tA1\n")

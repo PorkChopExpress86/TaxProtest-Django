@@ -2,6 +2,7 @@
 
 import tempfile
 from io import StringIO
+from pathlib import Path
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -12,18 +13,27 @@ from django.urls import reverse
 
 from counties.common.county_registry import registration_for
 from counties.common.models import CountyWriter, ImportCandidate, ImportOperation
+from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG, HcadSourceId
 
 COMMAND = "counties.harris.management.commands.check_and_import_data.call_command"
+LOCAL_SOURCES = (
+    HcadSourceId.REAL_ACCOUNT_OWNER,
+    HcadSourceId.REAL_BUILDING_LAND,
+    HcadSourceId.GIS_PARCELS,
+)
 
 
 class CheckAndImportDataTests(TestCase):
-    def run_check(self):
+    def run_check(self, extracted=()):
         out = StringIO()
         with (
             tempfile.TemporaryDirectory() as extract_dir,
             self.settings(HCAD_EXTRACT_DIR=extract_dir),
             patch(COMMAND) as mocked_import,
         ):
+            for source_id in extracted:
+                dirname = DEFAULT_HCAD_SOURCE_CATALOG.extract_dirname(source_id)
+                (Path(extract_dir) / dirname).mkdir()
             call_command("check_and_import_data", stdout=out)
         return mocked_import, out.getvalue()
 
@@ -31,6 +41,24 @@ class CheckAndImportDataTests(TestCase):
         mocked_import, _ = self.run_check()
 
         mocked_import.assert_called_once_with("import_all_data")
+
+    def test_extracted_catalog_sources_skip_download_and_extract(self):
+        mocked_import, output = self.run_check(extracted=LOCAL_SOURCES)
+
+        mocked_import.assert_called_once_with(
+            "import_all_data", skip_download=True, skip_extract=True
+        )
+        self.assertIn("Local extracted files found", output)
+
+    def test_any_missing_catalog_source_falls_back_to_download(self):
+        for missing in LOCAL_SOURCES:
+            with self.subTest(missing=missing):
+                present = [source_id for source_id in LOCAL_SOURCES if source_id is not missing]
+
+                mocked_import, output = self.run_check(extracted=present)
+
+                mocked_import.assert_called_once_with("import_all_data")
+                self.assertIn("Local data files NOT found", output)
 
     def test_pending_harris_candidate_holds_the_import_and_names_the_next_step(self):
         next_steps = {

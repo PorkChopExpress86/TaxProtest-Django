@@ -63,9 +63,13 @@ class SourceRetentionTests(TransactionTestCase):
     def test_harris_supersession_protects_current_sources_and_repeat_is_safe(self):
         from counties.harris.etl_pipeline import run_harris_import
         from counties.harris.etl_pipeline.import_plan import HarrisImportPlan
-        from counties.harris.etl_pipeline.tests.test_harris_import import _runtime_settings
+        from counties.harris.etl_pipeline.tests.test_harris_import import (
+            _runtime_settings,
+            extracted,
+        )
         from counties.harris.etl_pipeline.tests.test_import_publication import harris_request
         from counties.harris.models import BuildingDetail, PropertyRecord
+        from counties.harris.source_catalog import HcadSourceId
 
         prop = PropertyRecord.objects.create(
             account_number="P100",
@@ -85,7 +89,7 @@ class SourceRetentionTests(TransactionTestCase):
         with tempfile.TemporaryDirectory() as root, self.settings(**_runtime_settings(root)):
             request = harris_request(root)
             first = run_harris_import(request)
-            building = Path(root) / "extracted/Real_building_land/building_res.txt"
+            building = extracted(root, HcadSourceId.REAL_BUILDING_LAND) / "building_res.txt"
             building.write_text(building.read_text().replace("1800", "1900"))
             partial = run_harris_import(
                 replace(request, plan=HarrisImportPlan.from_legacy_scope("building-only"))
@@ -104,7 +108,7 @@ class SourceRetentionTests(TransactionTestCase):
                     stdout=io.StringIO(),
                 )
             self.assertTrue(all(Path(s["path"]).is_file() for s in old.sources))
-            source = Path(root) / "extracted/Real_acct_owner/real_acct.txt"
+            source = extracted(root, HcadSourceId.REAL_ACCOUNT_OWNER) / "real_acct.txt"
             source.write_text(source.read_text().replace("250000", "260000"))
             second = run_harris_import(request)
             old = ImportCandidate.objects.get(pk=first.candidate_id)

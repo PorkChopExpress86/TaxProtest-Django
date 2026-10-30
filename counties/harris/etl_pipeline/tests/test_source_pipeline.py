@@ -5,12 +5,14 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from counties.harris.etl_pipeline.config import DataSource, DataSourceType
+from counties.harris.etl_pipeline.config import DataSource, DataSourceType, ETLConfig
+from counties.harris.etl_pipeline.extract import ExtractManager
 from counties.harris.etl_pipeline.fixtures_aggregator import FixturesAggregator
 from counties.harris.etl_pipeline.source_pipeline import (
     HarrisSourcePipeline,
     resolve_schema_name,
 )
+from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG, HcadSourceId
 
 
 def test_resolve_schema_name():
@@ -30,6 +32,7 @@ def test_source_pipeline_missing_extract_path_required(tmp_path: Path):
         url_template="http://example.com/real_acct.zip",
         filename="real_acct.zip",
         source_type=DataSourceType.PROPERTY_DATA,
+        source_id=HcadSourceId.REAL_ACCOUNT_OWNER,
         required=True,
     )
     extract_manager = MagicMock()
@@ -53,6 +56,7 @@ def test_source_pipeline_missing_extract_path_optional(tmp_path: Path):
         url_template="http://example.com/opt.zip",
         filename="opt.zip",
         source_type=DataSourceType.PROPERTY_DATA,
+        source_id=HcadSourceId.PP_FILES,
         required=False,
     )
     extract_manager = MagicMock()
@@ -70,18 +74,27 @@ def test_source_pipeline_missing_extract_path_optional(tmp_path: Path):
     assert "Extract path not found" in result.warnings[0]
 
 
+def _extract_manager(root: Path) -> ExtractManager:
+    return ExtractManager(
+        ETLConfig(
+            download_dir=root / "downloads",
+            extract_dir=root / "extracted",
+            log_dir=root / "logs",
+        )
+    )
+
+
 def test_source_pipeline_preload_fixtures_when_file_missing(tmp_path: Path):
     source = DataSource(
         name="real_building_land",
         url_template="http://example.com/Real_building_land.zip",
         filename="Real_building_land.zip",
         source_type=DataSourceType.PROPERTY_DATA,
+        source_id=HcadSourceId.REAL_BUILDING_LAND,
         required=True,
     )
-    extract_dir = tmp_path / "extracted"
-    extract_dir.mkdir()
-    extract_manager = MagicMock()
-    extract_manager.get_extract_path.return_value = extract_dir
+    (tmp_path / "extracted").mkdir()
+    extract_manager = _extract_manager(tmp_path)
 
     aggregator = FixturesAggregator()
     pipeline = HarrisSourcePipeline(
@@ -90,6 +103,25 @@ def test_source_pipeline_preload_fixtures_when_file_missing(tmp_path: Path):
     )
     pipeline.preload_fixtures([source])
     assert aggregator.get_stats()["total_buildings"] == 0
+
+
+def test_source_pipeline_preloads_fixtures_from_the_catalog_layout(tmp_path: Path):
+    source = DEFAULT_HCAD_SOURCE_CATALOG.source_for_id(HcadSourceId.REAL_BUILDING_LAND)
+    extract_root = tmp_path / "extracted"
+    building_dir = extract_root / "Real_building_land"
+    building_dir.mkdir(parents=True)
+    (building_dir / "fixtures.txt").write_text(
+        "acct\tbld_num\ttype\ttype_dscr\tunits\n1234567890123\t1\tRMB\tRoom: Bedroom\t3.00\n"
+    )
+    extract_manager = _extract_manager(tmp_path)
+
+    aggregator = FixturesAggregator()
+    pipeline = HarrisSourcePipeline(
+        extract_manager=extract_manager,
+        fixtures_aggregator=aggregator,
+    )
+    pipeline.preload_fixtures([source])
+    assert aggregator.get_stats()["total_buildings"] == 1
 
 
 @pytest.mark.django_db

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from counties.common.import_audit import record_sources
+from counties.common.import_writers import reused_source
 from counties.common.models import ImportOperation
 from counties.harris.models import PropertyRecord
 from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG, DataSource, DataSourceType
@@ -272,14 +273,11 @@ def validate_harris_sources(
     unconfirmed_years: set[Path] = set()
     for source in sources:
         root = manager.get_extract_path(source)
-        archive = config.download_dir / source.filename
+        archive = manager.get_archive_path(source)
         acquired = operation.evidence.get("acquired_sources", {}).get(source.filename, {})
-        previous_download = operation.evidence.get("reused_from", {}).get(
-            str(config.download_dir.parent.parent)
-        )
-        if not acquired and previous_download:
-            previous = ImportOperation.objects.get(pk=previous_download)
-            acquired = previous.evidence.get("acquired_sources", {}).get(source.filename, {})
+        reused = None if acquired else reused_source(operation, config.download_dir)
+        if reused is not None:
+            acquired = reused.prior.evidence.get("acquired_sources", {}).get(source.filename, {})
         if acquired:
             operation.evidence.setdefault("acquired_sources", {})[source.filename] = acquired
             if acquired.get("source_year") is not None and acquired["source_year"] != year:
@@ -289,7 +287,7 @@ def validate_harris_sources(
         record_sources(
             operation,
             [archive],
-            source_id=source.source_id.value if source.source_id else source.name,
+            source_id=source.source_id.value,
             requested_year=year,
             source_year=acquired.get("source_year"),
             source_url=acquired.get("source_url"),
@@ -303,7 +301,11 @@ def validate_harris_sources(
                 result.errors.append(f"{archive.name}: archive integrity unavailable: {exc}")
         if source.source_type == DataSourceType.GIS_DATA:
             layer = select_preferred_gis_shapefile(
-                [root, config.download_dir / Path(source.filename).stem]
+                [
+                    root,
+                    config.download_dir
+                    / DEFAULT_HCAD_SOURCE_CATALOG.extract_dirname(source.source_id),
+                ]
             )
             if layer is None:
                 result.errors.append(f"{source.name}: no requested GIS layer")
@@ -315,7 +317,7 @@ def validate_harris_sources(
                 record_sources(
                     operation,
                     paths,
-                    source_id=source.source_id.value if source.source_id else source.name,
+                    source_id=source.source_id.value,
                     requested_year=year,
                     source_year=acquired.get("source_year"),
                 )
@@ -325,9 +327,7 @@ def validate_harris_sources(
                 _check_archive_inputs(archive, paths, operation, result, relative_to=layer.parent)
             continue
         files = sorted(root.rglob("*.txt"))
-        missing = DEFAULT_HCAD_SOURCE_CATALOG.missing_required_files(
-            source, [str(path) for path in files]
-        )
+        missing = DEFAULT_HCAD_SOURCE_CATALOG.missing_required_members(source.source_id, files)
         if missing:
             result.errors.append(f"{source.name}: required files missing: {', '.join(missing)}")
         detailed = any(path.stem.lower().startswith("extra_features_detail") for path in files)
@@ -340,7 +340,7 @@ def validate_harris_sources(
             record_sources(
                 operation,
                 [path],
-                source_id=source.source_id.value if source.source_id else source.name,
+                source_id=source.source_id.value,
                 requested_year=year,
                 source_year=None,
             )

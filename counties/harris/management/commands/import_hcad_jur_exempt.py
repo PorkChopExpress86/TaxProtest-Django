@@ -82,16 +82,23 @@ from counties.common.tax_models import TaxUnitRate
 from counties.harris.etl_pipeline.row_reader import iter_dict_rows
 from counties.harris.models import PropertyRecord
 from counties.harris.replacement_guard import check_replacement
+from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG, HcadSourceId
 
 logger = logging.getLogger(__name__)
 
 COUNTY = "harris"
 SOURCE = "hcad_real_jur_exempt"
 
-VALUE_FILE = "jur_value.txt"
-EXEMPT_FILE = "jur_exempt.txt"
-DESCRIPTION_FILE = "jur_exemption_dscr.txt"
-RATE_FILE = "jur_tax_dist_exempt_value_rate.txt"
+SOURCE_ID = HcadSourceId.REAL_JUR_EXEMPT
+EXTRACT_DIRNAME = DEFAULT_HCAD_SOURCE_CATALOG.extract_dirname(SOURCE_ID)
+ARCHIVE_FILENAME = DEFAULT_HCAD_SOURCE_CATALOG.source_for_id(SOURCE_ID).filename
+_MEMBERS = {member.label: member for member in DEFAULT_HCAD_SOURCE_CATALOG.members(SOURCE_ID)}
+
+# Indexing _MEMBERS fails at import if the catalog stops declaring one of these files.
+VALUE_FILE = _MEMBERS["jur_value.txt"].label
+EXEMPT_FILE = _MEMBERS["jur_exempt.txt"].label
+DESCRIPTION_FILE = _MEMBERS["jur_exemption_dscr.txt"].label
+RATE_FILE = _MEMBERS["jur_tax_dist_exempt_value_rate.txt"].label
 
 #: HCAD quotes tax rates per $100 of assessed value.
 RATE_DIVISOR = Decimal("100")
@@ -154,7 +161,7 @@ def _read_rows(path: Path, *extra_required: str) -> Iterator[dict[str, str]]:
 
 
 class Command(BaseCommand):
-    help = "Import Harris jurisdiction/exemption rows and tax unit rates from Real_jur_exempt."
+    help = f"Import Harris jurisdiction/exemption rows and tax unit rates from {EXTRACT_DIRNAME}."
 
     def add_arguments(self, parser):
         parser.add_argument("--actor", default="")
@@ -167,7 +174,7 @@ class Command(BaseCommand):
         parser.add_argument(
             "--path",
             help="Directory holding the extracted jur_*.txt files "
-            "(default: <HCAD_EXTRACT_DIR>/Real_jur_exempt).",
+            f"(default: <HCAD_EXTRACT_DIR>/{EXTRACT_DIRNAME}).",
         )
         parser.add_argument(
             "--rate-column",
@@ -198,11 +205,9 @@ class Command(BaseCommand):
         if option:
             directory = Path(option)
         else:
-            directory = working_source_root(Path(settings.HCAD_EXTRACT_DIR)) / "Real_jur_exempt"
+            directory = working_source_root(Path(settings.HCAD_EXTRACT_DIR)) / EXTRACT_DIRNAME
             if not directory.is_dir():
-                zip_path = (
-                    working_source_root(Path(settings.HCAD_DOWNLOAD_DIR)) / "Real_jur_exempt.zip"
-                )
+                zip_path = working_source_root(Path(settings.HCAD_DOWNLOAD_DIR)) / ARCHIVE_FILENAME
                 if zip_path.exists():
                     self.stdout.write(f"Extracting {zip_path} -> {directory} ...")
                     directory.mkdir(parents=True, exist_ok=True)
@@ -211,10 +216,16 @@ class Command(BaseCommand):
         if not directory.is_dir():
             raise CommandError(
                 f"Extract directory not found: {directory}. "
-                "Download and extract Real_jur_exempt.zip first "
+                f"Download and extract {ARCHIVE_FILENAME} first "
                 "(python manage.py download_hcad, or the ETL pipeline's 'Real Jur Exempt' source)."
             )
-        missing = [n for n in (VALUE_FILE, EXEMPT_FILE, RATE_FILE) if not (directory / n).exists()]
+        # The loader opens each member at the top of the directory, as HCAD's flat
+        # archive extracts it, so a required member must be present there.
+        missing = [
+            member.label
+            for member in _MEMBERS.values()
+            if member.required and not (directory / member.label).is_file()
+        ]
         if missing:
             raise CommandError(f"Missing required file(s) under {directory}: {', '.join(missing)}")
         return directory
