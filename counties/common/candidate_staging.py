@@ -96,8 +96,13 @@ def staged_candidate_schema(
     *,
     shared_models_scope: Mapping[type[models.Model], str] | None = None,
     foreign_keys: Sequence[tuple[type[models.Model], str, type[models.Model], str]] | None = None,
+    seed: bool = True,
 ) -> Iterator[None]:
-    """Provision an isolated candidate schema, clone tables, and scope search_path."""
+    """Provision an isolated candidate schema, clone tables, and scope search_path.
+
+    Each table is seeded with its published rows, unless ``seed`` is false because
+    the load replaces every table whole.
+    """
     if connection.vendor != "postgresql":
         raise ValueError("Durable candidate preparation requires PostgreSQL")
 
@@ -126,10 +131,11 @@ def staged_candidate_schema(
                     f"ALTER TABLE {quoted_schema}.{table} ALTER COLUMN id SET DEFAULT nextval(%s::regclass)",
                     [f"{schema_name}.{model._meta.db_table}_id_seq"],
                 )
-            scope = scopes.get(model, "")
-            cursor.execute(
-                f"INSERT INTO {quoted_schema}.{table} OVERRIDING SYSTEM VALUE SELECT * FROM public.{table}{scope}"
-            )
+            if seed:
+                scope = scopes.get(model, "")
+                cursor.execute(
+                    f"INSERT INTO {quoted_schema}.{table} OVERRIDING SYSTEM VALUE SELECT * FROM public.{table}{scope}"
+                )
             cursor.execute(
                 "SELECT setval(pg_get_serial_sequence(%s, 'id'), COALESCE((SELECT MAX(id) FROM "
                 f"{quoted_schema}.{table}), 1), EXISTS(SELECT 1 FROM {quoted_schema}.{table}))",

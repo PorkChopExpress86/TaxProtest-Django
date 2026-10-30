@@ -20,6 +20,8 @@ from counties.common.candidate_staging import (
 from counties.common.import_writers import county_writer
 from counties.common.models import ImportCandidate, ImportOperation
 from counties.common.tax_models import PropertyJurisdictionExemption
+from counties.harris.etl_pipeline.candidate import HarrisCandidatePort
+from counties.harris.models import BuildingDetail, PropertyRecord
 
 
 class CandidateStagingUnitTests(SimpleTestCase):
@@ -227,3 +229,89 @@ class CandidateStagingIntegrationTests(TransactionTestCase):
                 county="harris", account_number="999999999999"
             ).exists()
         )
+
+
+def staged_structure(schema):
+    """Every index, constraint, column default and sequence of a staged schema."""
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT tablename, indexname, indexdef FROM pg_indexes WHERE schemaname = %s",
+            [schema],
+        )
+        indexes = cursor.fetchall()
+        cursor.execute(
+            "SELECT conrelid::regclass::text, conname, pg_get_constraintdef(oid) "
+            "FROM pg_constraint WHERE connamespace = %s::regnamespace",
+            [schema],
+        )
+        constraints = cursor.fetchall()
+        cursor.execute(
+            "SELECT table_name, column_name, column_default, is_nullable "
+            "FROM information_schema.columns WHERE table_schema = %s",
+            [schema],
+        )
+        columns = cursor.fetchall()
+        cursor.execute(
+            "SELECT sequencename, data_type, start_value, increment_by "
+            "FROM pg_sequences WHERE schemaname = %s",
+            [schema],
+        )
+        sequences = cursor.fetchall()
+    return {
+        name: sorted(tuple(str(value).replace(schema, "{schema}") for value in row) for row in rows)
+        for name, rows in (
+            ("indexes", indexes),
+            ("constraints", constraints),
+            ("columns", columns),
+            ("sequences", sequences),
+        )
+    }
+
+
+class UnseededStagingTests(TransactionTestCase):
+    """A load that replaces every staged table starts from empty tables of the same shape."""
+
+    def setUp(self):
+        self.tables = HarrisCandidatePort.tables
+        prop = PropertyRecord.objects.create(account_number="PUBLISHED")
+        BuildingDetail.objects.create(property=prop, account_number="PUBLISHED", building_number=1)
+        self.operation = ImportOperation.objects.create(county="harris", intent="full")
+
+    def tearDown(self):
+        with connection.cursor() as cursor:
+            for candidate in ImportCandidate.objects.filter(county="harris"):
+                cursor.execute(f'DROP SCHEMA IF EXISTS "{candidate.storage_schema}" CASCADE')
+        super().tearDown()
+
+    def stage(self, **options):
+        candidate = ImportCandidate.objects.create(
+            county="harris",
+            operation=ImportOperation.objects.create(county="harris", intent="full"),
+            storage_schema=f"harris_candidate_{uuid4().hex}",
+        )
+        with staged_candidate_schema(
+            "harris",
+            candidate,
+            self.tables.models,
+            foreign_keys=self.tables.deferred_keys,
+            **options,
+        ):
+            counts = [model.objects.count() for model in self.tables.models]
+            first = self.tables.models[0].objects.create(account_number="FIRST")
+        return candidate.storage_schema, counts, first.pk
+
+    def test_an_unseeded_table_is_empty_with_the_seeded_shape(self):
+        with county_writer(self.operation):
+            seeded, seeded_counts, _ = self.stage()
+            empty, empty_counts, first_id = self.stage(seed=False)
+
+        self.assertEqual(seeded_counts, [1, 1, 0])
+        self.assertEqual(empty_counts, [0, 0, 0])
+        # A full load restarts each table's identity, so the first new row is id 1.
+        self.assertEqual(first_id, 1)
+        structure = staged_structure(empty)
+        self.assertEqual(structure, staged_structure(seeded))
+        self.assertEqual(
+            sum("FOREIGN KEY" in definition for _, _, definition in structure["constraints"]), 2
+        )
+        self.assertEqual(len(structure["sequences"]), len(self.tables.models))

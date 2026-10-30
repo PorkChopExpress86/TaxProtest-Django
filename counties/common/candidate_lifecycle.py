@@ -64,6 +64,12 @@ class CandidateLoad:
     identity: Mapping[str, Any]  # recorded as candidate.request; opaque to common
     carries_published: bool  # the candidate keeps published rows, so inherits their sources
     run: Callable[[ImportCandidate, ImportOperation], Loaded]  # runs in the staged schema
+    # The load replaces every staged table whole, so none is seeded with published rows.
+    replaces_published: bool = False
+
+    def __post_init__(self) -> None:
+        if self.carries_published and self.replaces_published:
+            raise ValueError("A load cannot both keep and replace the published rows")
 
 
 @dataclass(frozen=True)
@@ -116,6 +122,7 @@ def prepare(
             port.tables.models,
             shared_models_scope=_county_rows(port.tables, county),
             foreign_keys=port.tables.deferred_keys,
+            seed=not load.replaces_published,
         ):
             loaded = load.run(candidate, operation)
             candidate.request.update(loaded.identity)

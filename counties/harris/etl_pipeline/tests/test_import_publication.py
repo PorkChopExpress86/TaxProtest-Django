@@ -5,9 +5,11 @@ import io
 import tempfile
 import threading
 from dataclasses import replace
+from datetime import UTC, datetime
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
+from uuid import UUID
 
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
@@ -15,6 +17,8 @@ from django.db import close_old_connections, connection
 from django.test import Client, TransactionTestCase
 from django.urls import reverse
 
+from counties.common.candidate_lifecycle import prepare
+from counties.common.import_audit import audited_operation
 from counties.common.import_writers import WriterConflict, county_writer
 from counties.common.models import ImportAuditEntry, ImportCandidate, ImportOperation
 from counties.common.tax_models import PropertyJurisdictionExemption, TaxUnitRate
@@ -26,10 +30,12 @@ from counties.harris.etl_pipeline import (
     HarrisImportStatus,
     HarrisPrepare,
     HarrisPreview,
+    HarrisPropertyFile,
     InvalidHarrisImportRequest,
     run_harris_import,
 )
 from counties.harris.etl_pipeline.import_plan import HarrisImportPlan
+from counties.harris.etl_pipeline.orchestrator import harris_candidate_load
 from counties.harris.etl_pipeline.tests.test_harris_import import _runtime_settings, extracted
 from counties.harris.models import BuildingDetail, PropertyRecord
 from counties.harris.source_catalog import HcadSourceId
@@ -62,6 +68,25 @@ def harris_request(root, key="P100", *, prepare=False):
     )
 
 
+def publish_baseline():
+    prop = PropertyRecord.objects.create(
+        account_number="P100",
+        address="Old address",
+        is_residential=True,
+        is_data_ready=True,
+        latitude=29.7,
+        longitude=-95.4,
+    )
+    BuildingDetail.objects.create(
+        property=prop,
+        account_number="P100",
+        building_number=1,
+        bedrooms=3,
+        bathrooms=2,
+        heat_area=1800,
+    )
+
+
 class HarrisPublicationTests(TransactionTestCase):
     def tearDown(self):
         with connection.cursor() as cursor:
@@ -70,22 +95,7 @@ class HarrisPublicationTests(TransactionTestCase):
         super().tearDown()
 
     def baseline(self):
-        prop = PropertyRecord.objects.create(
-            account_number="P100",
-            address="Old address",
-            is_residential=True,
-            is_data_ready=True,
-            latitude=29.7,
-            longitude=-95.4,
-        )
-        BuildingDetail.objects.create(
-            property=prop,
-            account_number="P100",
-            building_number=1,
-            bedrooms=3,
-            bathrooms=2,
-            heat_area=1800,
-        )
+        publish_baseline()
 
     def test_qualified_replacement_publishes_and_repeated_application_is_idempotent(self):
         self.baseline()
@@ -481,3 +491,61 @@ class HarrisPublicationTests(TransactionTestCase):
             self.assertEqual(observations, [(5, 2500.0)])
             response = self.client.get(reverse("similar_properties", args=["P100"]))
             self.assertEqual(response.context["subject"].bedrooms, 3)
+
+
+class FullLoadStagingTests(TransactionTestCase):
+    """A full load replaces every staged table, so it is not seeded with published rows."""
+
+    def tearDown(self):
+        with connection.cursor() as cursor:
+            for candidate in ImportCandidate.objects.filter(county="harris"):
+                cursor.execute(f'DROP SCHEMA IF EXISTS "{candidate.storage_schema}" CASCADE')
+        super().tearDown()
+
+    def load(self, request):
+        with audited_operation("harris", "full", actor="operator") as operation:
+            return operation, harris_candidate_load(request, operation)
+
+    def test_only_a_full_load_of_complete_sources_replaces_published_rows(self):
+        with tempfile.TemporaryDirectory() as root, self.settings(**_runtime_settings(root)):
+            request = harris_request(root, prepare=True)
+            partial = replace(request, plan=HarrisImportPlan.from_legacy_scope("property-only"))
+            appended = replace(
+                request,
+                property_file=HarrisPropertyFile(
+                    extracted(root, HcadSourceId.REAL_ACCOUNT_OWNER) / "real_acct.txt", append=True
+                ),
+            )
+            self.assertTrue(self.load(request)[1].replaces_published)
+            self.assertFalse(self.load(partial)[1].replaces_published)
+            self.assertFalse(self.load(appended)[1].replaces_published)
+
+    def test_a_full_load_prepares_the_same_content_as_a_seeded_one(self):
+        publish_baseline()
+        moment = datetime(2026, 10, 30, 12, tzinfo=UTC)
+        prepared = []
+        with (
+            tempfile.TemporaryDirectory() as root,
+            self.settings(**_runtime_settings(root)),
+            patch("counties.harris.etl_pipeline.persistence.timezone.now", return_value=moment),
+            # Each persisted dataset otherwise records a random batch id.
+            patch("counties.harris.etl_pipeline.persistence.uuid4", return_value=UUID(int=1)),
+        ):
+            request = harris_request(root, prepare=True)
+            for replaces_published in (False, True):
+                with audited_operation("harris", "full", actor="operator") as operation:
+                    load = harris_candidate_load(request, operation)
+                    candidate = prepare(
+                        operation, replace(load, replaces_published=replaces_published)
+                    ).candidate
+                prepared.append((candidate.state, candidate.evidence["content_identity"]))
+        self.assertEqual(prepared[0], prepared[1])
+        # Pinned so a change to the bytes either mode identifies is caught (ADR-0024).
+        self.assertEqual(
+            prepared[0],
+            (
+                "prepared",
+                {"sha256": "12dbf18d29c9a4cf025683c61771198065f4362ea4ef11211c11c8e93b36eae7"},
+            ),
+        )
+        self.assertEqual(PropertyRecord.objects.get().address, "Old address")

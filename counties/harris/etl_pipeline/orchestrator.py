@@ -954,11 +954,14 @@ def harris_candidate_load(
             result=result,
         )
 
+    # A partial plan or a property file keeps published rows, so inherits their sources.
+    carries_published = not request.plan.is_full or request.property_file is not None
     return CandidateLoad(
         identity=identity,
-        # A partial plan or a property file keeps published rows, so inherits their sources.
-        carries_published=not request.plan.is_full or request.property_file is not None,
+        carries_published=carries_published,
         run=run,
+        # Otherwise the load replaces the account table, which empties every staged table.
+        replaces_published=not carries_published,
     )
 
 
