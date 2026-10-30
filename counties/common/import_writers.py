@@ -1,7 +1,5 @@
 """County-scoped database ownership; this module does not execute ETL."""
 
-import hashlib
-import os
 import shutil
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -15,6 +13,7 @@ from django.db import DatabaseError, connection, transaction
 from counties.common.county_registry import registration_for
 from counties.common.import_states import CandidateState, LegacyOperationStatus, OperationStatus
 from counties.common.models import CountyWriter, ImportAuditEntry, ImportOperation
+from counties.common.source_digests import carry_digests, tree_digests
 
 _CURRENT_WRITER: ContextVar[ImportOperation | None] = ContextVar("county_writer", default=None)
 
@@ -32,20 +31,6 @@ def _active_writer() -> ImportOperation:
     if operation is None:
         raise FencedWriter("No county writer reservation is active; mutation rejected")
     return operation
-
-
-def _source_digests(root: Path) -> dict[str, str]:
-    digests = {}
-    for directory, children, files in os.walk(root):
-        children[:] = [name for name in children if name != ".imports"]
-        for filename in sorted(files):
-            source = Path(directory) / filename
-            digest = hashlib.sha256()
-            with source.open("rb") as stream:
-                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                    digest.update(chunk)
-            digests[str(source.relative_to(root))] = digest.hexdigest()
-    return digests
 
 
 def _working_root(root: Path, operation_id: UUID | str) -> Path:
@@ -81,7 +66,7 @@ def working_source_root(root: Path, *, reuse: bool = True) -> Path:
         operation.evidence.setdefault("working_sources", []).append(str(working))
         return working
     if not working.exists():
-        base_digests = _source_digests(root)
+        base_digests = tree_digests(root)
         source_root = root
         for prior in (
             ImportOperation.objects.filter(
@@ -110,7 +95,7 @@ def working_source_root(root: Path, *, reuse: bool = True) -> Path:
                     f"Retained sources of {prior.pk} are unavailable; copied the base root"
                 )
                 break
-            if _source_digests(retained) != expected:
+            if tree_digests(retained) != expected:
                 raise RuntimeError(f"Retained source files changed or are unavailable: {prior.pk}")
             source_root = retained
             operation.evidence.setdefault("reused_from", {})[str(root)] = str(prior.pk)
@@ -129,6 +114,7 @@ def working_source_root(root: Path, *, reuse: bool = True) -> Path:
         except BaseException:
             shutil.rmtree(working, ignore_errors=True)
             raise
+        carry_digests(source_root, working)
         operation.evidence.setdefault("working_sources", []).append(str(working))
     return working
 
@@ -203,7 +189,7 @@ def county_writer(operation: ImportOperation) -> Iterator[None]:
     finally:
         try:
             operation.evidence["retained_source_digests"] = {
-                path: _source_digests(Path(path))
+                path: tree_digests(Path(path))
                 for path in operation.evidence.get("working_sources", [])
             }
         except OSError as exc:

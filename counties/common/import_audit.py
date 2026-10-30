@@ -1,6 +1,5 @@
 """Audit/ownership primitives; county callers select and interpret their sources."""
 
-import hashlib
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -13,6 +12,7 @@ from counties.common.import_logging import import_warnings
 from counties.common.import_states import CandidateState, OperationStatus
 from counties.common.import_writers import county_writer, fenced_write
 from counties.common.models import ImportAuditEntry, ImportOperation
+from counties.common.source_digests import digest_once, file_digest
 
 DEAD_OPERATION_ERROR = (
     "Import operation never finished: its worker stopped, and another Import operation "
@@ -25,11 +25,7 @@ def record_sources(operation: ImportOperation, paths: list[Path], **identity) ->
     for path in paths:
         if not path.is_file():
             continue
-        digest = hashlib.sha256()
-        with path.open("rb") as stream:
-            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                digest.update(chunk)
-        sources.append({"path": str(path), "sha256": digest.hexdigest(), **identity})
+        sources.append({"path": str(path), "sha256": file_digest(path), **identity})
 
 
 @contextmanager
@@ -66,6 +62,7 @@ def audited_operation(
             import_warnings(
                 registration.warning_logger, operation_id=str(operation.pk)
             ) as warnings,
+            digest_once(),
             county_writer(operation),
         ):
             _reconcile_dead_operations(operation)

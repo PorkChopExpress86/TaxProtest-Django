@@ -5,6 +5,8 @@ Provides safe and efficient archive extraction with validation,
 streaming support, and automatic cleanup.
 """
 
+import json
+import os
 import shutil
 import tarfile
 import zipfile
@@ -13,6 +15,7 @@ from dataclasses import dataclass
 from fnmatch import fnmatch
 from pathlib import Path
 
+from counties.common.source_digests import PROVENANCE_FILENAME, file_digest
 from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG
 
 from .config import DataSource, ETLConfig
@@ -267,6 +270,25 @@ class ExtractManager:
         self.logger.info(f"Extracting {source.name} from {archive_path}")
 
         try:
+            # A missing archive is reported by validation, never by removing its extract.
+            provenance = self._provenance(source, archive_path) if archive_path.is_file() else None
+            unchanged = (
+                None
+                if provenance is None
+                else self._unchanged_extract(source, dest_dir, provenance)
+            )
+            if unchanged is not None:
+                self.logger.info(f"{source.name} is already extracted from this archive")
+                return ExtractResult(
+                    source=source,
+                    success=True,
+                    extract_dir=dest_dir,
+                    files_extracted=unchanged,
+                    bytes_extracted=0,
+                )
+            # An extraction stopped part way must never pass for the earlier one.
+            (dest_dir / PROVENANCE_FILENAME).unlink(missing_ok=True)
+
             # Validate if requested
             if validate:
                 if not self.verify_archive(archive_path):
@@ -306,6 +328,8 @@ class ExtractManager:
             self.logger.info(
                 f"Extracted {len(files)} files ({bytes_extracted:,} bytes) " f"from {source.name}"
             )
+            if provenance is not None:
+                self._record_provenance(dest_dir, provenance, files)
 
             return ExtractResult(
                 source=source,
@@ -325,6 +349,48 @@ class ExtractManager:
                 success=False,
                 error=str(e),
             )
+
+    def _provenance(self, source: DataSource, archive_path: Path) -> dict:
+        """Name the archive bytes and member selection an extract is made from."""
+        return {
+            "archive_sha256": file_digest(archive_path),
+            "patterns": source.extract_patterns,
+            "allowed_extensions": self.extract_config.allowed_extensions,
+            "max_file_size": self.extract_config.max_file_size,
+        }
+
+    def _unchanged_extract(
+        self, source: DataSource, dest_dir: Path, provenance: dict
+    ) -> list[str] | None:
+        """Return the members of a complete extract made from the same archive, if any."""
+        try:
+            recorded = json.loads((dest_dir / PROVENANCE_FILENAME).read_text())
+            files = recorded.pop("files")
+        except (OSError, ValueError, KeyError, AttributeError):
+            return None
+        if recorded != provenance:
+            return None
+        for name, digest in files.items():
+            path = dest_dir / name
+            if not path.is_file() or file_digest(path) != digest:
+                return None
+        if DEFAULT_HCAD_SOURCE_CATALOG.missing_required_members(
+            source.source_id, [dest_dir / name for name in files]
+        ):
+            return None
+        return list(files)
+
+    def _record_provenance(self, dest_dir: Path, provenance: dict, files: list[str]) -> None:
+        paths = {name: dest_dir / name for name in files}
+        if not all(path.is_file() for path in paths.values()):
+            return  # a member name the archive library rewrote; extract it again next time
+        recorded = {
+            **provenance,
+            "files": {name: file_digest(path) for name, path in paths.items()},
+        }
+        partial = dest_dir / f"{PROVENANCE_FILENAME}.partial"
+        partial.write_text(json.dumps(recorded, sort_keys=True))
+        os.replace(partial, dest_dir / PROVENANCE_FILENAME)
 
     def extract_batch(
         self,
