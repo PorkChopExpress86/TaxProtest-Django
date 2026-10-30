@@ -7,6 +7,7 @@ port never parses sources or decides readiness criteria for another county (ADR-
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
@@ -61,6 +62,26 @@ def dataset_identity(county: str, schema: str = "public") -> dict:
     )
 
 
-def published_identity(county: str) -> dict:
-    """The identity of the county's live dataset: its content digest plus county facts."""
-    return {**dataset_identity(county), **registration_for(county).port.published()}
+def published_identity(county: str, digest: Mapping | None = None) -> dict:
+    """The identity of the county's live dataset: its content digest plus county facts.
+
+    A caller that has just read the live content digest, and knows the tables are
+    unchanged since, passes it as ``digest``; the county facts are always read.
+    """
+    if digest is None:
+        digest = dataset_identity(county)
+    return {**digest, **registration_for(county).port.published()}
+
+
+@dataclass(frozen=True)
+class Measurement:
+    """What preparation measured, handed to the publication it starts at once.
+
+    Valid only while the operation that measured it holds the county writer and
+    nothing has written the measured tables since.
+    """
+
+    published_digest: Mapping | None  # None when preparation was handed its baseline
+    content_identity: Mapping
+    published_outcomes: Mapping[str, OutcomePopulation]
+    candidate_outcomes: Mapping[str, OutcomePopulation]

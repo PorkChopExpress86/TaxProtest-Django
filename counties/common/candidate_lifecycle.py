@@ -17,6 +17,7 @@ from django.db import DatabaseError, connection, transaction
 
 from counties.common.candidate_ports import (
     CandidateTables,
+    Measurement,
     dataset_identity,
     published_identity,
 )
@@ -105,11 +106,15 @@ def prepare(
     county = operation.county
     port = registration_for(county).port
     inherited = baseline_sources(county) if load.carries_published else []
+    digest = None
+    if baseline is None:
+        digest = dataset_identity(county)
+        baseline = published_identity(county, digest)
     candidate = ImportCandidate.objects.create(
         county=county,
         operation=operation,
         storage_schema=f"{county}_candidate_{uuid4().hex}",
-        baseline=published_identity(county) if baseline is None else baseline,
+        baseline=baseline,
         request=dict(load.identity),
         evidence={"publication": "Published data unchanged"},
     )
@@ -129,9 +134,11 @@ def prepare(
             candidate.evidence.update(loaded.evidence, audit=dict(loaded.audit))
             coverage = None
             if loaded.complete:
-                coverage = compare_coverage(previous, port.outcomes(candidate))
+                current = port.outcomes(candidate)
+                coverage = compare_coverage(previous, current)
                 candidate.evidence["coverage"] = coverage
-        candidate.evidence["content_identity"] = dataset_identity(county, candidate.storage_schema)
+        content = dataset_identity(county, candidate.storage_schema)
+        candidate.evidence["content_identity"] = content
         if coverage is None or coverage["hard_failures"]:
             candidate.state = CandidateState.BLOCKED
         elif coverage["requires_review"]:
@@ -170,18 +177,29 @@ def prepare(
         if candidate.state == CandidateState.BLOCKED:
             drop_candidate_schema(candidate)
     if automatic_publication and candidate.state == CandidateState.PREPARED:
-        candidate = publish(operation, candidate.pk, user=user, reason=reason)
+        # Under this writer nothing has written the published or staged tables since
+        # they were measured, so publication rechecks the recorded evidence against
+        # these measurements instead of reading every table again.
+        measured = Measurement(digest, dict(content), previous, current)
+        candidate = publish(operation, candidate.pk, user=user, reason=reason, measured=measured)
     return Prepared(candidate, loaded.result)
 
 
 def publish(
-    operation: ImportOperation, candidate_id, *, user=None, reason: str = ""
+    operation: ImportOperation,
+    candidate_id,
+    *,
+    user=None,
+    reason: str = "",
+    measured: Measurement | None = None,
 ) -> ImportCandidate:
     """Publish a qualified candidate atomically under the operation's writer reservation.
 
     Publication rechecks authorization and exact evidence first; any failure rolls the
     whole cutover and its audit back, leaving the previous dataset published. A
-    candidate that is already published is reported as already applied.
+    candidate that is already published is reported as already applied. Only the
+    preparation that just measured the candidate, under this writer, passes
+    ``measured``; the published identity after cutover is always read again.
     """
     county = operation.county
     tables = registration_for(county).port.tables
@@ -198,7 +216,7 @@ def publish(
                 operation.evidence["already_applied"] = str(candidate.pk)
                 operation.status = OperationStatus.ALREADY_APPLIED
                 return candidate
-            review = authorize_publication(candidate, user=user)
+            review = authorize_publication(candidate, user=user, measured=measured)
             # Authorization verified under this lock that the baseline is still live.
             operation.publication_before = candidate.baseline
             cutover_staged_tables(
