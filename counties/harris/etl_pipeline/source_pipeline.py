@@ -106,11 +106,8 @@ class HarrisSourcePipeline:
 
         for source in sources:
             if DEFAULT_HCAD_SOURCE_CATALOG.is_source(source, HcadSourceId.REAL_BUILDING_LAND):
-                fixtures_path = self.extract_manager.extract_dir / (
-                    DEFAULT_HCAD_SOURCE_CATALOG.member_path(
-                        HcadSourceId.REAL_BUILDING_LAND, "fixtures.txt"
-                    )
-                )
+                # fixtures.txt is a declared member of the building-land source.
+                fixtures_path = self.extract_manager.get_extract_path(source) / "fixtures.txt"
 
                 if fixtures_path.exists():
                     try:
