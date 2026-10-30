@@ -7,6 +7,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
+from typing import NamedTuple
 from uuid import UUID
 
 from django.db import DatabaseError, connection, transaction
@@ -47,10 +48,34 @@ def _source_digests(root: Path) -> dict[str, str]:
     return digests
 
 
+def _working_root(root: Path, operation_id: UUID | str) -> Path:
+    return root / ".imports" / str(operation_id)
+
+
+class ReusedSource(NamedTuple):
+    base_root: Path
+    prior: ImportOperation
+
+
+def reused_source(operation: ImportOperation, working: Path) -> ReusedSource | None:
+    """Name the base root and prior operation whose retained files ``working`` copied.
+
+    ``working`` must be a working root of ``operation``, as ``working_source_root`` returns.
+    Returns ``None`` when it copied the base root itself.
+    """
+    base_root = working.parent.parent
+    if working != _working_root(base_root, operation.pk):
+        raise ValueError(f"Not a working source root of {operation.pk}: {working}")
+    prior_id = operation.evidence.get("reused_from", {}).get(str(base_root))
+    if prior_id is None:
+        return None
+    return ReusedSource(base_root, ImportOperation.objects.get(pk=prior_id))
+
+
 def working_source_root(root: Path, *, reuse: bool = True) -> Path:
     """Isolate attempt-owned files, so a lost worker cannot overwrite another attempt."""
     operation = _active_writer()
-    working = root / ".imports" / str(operation.pk)
+    working = _working_root(root, operation.pk)
     if not working.exists() and not reuse:
         working.mkdir(parents=True)
         operation.evidence.setdefault("working_sources", []).append(str(working))
@@ -74,7 +99,7 @@ def working_source_root(root: Path, *, reuse: bool = True) -> Path:
             .exclude(pk=operation.pk)
             .exclude(candidate__state__in=(CandidateState.REJECTED, CandidateState.SUPERSEDED))
         ):
-            retained = root / ".imports" / str(prior.pk)
+            retained = _working_root(root, prior.pk)
             if str(retained) not in prior.evidence.get("working_sources", []):
                 continue
             if prior.evidence.get("base_sources", {}).get(str(root)) != base_digests:
