@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from counties.common.import_audit import record_sources
+from counties.common.import_writers import reused_source
 from counties.common.models import ImportOperation
 from counties.harris.models import PropertyRecord
 from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG, DataSource, DataSourceType
@@ -274,12 +275,9 @@ def validate_harris_sources(
         root = manager.get_extract_path(source)
         archive = manager.get_archive_path(source)
         acquired = operation.evidence.get("acquired_sources", {}).get(source.filename, {})
-        previous_download = operation.evidence.get("reused_from", {}).get(
-            str(config.download_dir.parent.parent)
-        )
-        if not acquired and previous_download:
-            previous = ImportOperation.objects.get(pk=previous_download)
-            acquired = previous.evidence.get("acquired_sources", {}).get(source.filename, {})
+        reused = None if acquired else reused_source(operation, config.download_dir)
+        if reused is not None:
+            acquired = reused.prior.evidence.get("acquired_sources", {}).get(source.filename, {})
         if acquired:
             operation.evidence.setdefault("acquired_sources", {})[source.filename] = acquired
             if acquired.get("source_year") is not None and acquired["source_year"] != year:
