@@ -62,26 +62,12 @@ def dataset_identity(county: str, schema: str = "public") -> dict:
     )
 
 
-def published_identity(county: str, digest: Mapping | None = None) -> dict:
+def published_identity(county: str, content: Mapping | None = None) -> dict:
     """The identity of the county's live dataset: its content digest plus county facts.
 
-    A caller that has just read the live content digest, and knows the tables are
-    unchanged since, passes it as ``digest``; the county facts are always read.
+    A caller that has just read the live ``dataset_identity``, and knows the tables are
+    unchanged since, passes it as ``content``; the county facts are always read.
     """
-    if digest is None:
-        digest = dataset_identity(county)
-    return {**digest, **registration_for(county).port.published()}
-
-
-@dataclass(frozen=True)
-class Measurement:
-    """What preparation measured, handed to the publication it starts at once.
-
-    Valid only while the operation that measured it holds the county writer and
-    nothing has written the measured tables since.
-    """
-
-    published_digest: Mapping | None  # None when preparation was handed its baseline
-    content_identity: Mapping
-    published_outcomes: Mapping[str, OutcomePopulation]
-    candidate_outcomes: Mapping[str, OutcomePopulation]
+    if content is None:
+        content = dataset_identity(county)
+    return {**content, **registration_for(county).port.published()}

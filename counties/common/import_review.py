@@ -2,16 +2,19 @@
 
 import hashlib
 import json
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from django.core.exceptions import PermissionDenied
 from django.utils import timezone
 
-from counties.common.candidate_ports import Measurement, dataset_identity, published_identity
+from counties.common.candidate_ports import dataset_identity, published_identity
 from counties.common.candidate_staging import drop_candidate_schema, switch_search_path
 from counties.common.county_registry import registration_for
 from counties.common.import_audit import audited_operation
-from counties.common.import_coverage import compare_coverage
+from counties.common.import_coverage import OutcomePopulation, compare_coverage
 from counties.common.import_states import RETIRED_CANDIDATE_STATES, CandidateState
 from counties.common.import_writers import fenced_write
 from counties.common.models import ImportAuditEntry, ImportCandidate
@@ -19,6 +22,21 @@ from counties.common.models import ImportAuditEntry, ImportCandidate
 
 class ImportReviewRejected(ValueError):
     pass
+
+
+@dataclass(frozen=True)
+class Measurement:
+    """What preparation measured of one candidate, handed to the publication it starts.
+
+    Valid only inside the operation that prepared the candidate, while it holds the
+    county writer and nothing has written the measured tables since.
+    """
+
+    candidate_id: Any
+    published_content: Mapping | None  # None when preparation was handed its baseline
+    content_identity: Mapping
+    published_outcomes: dict[str, OutcomePopulation]
+    candidate_outcomes: dict[str, OutcomePopulation]
 
 
 def captured_binding(candidate) -> str:
@@ -66,7 +84,13 @@ def check_recorded_qualification(candidate: ImportCandidate) -> None:
 
 
 def checked_binding(candidate: ImportCandidate, measured: Measurement | None = None) -> str:
-    """Recheck the candidate's evidence live and bind it; ``measured`` spares the remeasure."""
+    """Recheck the candidate's evidence live and bind it.
+
+    With ``measured``, the published county facts are read live and the expensive
+    measurements are taken from it instead of being read again.
+    """
+    if measured is not None and measured.candidate_id != candidate.pk:
+        raise ValueError("A measurement of another candidate cannot qualify this one")
     check_recorded_qualification(candidate)
     validation = candidate.operation.evidence["validation"]
     coverage = candidate.evidence["coverage"]
@@ -87,7 +111,7 @@ def checked_binding(candidate: ImportCandidate, measured: Measurement | None = N
         baseline = published_identity(candidate.county)
         content = dataset_identity(candidate.county, candidate.storage_schema)
     else:
-        baseline = published_identity(candidate.county, measured.published_digest)
+        baseline = published_identity(candidate.county, measured.published_content)
         content = dict(measured.content_identity)
     if baseline != candidate.baseline:
         raise ImportReviewRejected("Published baseline changed; prepare fresh comparison evidence")

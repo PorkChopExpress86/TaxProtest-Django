@@ -10,7 +10,7 @@ from counties.common.candidate_lifecycle import prepare, publish
 from counties.common.candidate_ports import dataset_identity, published_identity
 from counties.common.county_registry import registration_for
 from counties.common.import_audit import audited_operation
-from counties.common.import_review import ImportReviewRejected
+from counties.common.import_review import ImportReviewRejected, Measurement
 from counties.common.tests.candidate_contract import (
     BrazosCandidateContract,
     HarrisCandidateContract,
@@ -120,6 +120,27 @@ class MeasurementContract:
             self.add_published_record("CHANGED")
             self.assertNotEqual(dataset_identity(self.county), before)
             publish(operation, candidate.pk, reason="Publish after a change")
+
+    def test_a_measurement_qualifies_only_its_candidate_in_its_operation(self):
+        self.approve()
+        self.publish_reviewed()
+        self.write_candidate_rows(ready=True)
+        published = self.published_keys()
+        with audited_operation(self.county, "fixture", actor="operator") as operation:
+            candidate = prepare(operation, self.fixture_load(operation)).candidate
+        measured = Measurement(candidate.pk, None, {}, {}, {})
+        with (
+            self.assertRaisesMessage(ValueError, "Only the operation that measured"),
+            audited_operation(self.county, "apply", actor="operator") as other,
+        ):
+            publish(other, candidate.pk, measured=measured)
+        with (
+            self.assertRaisesMessage(ValueError, "another candidate"),
+            audited_operation(self.county, "fixture", actor="operator") as operation,
+        ):
+            prepared = prepare(operation, self.fixture_load(operation)).candidate
+            publish(operation, prepared.pk, measured=measured)
+        self.assertEqual(self.published_keys(), published)
 
 
 class HarrisMeasurementContractTests(
