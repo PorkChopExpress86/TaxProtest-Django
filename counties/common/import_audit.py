@@ -1,6 +1,5 @@
 """Audit/ownership primitives; county callers select and interpret their sources."""
 
-import hashlib
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -10,6 +9,7 @@ from django.utils import timezone
 from counties.common.candidate_staging import drop_candidate_schema
 from counties.common.county_registry import registration_for
 from counties.common.import_logging import import_warnings
+from counties.common.import_source_digests import digest_once, file_digest, is_source_file
 from counties.common.import_states import CandidateState, OperationStatus
 from counties.common.import_writers import county_writer, fenced_write
 from counties.common.models import ImportAuditEntry, ImportOperation
@@ -23,13 +23,9 @@ DEAD_OPERATION_ERROR = (
 def record_sources(operation: ImportOperation, paths: list[Path], **identity) -> None:
     sources = operation.evidence.setdefault("sources", [])
     for path in paths:
-        if not path.is_file():
+        if not is_source_file(path):
             continue
-        digest = hashlib.sha256()
-        with path.open("rb") as stream:
-            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                digest.update(chunk)
-        sources.append({"path": str(path), "sha256": digest.hexdigest(), **identity})
+        sources.append({"path": str(path), "sha256": file_digest(path), **identity})
 
 
 @contextmanager
@@ -66,6 +62,7 @@ def audited_operation(
             import_warnings(
                 registration.warning_logger, operation_id=str(operation.pk)
             ) as warnings,
+            digest_once(),
             county_writer(operation),
         ):
             _reconcile_dead_operations(operation)
