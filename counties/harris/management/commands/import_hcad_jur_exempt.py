@@ -94,16 +94,11 @@ EXTRACT_DIRNAME = DEFAULT_HCAD_SOURCE_CATALOG.extract_dirname(SOURCE_ID)
 ARCHIVE_FILENAME = DEFAULT_HCAD_SOURCE_CATALOG.source_for_id(SOURCE_ID).filename
 _MEMBERS = {member.label: member for member in DEFAULT_HCAD_SOURCE_CATALOG.members(SOURCE_ID)}
 
-
-def _declared(label: str) -> str:
-    """Name a member the catalog declares for the jurisdiction-exemption source."""
-    return DEFAULT_HCAD_SOURCE_CATALOG.member_path(SOURCE_ID, label).name
-
-
-VALUE_FILE = _declared("jur_value.txt")
-EXEMPT_FILE = _declared("jur_exempt.txt")
-DESCRIPTION_FILE = _declared("jur_exemption_dscr.txt")
-RATE_FILE = _declared("jur_tax_dist_exempt_value_rate.txt")
+# Indexing _MEMBERS fails at import if the catalog stops declaring one of these files.
+VALUE_FILE = _MEMBERS["jur_value.txt"].label
+EXEMPT_FILE = _MEMBERS["jur_exempt.txt"].label
+DESCRIPTION_FILE = _MEMBERS["jur_exemption_dscr.txt"].label
+RATE_FILE = _MEMBERS["jur_tax_dist_exempt_value_rate.txt"].label
 
 #: HCAD quotes tax rates per $100 of assessed value.
 RATE_DIVISOR = Decimal("100")
