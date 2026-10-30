@@ -16,7 +16,10 @@ from counties.common.import_writers import (
     DEAD_OPERATION_ERROR,
     county_writer,
     ensure_writer_free,
+    fail_operation,
     fenced_write,
+    operation_alive,
+    operation_is_alive,
 )
 from counties.common.models import ImportAuditEntry, ImportCandidate, ImportOperation
 
@@ -58,43 +61,47 @@ def audited_operation(
         publication_before=publication_before,
     )
     warnings: list[str] = []
-    try:
-        with (
-            import_warnings(
-                registration.warning_logger, operation_id=str(operation.pk)
-            ) as warnings,
-            digest_once(),
-            county_writer(operation),
-        ):
-            _reconcile_dead_operations(operation)
-            yield operation
-        if operation.status == OperationStatus.RUNNING:
-            operation.status = (
-                OperationStatus.COMPLETED_WITH_WARNINGS
-                if operation.warnings
-                else OperationStatus.COMPLETED
-            )
-        operation.status = OperationStatus(operation.status)
-    except Exception as exc:
-        if ImportOperation.objects.filter(
-            pk=operation.pk, status=OperationStatus.PUBLISHED
-        ).exists():
-            operation.refresh_from_db(fields=["status", "publication_before", "publication_after"])
-            operation.warnings.append(str(exc))
-            operation.evidence["post_publication_failure"] = str(exc)
-            return
-        if operation.status == OperationStatus.COMPLETED_WITH_WARNINGS:
-            operation.warnings.append(str(exc))
-        else:
-            # Publication values recorded by a rolled-back transaction were never observed.
-            operation.refresh_from_db(fields=["publication_before", "publication_after"])
-            operation.status = OperationStatus.FAILED
-            operation.errors.append(str(exc))
-        raise
-    finally:
-        operation.warnings = list(dict.fromkeys([*operation.warnings, *warnings]))
-        operation.finished_at = timezone.now()
-        operation.save()
+    # Its ending is saved before this lock goes, so no writer mistakes it for dead.
+    with operation_alive(operation):
+        try:
+            with (
+                import_warnings(
+                    registration.warning_logger, operation_id=str(operation.pk)
+                ) as warnings,
+                digest_once(),
+                county_writer(operation),
+            ):
+                _reconcile_dead_operations(operation)
+                yield operation
+            if operation.status == OperationStatus.RUNNING:
+                operation.status = (
+                    OperationStatus.COMPLETED_WITH_WARNINGS
+                    if operation.warnings
+                    else OperationStatus.COMPLETED
+                )
+            operation.status = OperationStatus(operation.status)
+        except Exception as exc:
+            if ImportOperation.objects.filter(
+                pk=operation.pk, status=OperationStatus.PUBLISHED
+            ).exists():
+                operation.refresh_from_db(
+                    fields=["status", "publication_before", "publication_after"]
+                )
+                operation.warnings.append(str(exc))
+                operation.evidence["post_publication_failure"] = str(exc)
+                return
+            if operation.status == OperationStatus.COMPLETED_WITH_WARNINGS:
+                operation.warnings.append(str(exc))
+            else:
+                # Publication values recorded by a rolled-back transaction were never observed.
+                operation.refresh_from_db(fields=["publication_before", "publication_after"])
+                operation.status = OperationStatus.FAILED
+                operation.errors.append(str(exc))
+            raise
+        finally:
+            operation.warnings = list(dict.fromkeys([*operation.warnings, *warnings]))
+            operation.finished_at = timezone.now()
+            operation.save()
 
 
 def reconcile_dead_operations(county: str, *, actor: str) -> None:
@@ -144,12 +151,9 @@ def _reconcile_dead_operations(operation: ImportOperation) -> None:
         candidate = None
         with fenced_write():
             dead = unfinished.select_for_update(of=("self",)).filter(pk=pk).first()
-            if dead is None:
-                continue  # its worker recorded how it ended after all
-            dead.status = OperationStatus.FAILED
-            dead.errors.append(DEAD_OPERATION_ERROR)
-            dead.finished_at = timezone.now()
-            dead.save(update_fields=["status", "errors", "finished_at"])
+            if dead is None or operation_is_alive(dead.pk):
+                continue  # its worker recorded, or is still recording, how it ended
+            fail_operation(dead, DEAD_OPERATION_ERROR)
             evidence = {"reconciled_by": str(operation.pk)}
             candidate = ImportCandidate.objects.filter(operation=dead).first()
             if candidate is not None:

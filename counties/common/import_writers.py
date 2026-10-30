@@ -14,7 +14,7 @@ from django.utils import timezone
 from counties.common.county_registry import registration_for
 from counties.common.import_source_digests import carry_digests, tree_digests
 from counties.common.import_states import CandidateState, LegacyOperationStatus, OperationStatus
-from counties.common.models import CountyWriter, ImportAuditEntry, ImportOperation
+from counties.common.models import CountyWriter, ImportAuditEntry, ImportCandidate, ImportOperation
 
 _CURRENT_WRITER: ContextVar[ImportOperation | None] = ContextVar("county_writer", default=None)
 
@@ -23,6 +23,53 @@ DEAD_OPERATION_ERROR = (
     "Import operation never finished: its worker stopped, and another Import operation "
     "has since held the county writer"
 )
+
+
+RECOVERED_OPERATION_ERROR = (
+    "Import operation never finished: its worker stopped, and its county writer was recovered"
+)
+
+# Two-key advisory locks live apart from the one-key county writer locks; the first
+# key names this lock family, the second is drawn from the operation's id.
+_OPERATION_LOCK_FAMILY = 0x54504F50
+
+
+def _operation_lock_key(operation_id: UUID | str) -> list[int]:
+    return [_OPERATION_LOCK_FAMILY, UUID(str(operation_id)).int % 2**31]
+
+
+@contextmanager
+def operation_alive(operation: ImportOperation) -> Iterator[None]:
+    """Hold a session lock from an operation's start until its ending is recorded.
+
+    Another session that can take the lock knows the operation's worker is gone.
+    """
+    if connection.vendor != "postgresql":
+        yield
+        return
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT pg_advisory_lock(%s, %s)", _operation_lock_key(operation.pk))
+    try:
+        yield
+    finally:
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT pg_advisory_unlock(%s, %s)", _operation_lock_key(operation.pk)
+                )
+        except DatabaseError:
+            pass  # a lost session already released it
+
+
+def operation_is_alive(operation_id: UUID | str) -> bool:
+    if connection.vendor != "postgresql":
+        return False
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT pg_try_advisory_lock(%s, %s)", _operation_lock_key(operation_id))
+        if not cursor.fetchone()[0]:
+            return True
+        cursor.execute("SELECT pg_advisory_unlock(%s, %s)", _operation_lock_key(operation_id))
+    return False
 
 
 class FencedWriter(RuntimeError):
@@ -154,6 +201,14 @@ def _lock_held(county: str, pid: int | None) -> bool:
         return bool(cursor.fetchone()[0])
 
 
+def fail_operation(operation: ImportOperation, error: str) -> None:
+    """Record that an unfinished operation's worker stopped before it could end it."""
+    operation.status = OperationStatus.FAILED
+    operation.errors.append(error)
+    operation.finished_at = timezone.now()
+    operation.save(update_fields=["status", "errors", "finished_at"])
+
+
 def ensure_writer_free(county: str) -> None:
     """Raise ``WriterConflict`` while an operation holds or uncertainly holds ``county``."""
     writer = CountyWriter.objects.filter(county=county, operation__isnull=False).first()
@@ -189,6 +244,10 @@ def county_writer(operation: ImportOperation) -> Iterator[None]:
                 if writer.operation_id is not None:
                     raise WriterConflict(county, writer.operation_id)
                 # The winner already ended; a currently free county may be acquired.
+        operation.writer_held_at = timezone.now()
+        ImportOperation.objects.filter(pk=operation.pk).update(
+            writer_held_at=operation.writer_held_at
+        )
         # Publish the owner before taking the session lock, so even acquisition
         # contention has a durable identity. Never clear ownership before unlock.
         if connection.vendor == "postgresql":
@@ -201,11 +260,9 @@ def county_writer(operation: ImportOperation) -> Iterator[None]:
                     operation=None, backend_pid=None
                 )
                 reserved = False
+                operation.writer_held_at = None
+                ImportOperation.objects.filter(pk=operation.pk).update(writer_held_at=None)
                 raise WriterConflict(county, operation.pk, uncertain=True)
-        operation.writer_held_at = timezone.now()
-        ImportOperation.objects.filter(pk=operation.pk).update(
-            writer_held_at=operation.writer_held_at
-        )
         token = _CURRENT_WRITER.set(operation)
         yield
     finally:
@@ -291,11 +348,13 @@ def recover_writer(operation: ImportOperation, *, actor: str, reason: str) -> No
             writer.backend_pid = None
             writer.save()
             fenced = ImportOperation.objects.select_for_update().get(pk=operation.pk)
-            if fenced.finished_at is None:
-                fenced.status = OperationStatus.FAILED
-                fenced.errors.append(DEAD_OPERATION_ERROR)
-                fenced.finished_at = timezone.now()
-                fenced.save(update_fields=["status", "errors", "finished_at"])
+            # A preparation's candidate and schema are retired by the next writer's
+            # reconciliation, which needs its operation still unfinished.
+            if (
+                fenced.finished_at is None
+                and not ImportCandidate.objects.filter(operation=fenced).exists()
+            ):
+                fail_operation(fenced, RECOVERED_OPERATION_ERROR)
             ImportAuditEntry.objects.create(
                 operation=operation,
                 kind="writer_recovery",

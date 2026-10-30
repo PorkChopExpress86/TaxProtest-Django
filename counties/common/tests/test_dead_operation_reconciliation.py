@@ -9,7 +9,12 @@ from django.utils import timezone
 
 from counties.common.county_registry import registration_for
 from counties.common.import_audit import audited_operation, reconcile_dead_operations
-from counties.common.import_writers import WriterConflict, county_writer, recover_writer
+from counties.common.import_writers import (
+    WriterConflict,
+    county_writer,
+    operation_alive,
+    recover_writer,
+)
 from counties.common.models import (
     CountyWriter,
     ImportAuditEntry,
@@ -24,6 +29,9 @@ from counties.common.tests.test_candidate_schema_retirement import (
 DEAD = (
     "Import operation never finished: its worker stopped, and another Import operation "
     "has since held the county writer"
+)
+RECOVERED = (
+    "Import operation never finished: its worker stopped, and its county writer was recovered"
 )
 
 
@@ -179,8 +187,52 @@ class DeadOperationReconciliationTests(TransactionTestCase):
         recover_writer(fenced, actor="operator", reason="Worker host lost")
 
         fenced.refresh_from_db()
-        self.assertEqual((fenced.status, fenced.errors), ("failed", [DEAD]))
+        self.assertEqual((fenced.status, fenced.errors), ("failed", [RECOVERED]))
         self.assertIsNotNone(fenced.finished_at)
+
+    def test_recovering_a_preparation_leaves_its_candidate_to_the_next_writer(self):
+        fenced, candidate = crashed_preparation("harris")
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT pg_backend_pid()")
+            pid = cursor.fetchone()[0]
+        connection.close()
+        CountyWriter.objects.create(county="harris", operation=fenced, backend_pid=pid)
+
+        recover_writer(fenced, actor="operator", reason="Worker host lost")
+        next_operation("harris")
+
+        fenced.refresh_from_db()
+        candidate.refresh_from_db()
+        self.assertEqual((fenced.status, fenced.errors), ("failed", [DEAD]))
+        self.assertEqual(candidate.state, "blocked")
+        self.assertFalse(schema_exists(candidate))
+
+    def test_an_operation_still_recording_its_ending_is_not_failed(self):
+        # It has released the writer and is about to save how it ended.
+        finishing = ImportOperation.objects.create(county="harris", intent="apply")
+        with county_writer(finishing):
+            pass
+        held, release = Event(), Event()
+
+        def finish_slowly():
+            try:
+                with operation_alive(finishing):
+                    held.set()
+                    release.wait(15)
+            finally:
+                connections.close_all()
+
+        worker = Thread(target=finish_slowly)
+        worker.start()
+        try:
+            self.assertTrue(held.wait(15))
+            next_operation("harris")
+        finally:
+            release.set()
+            worker.join(20)
+        finishing.refresh_from_db()
+        self.assertEqual((finishing.status, finishing.errors), ("running", []))
+        self.assertFalse(ImportAuditEntry.objects.filter(operation=finishing).exists())
 
     def test_a_writer_that_cannot_take_the_lock_leaves_no_reservation(self):
         # Recovery cleared the reservation but still holds the lock for a moment.
