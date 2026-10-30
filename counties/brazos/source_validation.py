@@ -94,23 +94,11 @@ def inspect_cad(operation: ImportOperation, preparation: StagePreparation) -> St
             prop_id = fields["prop_id"]
             if not prop_id.isdigit() or len(prop_id) != 12:
                 raise CommandError(f"Invalid canonical property key in {filename}, row {number}.")
-            for spec in layout:
-                raw = line[spec.start : spec.end].strip()
-                if not raw or spec.cast is pacs._text:
-                    continue
-                try:
-                    numeric = Decimal(raw)
-                    if not numeric.is_finite() or (
-                        spec.cast in (pacs._int_or_none, pacs._int_or_zero)
-                        and numeric != numeric.to_integral_value()
-                    ):
-                        raise InvalidOperation
-                except InvalidOperation as exc:
-                    raise CommandError(
-                        f"Malformed numeric {spec.name} in {filename}, row {number}."
-                    ) from exc
+            malformed = pacs.malformed_numeric_fields(line, layout)
+            if malformed:
+                raise CommandError(f"Malformed numeric {malformed[0]} in {filename}, row {number}.")
             key = tuple(fields[name] for name in keys)
-            fingerprint = hashlib.sha256(repr(fields).encode()).digest()
+            fingerprint = pacs.row_fingerprint(fields)
             if key in seen:
                 if seen[key] != fingerprint:
                     raise CommandError(f"Conflicting canonical key in {filename}, row {number}.")

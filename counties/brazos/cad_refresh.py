@@ -2,7 +2,7 @@
 
 Pipeline:
   1. Scrape https://brazoscad.org/certified-data-downloads/ to locate the
-     latest certified .zip archive.
+     certified .zip archive for --year (the latest one when --year is omitted).
   2. Stream-download the archive into BCAD_DOWNLOAD_DIR (idempotent unless
      --force).
   3. Extract the archive to BCAD_EXTRACT_DIR/<year>/ and locate the real
@@ -41,10 +41,11 @@ from __future__ import annotations
 import logging
 import re
 import shutil
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
+from typing import TypeVar
 
 import requests
 from bs4 import BeautifulSoup
@@ -60,12 +61,14 @@ from counties.brazos.models import (
     PropertyLand,
 )
 from counties.brazos.parsers.pacs import (
+    iter_pacs_lines,
     parse_entity_info_line,
     parse_improvement_detail_attr_line,
     parse_improvement_detail_line,
     parse_improvement_info_line,
     parse_info_line,
     parse_land_detail_line,
+    row_fingerprint,
 )
 from counties.brazos.portal import (
     USER_AGENT,
@@ -80,6 +83,8 @@ from counties.common.models import ImportOperation
 from counties.common.tax_models import PropertyJurisdictionExemption
 
 logger = logging.getLogger("brazos_cad")
+
+_Record = TypeVar("_Record", bound=Mapping[str, object])
 
 
 BCAD_PORTAL_URL = "https://brazoscad.org/certified-data-downloads/"
@@ -255,12 +260,13 @@ class CadRefreshStage:
 
     # ------------------------------------------------------------------ scrape
 
-    def _scrape_archive(self, portal_url: str) -> tuple[str, int]:
-        """Return (absolute_url, year) for the latest certified archive.
+    def _scrape_archive(self, portal_url: str, year: int | None = None) -> tuple[str, int]:
+        """Return (absolute_url, year) for a certified archive.
 
-        Heuristic: pick the highest year mentioned in any .zip link's
-        text or href; if the year is missing, use the last .zip link on
-        the page. Fails loudly if no .zip is found.
+        With ``year``, pick the link for that year, or fail before anything is
+        downloaded when the portal has none. Without it, pick the highest year
+        mentioned in any .zip link's text or href; if the year is missing, use
+        the last .zip link on the page. Fails loudly if no .zip is found.
         """
         self.stdout.write(f"Scraping BCAD portal: {portal_url}")
         try:
@@ -276,8 +282,8 @@ class CadRefreshStage:
             text = anchor.get_text(" ", strip=True)
             if not ZIP_RE.search(href):
                 continue
-            year = self._candidate_year(text) or self._candidate_year(href)
-            zip_links.append((year, href))
+            link_year = self._candidate_year(text) or self._candidate_year(href)
+            zip_links.append((link_year, href))
 
         if not zip_links:
             raise CommandError(
@@ -285,12 +291,24 @@ class CadRefreshStage:
                 "The portal layout may have changed."
             )
 
+        if year is not None:
+            matching = [href for link_year, href in zip_links if link_year == year]
+            if not matching:
+                offered = sorted({link_year for link_year, _ in zip_links if link_year})
+                raise CommandError(
+                    f"BCAD portal has no certified archive for {year} "
+                    f"(offered: {', '.join(map(str, offered)) or 'none with a year'})."
+                )
+            absolute_url = requests.compat.urljoin(portal_url, matching[-1])
+            self.stdout.write(f"Requested archive: {absolute_url} (year={year})")
+            return absolute_url, year
+
         # Prefer the highest year; fall back to the last link if none had a year.
         zip_links.sort(key=lambda pair: (pair[0] is None, pair[0] or 0))
-        year, href = zip_links[-1]
+        latest_year, href = zip_links[-1]
         absolute_url = requests.compat.urljoin(portal_url, href)
-        self.stdout.write(f"Latest archive: {absolute_url} (year={year or 'unknown'})")
-        return absolute_url, year or 0
+        self.stdout.write(f"Latest archive: {absolute_url} (year={latest_year or 'unknown'})")
+        return absolute_url, latest_year or 0
 
     # ------------------------------------------------------------------ download
 
@@ -319,12 +337,35 @@ class CadRefreshStage:
     # ------------------------------------------------------------------ ingest
 
     @staticmethod
-    def _iter_lines(text_file: Path):
-        with text_file.open("r", encoding="utf-8", errors="replace") as fh:
-            for line in fh:
-                line = line.rstrip("\n")
-                if line.strip():
-                    yield line
+    def _iter_lines(text_file: Path) -> Iterator[str]:
+        return iter_pacs_lines(text_file)
+
+    def _iter_unique_records(
+        self, text_file: Path, parse_fn: Callable[[str], _Record]
+    ) -> Iterator[_Record]:
+        """Yield each parsed record once, dropping exact duplicate source rows.
+
+        Certified exports do repeat rows byte for byte (the 2026 export has 370
+        in APPRAISAL_IMPROVEMENT_DETAIL_ATTR.TXT and no conflicting ones), so
+        rejecting the source would block every real import. Dropping them here
+        keeps persist from raising IntegrityError on unique-constrained tables
+        and from doubling PropertyExtraFeature, which has no unique constraint.
+        Inspection counts the same duplicates into ``duplicates_by_file`` and
+        still rejects rows that share a key but differ.
+        """
+        seen: set[bytes] = set()
+        duplicates = 0
+        for line in self._iter_lines(text_file):
+            fields = parse_fn(line)
+            # A digest keeps memory flat on the ~670k-row entity file.
+            fingerprint = row_fingerprint(fields)
+            if fingerprint in seen:
+                duplicates += 1
+                continue
+            seen.add(fingerprint)
+            yield fields
+        if duplicates:
+            logger.warning("%s: dropped %d exact duplicate source rows", text_file.name, duplicates)
 
     def _load_file(self, spec: IngestSpec, text_file: Path, tax_year: int, *, dry_run: bool) -> int:
         if not text_file.exists():
@@ -339,8 +380,7 @@ class CadRefreshStage:
 
         instances = []
         mismatched = 0
-        for line in self._iter_lines(text_file):
-            fields = spec.parse_fn(line)
+        for fields in self._iter_unique_records(text_file, spec.parse_fn):
             record_year = fields.pop("tax_year", None)
             if record_year is not None and record_year != tax_year:
                 mismatched += 1
@@ -393,8 +433,7 @@ class CadRefreshStage:
         rollup_year_built: dict[tuple[str, str], int] = {}
         mismatched = 0
 
-        for line in self._iter_lines(text_file):
-            fields = parse_improvement_detail_line(line)
+        for fields in self._iter_unique_records(text_file, parse_improvement_detail_line):
             record_year = fields.pop("tax_year", None)
             if record_year is not None and record_year != tax_year:
                 mismatched += 1
@@ -487,8 +526,7 @@ class CadRefreshStage:
         assessed_value_by_prop: dict[str, Decimal] = {}
         mismatched = 0
 
-        for line in self._iter_lines(text_file):
-            fields = parse_entity_info_line(line)
+        for fields in self._iter_unique_records(text_file, parse_entity_info_line):
             record_year = fields["tax_year"]
             if record_year is not None and record_year != tax_year:
                 mismatched += 1
@@ -626,8 +664,7 @@ class CadRefreshStage:
         mismatched = 0
         unparseable_bathrooms = 0
 
-        for line in self._iter_lines(text_file):
-            fields = parse_improvement_detail_attr_line(line)
+        for fields in self._iter_unique_records(text_file, parse_improvement_detail_attr_line):
             record_year = fields.pop("tax_year", None)
             if record_year is not None and record_year != tax_year:
                 mismatched += 1
@@ -793,7 +830,7 @@ class CadRefreshStage:
                 )
             url = ""
         else:
-            url, source_year = self._scrape_archive(BCAD_PORTAL_URL)
+            url, source_year = self._scrape_archive(BCAD_PORTAL_URL, options.tax_year)
             if not source_year:
                 raise CommandError(
                     "Could not determine a tax year for the certified archive. Pass --year YYYY."

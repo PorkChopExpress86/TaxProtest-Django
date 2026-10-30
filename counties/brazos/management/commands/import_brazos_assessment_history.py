@@ -77,7 +77,12 @@ from counties.brazos.models import (
     HistoricalCoverageStatus,
     PropertyAccount,
 )
-from counties.brazos.parsers.pacs import parse_entity_info_line
+from counties.brazos.parsers.pacs import (
+    ENTITY_INFO_LAYOUT,
+    iter_pacs_lines,
+    malformed_numeric_fields,
+    parse_entity_info_line,
+)
 from counties.brazos.portal import (
     USER_AGENT,
     download_archive,
@@ -110,6 +115,14 @@ MIN_SANE_ORDER_FRACTION = Decimal("0.90")
 
 COUNTY = "brazos"
 
+#: The numeric ENTITY_INFO fields this import reads. A malformed one parses to
+#: None like a blank one would, so each is counted instead of trusted. Only the
+#: row kept per property is counted (the values the import writes), so
+#: ``malformed_values_by_year`` is malformed values written, not in the file.
+HISTORY_NUMERIC_FIELDS = frozenset(
+    {"tax_year", "assessed_value", "appraised_value", "market_value"}
+)
+
 
 @dataclass(frozen=True)
 class YearRollup:
@@ -117,6 +130,8 @@ class YearRollup:
     assessed_value: Decimal | None
     appraised_value: Decimal | None
     market_value: Decimal | None
+    #: Non-blank source values that did not parse and were read as None.
+    malformed_values: int = 0
 
     @property
     def cap_account(self) -> str:
@@ -288,11 +303,7 @@ class Command(BaseCommand):
 
     @staticmethod
     def _iter_lines(path: Path) -> Iterator[str]:
-        with path.open("r", encoding="latin-1", newline="") as fh:
-            for line in fh:
-                line = line.rstrip("\r\n")
-                if line.strip():
-                    yield line
+        return iter_pacs_lines(path)
 
     def _roll_up_year(
         self, entity_info_path: Path, tax_year: int, accounts: set[str] | None
@@ -320,6 +331,11 @@ class Command(BaseCommand):
                 assessed_value=fields.get("assessed_value"),
                 appraised_value=fields.get("appraised_value"),
                 market_value=fields.get("market_value"),
+                malformed_values=sum(
+                    1
+                    for name in malformed_numeric_fields(line, ENTITY_INFO_LAYOUT)
+                    if name in HISTORY_NUMERIC_FIELDS
+                ),
             )
 
         if mismatched:
@@ -338,7 +354,9 @@ class Command(BaseCommand):
         return list(seen.values())
 
     def _verify_sane_order(self, tax_year: int, rollups: list[YearRollup]) -> None:
-        checkable = [r for r in rollups if r.market_value is not None]
+        # A row with a malformed value is checkable and fails: otherwise a year
+        # that parses mostly to None would pass on its few readable rows.
+        checkable = [r for r in rollups if r.market_value is not None or r.malformed_values]
         if not checkable:
             raise CommandError(
                 f"No rows for tax_year {tax_year} had a market_value -- refusing to "
@@ -346,7 +364,7 @@ class Command(BaseCommand):
                 "for this year matches the offsets documented in parsers/pacs.py's "
                 "ENTITY_INFO_LAYOUT before retrying."
             )
-        sane = sum(1 for r in checkable if r.is_sanely_ordered)
+        sane = sum(1 for r in checkable if r.is_sanely_ordered and not r.malformed_values)
         fraction = Decimal(sane) / Decimal(len(checkable))
         self.stdout.write(
             f"  sanity check: {sane:,}/{len(checkable):,} properties satisfy "
@@ -528,6 +546,16 @@ class Command(BaseCommand):
                     source_url=archives.get(year),
                 )
                 rollups = self._roll_up_year(entity_info_path, year, accounts)
+                malformed = sum(r.malformed_values for r in rollups)
+                self._operation.evidence.setdefault("malformed_values_by_year", {})[
+                    str(year)
+                ] = malformed
+                if malformed:
+                    self.stdout.write(
+                        self.style.WARNING(
+                            f"  {malformed:,} malformed numeric values read as empty"
+                        )
+                    )
                 self._verify_sane_order(year, rollups)
             except (OSError, UnicodeError) as exc:
                 self._record_unavailable_coverage(year, "entity_info_read_failed")

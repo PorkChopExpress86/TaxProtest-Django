@@ -27,11 +27,30 @@ shapefile instead (``load_brazos_gis``, not this module).
 
 from __future__ import annotations
 
+import hashlib
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 from typing import Any, TypedDict, cast
+
+#: Every reader of a PACS ``APPRAISAL_*.TXT`` file decodes with this. Offsets
+#: in the layouts below are byte positions: each file in the real 2026 export
+#: has one uniform byte width per line and no byte above 0x7F, so the true
+#: charset is unconfirmed. A single-byte decoding maps each byte to exactly one
+#: character, so later fields keep their offsets whatever a future export
+#: carries; at worst a non-ASCII text field reads as the wrong letters.
+PACS_ENCODING = "latin-1"
+
+
+def iter_pacs_lines(path: Path) -> Iterator[str]:
+    """Yield each non-blank line of a PACS file without its line terminator."""
+    with path.open("r", encoding=PACS_ENCODING, newline="") as fh:
+        for line in fh:
+            line = line.rstrip("\r\n")
+            if line.strip():
+                yield line
 
 
 @dataclass(frozen=True)
@@ -132,6 +151,39 @@ def _int_or_zero(raw: str) -> int:
 
 def parse_fixed_width(line: str, layout: Sequence[FieldSpec]) -> dict[str, Any]:
     return {spec.name: spec.cast(line[spec.start : spec.end]) for spec in layout}
+
+
+def row_fingerprint(fields: Mapping[str, Any]) -> bytes:
+    """A compact digest of one parsed row; equal rows share it.
+
+    Inspection counts exact duplicate rows with it and persist drops them with
+    it, so the two always agree on what an exact duplicate is.
+    """
+    return hashlib.sha256(repr(fields).encode()).digest()
+
+
+def malformed_numeric_fields(line: str, layout: Sequence[FieldSpec]) -> list[str]:
+    """Names of numeric fields whose non-blank text is not a finite number.
+
+    Integer fields must also hold a whole number. The casts above read such
+    text as None or 0 without saying so, so a caller that must not trust a
+    silent None asks here first.
+    """
+    malformed = []
+    for spec in layout:
+        raw = line[spec.start : spec.end].strip()
+        if not raw or spec.cast is _text:
+            continue
+        try:
+            numeric = Decimal(raw)
+        except InvalidOperation:
+            malformed.append(spec.name)
+            continue
+        if not numeric.is_finite() or (
+            spec.cast in (_int_or_none, _int_or_zero) and numeric != numeric.to_integral_value()
+        ):
+            malformed.append(spec.name)
+    return malformed
 
 
 # ---------------------------------------------------------------- APPRAISAL_LAND_DETAIL.TXT
