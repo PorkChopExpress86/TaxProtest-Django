@@ -736,8 +736,9 @@ class _HarrisImportExecution:
 
         # Legacy extracts often lived under the download tree. Include that
         # location as a fallback so modern and legacy commands pick equivalent data.
-        archive_base = Path(source.filename).name.rsplit(".", 1)[0]
-        legacy_extract_path = self.config.download_dir / archive_base
+        legacy_extract_path = self.config.download_dir / DEFAULT_HCAD_SOURCE_CATALOG.extract_dirname(
+            source.source_id
+        )
 
         candidate_roots = [extract_path]
         if legacy_extract_path.exists() and legacy_extract_path != extract_path:

@@ -83,7 +83,9 @@ class Command(BaseCommand):
             self.stdout.write("Skipping download and extraction, using existing files...")
 
         extract_dir = extract_manager.get_extract_path(source)
-        legacy_extract_dir = config.download_dir / source.filename.rsplit(".", 1)[0]
+        legacy_extract_dir = config.download_dir / DEFAULT_HCAD_SOURCE_CATALOG.extract_dirname(
+            source.source_id
+        )
         shapefile = select_preferred_gis_shapefile([extract_dir, legacy_extract_dir])
 
         if shapefile is None:

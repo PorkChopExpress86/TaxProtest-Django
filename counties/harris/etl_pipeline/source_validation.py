@@ -301,7 +301,11 @@ def validate_harris_sources(
                 result.errors.append(f"{archive.name}: archive integrity unavailable: {exc}")
         if source.source_type == DataSourceType.GIS_DATA:
             layer = select_preferred_gis_shapefile(
-                [root, config.download_dir / Path(source.filename).stem]
+                [
+                    root,
+                    config.download_dir
+                    / DEFAULT_HCAD_SOURCE_CATALOG.extract_dirname(source.source_id),
+                ]
             )
             if layer is None:
                 result.errors.append(f"{source.name}: no requested GIS layer")
