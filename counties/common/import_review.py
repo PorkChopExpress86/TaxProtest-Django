@@ -2,7 +2,10 @@
 
 import hashlib
 import json
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from django.core.exceptions import PermissionDenied
 from django.utils import timezone
@@ -11,7 +14,7 @@ from counties.common.candidate_ports import dataset_identity, published_identity
 from counties.common.candidate_staging import drop_candidate_schema, switch_search_path
 from counties.common.county_registry import registration_for
 from counties.common.import_audit import audited_operation
-from counties.common.import_coverage import compare_coverage
+from counties.common.import_coverage import OutcomePopulation, compare_coverage
 from counties.common.import_states import RETIRED_CANDIDATE_STATES, CandidateState
 from counties.common.import_writers import fenced_write
 from counties.common.models import ImportAuditEntry, ImportCandidate
@@ -19,6 +22,21 @@ from counties.common.models import ImportAuditEntry, ImportCandidate
 
 class ImportReviewRejected(ValueError):
     pass
+
+
+@dataclass(frozen=True)
+class Measurement:
+    """What preparation measured of one candidate, handed to the publication it starts.
+
+    Valid only inside the operation that prepared the candidate, while it holds the
+    county writer and nothing has written the measured tables since.
+    """
+
+    candidate_id: Any
+    published_content: Mapping | None  # None when preparation was handed its baseline
+    content_identity: Mapping
+    published_outcomes: dict[str, OutcomePopulation]
+    candidate_outcomes: dict[str, OutcomePopulation]
 
 
 def captured_binding(candidate) -> str:
@@ -34,8 +52,10 @@ def captured_binding(candidate) -> str:
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
-def current_coverage(candidate):
+def current_coverage(candidate, measured: Measurement | None = None):
     """Measure the candidate against the published data with the county's own rules."""
+    if measured is not None:
+        return compare_coverage(measured.published_outcomes, measured.candidate_outcomes)
     port = registration_for(candidate.county).port
     previous = port.outcomes(None)
     with switch_search_path(candidate.storage_schema):
@@ -63,7 +83,14 @@ def check_recorded_qualification(candidate: ImportCandidate) -> None:
         raise ImportReviewRejected(f"Candidate is {candidate.state}; its staged data is retired")
 
 
-def checked_binding(candidate: ImportCandidate) -> str:
+def checked_binding(candidate: ImportCandidate, measured: Measurement | None = None) -> str:
+    """Recheck the candidate's evidence live and bind it.
+
+    With ``measured``, the published county facts are read live and the expensive
+    measurements are taken from it instead of being read again.
+    """
+    if measured is not None and measured.candidate_id != candidate.pk:
+        raise ValueError("A measurement of another candidate cannot qualify this one")
     check_recorded_qualification(candidate)
     validation = candidate.operation.evidence["validation"]
     coverage = candidate.evidence["coverage"]
@@ -80,8 +107,12 @@ def checked_binding(candidate: ImportCandidate) -> str:
             ) from exc
         if digest.hexdigest() != source["sha256"]:
             raise ImportReviewRejected("Retained source changed; prepare fresh evidence")
-    baseline = published_identity(candidate.county)
-    content = dataset_identity(candidate.county, candidate.storage_schema)
+    if measured is None:
+        baseline = published_identity(candidate.county)
+        content = dataset_identity(candidate.county, candidate.storage_schema)
+    else:
+        baseline = published_identity(candidate.county, measured.published_content)
+        content = dict(measured.content_identity)
     if baseline != candidate.baseline:
         raise ImportReviewRejected("Published baseline changed; prepare fresh comparison evidence")
     if not candidate.evidence.get("content_identity"):
@@ -92,7 +123,7 @@ def checked_binding(candidate: ImportCandidate) -> str:
         raise ImportReviewRejected(
             "Candidate contents changed; prepare fresh qualification evidence"
         )
-    if current_coverage(candidate) != coverage:
+    if current_coverage(candidate, measured) != coverage:
         raise ImportReviewRejected(
             "Outcome qualification changed; prepare fresh evidence and review"
         )
@@ -111,8 +142,8 @@ def checked_binding(candidate: ImportCandidate) -> str:
     ).hexdigest()
 
 
-def authorize_publication(candidate, *, user=None):
-    binding = checked_binding(candidate)
+def authorize_publication(candidate, *, user=None, measured: Measurement | None = None):
+    binding = checked_binding(candidate, measured)
     if candidate.state == CandidateState.PREPARING:
         raise ImportReviewRejected("Candidate is not qualified for publication")
     if not candidate.evidence["coverage"]["requires_review"]:
