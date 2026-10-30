@@ -11,9 +11,9 @@ from uuid import UUID
 from django.db import DatabaseError, connection, transaction
 
 from counties.common.county_registry import registration_for
+from counties.common.import_source_digests import carry_digests, tree_digests
 from counties.common.import_states import CandidateState, LegacyOperationStatus, OperationStatus
 from counties.common.models import CountyWriter, ImportAuditEntry, ImportOperation
-from counties.common.source_digests import carry_digests, tree_digests
 
 _CURRENT_WRITER: ContextVar[ImportOperation | None] = ContextVar("county_writer", default=None)
 

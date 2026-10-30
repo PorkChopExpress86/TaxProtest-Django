@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from fnmatch import fnmatch
 from pathlib import Path
 
-from counties.common.source_digests import PROVENANCE_FILENAME, file_digest
+from counties.common.import_source_digests import PROVENANCE_FILENAME, file_digest
 from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG
 
 from .config import DataSource, ETLConfig
@@ -275,7 +275,7 @@ class ExtractManager:
             unchanged = (
                 None
                 if provenance is None
-                else self._unchanged_extract(source, dest_dir, provenance)
+                else self._reusable_extract_members(source, dest_dir, provenance)
             )
             if unchanged is not None:
                 self.logger.info(f"{source.name} is already extracted from this archive")
@@ -359,7 +359,7 @@ class ExtractManager:
             "max_file_size": self.extract_config.max_file_size,
         }
 
-    def _unchanged_extract(
+    def _reusable_extract_members(
         self, source: DataSource, dest_dir: Path, provenance: dict
     ) -> list[str] | None:
         """Return the members of a complete extract made from the same archive, if any."""

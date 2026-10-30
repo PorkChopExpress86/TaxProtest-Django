@@ -52,17 +52,26 @@ def file_digest(path: Path) -> str:
     return digest
 
 
-def tree_digests(root: Path) -> dict[str, str]:
-    """Digest every source file under ``root``, keyed by its path relative to ``root``."""
-    digests = {}
+def is_source_file(path: Path) -> bool:
+    # A provenance file, or a copy of one left part written, describes sources.
+    return path.is_file() and not path.name.startswith(PROVENANCE_FILENAME)
+
+
+def _files(root: Path) -> Iterator[Path]:
+    """Yield the files under ``root``, leaving out the Import operations' working roots."""
     for directory, children, files in os.walk(root):
         children[:] = [name for name in children if name != ".imports"]
         for filename in sorted(files):
-            if filename.startswith(PROVENANCE_FILENAME):  # with any copy left part written
-                continue
-            source = Path(directory) / filename
-            digests[str(source.relative_to(root))] = file_digest(source)
-    return digests
+            yield Path(directory) / filename
+
+
+def tree_digests(root: Path) -> dict[str, str]:
+    """Digest every source file under ``root``, keyed by its path relative to ``root``."""
+    return {
+        str(source.relative_to(root)): file_digest(source)
+        for source in _files(root)
+        if is_source_file(source)
+    }
 
 
 def carry_digests(source_root: Path, target_root: Path) -> None:
@@ -74,11 +83,8 @@ def carry_digests(source_root: Path, target_root: Path) -> None:
     digests = _DIGESTS.get()
     if digests is None:
         return
-    for directory, children, files in os.walk(source_root):
-        children[:] = [name for name in children if name != ".imports"]
-        for filename in files:
-            source = Path(directory) / filename
-            digest = digests.get(_stat_key(source))
-            target = target_root / source.relative_to(source_root)
-            if digest is not None and target.is_file():
-                digests[_stat_key(target)] = digest
+    for source in _files(source_root):
+        digest = digests.get(_stat_key(source))
+        target = target_root / source.relative_to(source_root)
+        if digest is not None and target.is_file():
+            digests[_stat_key(target)] = digest

@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
-from counties.common import source_digests
+from counties.common import import_source_digests as source_digests
 from counties.common.models import ImportOperation
 from counties.harris.etl_pipeline import (
     HarrisAcquisitionMode,

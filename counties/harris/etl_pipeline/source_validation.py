@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from counties.common.import_audit import record_sources
+from counties.common.import_source_digests import is_source_file
 from counties.common.import_writers import reused_source
 from counties.common.models import ImportOperation
 from counties.harris.models import PropertyRecord
@@ -312,7 +313,11 @@ def validate_harris_sources(
             else:
                 gis_paths.append(layer)
                 paths = sorted(
-                    layer.rglob("*") if layer.is_dir() else layer.parent.glob(f"{layer.stem}.*")
+                    path
+                    for path in (
+                        layer.rglob("*") if layer.is_dir() else layer.parent.glob(f"{layer.stem}.*")
+                    )
+                    if is_source_file(path)
                 )
                 record_sources(
                     operation,

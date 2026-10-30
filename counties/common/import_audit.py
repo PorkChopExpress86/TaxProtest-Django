@@ -9,10 +9,10 @@ from django.utils import timezone
 from counties.common.candidate_staging import drop_candidate_schema
 from counties.common.county_registry import registration_for
 from counties.common.import_logging import import_warnings
+from counties.common.import_source_digests import digest_once, file_digest, is_source_file
 from counties.common.import_states import CandidateState, OperationStatus
 from counties.common.import_writers import county_writer, fenced_write
 from counties.common.models import ImportAuditEntry, ImportOperation
-from counties.common.source_digests import digest_once, file_digest
 
 DEAD_OPERATION_ERROR = (
     "Import operation never finished: its worker stopped, and another Import operation "
@@ -23,7 +23,7 @@ DEAD_OPERATION_ERROR = (
 def record_sources(operation: ImportOperation, paths: list[Path], **identity) -> None:
     sources = operation.evidence.setdefault("sources", [])
     for path in paths:
-        if not path.is_file():
+        if not is_source_file(path):
             continue
         sources.append({"path": str(path), "sha256": file_digest(path), **identity})
 
