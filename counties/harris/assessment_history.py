@@ -17,15 +17,13 @@ REAL_ACCT_REQUIRED = ("acct", "assessed_val")
 HEARING_REQUIRED = ("acct", "Final_Appraised_Value")
 
 
-def _member_path(source_id: HcadSourceId, label: str) -> Path:
-    """Return a declared member's path relative to a year root, by catalog name."""
-    if not any(member.label == label for member in DEFAULT_HCAD_SOURCE_CATALOG.members(source_id)):
-        raise ValueError(f"HCAD source {source_id} declares no member {label}")
-    return Path(DEFAULT_HCAD_SOURCE_CATALOG.extract_dirname(source_id)) / label
-
-
-REAL_ACCT_MEMBER = _member_path(HcadSourceId.REAL_ACCOUNT_OWNER, "real_acct.txt")
-HEARING_MEMBER = _member_path(HcadSourceId.HEARING_FILES, "arb_hearings_real.txt")
+# Member paths relative to a year root.
+REAL_ACCT_MEMBER = DEFAULT_HCAD_SOURCE_CATALOG.member_path(
+    HcadSourceId.REAL_ACCOUNT_OWNER, "real_acct.txt"
+)
+HEARING_MEMBER = DEFAULT_HCAD_SOURCE_CATALOG.member_path(
+    HcadSourceId.HEARING_FILES, "arb_hearings_real.txt"
+)
 
 
 def _parse_decimal(value: Any) -> Decimal | None:

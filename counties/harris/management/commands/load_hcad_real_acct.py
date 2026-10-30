@@ -18,10 +18,9 @@ from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG, HcadSour
 
 def default_real_acct_path() -> Path:
     """Return the catalog's property member under the configured extract root."""
-    source_id = HcadSourceId.REAL_ACCOUNT_OWNER
-    (member,) = [m for m in DEFAULT_HCAD_SOURCE_CATALOG.members(source_id) if m.required]
-    dirname = DEFAULT_HCAD_SOURCE_CATALOG.extract_dirname(source_id)
-    return Path(settings.HCAD_EXTRACT_DIR) / dirname / member.label
+    return Path(settings.HCAD_EXTRACT_DIR) / DEFAULT_HCAD_SOURCE_CATALOG.member_path(
+        HcadSourceId.REAL_ACCOUNT_OWNER, "real_acct.txt"
+    )
 
 
 class Command(BaseCommand):

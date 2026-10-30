@@ -213,6 +213,15 @@ class HcadSourceCatalog:
         """Return the declared members of a source's extract directory."""
         return self._catalog_source(source_id).members
 
+    def member_path(self, source_id: HcadSourceId, label: str) -> Path:
+        """Return a declared member's path relative to the root that holds the extract directory.
+
+        Callers join it with the root they own (base, working, per-year or benchmark root).
+        """
+        if not any(member.label == label for member in self.members(source_id)):
+            raise LookupError(f"HCAD source {source_id} declares no member {label}")
+        return Path(self.extract_dirname(source_id)) / label
+
     def missing_required_members(self, source_id: HcadSourceId, directory: Path) -> list[str]:
         """Return labels of required members with no matching file under ``directory``.
 

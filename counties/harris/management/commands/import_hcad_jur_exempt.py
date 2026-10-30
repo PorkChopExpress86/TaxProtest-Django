@@ -97,9 +97,7 @@ _MEMBERS = {member.label: member for member in DEFAULT_HCAD_SOURCE_CATALOG.membe
 
 def _declared(label: str) -> str:
     """Name a member the catalog declares for the jurisdiction-exemption source."""
-    if label not in _MEMBERS:
-        raise ValueError(f"HCAD source {SOURCE_ID} declares no member {label}")
-    return label
+    return DEFAULT_HCAD_SOURCE_CATALOG.member_path(SOURCE_ID, label).name
 
 
 VALUE_FILE = _declared("jur_value.txt")

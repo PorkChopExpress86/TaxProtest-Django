@@ -231,3 +231,20 @@ def test_extract_patterns_are_unchanged(source_id: HcadSourceId) -> None:
     source = DEFAULT_HCAD_SOURCE_CATALOG.source_for_id(source_id)
 
     assert source.extract_patterns == EXPECTED_EXTRACT_PATTERNS.get(source_id, [])
+
+
+# Member paths: a declared member, named relative to whichever root holds the extract directory.
+
+
+def test_member_path_is_root_relative_and_names_the_extract_directory() -> None:
+    assert DEFAULT_HCAD_SOURCE_CATALOG.member_path(
+        HcadSourceId.REAL_ACCOUNT_OWNER, "real_acct.txt"
+    ) == Path("Real_acct_owner/real_acct.txt")
+    assert DEFAULT_HCAD_SOURCE_CATALOG.member_path(
+        HcadSourceId.HEARING_FILES, "arb_hearings_real.txt"
+    ) == Path("Hearing_files/arb_hearings_real.txt")
+
+
+def test_member_path_rejects_an_undeclared_member() -> None:
+    with pytest.raises(LookupError, match="declares no member"):
+        DEFAULT_HCAD_SOURCE_CATALOG.member_path(HcadSourceId.REAL_ACCOUNT_OWNER, "fixtures.txt")
