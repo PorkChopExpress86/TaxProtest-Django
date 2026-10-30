@@ -67,6 +67,10 @@ class CandidateLoad:
     # The load replaces every staged table whole, so none is seeded with published rows.
     replaces_published: bool = False
 
+    def __post_init__(self) -> None:
+        if self.carries_published and self.replaces_published:
+            raise ValueError("A load cannot both keep and replace the published rows")
+
 
 @dataclass(frozen=True)
 class Prepared:

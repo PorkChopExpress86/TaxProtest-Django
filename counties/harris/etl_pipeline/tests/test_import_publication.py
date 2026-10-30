@@ -68,6 +68,25 @@ def harris_request(root, key="P100", *, prepare=False):
     )
 
 
+def publish_baseline():
+    prop = PropertyRecord.objects.create(
+        account_number="P100",
+        address="Old address",
+        is_residential=True,
+        is_data_ready=True,
+        latitude=29.7,
+        longitude=-95.4,
+    )
+    BuildingDetail.objects.create(
+        property=prop,
+        account_number="P100",
+        building_number=1,
+        bedrooms=3,
+        bathrooms=2,
+        heat_area=1800,
+    )
+
+
 class HarrisPublicationTests(TransactionTestCase):
     def tearDown(self):
         with connection.cursor() as cursor:
@@ -76,22 +95,7 @@ class HarrisPublicationTests(TransactionTestCase):
         super().tearDown()
 
     def baseline(self):
-        prop = PropertyRecord.objects.create(
-            account_number="P100",
-            address="Old address",
-            is_residential=True,
-            is_data_ready=True,
-            latitude=29.7,
-            longitude=-95.4,
-        )
-        BuildingDetail.objects.create(
-            property=prop,
-            account_number="P100",
-            building_number=1,
-            bedrooms=3,
-            bathrooms=2,
-            heat_area=1800,
-        )
+        publish_baseline()
 
     def test_qualified_replacement_publishes_and_repeated_application_is_idempotent(self):
         self.baseline()
@@ -517,7 +521,7 @@ class FullLoadStagingTests(TransactionTestCase):
             self.assertFalse(self.load(appended)[1].replaces_published)
 
     def test_a_full_load_prepares_the_same_content_as_a_seeded_one(self):
-        HarrisPublicationTests.baseline(self)
+        publish_baseline()
         moment = datetime(2026, 10, 30, 12, tzinfo=UTC)
         prepared = []
         with (
@@ -536,5 +540,12 @@ class FullLoadStagingTests(TransactionTestCase):
                     ).candidate
                 prepared.append((candidate.state, candidate.evidence["content_identity"]))
         self.assertEqual(prepared[0], prepared[1])
-        self.assertEqual(prepared[0][0], "prepared")
+        # Pinned so a change to the bytes either mode identifies is caught (ADR-0024).
+        self.assertEqual(
+            prepared[0],
+            (
+                "prepared",
+                {"sha256": "12dbf18d29c9a4cf025683c61771198065f4362ea4ef11211c11c8e93b36eae7"},
+            ),
+        )
         self.assertEqual(PropertyRecord.objects.get().address, "Old address")

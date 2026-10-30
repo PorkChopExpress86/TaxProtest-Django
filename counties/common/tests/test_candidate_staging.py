@@ -20,6 +20,8 @@ from counties.common.candidate_staging import (
 from counties.common.import_writers import county_writer
 from counties.common.models import ImportCandidate, ImportOperation
 from counties.common.tax_models import PropertyJurisdictionExemption
+from counties.harris.etl_pipeline.candidate import HarrisCandidatePort
+from counties.harris.models import BuildingDetail, PropertyRecord
 
 
 class CandidateStagingUnitTests(SimpleTestCase):
@@ -270,9 +272,6 @@ class UnseededStagingTests(TransactionTestCase):
     """A load that replaces every staged table starts from empty tables of the same shape."""
 
     def setUp(self):
-        from counties.harris.etl_pipeline.candidate import HarrisCandidatePort
-        from counties.harris.models import BuildingDetail, PropertyRecord
-
         self.tables = HarrisCandidatePort.tables
         prop = PropertyRecord.objects.create(account_number="PUBLISHED")
         BuildingDetail.objects.create(property=prop, account_number="PUBLISHED", building_number=1)
