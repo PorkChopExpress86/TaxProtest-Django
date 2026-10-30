@@ -58,6 +58,7 @@ class Command(BaseCommand):
             try:
                 reconcile_dead_operations("harris", actor="check_and_import_data")
             except WriterConflict as conflict:
+                logger.info("Leaving reconciliation to the county writer holder: %s", conflict)
                 if conflict.uncertain:
                     stuck_writer = conflict.operation_id
             # A first import publishes nothing until an operator resolves its candidate,

@@ -13,7 +13,7 @@ from typing import Any
 from uuid import uuid4
 
 from django.core.exceptions import PermissionDenied
-from django.db import connection
+from django.db import DatabaseError, connection, transaction
 
 from counties.common.candidate_ports import (
     CandidateTables,
@@ -143,8 +143,23 @@ def prepare(
     finally:
         retain_baseline_sources(operation, inherited)
         candidate.sources = operation.evidence.get("sources", [])
-        operation.save()
-        candidate.save()
+        try:
+            with transaction.atomic():
+                operation.save()
+                candidate.save()
+        except Exception as exc:
+            # Never leave the candidate preparing behind an operation that records an
+            # ending. Its evidence may be what could not be saved, so only the error is.
+            candidate.state = CandidateState.BLOCKED
+            candidate.evidence = {"error": f"Candidate was not saved: {exc}"}
+            try:
+                ImportCandidate.objects.filter(pk=candidate.pk).update(
+                    state=candidate.state, evidence=candidate.evidence
+                )
+                drop_candidate_schema(candidate)
+            except DatabaseError:
+                pass  # the next writer's reconciliation blocks it and drops its schema
+            raise
         if candidate.state == CandidateState.BLOCKED:
             drop_candidate_schema(candidate)
     if automatic_publication and candidate.state == CandidateState.PREPARED:

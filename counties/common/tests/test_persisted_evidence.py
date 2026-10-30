@@ -237,6 +237,9 @@ class BrazosAnnualCoverageEvidenceTests(TransactionTestCase):
         self.assertEqual({source["stage"] for source in candidate.sources}, {"cad", "gis"})
 
 
+OPERATION_LOCK_FAMILY = 1414549328
+
+
 class CountyWriterLockKeyTests(TransactionTestCase):
     """Running deployments coordinate writers through these exact advisory lock keys."""
 
@@ -258,7 +261,12 @@ class CountyWriterLockKeyTests(TransactionTestCase):
                     writer = CountyWriter.objects.get(county=county)
                     self.assertEqual(writer.operation_id, operation.pk)
                     self.assertEqual(writer.backend_pid, pid)
-                    self.assertEqual(self.held_advisory_keys(), [(0, key, 1)])
+                    held = self.held_advisory_keys()
+                    self.assertEqual([lock for lock in held if lock[2] == 1], [(0, key, 1)])
+                    # Beside it, in the two-key space, only the operation's liveness lock.
+                    self.assertEqual(
+                        [lock[0] for lock in held if lock[2] == 2], [OPERATION_LOCK_FAMILY]
+                    )
                 self.assertEqual(self.held_advisory_keys(), [])
                 writer.refresh_from_db()
                 self.assertIsNone(writer.operation_id)

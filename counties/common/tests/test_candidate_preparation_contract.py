@@ -2,7 +2,9 @@
 
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
+from django.db import DataError
 from django.test import TransactionTestCase
 
 from counties.common.candidate_lifecycle import prepare, publish
@@ -29,6 +31,27 @@ class PreparationContract:
         self.approve()
         with audited_operation(self.county, "apply", actor="operator") as operation:
             publish(operation, self.candidate.pk, user=self.reviewer, reason="Apply reviewed")
+
+    def test_a_candidate_whose_ending_cannot_be_saved_is_not_left_preparing(self):
+        real_save = ImportCandidate.save
+
+        def save(candidate, *args, **kwargs):
+            if kwargs.get("force_insert"):
+                return real_save(candidate, *args, **kwargs)
+            raise DataError("Candidate evidence is too large")
+
+        with (
+            self.assertRaisesMessage(DataError, "too large"),
+            audited_operation(self.county, "fixture", actor="operator") as operation,
+            patch.object(ImportCandidate, "save", save),
+        ):
+            prepare(operation, self.fixture_load(operation))
+        operation.refresh_from_db()
+        candidate = ImportCandidate.objects.get(operation=operation)
+        self.assertEqual(operation.status, "failed")
+        self.assertIsNotNone(operation.finished_at)
+        self.assertEqual(candidate.state, "blocked")
+        self.assertIn("too large", candidate.evidence["error"])
 
     def test_first_import_awaits_review(self):
         before = published_identity(self.county)

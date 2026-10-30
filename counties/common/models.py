@@ -17,6 +17,8 @@ class ImportOperation(models.Model):
     status = models.CharField(max_length=32, default="running", db_index=True)
     started_at = models.DateTimeField(auto_now_add=True)
     finished_at = models.DateTimeField(null=True)
+    # Set once the operation holds its county writer, so a dead holder is recognizable.
+    writer_held_at = models.DateTimeField(null=True)
     publication_before = models.JSONField(null=True)
     publication_after = models.JSONField(null=True)
     evidence = models.JSONField(default=dict)
