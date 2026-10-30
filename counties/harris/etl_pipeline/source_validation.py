@@ -287,7 +287,7 @@ def validate_harris_sources(
         record_sources(
             operation,
             [archive],
-            source_id=source.source_id.value if source.source_id else source.name,
+            source_id=source.source_id.value,
             requested_year=year,
             source_year=acquired.get("source_year"),
             source_url=acquired.get("source_url"),
@@ -313,7 +313,7 @@ def validate_harris_sources(
                 record_sources(
                     operation,
                     paths,
-                    source_id=source.source_id.value if source.source_id else source.name,
+                    source_id=source.source_id.value,
                     requested_year=year,
                     source_year=acquired.get("source_year"),
                 )
@@ -338,7 +338,7 @@ def validate_harris_sources(
             record_sources(
                 operation,
                 [path],
-                source_id=source.source_id.value if source.source_id else source.name,
+                source_id=source.source_id.value,
                 requested_year=year,
                 source_year=None,
             )

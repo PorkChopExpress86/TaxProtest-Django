@@ -77,15 +77,7 @@ class ExtractManager:
 
     def _get_extract_path(self, source: DataSource) -> Path:
         """Get the extraction directory for a source: the configured root plus the catalog name."""
-        if source.source_id is not None:
-            return self.extract_dir / DEFAULT_HCAD_SOURCE_CATALOG.extract_dirname(source.source_id)
-        # A source with no catalog identity keeps the filename-stem rule until #123 rejects it.
-        base_name = source.filename
-        for ext in [".zip", ".tar.gz", ".tar", ".gz"]:
-            if base_name.lower().endswith(ext):
-                base_name = base_name[: -len(ext)]
-                break
-        return self.extract_dir / base_name
+        return self.extract_dir / DEFAULT_HCAD_SOURCE_CATALOG.extract_dirname(source.source_id)
 
     def _validate_zip(self, archive_path: Path) -> bool:
         """Validate a ZIP archive."""

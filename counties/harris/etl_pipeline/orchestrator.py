@@ -37,7 +37,7 @@ from .extract import ExtractManager
 from .fixtures_aggregator import FixturesAggregator
 from .import_plan import HarrisImportPlan
 from .logging import ETLLogger
-from .source_pipeline import HarrisSourcePipeline, declared_member, resolve_schema_name
+from .source_pipeline import HarrisSourcePipeline, resolve_schema_name
 
 
 class HarrisImportPhase(Enum):
@@ -332,12 +332,11 @@ class _HarrisImportExecution:
             assert operation is not None
             seed_sources(self.config, sources, replayed, operation)
         if request.property_file is not None:
-            owner = HcadSourceId.REAL_ACCOUNT_OWNER
-            directory = self.config.extract_dir / DEFAULT_HCAD_SOURCE_CATALOG.extract_dirname(owner)
-            directory.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(
-                request.property_file.path, directory / declared_member(owner, "real_acct.txt")
+            destination = self.config.extract_dir / DEFAULT_HCAD_SOURCE_CATALOG.member_path(
+                HcadSourceId.REAL_ACCOUNT_OWNER, "real_acct.txt"
             )
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(request.property_file.path, destination)
         self.logger = logger or ETLLogger(
             name="etl_orchestrator",
             log_dir=self.config.log_dir,
@@ -988,8 +987,6 @@ def seed_sources(config, sources, replayed: ImportCandidate, operation: ImportOp
             )
     manager = ExtractManager(config)
     for source in sources:
-        if source.source_id is None:
-            raise ReplayRejected("A retained Harris source must have a catalog identity")
         selected = [item for item in retained if item.get("source_id") == source.source_id.value]
         if not selected:
             raise ReplayRejected(f"Retained full Harris inputs are unavailable for {source.name}")

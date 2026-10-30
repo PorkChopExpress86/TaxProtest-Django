@@ -19,11 +19,12 @@ from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG, HcadSour
 
 def write_synthetic_real_acct(root: str | Path, count: int) -> Path:
     """Write ``count`` residential accounts as the catalog's property member under ``extracted``."""
-    source_id = HcadSourceId.REAL_ACCOUNT_OWNER
-    (member,) = [m for m in DEFAULT_HCAD_SOURCE_CATALOG.members(source_id) if m.required]
-    source_dir = Path(root) / "extracted" / DEFAULT_HCAD_SOURCE_CATALOG.extract_dirname(source_id)
-    source_dir.mkdir(parents=True, exist_ok=True)
-    source = source_dir / member.label
+    source = (
+        Path(root)
+        / "extracted"
+        / DEFAULT_HCAD_SOURCE_CATALOG.member_path(HcadSourceId.REAL_ACCOUNT_OWNER, "real_acct.txt")
+    )
+    source.parent.mkdir(parents=True, exist_ok=True)
     lines = ["acct\tsite_addr_1\tsite_addr_3\tstate_class\ttot_appr_val"]
     for i in range(count):
         acct = f"P{i:07d}"
