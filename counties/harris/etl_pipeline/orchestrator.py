@@ -27,6 +27,7 @@ from counties.harris.models import BuildingDetail, ExtraFeature, PropertyRecord
 from counties.harris.readiness import published_year
 from counties.harris.source_catalog import (
     DEFAULT_HCAD_SOURCE_CATALOG,
+    REAL_ACCT_MEMBER_PATH,
     HarrisImportStage,
     HcadSourceId,
 )
@@ -332,9 +333,7 @@ class _HarrisImportExecution:
             assert operation is not None
             seed_sources(self.config, sources, replayed, operation)
         if request.property_file is not None:
-            destination = self.config.extract_dir / DEFAULT_HCAD_SOURCE_CATALOG.member_path(
-                HcadSourceId.REAL_ACCOUNT_OWNER, "real_acct.txt"
-            )
+            destination = self.config.extract_dir / REAL_ACCT_MEMBER_PATH
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(request.property_file.path, destination)
         self.logger = logger or ETLLogger(
@@ -736,8 +735,8 @@ class _HarrisImportExecution:
 
         # Legacy extracts often lived under the download tree. Include that
         # location as a fallback so modern and legacy commands pick equivalent data.
-        legacy_extract_path = self.config.download_dir / DEFAULT_HCAD_SOURCE_CATALOG.extract_dirname(
-            source.source_id
+        legacy_extract_path = (
+            self.config.download_dir / DEFAULT_HCAD_SOURCE_CATALOG.extract_dirname(source.source_id)
         )
 
         candidate_roots = [extract_path]

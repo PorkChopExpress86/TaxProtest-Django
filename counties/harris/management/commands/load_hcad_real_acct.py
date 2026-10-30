@@ -13,14 +13,12 @@ from counties.harris.etl_pipeline import (
     run_harris_import,
 )
 from counties.harris.etl_pipeline.orchestrator import HarrisPropertyFile
-from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG, HcadSourceId
+from counties.harris.source_catalog import REAL_ACCT_MEMBER_PATH
 
 
 def default_real_acct_path() -> Path:
     """Return the catalog's property member under the configured extract root."""
-    return Path(settings.HCAD_EXTRACT_DIR) / DEFAULT_HCAD_SOURCE_CATALOG.member_path(
-        HcadSourceId.REAL_ACCOUNT_OWNER, "real_acct.txt"
-    )
+    return Path(settings.HCAD_EXTRACT_DIR) / REAL_ACCT_MEMBER_PATH
 
 
 class Command(BaseCommand):

@@ -389,6 +389,11 @@ DEFAULT_HCAD_SOURCE_CATALOG = HcadSourceCatalog(
 DEFAULT_PROPERTY_SOURCES = DEFAULT_HCAD_SOURCE_CATALOG.property_sources()
 DEFAULT_GIS_SOURCES = DEFAULT_HCAD_SOURCE_CATALOG.gis_sources()
 
+# The real-account property file, relative to whichever root holds its extract directory.
+REAL_ACCT_MEMBER_PATH = DEFAULT_HCAD_SOURCE_CATALOG.member_path(
+    HcadSourceId.REAL_ACCOUNT_OWNER, "real_acct.txt"
+)
+
 
 __all__ = [
     "DEFAULT_GIS_SOURCES",
@@ -400,5 +405,6 @@ __all__ = [
     "HarrisImportStage",
     "HcadSourceId",
     "HcadSourceCatalog",
+    "REAL_ACCT_MEMBER_PATH",
     "SourceMember",
 ]
