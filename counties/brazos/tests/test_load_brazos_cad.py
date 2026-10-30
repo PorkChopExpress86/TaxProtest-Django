@@ -693,3 +693,29 @@ class LoadImprovementDetailAttrTests(TestCase):
             CadRefreshStage()._load_improvement_detail_attr(path, 2025, dry_run=False)
 
         self.assertEqual(PropertyExtraFeature.objects.filter(tax_year=2025).count(), 1)
+
+
+class ExactDuplicateSourceRowTests(TestCase):
+    """The real 2026 export repeats 370 ATTR rows byte for byte; persist keeps one."""
+
+    def test_exact_duplicate_in_a_unique_constrained_file_loads_once(self):
+        spec = next(s for s in INGEST_SPECS if s.filename == "APPRAISAL_LAND_DETAIL.TXT")
+        line = _land_detail_line("000000010002", "2025", "000000100000", "00000002833677", "105024")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / spec.filename
+            path.write_text(f"{line}\r\n{line}\r\n", encoding="utf-8")
+
+            count = CadRefreshStage()._load_file(spec, path, 2025, dry_run=False)
+
+        self.assertEqual(count, 1)
+        self.assertEqual(PropertyLand.objects.filter(tax_year=2025).count(), 1)
+
+    def test_exact_duplicate_extra_feature_is_not_doubled(self):
+        line = _attr_line("000000010008", "2025", "000000100002", "000000100001", "Fireplace", "G")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / IMPROVEMENT_DETAIL_ATTR_FILENAME
+            path.write_text(f"{line}\r\n{line}\r\n", encoding="utf-8")
+
+            CadRefreshStage()._load_improvement_detail_attr(path, 2025, dry_run=False)
+
+        self.assertEqual(PropertyExtraFeature.objects.filter(tax_year=2025).count(), 1)

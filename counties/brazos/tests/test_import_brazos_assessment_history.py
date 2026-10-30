@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import tempfile
 from decimal import Decimal
+from io import StringIO
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -26,6 +27,7 @@ from counties.brazos.models import (
     HistoricalCoverageStatus,
     PropertyAccount,
 )
+from counties.common.models import ImportOperation
 from counties.common.tax_models import AssessmentHistory
 
 
@@ -719,3 +721,81 @@ class EvaluateCapStatusIntegrationTests(TestCase):
         # whether this was a homestead cap or something else. See
         # counties/common/tests/test_cap_status.py for the dedicated coverage.
         self.assertEqual(rows[0]["cap_status"]["cap_type"], "unknown")
+
+
+class MalformedHistoryValueTests(TestCase):
+    """A non-blank value that is not a number is counted, not quietly read as None."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+
+    def _run(self, lines: list[str]) -> ImportOperation:
+        year_dir = self.root / "extracted" / "2025"
+        year_dir.mkdir(parents=True)
+        (self.root / "downloads").mkdir()
+        (self.root / "downloads" / "bcad_certified_2025.zip").write_bytes(b"placeholder")
+        (year_dir / ENTITY_INFO_FILENAME).write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
+        with self.settings(
+            BCAD_DOWNLOAD_DIR=str(self.root / "downloads"),
+            BCAD_EXTRACT_DIR=str(self.root / "extracted"),
+        ):
+            call_command(
+                "import_brazos_assessment_history",
+                "--start-year",
+                "2025",
+                "--end-year",
+                "2025",
+                "--skip-download",
+                "--skip-extract",
+                "--all-accounts",
+                stdout=StringIO(),
+            )
+        return ImportOperation.objects.get(county="brazos", intent="assessment_history")
+
+    def test_malformed_values_are_counted_in_the_evidence(self):
+        sane = [
+            _entity_info_line(
+                f"{i:012d}",
+                "02025",
+                "G1",
+                assessed_raw="000000000100000",
+                appraised_raw="000000000100000",
+                market_raw="000000000100000",
+            )
+            for i in range(19)
+        ]
+        malformed = _entity_info_line(
+            "000000099999",
+            "02025",
+            "G1",
+            assessed_raw="000000000100000",
+            appraised_raw="0000000001O0000",  # letter O, not zero
+            market_raw="00000000010000X",
+        )
+
+        operation = self._run([*sane, malformed])
+
+        self.assertEqual(operation.evidence["malformed_values_by_year"], {"2025": 2})
+        self.assertEqual(operation.evidence["rows_by_year"], {"2025": 20})
+
+    def test_a_mostly_malformed_year_fails_the_sanity_check(self):
+        lines = [
+            _entity_info_line(
+                f"{i:012d}",
+                "02025",
+                "G1",
+                assessed_raw="000000000100000",
+                appraised_raw="00000000BAD0000",
+                market_raw="000000000100000" if i == 0 else "00000000BAD0000",
+            )
+            for i in range(10)
+        ]
+
+        operation = self._run(lines)
+
+        self.assertFalse(AssessmentHistory.objects.filter(county="brazos").exists())
+        self.assertEqual(operation.evidence["malformed_values_by_year"], {"2025": 19})
+        coverage = BrazosHistoricalCoverage.objects.get(tax_year=2025)
+        self.assertEqual(coverage.failure_category, "entity_info_preflight_failed")
