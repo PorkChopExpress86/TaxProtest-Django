@@ -86,12 +86,13 @@ class DataSource:
     url_template: str
     filename: str
     source_type: DataSourceType
+    # The catalog identity. Required: a source is never identified by its file or display name.
+    source_id: HcadSourceId = field(kw_only=True)
     file_format: FileFormat = FileFormat.ZIP
     required: bool = True
     checksum: str | None = None
     extract_patterns: list[str] = field(default_factory=list)
     priority: int = 100
-    source_id: HcadSourceId | None = None
     import_stages: frozenset[HarrisImportStage] = field(default_factory=frozenset)
     download_timeout: int = 300
     # A yearless URL tried after the requested year's archive, instead of the prior year.
@@ -115,6 +116,10 @@ class DataSource:
         )
 
     def __post_init__(self) -> None:
+        if not isinstance(self.source_id, HcadSourceId):
+            raise ValueError(
+                f"DataSource {self.name!r} needs an HCAD source catalog id, got {self.source_id!r}"
+            )
         if not self.name:
             raise ValueError("DataSource name cannot be empty")
         if not self.url_template:
@@ -162,45 +167,20 @@ class HcadSourceCatalog:
         raise KeyError(f"Unknown HCAD source id: {source_id}")
 
     def source_for_archive(self, archive: Mapping[str, Any]) -> DataSource:
-        """Resolve a legacy archive mapping through the catalog."""
+        """Resolve a legacy archive mapping by its catalog id; a filename never identifies it."""
         raw_id = archive.get("source_id")
-        if raw_id:
-            return self.source_for_id(HcadSourceId(raw_id))
-
-        filename = str(archive["filename"])
-        for source in self.sources:
-            if source.filename.lower() == filename.lower():
-                return source.clone()
-        raise KeyError(f"Unknown HCAD archive filename: {filename}")
-
-    def source_id_for(self, source: DataSource) -> HcadSourceId | None:
-        """Resolve a catalog identity for static or compatible caller sources."""
-        if source.source_id is not None:
-            return source.source_id
-        for catalog_source in self.sources:
-            if (
-                catalog_source.filename.lower() == source.filename.lower()
-                or catalog_source.name.lower() == source.name.lower()
-            ):
-                return catalog_source.source_id
-        return None
+        if not raw_id:
+            raise KeyError(f"Legacy HCAD archive has no catalog id: {archive.get('filename')}")
+        return self.source_for_id(HcadSourceId(raw_id))
 
     def import_stages_for(self, source: DataSource) -> frozenset[HarrisImportStage]:
-        """Return stage membership, with a safe fallback for caller-defined sources."""
+        """Return the source's own stage membership, else its catalog entry's."""
         if source.import_stages:
             return source.import_stages
-
-        source_id = self.source_id_for(source)
-        if source_id is not None:
-            return self.source_for_id(source_id).import_stages
-        if source.source_type is DataSourceType.GIS_DATA:
-            return frozenset({HarrisImportStage.GIS})
-        if source.source_type is DataSourceType.PROPERTY_DATA:
-            return frozenset({HarrisImportStage.PROPERTY})
-        return frozenset()
+        return self._catalog_source(source.source_id).import_stages
 
     def is_source(self, source: DataSource, source_id: HcadSourceId) -> bool:
-        return self.source_id_for(source) is source_id
+        return source.source_id is source_id
 
     def extract_dirname(self, source_id: HcadSourceId) -> str:
         """Return the root-relative directory name a source's archive extracts into."""
@@ -264,7 +244,7 @@ class HcadSourceCatalog:
         """Adapt catalog facts for the retained legacy download task."""
         return [
             {
-                "source_id": source.source_id.value if source.source_id else None,
+                "source_id": source.source_id.value,
                 "filename": source.filename,
                 "required": source.required,
                 "timeout": source.download_timeout,
@@ -274,7 +254,6 @@ class HcadSourceCatalog:
 
     def missing_required_files(self, source: DataSource, file_paths: list[str]) -> list[str]:
         """Return core translated-row files absent from an extracted source."""
-        source_id = self.source_id_for(source)
         requirements: dict[HcadSourceId, tuple[tuple[str, tuple[str, ...]], ...]] = {
             HcadSourceId.REAL_ACCOUNT_OWNER: (("real_acct.txt", ("real_acct.txt",)),),
             HcadSourceId.REAL_BUILDING_LAND: (
@@ -287,7 +266,7 @@ class HcadSourceCatalog:
             path.replace("\\", "/").rsplit("/", 1)[-1].lower() for path in file_paths
         ]
         missing: list[str] = []
-        for label, patterns in requirements.get(source_id, ()):
+        for label, patterns in requirements.get(source.source_id, ()):
             if not any(fnmatch(name, pattern) for name in normalized_names for pattern in patterns):
                 missing.append(label)
         return missing

@@ -9,7 +9,12 @@ from pathlib import Path
 
 import pytest
 
-from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG, HcadSourceId
+from counties.harris.source_catalog import (
+    DEFAULT_HCAD_SOURCE_CATALOG,
+    DataSource,
+    DataSourceType,
+    HcadSourceId,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 PERSISTED_EVIDENCE = REPO_ROOT / "counties" / "common" / "tests" / "persisted_evidence"
@@ -231,6 +236,45 @@ def test_extract_patterns_are_unchanged(source_id: HcadSourceId) -> None:
     source = DEFAULT_HCAD_SOURCE_CATALOG.source_for_id(source_id)
 
     assert source.extract_patterns == EXPECTED_EXTRACT_PATTERNS.get(source_id, [])
+
+
+# Source identity: a source with no catalog id is rejected, never guessed from its names.
+
+
+def test_a_source_without_a_catalog_id_is_rejected() -> None:
+    with pytest.raises(TypeError):
+        DataSource(  # type: ignore[call-arg]
+            name="Real Account Owner",
+            url_template="https://example.com/{year}/Real_acct_owner.zip",
+            filename="Real_acct_owner.zip",
+            source_type=DataSourceType.PROPERTY_DATA,
+        )
+
+
+@pytest.mark.parametrize("bad_id", [None, "real-account-owner"])
+def test_a_source_whose_id_is_not_a_catalog_id_is_rejected(bad_id: object) -> None:
+    with pytest.raises(ValueError, match="catalog id"):
+        DataSource(
+            name="Real Account Owner",
+            url_template="https://example.com/{year}/Real_acct_owner.zip",
+            filename="Real_acct_owner.zip",
+            source_type=DataSourceType.PROPERTY_DATA,
+            source_id=bad_id,  # type: ignore[arg-type]
+        )
+
+
+def test_a_legacy_archive_without_a_catalog_id_is_rejected() -> None:
+    with pytest.raises(KeyError):
+        DEFAULT_HCAD_SOURCE_CATALOG.source_for_archive({"filename": "Real_acct_owner.zip"})
+
+
+def test_a_legacy_archive_resolves_by_its_catalog_id() -> None:
+    source = DEFAULT_HCAD_SOURCE_CATALOG.source_for_archive(
+        {"source_id": "gis-parcels", "filename": "anything.zip"}
+    )
+
+    assert source.source_id is HcadSourceId.GIS_PARCELS
+    assert source.filename == "Parcels.zip"
 
 
 # Member paths: a declared member, named relative to whichever root holds the extract directory.

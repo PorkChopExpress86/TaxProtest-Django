@@ -987,8 +987,6 @@ def seed_sources(config, sources, replayed: ImportCandidate, operation: ImportOp
             )
     manager = ExtractManager(config)
     for source in sources:
-        if source.source_id is None:
-            raise ReplayRejected("A retained Harris source must have a catalog identity")
         selected = [item for item in retained if item.get("source_id") == source.source_id.value]
         if not selected:
             raise ReplayRejected(f"Retained full Harris inputs are unavailable for {source.name}")
