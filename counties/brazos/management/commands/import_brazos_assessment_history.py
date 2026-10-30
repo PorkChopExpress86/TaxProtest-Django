@@ -116,7 +116,9 @@ MIN_SANE_ORDER_FRACTION = Decimal("0.90")
 COUNTY = "brazos"
 
 #: The numeric ENTITY_INFO fields this import reads. A malformed one parses to
-#: None like a blank one would, so each is counted instead of trusted.
+#: None like a blank one would, so each is counted instead of trusted. Only the
+#: row kept per property is counted (the values the import writes), so
+#: ``malformed_values_by_year`` is malformed values written, not in the file.
 HISTORY_NUMERIC_FIELDS = frozenset(
     {"tax_year", "assessed_value", "appraised_value", "market_value"}
 )

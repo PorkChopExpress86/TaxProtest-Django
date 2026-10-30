@@ -27,8 +27,9 @@ shapefile instead (``load_brazos_gis``, not this module).
 
 from __future__ import annotations
 
+import hashlib
 import re
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -150,6 +151,15 @@ def _int_or_zero(raw: str) -> int:
 
 def parse_fixed_width(line: str, layout: Sequence[FieldSpec]) -> dict[str, Any]:
     return {spec.name: spec.cast(line[spec.start : spec.end]) for spec in layout}
+
+
+def row_fingerprint(fields: Mapping[str, Any]) -> bytes:
+    """A compact digest of one parsed row; equal rows share it.
+
+    Inspection counts exact duplicate rows with it and persist drops them with
+    it, so the two always agree on what an exact duplicate is.
+    """
+    return hashlib.sha256(repr(fields).encode()).digest()
 
 
 def malformed_numeric_fields(line: str, layout: Sequence[FieldSpec]) -> list[str]:

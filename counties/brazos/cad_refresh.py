@@ -38,7 +38,6 @@ run ``load_brazos_gis --year YYYY`` before relying on GIS fields.
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import re
 import shutil
@@ -69,6 +68,7 @@ from counties.brazos.parsers.pacs import (
     parse_improvement_info_line,
     parse_info_line,
     parse_land_detail_line,
+    row_fingerprint,
 )
 from counties.brazos.portal import (
     USER_AGENT,
@@ -357,9 +357,8 @@ class CadRefreshStage:
         duplicates = 0
         for line in self._iter_lines(text_file):
             fields = parse_fn(line)
-            # The same fingerprint inspect_cad uses; a digest keeps memory flat
-            # on the ~670k-row entity file.
-            fingerprint = hashlib.sha256(repr(fields).encode()).digest()
+            # A digest keeps memory flat on the ~670k-row entity file.
+            fingerprint = row_fingerprint(fields)
             if fingerprint in seen:
                 duplicates += 1
                 continue

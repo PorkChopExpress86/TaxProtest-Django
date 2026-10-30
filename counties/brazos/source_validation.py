@@ -98,7 +98,7 @@ def inspect_cad(operation: ImportOperation, preparation: StagePreparation) -> St
             if malformed:
                 raise CommandError(f"Malformed numeric {malformed[0]} in {filename}, row {number}.")
             key = tuple(fields[name] for name in keys)
-            fingerprint = hashlib.sha256(repr(fields).encode()).digest()
+            fingerprint = pacs.row_fingerprint(fields)
             if key in seen:
                 if seen[key] != fingerprint:
                     raise CommandError(f"Conflicting canonical key in {filename}, row {number}.")
