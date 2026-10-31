@@ -72,6 +72,35 @@ class ResolveRuntimePathsTests(SimpleTestCase):
 
         self.assertEqual(paths["harris"].report_dir, Path("/srv/hcad"))
 
+    def test_etl_working_root_variables_set_the_harris_source_roots(self) -> None:
+        paths = resolve_runtime_paths(
+            "/tmp/project",
+            env={"ETL_DOWNLOAD_DIR": "/srv/etl-downloads", "ETL_EXTRACT_DIR": "staging/extracted"},
+        )
+
+        self.assertEqual(paths["harris"].download_dir, Path("/srv/etl-downloads"))
+        self.assertEqual(paths["harris"].extract_dir, Path("/tmp/project/staging/extracted"))
+        self.assertEqual(
+            paths["brazos"].download_dir, Path("/tmp/project/counties/brazos/var/downloads")
+        )
+        self.assertEqual(
+            paths["brazos"].extract_dir, Path("/tmp/project/counties/brazos/var/extracted")
+        )
+
+    def test_county_specific_source_roots_win_over_the_etl_variables(self) -> None:
+        paths = resolve_runtime_paths(
+            "/tmp/project",
+            env={
+                "HCAD_DOWNLOAD_DIR": "/srv/hcad-downloads",
+                "HCAD_EXTRACT_DIR": "/srv/hcad-extracted",
+                "ETL_DOWNLOAD_DIR": "/srv/etl-downloads",
+                "ETL_EXTRACT_DIR": "/srv/etl-extracted",
+            },
+        )
+
+        self.assertEqual(paths["harris"].download_dir, Path("/srv/hcad-downloads"))
+        self.assertEqual(paths["harris"].extract_dir, Path("/srv/hcad-extracted"))
+
 
 class MigrateRuntimeArtifactsTests(SimpleTestCase):
     def test_moves_project_root_directories_into_the_harris_app(self) -> None:

@@ -19,7 +19,7 @@ from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG, DataSour
 from .config import ETLConfig
 from .extract import ExtractManager
 from .fixtures_aggregator import FixturesAggregator
-from .gis_loader import inspect_gis_parcels, select_preferred_gis_shapefile
+from .gis_loader import inspect_gis_parcels, locate_gis_layer
 from .row_reader import (
     BUILDING_RES_SOURCES,
     EXTRA_FEATURES_SOURCES,
@@ -301,12 +301,8 @@ def validate_harris_sources(
             except (OSError, zipfile.BadZipFile, NotImplementedError) as exc:
                 result.errors.append(f"{archive.name}: archive integrity unavailable: {exc}")
         if source.source_type == DataSourceType.GIS_DATA:
-            layer = select_preferred_gis_shapefile(
-                [
-                    root,
-                    config.download_dir
-                    / DEFAULT_HCAD_SOURCE_CATALOG.extract_dirname(source.source_id),
-                ]
+            layer = locate_gis_layer(
+                root, download_root=config.download_dir, source_id=source.source_id
             )
             if layer is None:
                 result.errors.append(f"{source.name}: no requested GIS layer")

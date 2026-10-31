@@ -19,6 +19,7 @@ from pathlib import Path
 from django.db import connection, transaction
 
 from counties.harris.models import PropertyRecord
+from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG, HcadSourceId
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +82,27 @@ def select_preferred_gis_shapefile(search_roots: Sequence[Path]) -> Path | None:
         )
 
     return max(shapefiles, key=priority)
+
+
+def locate_gis_layer(
+    canonical_root: Path, *, download_root: Path, source_id: HcadSourceId
+) -> Path | None:
+    """Choose the parcel layer from a canonical extract, falling back to the legacy layout.
+
+    The legacy layout (extracted files beside the downloaded archive) is consulted only
+    when the canonical extract holds no layer at all, shapefile or geodatabase, and is
+    never merged with it by priority: a stale legacy layer must not outrank a fresh one.
+    """
+    layer = select_preferred_gis_shapefile([canonical_root])
+    if layer is not None:
+        return layer
+    legacy_root = download_root / DEFAULT_HCAD_SOURCE_CATALOG.extract_dirname(source_id)
+    layer = select_preferred_gis_shapefile([legacy_root])
+    if layer is not None:
+        logger.warning(
+            "No canonical GIS layer in %s; using legacy layout %s", canonical_root, layer
+        )
+    return layer
 
 
 @dataclass(frozen=True)
