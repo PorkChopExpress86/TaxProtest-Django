@@ -726,27 +726,14 @@ class _HarrisImportExecution:
         """
         self.logger.info(f"Processing GIS source: {source.name}")
 
-        # Get the extract path for GIS data
+        from .gis_loader import locate_gis_layer
+
         extract_path = self.extract_manager.get_extract_path(source)
-        if not extract_path.exists():
-            msg = f"GIS extract path not found: {extract_path}"
-            self.logger.error(msg)
-            return {"loaded": 0, "invalid": 0, "skipped": 0, "failed": 1, "source_error": msg}
-
-        # Legacy extracts often lived under the download tree. Include that
-        # location as a fallback so modern and legacy commands pick equivalent data.
-        legacy_extract_path = (
-            self.config.download_dir / DEFAULT_HCAD_SOURCE_CATALOG.extract_dirname(source.source_id)
+        shapefile_path = locate_gis_layer(
+            extract_path, download_root=self.config.download_dir, source_id=source.source_id
         )
-
-        candidate_roots = [extract_path]
-        if legacy_extract_path.exists() and legacy_extract_path != extract_path:
-            candidate_roots.append(legacy_extract_path)
-
-        shapefile_path = self._select_preferred_gis_shapefile(candidate_roots)
         if shapefile_path is None:
-            searched = ", ".join(str(root) for root in candidate_roots)
-            msg = f"No shapefiles found in candidate roots: {searched}"
+            msg = f"No GIS layer found in {extract_path} or its legacy layout"
             self.logger.error(msg)
             return {"loaded": 0, "invalid": 0, "skipped": 0, "failed": 1, "source_error": msg}
 
@@ -775,13 +762,6 @@ class _HarrisImportExecution:
         except (DatabaseError, OSError, ValueError) as e:
             self.logger.exception(f"Error processing GIS data: {e}")
             return {"loaded": 0, "invalid": 0, "skipped": 0, "failed": 1, "source_error": str(e)}
-
-    @staticmethod
-    def _select_preferred_gis_shapefile(search_roots: list[Path]) -> Path | None:
-        """Compatibility adapter for the shared GIS selection rule."""
-        from .gis_loader import select_preferred_gis_shapefile
-
-        return select_preferred_gis_shapefile(search_roots)
 
 
 def run_harris_import(

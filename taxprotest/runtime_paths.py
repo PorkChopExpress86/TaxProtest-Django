@@ -14,6 +14,10 @@ production hosts can point the (large) staging area at a mounted volume:
 
 where ``<PREFIX>`` is the county's appraisal-district abbreviation (``HCAD`` for
 Harris, ``BCAD`` for Brazos). Relative values resolve against the project root.
+
+Harris also honours ``ETL_DOWNLOAD_DIR`` and ``ETL_EXTRACT_DIR``, which once moved only the
+ETL's working roots. They are resolved here, behind the ``HCAD_*`` names, so the roots an
+import works in and the roots source retention manages cannot diverge.
 """
 
 from __future__ import annotations
@@ -32,6 +36,10 @@ COUNTIES_DIRNAME = "counties"
 
 #: Legacy alias kept so ``PROJECT_REPORT_DIR=...`` deployments keep working.
 LEGACY_REPORT_DIR_ENV = "PROJECT_REPORT_DIR"
+
+#: Provisional Harris aliases for the former ETL-only working-root overrides (#124).
+HARRIS_ETL_DOWNLOAD_DIR_ENV = "ETL_DOWNLOAD_DIR"
+HARRIS_ETL_EXTRACT_DIR_ENV = "ETL_EXTRACT_DIR"
 
 
 @dataclass(frozen=True)
@@ -117,20 +125,22 @@ def resolve_county_runtime_paths(
     environ = env if env is not None else os.environ
     default_root = county_runtime_root(root, spec)
 
+    download_env_names = (f"{spec.env_prefix}_DOWNLOAD_DIR",)
+    extract_env_names = (f"{spec.env_prefix}_EXTRACT_DIR",)
     report_env_names = (f"{spec.env_prefix}_REPORT_DIR",)
     if spec.slug == "harris":
-        # Harris predates the per-county layout and shipped with this name.
+        # Harris predates the per-county layout and shipped with these names.
+        download_env_names += (HARRIS_ETL_DOWNLOAD_DIR_ENV,)
+        extract_env_names += (HARRIS_ETL_EXTRACT_DIR_ENV,)
         report_env_names += (LEGACY_REPORT_DIR_ENV,)
 
     return CountyRuntimePaths(
         slug=spec.slug,
         root=default_root,
         download_dir=_resolve_env_path(
-            root, environ, (f"{spec.env_prefix}_DOWNLOAD_DIR",), default_root / "downloads"
+            root, environ, download_env_names, default_root / "downloads"
         ),
-        extract_dir=_resolve_env_path(
-            root, environ, (f"{spec.env_prefix}_EXTRACT_DIR",), default_root / "extracted"
-        ),
+        extract_dir=_resolve_env_path(root, environ, extract_env_names, default_root / "extracted"),
         log_dir=_resolve_env_path(
             root, environ, (f"{spec.env_prefix}_LOG_DIR",), default_root / "logs"
         ),

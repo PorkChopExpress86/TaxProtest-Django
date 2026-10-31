@@ -9,7 +9,11 @@ from django.core.management.base import BaseCommand, CommandError
 from counties.common.import_audit import audited_operation, record_sources
 from counties.common.import_writers import fenced_write, working_source_root
 from counties.harris.etl_pipeline import DownloadManager, ETLConfig, ExtractManager
-from counties.harris.etl_pipeline.gis_loader import load_gis_parcels, select_preferred_gis_shapefile
+from counties.harris.etl_pipeline.gis_loader import (
+    load_gis_parcels,
+    locate_gis_layer,
+    select_preferred_gis_shapefile,
+)
 from counties.harris.etl_pipeline.logging import ETLLogger
 from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG, HcadSourceId
 
@@ -83,10 +87,9 @@ class Command(BaseCommand):
             self.stdout.write("Skipping download and extraction, using existing files...")
 
         extract_dir = extract_manager.get_extract_path(source)
-        legacy_extract_dir = config.download_dir / DEFAULT_HCAD_SOURCE_CATALOG.extract_dirname(
-            source.source_id
+        shapefile = locate_gis_layer(
+            extract_dir, download_root=config.download_dir, source_id=source.source_id
         )
-        shapefile = select_preferred_gis_shapefile([extract_dir, legacy_extract_dir])
 
         if shapefile is None:
             operation.warnings.append("No GIS shapefile is available")

@@ -1,10 +1,9 @@
-"""Where each Harris caller finds the GIS parcel layer today.
+"""Where each Harris caller finds the GIS parcel layer.
 
 The canonical layout is the extract root's ``Parcels`` directory. The legacy layout
-(extracted files beside the downloaded archive) is still probed, and the callers
-disagree about it: validation and ``load_gis_data`` merge it into selection by
-priority, while the import's own GIS load refuses a layout without the canonical
-directory. These pins record that behaviour as it is, before the catalog owns it.
+(extracted files beside the downloaded archive) is a strict fallback, the same for every
+caller: it is consulted only when the canonical extract has no layer, and is never merged
+with it by priority, so a stale legacy layer cannot outrank a fresh extract.
 """
 
 import tempfile
@@ -30,7 +29,16 @@ from counties.harris.etl_pipeline.tests.test_harris_import import _runtime_setti
 CANONICAL_ONLY = "canonical only"
 LEGACY_ONLY = "legacy only"
 BOTH = "both present"
-LAYOUTS = (CANONICAL_ONLY, LEGACY_ONLY, BOTH)
+NEITHER = "neither present"
+LAYOUTS = (CANONICAL_ONLY, LEGACY_ONLY, BOTH, NEITHER)
+
+# The base root each caller's selected layer comes from, and its file name.
+EXPECTED = {
+    CANONICAL_ONLY: ("extracted", "parcels.shp"),
+    LEGACY_ONLY: ("downloads", "ParcelsCity.shp"),
+    BOTH: ("extracted", "parcels.shp"),
+    NEITHER: None,
+}
 
 
 def _write_layer(path: Path) -> None:
@@ -44,8 +52,8 @@ def _write_layer(path: Path) -> None:
 
 
 def _write_layout(root: str, layout: str) -> None:
-    # A legacy ParcelsCity layer outranks a canonical parcels layer by name, which is
-    # how stale legacy data can win over a fresh extract.
+    # A legacy ParcelsCity layer would outrank a canonical parcels layer by name if the
+    # two were merged, which is how stale legacy data could win over a fresh extract.
     if layout in (CANONICAL_ONLY, BOTH):
         _write_layer(Path(root) / "extracted" / "Parcels" / "parcels.shp")
     if layout in (LEGACY_ONLY, BOTH):
@@ -69,12 +77,9 @@ def _gis_request(load) -> HarrisImportRequest:
 
 
 class HarrisGisSourceLayoutTests(TestCase):
-    def test_preview_validation_merges_the_legacy_layout_by_priority(self):
-        expected = {
-            CANONICAL_ONLY: ("extracted", "parcels.shp"),
-            LEGACY_ONLY: ("downloads", "ParcelsCity.shp"),
-            BOTH: ("downloads", "ParcelsCity.shp"),
-        }
+    def test_preview_validation_falls_back_to_the_legacy_layout_only_without_a_canonical_one(
+        self,
+    ):
         for layout in LAYOUTS:
             with (
                 self.subTest(layout=layout),
@@ -85,19 +90,18 @@ class HarrisGisSourceLayoutTests(TestCase):
 
                 result = run_harris_import(_gis_request(HarrisPreview()))
 
+                if EXPECTED[layout] is None:
+                    self.assertFalse(result.success)
+                    self.assertIn("no requested GIS layer", " ".join(result.errors))
+                    continue
                 self.assertTrue(result.success, result.errors)
                 validation = ImportOperation.objects.get(pk=result.operation_id).evidence[
                     "validation"
                 ]
                 (gis,) = [file for file in validation["files"] if file["schema"] == "gis"]
-                self.assertEqual(_located(root, gis["path"]), expected[layout])
+                self.assertEqual(_located(root, gis["path"]), EXPECTED[layout])
 
-    def test_apply_requires_the_canonical_layout_and_then_merges_the_legacy_one(self):
-        expected = {
-            CANONICAL_ONLY: ("extracted", "parcels.shp"),
-            LEGACY_ONLY: None,
-            BOTH: ("downloads", "ParcelsCity.shp"),
-        }
+    def test_apply_falls_back_to_the_legacy_layout_only_without_a_canonical_one(self):
         for layout in LAYOUTS:
             with (
                 self.subTest(layout=layout),
@@ -111,21 +115,16 @@ class HarrisGisSourceLayoutTests(TestCase):
 
                 result = run_harris_import(_gis_request(HarrisApply(validate_completeness=False)))
 
-                if expected[layout] is None:
+                if EXPECTED[layout] is None:
                     self.assertFalse(result.success)
-                    self.assertIn("GIS extract path not found", " ".join(result.errors))
+                    self.assertIn("no requested GIS layer", " ".join(result.errors))
                     load.assert_not_called()
                 else:
                     # A GIS-only apply stops later, short of a full candidate; the layer
                     # handed to the loader is what this pin records.
-                    self.assertEqual(_located(root, load.call_args.args[0]), expected[layout])
+                    self.assertEqual(_located(root, load.call_args.args[0]), EXPECTED[layout])
 
-    def test_load_gis_data_merges_the_legacy_layout_by_priority(self):
-        expected = {
-            CANONICAL_ONLY: ("extracted", "parcels.shp"),
-            LEGACY_ONLY: ("downloads", "ParcelsCity.shp"),
-            BOTH: ("downloads", "ParcelsCity.shp"),
-        }
+    def test_load_gis_data_falls_back_to_the_legacy_layout_only_without_a_canonical_one(self):
         for layout in LAYOUTS:
             with (
                 self.subTest(layout=layout),
@@ -140,4 +139,7 @@ class HarrisGisSourceLayoutTests(TestCase):
 
                 call_command("load_gis_data", "--skip-download", stdout=StringIO())
 
-                self.assertEqual(_located(root, load.call_args.args[0]), expected[layout])
+                if EXPECTED[layout] is None:
+                    load.assert_not_called()
+                else:
+                    self.assertEqual(_located(root, load.call_args.args[0]), EXPECTED[layout])
