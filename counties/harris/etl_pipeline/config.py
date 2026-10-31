@@ -122,18 +122,14 @@ class ETLConfig:
 
     @classmethod
     def from_env(cls) -> "ETLConfig":
-        """Create configuration from environment variables."""
+        """Create configuration from environment variables.
+
+        Source roots come only from settings, the roots source retention manages; move
+        them with ``HCAD_DOWNLOAD_DIR`` / ``HCAD_EXTRACT_DIR``.
+        """
         config = cls()
 
         # Override from environment
-        download_dir = os.getenv("ETL_DOWNLOAD_DIR")
-        if download_dir:
-            config.download_dir = Path(download_dir)
-
-        extract_dir = os.getenv("ETL_EXTRACT_DIR")
-        if extract_dir:
-            config.extract_dir = Path(extract_dir)
-
         if os.getenv("ETL_FORCE_DOWNLOAD", "").lower() in ("true", "1", "yes"):
             config.download.skip_if_unchanged = False
 

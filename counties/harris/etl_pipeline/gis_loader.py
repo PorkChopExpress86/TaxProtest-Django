@@ -11,7 +11,7 @@ from __future__ import annotations
 import io
 import logging
 import math
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -38,32 +38,17 @@ def _is_nan(value: object) -> bool:
         return False
 
 
-def select_preferred_gis_shapefile(search_roots: Sequence[Path]) -> Path | None:
-    """Choose the best parcel layer from one or more extracted GIS roots."""
-    shapefiles: list[Path] = []
-    seen: set[str] = set()
+def select_preferred_gis_shapefile(root: Path) -> Path | None:
+    """Choose the best parcel layer from one extracted GIS root.
 
-    for root in search_roots:
-        if not root.exists():
-            continue
-        for path in root.rglob("*.shp"):
-            normalized = str(path).replace("\\", "/")
-            if normalized in seen:
-                continue
-            seen.add(normalized)
-            shapefiles.append(path)
+    One root only: merging roots by priority is how a stale layer could outrank a fresh one.
+    """
+    if not root.exists():
+        return None
+    shapefiles = list(root.rglob("*.shp"))
 
     if not shapefiles:
-        geodatabases: list[Path] = []
-        for root in search_roots:
-            if not root.exists():
-                continue
-            for path in root.rglob("*.gdb"):
-                if path.is_dir():
-                    normalized = str(path).replace("\\", "/")
-                    if normalized not in seen:
-                        seen.add(normalized)
-                        geodatabases.append(path)
+        geodatabases = [path for path in root.rglob("*.gdb") if path.is_dir()]
         if geodatabases:
             return min(
                 geodatabases,
