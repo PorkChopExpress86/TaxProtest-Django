@@ -30,10 +30,9 @@ from counties.brazos.readiness import BrazosActiveSnapshotReadiness, BrazosSnaps
 from counties.common.candidate_lifecycle import (
     CandidateLoad,
     Loaded,
+    apply_candidate,
     candidate_operation,
     prepare,
-    publish,
-    was_already_applied,
 )
 from counties.common.import_coverage import OutcomePopulation
 from counties.common.import_states import CandidateState, OperationStatus, operation_status_for
@@ -329,10 +328,11 @@ class BrazosPropertyImport:
                 }:
                     raise ValueError("Candidate request identity differs from application")
                 operation.requested_year = candidate.request["tax_year"]
-                publish(operation, candidate.pk, user=reviewer, reason=request.application_reason)
+                applied = apply_candidate(
+                    operation, candidate.pk, user=reviewer, reason=request.application_reason
+                )
                 active = BrazosPropertySnapshot.objects.get(is_active=True)
-                already = was_already_applied(operation)
-                status = OperationStatus.ALREADY_APPLIED if already else OperationStatus.PUBLISHED
+                status = applied.operation_status
                 completed = PropertyImportResult(
                     tax_year=active.tax_year,
                     outcome=PropertyImportOutcome(active.outcome),
@@ -350,7 +350,7 @@ class BrazosPropertyImport:
                     dry_run=False,
                     candidate_id=candidate.pk,
                     workflow_state=status,
-                    already_applied=already,
+                    already_applied=applied.already_applied,
                 )
             elif request.options.dry_run:
                 completed = self._preview(request, operation)

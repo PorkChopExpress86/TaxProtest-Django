@@ -18,12 +18,12 @@ from django.core.management.base import CommandError as DjangoCommandError
 from django.db import DatabaseError
 
 from counties.common.candidate_lifecycle import (
+    Applied,
     CandidateLoad,
     Loaded,
+    apply_candidate,
     candidate_operation,
     prepare,
-    publish,
-    was_already_applied,
 )
 from counties.common.import_recovery import ReplayRejected, copy_exact_source
 from counties.common.import_states import CandidateState, OperationStatus
@@ -752,6 +752,7 @@ def run_harris_import(
     data_year = _resolve_data_year(request)
     sources = _selected_sources(request)
     result: HarrisImportResult | None = None
+    applied: Applied | None = None
     with candidate_operation(
         "harris",
         "preview" if isinstance(request.load, HarrisPreview) else request.plan.legacy_scope,
@@ -769,14 +770,15 @@ def run_harris_import(
                 raise InvalidHarrisImportRequest(
                     "Candidate request identity differs from application"
                 )
-            publish(operation, candidate.pk, user=reviewer, reason=request.application_reason)
-            already = was_already_applied(operation)
+            applied = apply_candidate(
+                operation, candidate.pk, user=reviewer, reason=request.application_reason
+            )
             completed = HarrisImportResult(
                 status=HarrisImportStatus.COMPLETED,
                 started_at=datetime.now(),
                 completed_at=datetime.now(),
-                wrote_data=not already,
-                already_applied=already,
+                wrote_data=applied.wrote_data,
+                already_applied=applied.already_applied,
                 candidate_id=candidate.pk,
             )
         elif isinstance(request.load, HarrisApply):
@@ -811,15 +813,14 @@ def run_harris_import(
                 request, sources, data_year, reporter=reporter, operation=operation
             ).run()
         result = replace(completed, operation_id=operation.pk)
-        operation.status = (
-            OperationStatus.ALREADY_APPLIED
-            if result.already_applied
-            else (
+        if applied is not None:
+            operation.status = applied.operation_status
+        else:
+            operation.status = (
                 OperationStatus.PUBLISHED
                 if result.wrote_data
                 else OPERATION_STATUS_FOR_HARRIS_STATUS[result.status]
             )
-        )
         operation.evidence = {
             **operation.evidence,
             "result": result.to_dict(),

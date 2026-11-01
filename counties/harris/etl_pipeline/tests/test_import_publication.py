@@ -18,7 +18,7 @@ from django.db import close_old_connections, connection
 from django.test import Client, TransactionTestCase
 from django.urls import reverse
 
-from counties.common.candidate_lifecycle import prepare
+from counties.common.candidate_lifecycle import apply_candidate, prepare
 from counties.common.import_audit import audited_operation
 from counties.common.import_writers import WriterConflict, county_writer
 from counties.common.models import ImportAuditEntry, ImportCandidate, ImportOperation
@@ -316,10 +316,15 @@ class HarrisPublicationTests(TransactionTestCase):
         with tempfile.TemporaryDirectory() as root, self.settings(**_runtime_settings(root)):
             prepared = run_harris_import(harris_request(root, prepare=True))
             apply = replace(harris_request(root), candidate_id=prepared.candidate_id)
-            failure = OSError("Reporting failed after publication")
+            real_apply = apply_candidate
+
+            def publish_then_fail(*args, **kwargs):
+                real_apply(*args, **kwargs)
+                raise OSError("Reporting failed after publication")
+
             with patch(
-                "counties.harris.etl_pipeline.orchestrator.was_already_applied",
-                side_effect=failure,
+                "counties.harris.etl_pipeline.orchestrator.apply_candidate",
+                side_effect=publish_then_fail,
             ):
                 applied = run_harris_import(apply)
             self.assertEqual(applied.status, HarrisImportStatus.COMPLETED)

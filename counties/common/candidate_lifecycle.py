@@ -85,15 +85,42 @@ ALREADY_APPLIED_KEY = "already_applied"
 
 
 @dataclass(frozen=True)
+class Applied:
+    """The typed outcome of applying a candidate inside its Import operation (ADR-0018).
+
+    The lifecycle owns the mapping from "already applied" to what the operation wrote and
+    the status it ends with; county boundaries only map this to their result shapes.
+    """
+
+    candidate: ImportCandidate
+    already_applied: bool
+
+    @property
+    def state(self) -> CandidateState:
+        return CandidateState(self.candidate.state)
+
+    @property
+    def wrote_data(self) -> bool:
+        return not self.already_applied
+
+    @property
+    def operation_status(self) -> OperationStatus:
+        return (
+            OperationStatus.ALREADY_APPLIED if self.already_applied else OperationStatus.PUBLISHED
+        )
+
+
+@dataclass(frozen=True)
 class Ending:
     """How a candidate's Import operation ended, read once the operation is over.
 
-    ``candidate_id`` is the candidate this operation prepared or published; an already
-    applied operation names none. ``warnings`` holds the failure after a committed publication: it was recorded on the
-    operation and is not raised. Reading it touches no database, so it cannot fail.
+    ``candidate_id`` and ``state`` come from the candidate object the lifecycle held, so
+    reading them queries nothing. ``warnings`` holds the failure after a committed
+    publication: recorded on the operation and not raised.
     """
 
     candidate_id: UUID | None
+    state: CandidateState | None
     warnings: tuple[str, ...]
 
 
@@ -140,20 +167,26 @@ def candidate_operation(
     handle._ending = _ending(import_operation)
 
 
+def apply_candidate(
+    operation: ImportOperation, candidate_id, *, user=None, reason: str = ""
+) -> Applied:
+    """Publish a candidate inside ``operation`` and return its typed outcome."""
+    candidate = publish(operation, candidate_id, user=user, reason=reason)
+    return Applied(candidate, already_applied=was_already_applied(operation))
+
+
 def was_already_applied(operation: ImportOperation) -> bool:
     """Whether ``operation`` found its candidate already published and wrote nothing."""
     return ALREADY_APPLIED_KEY in operation.evidence
 
 
 def _ending(operation: ImportOperation) -> Ending:
-    # Pure reads only: this runs after a publication may have committed.
-    try:
-        candidate_id = UUID(str(operation.evidence["candidate_id"]))
-    except (KeyError, TypeError, ValueError):
-        candidate_id = None
+    # Pure attribute reads only: this runs after a publication may have committed.
+    candidate = operation.held_candidate
     failure = operation.post_publication_failure
     return Ending(
-        candidate_id=candidate_id,
+        candidate_id=candidate.pk if candidate is not None else None,
+        state=CandidateState(candidate.state) if candidate is not None else None,
         warnings=(failure,) if failure is not None else (),
     )
 
@@ -197,6 +230,7 @@ def prepare(
         request=dict(load.identity),
         evidence={"publication": "Published data unchanged"},
     )
+    operation.held_candidate = candidate
     operation.evidence["candidate_id"] = str(candidate.pk)
     try:
         previous = port.outcomes(None)
@@ -292,6 +326,7 @@ def publish(
             candidate = ImportCandidate.objects.select_for_update().get(
                 pk=candidate_id, county=county
             )
+            operation.held_candidate = candidate
             if candidate.state in (CandidateState.PUBLISHED, CandidateState.SUPERSEDED):
                 operation.publication_before = operation.publication_after = published_identity(
                     county

@@ -1,10 +1,10 @@
-"""How a candidate's Import operation ended is one typed Ending for every county (ADR-0018)."""
+"""How a candidate's Import operation ended is one typed outcome for every county (ADR-0018)."""
 
 import uuid
 
 from django.test import TransactionTestCase
 
-from counties.common.candidate_lifecycle import candidate_operation, publish, was_already_applied
+from counties.common.candidate_lifecycle import apply_candidate, candidate_operation
 from counties.common.import_audit import audited_operation
 from counties.common.import_states import CandidateState, OperationStatus
 from counties.common.models import ImportCandidate, ImportOperation
@@ -28,30 +28,31 @@ class CandidateEndingTests(TransactionTestCase):
     def setUp(self):
         self.enterContext(registered_fake_county())
 
-    def test_repeating_a_publication_is_already_applied(self):
+    def test_repeating_a_publication_is_a_typed_already_applied_outcome(self):
         candidate = candidate_in(CandidateState.PUBLISHED)
 
         with candidate_operation(FAKE_COUNTY, "apply", actor="operator") as handle:
-            publish(handle.import_operation, candidate.pk, reason="Apply again")
+            applied = apply_candidate(handle.import_operation, candidate.pk, reason="Apply again")
 
         operation = ImportOperation.objects.get(pk=handle.import_operation.pk)
         self.assertEqual(operation.status, OperationStatus.ALREADY_APPLIED)
         self.assertEqual(operation.evidence["already_applied"], str(candidate.pk))
-        self.assertTrue(was_already_applied(operation))
-        # An already-applied run names no candidate of its own; the boundary holds the request's.
-        self.assertIsNone(handle.ending.candidate_id)
+        self.assertTrue(applied.already_applied)
+        self.assertFalse(applied.wrote_data)
+        self.assertEqual(applied.operation_status, OperationStatus.ALREADY_APPLIED)
+        self.assertEqual(applied.state, CandidateState.PUBLISHED)
+        self.assertEqual(handle.ending.candidate_id, candidate.pk)
+        self.assertEqual(handle.ending.state, CandidateState.PUBLISHED)
         self.assertEqual(handle.ending.warnings, ())
 
     def test_a_failure_after_publication_is_an_ending_warning_and_not_raised(self):
-        candidate = candidate_in(CandidateState.AWAITING_REVIEW)
+        candidate = candidate_in(CandidateState.PUBLISHED)
 
         with candidate_operation(FAKE_COUNTY, "apply", actor="operator") as handle:
             operation = handle.import_operation
-            operation.evidence["candidate_id"] = str(candidate.pk)
-            candidate.state = CandidateState.PUBLISHED
-            candidate.save(update_fields=["state"])
+            apply_candidate(operation, candidate.pk, reason="Apply")
+            # Publication committed (recorded PUBLISHED); a later failure is suppressed.
             operation.status = OperationStatus.PUBLISHED
-            operation.publication_after = {"candidate_id": str(candidate.pk)}
             operation.save()
             raise OSError("Readiness refresh failed")
 
@@ -60,22 +61,15 @@ class CandidateEndingTests(TransactionTestCase):
         self.assertEqual(operation.warnings, ["Readiness refresh failed"])
         self.assertEqual(operation.evidence["post_publication_failure"], "Readiness refresh failed")
         self.assertEqual(handle.ending.candidate_id, candidate.pk)
+        self.assertEqual(handle.ending.state, CandidateState.PUBLISHED)
         self.assertEqual(handle.ending.warnings, ("Readiness refresh failed",))
 
-    def test_a_held_candidate_ending_names_the_candidate_without_a_warning(self):
-        candidate = candidate_in(CandidateState.AWAITING_REVIEW)
-
-        with candidate_operation(FAKE_COUNTY, "full", actor="operator") as handle:
-            handle.import_operation.evidence["candidate_id"] = str(candidate.pk)
-
-        self.assertEqual(handle.ending.candidate_id, candidate.pk)
-        self.assertEqual(handle.ending.warnings, ())
-
-    def test_an_operation_without_a_candidate_has_no_candidate_id(self):
+    def test_an_operation_without_a_candidate_has_no_candidate_outcome(self):
         with candidate_operation(FAKE_COUNTY, "preview", actor="operator") as handle:
             pass
 
         self.assertIsNone(handle.ending.candidate_id)
+        self.assertIsNone(handle.ending.state)
         self.assertEqual(handle.ending.warnings, ())
 
     def test_an_unpublished_failure_is_raised_and_leaves_no_ending(self):
