@@ -85,36 +85,35 @@ ALREADY_APPLIED_KEY = "already_applied"
 
 
 @dataclass(frozen=True)
-class Outcome:
-    """How one candidate ended inside its Import operation, once the operation has ended.
+class Ending:
+    """How a candidate's Import operation ended, read once the operation is over.
 
-    ``warnings`` holds the failure after a committed publication, which the operation
-    recorded and did not raise. ``state`` is the candidate's persisted state.
+    ``candidate_id`` is the candidate this operation prepared or published; an already
+    applied operation names none. ``warnings`` holds the failure after a committed publication: it was recorded on the
+    operation and is not raised. Reading it touches no database, so it cannot fail.
     """
 
     candidate_id: UUID | None
-    state: CandidateState | None
-    already_applied: bool
     warnings: tuple[str, ...]
 
 
-class CandidateRun:
-    """An Import operation that prepares or applies one candidate, and its outcome."""
+class CandidateOperation:
+    """An Import operation that prepares or applies one candidate, and how it ended."""
 
-    def __init__(self, operation: ImportOperation) -> None:
-        self.operation = operation
-        self._outcome: Outcome | None = None
+    def __init__(self, import_operation: ImportOperation) -> None:
+        self.import_operation = import_operation
+        self._ending: Ending | None = None
 
     @property
-    def outcome(self) -> Outcome:
-        """The outcome of the ended operation; raises while it runs or ends unpublished."""
-        if self._outcome is None:
-            raise RuntimeError("The Import operation has not ended with a candidate outcome")
-        return self._outcome
+    def ending(self) -> Ending:
+        """How the operation ended; raises while it is still running or ended unpublished."""
+        if self._ending is None:
+            raise RuntimeError("The Import operation has not ended with a published candidate")
+        return self._ending
 
 
 @contextmanager
-def candidate_run(
+def candidate_operation(
     county: str,
     intent: str,
     *,
@@ -122,11 +121,11 @@ def candidate_run(
     origin: str = "command",
     requested_year: int | None = None,
     publication_before: dict | None = None,
-) -> Iterator[CandidateRun]:
-    """Run one Import operation that prepares or applies a candidate, typed at its end.
+) -> Iterator[CandidateOperation]:
+    """Run one Import operation that may prepare or apply a candidate, typed at its end.
 
     A failure after a committed publication is suppressed by ``audited_operation`` and
-    surfaces as ``Outcome.warnings``; any other failure is raised and leaves no outcome.
+    surfaces as ``Ending.warnings``; any other failure is raised and leaves no ending.
     """
     with audited_operation(
         county,
@@ -135,10 +134,10 @@ def candidate_run(
         origin=origin,
         requested_year=requested_year,
         publication_before=publication_before,
-    ) as operation:
-        run = CandidateRun(operation)
-        yield run
-    run._outcome = _outcome(operation)
+    ) as import_operation:
+        handle = CandidateOperation(import_operation)
+        yield handle
+    handle._ending = _ending(import_operation)
 
 
 def was_already_applied(operation: ImportOperation) -> bool:
@@ -146,20 +145,15 @@ def was_already_applied(operation: ImportOperation) -> bool:
     return ALREADY_APPLIED_KEY in operation.evidence
 
 
-def _outcome(operation: ImportOperation) -> Outcome:
-    named = operation.evidence.get("candidate_id") or operation.evidence.get(ALREADY_APPLIED_KEY)
-    candidate_id = UUID(str(named)) if named else None
-    state = None
-    if candidate_id is not None:
-        stored = (
-            ImportCandidate.objects.filter(pk=candidate_id).values_list("state", flat=True).first()
-        )
-        state = CandidateState(stored) if stored else None
+def _ending(operation: ImportOperation) -> Ending:
+    # Pure reads only: this runs after a publication may have committed.
+    try:
+        candidate_id = UUID(str(operation.evidence["candidate_id"]))
+    except (KeyError, TypeError, ValueError):
+        candidate_id = None
     failure = operation.post_publication_failure
-    return Outcome(
+    return Ending(
         candidate_id=candidate_id,
-        state=state,
-        already_applied=was_already_applied(operation),
         warnings=(failure,) if failure is not None else (),
     )
 

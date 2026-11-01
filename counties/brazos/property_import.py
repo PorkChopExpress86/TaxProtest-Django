@@ -30,7 +30,7 @@ from counties.brazos.readiness import BrazosActiveSnapshotReadiness, BrazosSnaps
 from counties.common.candidate_lifecycle import (
     CandidateLoad,
     Loaded,
-    candidate_run,
+    candidate_operation,
     prepare,
     publish,
     was_already_applied,
@@ -310,7 +310,7 @@ class BrazosPropertyImport:
     def run(self, request: PropertyImportRequest, *, reviewer=None) -> PropertyImportResult:
         active = BrazosPropertySnapshot.objects.filter(is_active=True).first()
         result: PropertyImportResult | None = None
-        with candidate_run(
+        with candidate_operation(
             "brazos",
             "preview" if request.options.dry_run else request.mode.value,
             actor=request.actor,
@@ -319,8 +319,8 @@ class BrazosPropertyImport:
             publication_before=(
                 {"snapshot_id": active.pk, "tax_year": active.tax_year} if active else None
             ),
-        ) as run:
-            operation = run.operation
+        ) as handle:
+            operation = handle.import_operation
             if request.candidate_id is not None:
                 candidate = ImportCandidate.objects.get(pk=request.candidate_id, county="brazos")
                 if candidate.request != {
@@ -401,7 +401,7 @@ class BrazosPropertyImport:
         if result is None:
             # Publication committed; the operation recorded the later failure as a warning.
             observed = operation.publication_after
-            outcome = run.outcome
+            ending = handle.ending
             return PropertyImportResult(
                 tax_year=observed["tax_year"],
                 outcome=PropertyImportOutcome(observed["outcome"]),
@@ -410,8 +410,8 @@ class BrazosPropertyImport:
                 snapshot_id=observed["snapshot_id"],
                 dry_run=False,
                 operation_id=operation.pk,
-                candidate_id=outcome.candidate_id,
-                cleanup_warnings=outcome.warnings,
+                candidate_id=ending.candidate_id,
+                cleanup_warnings=ending.warnings,
             )
         return result
 

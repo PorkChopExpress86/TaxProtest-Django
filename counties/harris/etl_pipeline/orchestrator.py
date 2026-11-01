@@ -20,7 +20,7 @@ from django.db import DatabaseError
 from counties.common.candidate_lifecycle import (
     CandidateLoad,
     Loaded,
-    candidate_run,
+    candidate_operation,
     prepare,
     publish,
     was_already_applied,
@@ -752,14 +752,14 @@ def run_harris_import(
     data_year = _resolve_data_year(request)
     sources = _selected_sources(request)
     result: HarrisImportResult | None = None
-    with candidate_run(
+    with candidate_operation(
         "harris",
         "preview" if isinstance(request.load, HarrisPreview) else request.plan.legacy_scope,
         actor=request.actor,
         origin=request.origin,
         requested_year=data_year,
-    ) as run:
-        operation = run.operation
+    ) as handle:
+        operation = handle.import_operation
         if request.candidate_id is not None:
             candidate = ImportCandidate.objects.get(pk=request.candidate_id, county="harris")
             if {key: candidate.request[key] for key in ("plan", "data_year")} != {
@@ -832,15 +832,15 @@ def run_harris_import(
         operation.errors = list(result.errors)
     if result is None:
         # Publication committed; the operation recorded the later failure as a warning.
-        outcome = run.outcome
+        ending = handle.ending
         return HarrisImportResult(
             status=HarrisImportStatus.COMPLETED,
             started_at=datetime.now(),
             completed_at=datetime.now(),
             wrote_data=True,
             operation_id=operation.pk,
-            candidate_id=outcome.candidate_id,
-            warnings=outcome.warnings,
+            candidate_id=ending.candidate_id,
+            warnings=ending.warnings,
         )
     return result
 
