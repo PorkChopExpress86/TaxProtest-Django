@@ -213,6 +213,7 @@ class CandidateStagingIntegrationTests(TransactionTestCase):
             cutover_staged_tables(
                 candidate,
                 models,
+                identity=lambda schemas: {},
                 shared_models_scope=shared_scope,
                 shared_models_county=shared_county,
             )

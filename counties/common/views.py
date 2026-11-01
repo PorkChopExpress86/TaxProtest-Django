@@ -29,7 +29,6 @@ from counties.common.analysis import (
     build_protest_dossier,
     clamped_float,
 )
-from counties.common.candidate_staging import published_read
 from counties.common.contracts import Comp, CountyAdapter, Subject
 from counties.common.exports import (
     EXPORT_CSV_MAX_ROWS,
@@ -39,6 +38,7 @@ from counties.common.exports import (
     render_protest_pdf,
     render_search_csv,
 )
+from counties.common.publication_lock import published_read
 
 
 def consistent_published_read(view):

@@ -3,17 +3,22 @@
 import threading
 import time
 from unittest.mock import patch
+from uuid import uuid4
 
 from django.db import DatabaseError, close_old_connections, connection, connections
 from django.http import HttpResponse
 from django.test import RequestFactory, TransactionTestCase
 
 from counties.brazos.models import BrazosPropertySnapshot, PropertyAccount
-from counties.common import candidate_staging
+from counties.common import candidate_lifecycle, publication_lock
 from counties.common.candidate_lifecycle import apply
 from counties.common.candidate_ports import dataset_identity, published_identity
-from counties.common.candidate_staging import CandidateDefinitionMismatch
-from counties.common.models import ImportCandidate
+from counties.common.candidate_staging import (
+    CandidateDefinitionMismatch,
+    staged_candidate_schema,
+)
+from counties.common.import_writers import county_writer
+from counties.common.models import ImportCandidate, ImportOperation
 from counties.common.tax_models import PropertyJurisdictionExemption
 from counties.common.tests.candidate_contract import (
     BrazosCandidateContract,
@@ -22,6 +27,7 @@ from counties.common.tests.candidate_contract import (
 from counties.common.tests.test_candidate_publication_contract import PublicationContract
 from counties.common.views import consistent_published_read
 from counties.harris.etl_pipeline import run_harris_import
+from counties.harris.etl_pipeline.candidate import HarrisCandidatePort
 from counties.harris.etl_pipeline.tests.test_import_publication import harris_request
 from counties.harris.models import BuildingDetail, ExtraFeature, PropertyRecord
 
@@ -111,6 +117,32 @@ class HarrisExchangeTests(Publishes, HarrisCandidateContract, TransactionTestCas
             )
             self.assertEqual(cursor.fetchone()[0], 0)
 
+    def test_the_published_identity_is_read_before_shared_reads_are_locked_out(self):
+        self.approve()
+        order = []
+        digest = candidate_lifecycle.dataset_identity
+
+        def logged_digest(*args, **kwargs):
+            order.append("identity")
+            return digest(*args, **kwargs)
+
+        def logged_lock(execute, sql, params, many, context):
+            if sql.startswith(("LOCK TABLE", "SELECT pg_advisory_xact_lock")):
+                order.append("lock")
+            return execute(sql, params, many, context)
+
+        with (
+            patch.object(candidate_lifecycle, "dataset_identity", logged_digest),
+            connection.execute_wrapper(logged_lock),
+        ):
+            applied = self.publish()
+
+        self.assertEqual(order, ["identity", "lock", "lock"])
+        self.assertEqual(
+            applied.publication_after,
+            published_identity("harris") | {"candidate_id": str(self.candidate.pk)},
+        )
+
     def test_migrations_find_exchanged_objects_by_name(self):
         self.approve()
         self.publish()
@@ -148,7 +180,7 @@ class HarrisExchangeTests(Publishes, HarrisCandidateContract, TransactionTestCas
                 cursor.execute("BEGIN")
                 cursor.execute("SELECT count(*) FROM data_propertyrecord")
             with (
-                patch.object(candidate_staging, "EXCHANGE_LOCK_TIMEOUT", "200ms"),
+                patch.object(publication_lock, "EXCHANGE_LOCK_TIMEOUT", "200ms"),
                 self.assertRaisesMessage(DatabaseError, "could not lock the published tables"),
             ):
                 self.publish()
@@ -157,6 +189,10 @@ class HarrisExchangeTests(Publishes, HarrisCandidateContract, TransactionTestCas
         self.assertEqual(published_identity("harris"), identity)
         self.candidate.refresh_from_db()
         self.assertEqual(self.candidate.state, "approved")
+        failed = ImportOperation.objects.get(intent="apply")
+        self.assertEqual(failed.status, "failed")
+        self.assertIn("could not lock the published tables", " ".join(failed.errors))
+        self.assertIsNone(failed.publication_after)
 
     def test_a_timed_out_automatic_publication_leaves_its_candidate_publishable(self):
         self.approve()
@@ -167,8 +203,8 @@ class HarrisExchangeTests(Publishes, HarrisCandidateContract, TransactionTestCas
                 cursor.execute("BEGIN")
                 cursor.execute("SELECT count(*) FROM data_propertyrecord")
             with (
-                patch.object(candidate_staging, "EXCHANGE_LOCK_TIMEOUT", "100ms"),
-                patch.object(candidate_staging, "EXCHANGE_LOCK_ATTEMPTS", 1),
+                patch.object(publication_lock, "EXCHANGE_LOCK_TIMEOUT", "100ms"),
+                patch.object(publication_lock, "EXCHANGE_LOCK_ATTEMPTS", 1),
                 self.assertRaisesMessage(DatabaseError, "could not lock the published tables"),
             ):
                 run_harris_import(harris_request(self.root))
@@ -261,3 +297,36 @@ class BrazosExchangeTests(Publishes, BrazosCandidateContract, TransactionTestCas
                 county="harris", account_number="999999999999"
             ).exists()
         )
+
+
+class StagedGrantTests(TransactionTestCase):
+    def test_staging_copies_production_grants(self):
+        operation = ImportOperation.objects.create(county="harris", intent="full")
+        candidate = ImportCandidate.objects.create(
+            county="harris", operation=operation, storage_schema=f"harris_candidate_{uuid4().hex}"
+        )
+        grants = (
+            "SELECT array_agg(format('%%s %%s', a.grantee::regrole, a.privilege_type) ORDER BY 1) "
+            "FROM pg_class c, aclexplode(c.relacl) a WHERE c.oid = %s::regclass"
+        )
+        tables = HarrisCandidatePort.tables
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("GRANT SELECT ON data_buildingdetail TO PUBLIC")
+            with (
+                county_writer(operation),
+                staged_candidate_schema(
+                    "harris", candidate, tables.models, foreign_keys=tables.deferred_keys
+                ),
+            ):
+                pass
+            with connection.cursor() as cursor:
+                cursor.execute(grants, ["public.data_buildingdetail"])
+                production = cursor.fetchone()[0]
+                cursor.execute(grants, [f"{candidate.storage_schema}.data_buildingdetail"])
+                self.assertEqual(cursor.fetchone()[0], production)
+            self.assertIn("- SELECT", production)
+        finally:
+            with connection.cursor() as cursor:
+                cursor.execute("REVOKE SELECT ON data_buildingdetail FROM PUBLIC")
+                cursor.execute(f'DROP SCHEMA IF EXISTS "{candidate.storage_schema}" CASCADE')

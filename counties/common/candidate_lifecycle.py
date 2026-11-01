@@ -200,8 +200,9 @@ def publish(
 
     Only the preparation that just measured the candidate in this operation passes
     ``measured``; publication then reads the published county facts live but takes the
-    content identities and outcome populations from it. The published identity after
-    cutover is always read again.
+    content identities and outcome populations from it. The published identity is always
+    read again, from the exact relations the cutover makes live, before the exchange
+    locks out shared reads.
     """
     county = operation.county
     tables = registration_for(county).port.tables
@@ -223,15 +224,16 @@ def publish(
             review = authorize_publication(candidate, user=user, measured=measured)
             # Authorization verified under this lock that the baseline is still live.
             operation.publication_before = candidate.baseline
-            cutover_staged_tables(
+            content = cutover_staged_tables(
                 candidate,
                 tables.models,
+                identity=lambda schemas: dataset_identity(county, schemas=schemas),
                 shared_models_scope=_county_rows(tables, county),
                 shared_models_county={model: county for model in tables.county_scoped},
             )
             record_publication(candidate, operation)
             operation.publication_after = {
-                **published_identity(county),
+                **published_identity(county, content),
                 "candidate_id": str(candidate.pk),
             }
             operation.status = OperationStatus.PUBLISHED

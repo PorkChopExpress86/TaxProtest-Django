@@ -37,5 +37,7 @@ definitions no longer match production's, as when a migration ran after preparat
 and statistics are gathered on staged tables before the exchange.
 
 The exchange preserves the staged rows and their ids, so dataset identities are
-unchanged (ADR-0024). Publication still runs under the county writer reservation
+unchanged (ADR-0024). Publication reads the published identity from the exact relations
+it makes live before the exchange takes its locks, so shared reads wait only for the
+exchange itself and the end of its transaction. Publication still runs under the county writer reservation
 (ADR-0011), and preparation's own staging cost is unchanged.
