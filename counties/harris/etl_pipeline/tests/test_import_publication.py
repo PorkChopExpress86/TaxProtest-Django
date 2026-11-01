@@ -4,6 +4,7 @@ import csv
 import io
 import tempfile
 import threading
+import time
 from dataclasses import replace
 from datetime import UTC, datetime
 from io import StringIO
@@ -87,6 +88,11 @@ def publish_baseline():
     )
 
 
+def exchanging(sql: str, table: str) -> bool:
+    """Whether ``sql`` moves a staged ``table`` into production during an exchange."""
+    return sql.startswith("ALTER TABLE") and f'"{table}" SET SCHEMA public' in sql
+
+
 class HarrisPublicationTests(TransactionTestCase):
     def tearDown(self):
         with connection.cursor() as cursor:
@@ -132,7 +138,7 @@ class HarrisPublicationTests(TransactionTestCase):
                     connection.close()
 
             def during_cutover(execute, sql, params, many, context):
-                if sql.startswith('INSERT INTO public."data_propertyrecord"') and not outcomes:
+                if exchanging(sql, "data_propertyrecord") and not outcomes:
                     thread = threading.Thread(target=compete)
                     thread.start()
                     thread.join(20)
@@ -152,7 +158,7 @@ class HarrisPublicationTests(TransactionTestCase):
         with tempfile.TemporaryDirectory() as root, self.settings(**_runtime_settings(root)):
 
             def fail(execute, sql, params, many, context):
-                if sql.startswith('INSERT INTO public."data_propertyrecord"'):
+                if exchanging(sql, "data_propertyrecord"):
                     raise OSError("Publication connection interrupted")
                 return execute(sql, params, many, context)
 
@@ -355,7 +361,7 @@ class HarrisPublicationTests(TransactionTestCase):
             prepared = run_harris_import(request)
 
             def fail(execute, sql, params, many, context):
-                if sql.startswith('INSERT INTO public."data_buildingdetail"'):
+                if exchanging(sql, "data_buildingdetail"):
                     raise OSError("Publication connection interrupted")
                 return execute(sql, params, many, context)
 
@@ -480,9 +486,13 @@ class HarrisPublicationTests(TransactionTestCase):
             thread.start()
             try:
                 self.assertTrue(selected.wait(20))
+                # Publication waits for the in-flight response, which finishes on the old data.
+                threading.Timer(1, resume.set).start()
+                started = time.monotonic()
                 run_harris_import(
                     replace(request, load=HarrisApply(), candidate_id=prepared.candidate_id)
                 )
+                self.assertGreaterEqual(time.monotonic() - started, 1)
             finally:
                 resume.set()
                 thread.join(20)

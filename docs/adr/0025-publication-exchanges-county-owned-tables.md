@@ -13,9 +13,18 @@ whole rebuild, and the delete still writes its WAL and bloat.
 
 Publication instead exchanges each county-owned table: in the publication transaction,
 under a bounded lock wait, the published table moves into the candidate schema and the
-staged table moves into `public`. Only the lock for the exchange itself blocks shared
-reads. A rollback leaves the previous tables published, and the replaced tables are
-dropped with the candidate schema, so no previous dataset stays selectable (ADR-0016).
+staged table moves into `public`. A rollback leaves the previous tables published, and
+the replaced tables are dropped with the candidate schema, so no previous dataset stays
+selectable (ADR-0016).
+
+A snapshot does not isolate an exchanged table: a shared response that first reads it
+after the exchange commits sees the new rows beside the old rows of everything else.
+Shared responses and exchanges therefore exclude each other. Each shared response holds
+a shared publication lock, taken before its snapshot, for its whole response; an
+exchange takes that lock exclusively with its table locks. An exchange waits a bounded
+time for in-flight responses and fails without publishing when they outlast it, leaving
+the candidate to apply again, and new responses wait while it holds or waits for its
+locks.
 
 A table is exchanged only when the county owns all of its rows and no table outside the
 county's declared set references it. A shared table scoped by `county=`, such as
@@ -28,5 +37,7 @@ definitions no longer match production's, as when a migration ran after preparat
 and statistics are gathered on staged tables before the exchange.
 
 The exchange preserves the staged rows and their ids, so dataset identities are
-unchanged (ADR-0024). Publication still runs under the county writer reservation
+unchanged (ADR-0024). Publication reads the published identity from the exact relations
+it makes live before the exchange takes its locks, so shared reads wait only for the
+exchange itself and the end of its transaction. Publication still runs under the county writer reservation
 (ADR-0011), and preparation's own staging cost is unchanged.

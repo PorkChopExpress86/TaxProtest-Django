@@ -52,13 +52,17 @@ class CandidatePort(Protocol):
         ...
 
 
-def dataset_identity(county: str, schema: str = "public") -> dict:
-    """The content digest of one county's declared tables in ``schema``."""
+def dataset_identity(
+    county: str, schema: str = "public", schemas: Mapping[type[Model], str] | None = None
+) -> dict:
+    """The content digest of one county's declared tables in ``schema``, reading any
+    table named in ``schemas`` from the schema given there instead."""
     tables = registration_for(county).port.tables
     return compute_dataset_hash(
         tables.models,
         schema=schema,
         scope_filters={model: f"AND county = '{county}'" for model in tables.county_scoped},
+        schemas=schemas,
     )
 
 

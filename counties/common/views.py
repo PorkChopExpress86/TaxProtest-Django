@@ -8,6 +8,7 @@ neutral records, and does all analysis and presentation here.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from contextlib import nullcontext
 from functools import wraps
 from typing import Any
 
@@ -37,6 +38,7 @@ from counties.common.exports import (
     render_protest_pdf,
     render_search_csv,
 )
+from counties.common.publication_lock import published_read
 
 
 def consistent_published_read(view):
@@ -45,7 +47,8 @@ def consistent_published_read(view):
     @wraps(view)
     def wrapped(*args, **kwargs):
         outer = not connection.in_atomic_block
-        with transaction.atomic():
+        # Publication exchanges whole tables, which a snapshot alone does not isolate.
+        with published_read() if outer else nullcontext(), transaction.atomic():
             if outer and connection.vendor == "postgresql":
                 with connection.cursor() as cursor:
                     cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")

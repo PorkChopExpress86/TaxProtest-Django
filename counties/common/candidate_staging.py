@@ -4,24 +4,33 @@ This module provides the database-level mechanism for staging candidate data in
 isolated schemas, computing deterministic dataset digests, and atomically cutting
 over candidate tables to the public schema. Domain ETL rules, parsing, and outcome
 classification remain county-owned.
+
+Staged tables carry production's exact names so that publication can exchange a
+county-owned table whole instead of rewriting its rows (ADR-0025).
 """
 
 from __future__ import annotations
 
 import hashlib
+import itertools
 import re
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 from django.db import connection, models
 
 from counties.common.import_writers import fenced_write
+from counties.common.publication_lock import lock_for_exchange
 
 if TYPE_CHECKING:
     from counties.common.models import ImportCandidate
 
 SCHEMA_PATTERN = re.compile(r"^[a-z_]+_candidate_[0-9a-f]{32}$")
+
+
+class CandidateDefinitionMismatch(ValueError):
+    """A staged table no longer matches production's definition, so it cannot publish."""
 
 
 def validate_schema_name(schema: str, county: str | None = None) -> None:
@@ -50,15 +59,20 @@ def compute_dataset_hash(
     models_list: Sequence[type[models.Model]],
     schema: str = "public",
     scope_filters: Mapping[type[models.Model], str] | None = None,
+    schemas: Mapping[type[models.Model], str] | None = None,
 ) -> dict[str, str]:
-    """Compute a deterministic sha256 checksum across rows of the given models."""
-    if schema != "public":
-        validate_schema_name(schema)
-    quoted_schema = connection.ops.quote_name(schema)
+    """Compute a deterministic sha256 checksum across rows of the given models.
+
+    ``schemas`` reads the named models from another schema than ``schema``.
+    """
     digest = hashlib.sha256()
     filters = scope_filters or {}
     with connection.cursor() as cursor:
         for model in models_list:
+            source = (schemas or {}).get(model, schema)
+            if source != "public":
+                validate_schema_name(source)
+            quoted_schema = connection.ops.quote_name(source)
             table = connection.ops.quote_name(model._meta.db_table)
             scope = filters.get(model, "")
             digest.update(table.encode())
@@ -110,6 +124,7 @@ def staged_candidate_schema(
     validate_schema_name(schema_name, county=county)
     scopes = shared_models_scope or {}
 
+    temporary_names = itertools.count()
     with fenced_write(), connection.cursor() as cursor:
         quoted_schema = connection.ops.quote_name(schema_name)
         cursor.execute(f"CREATE SCHEMA {quoted_schema}")
@@ -131,6 +146,8 @@ def staged_candidate_schema(
                     f"ALTER TABLE {quoted_schema}.{table} ALTER COLUMN id SET DEFAULT nextval(%s::regclass)",
                     [f"{schema_name}.{model._meta.db_table}_id_seq"],
                 )
+            _adopt_production_index_names(cursor, schema_name, model, temporary_names)
+            _copy_production_grants(cursor, schema_name, model)
             if seed:
                 scope = scopes.get(model, "")
                 cursor.execute(
@@ -148,8 +165,10 @@ def staged_candidate_schema(
                 target_table = connection.ops.quote_name(target_model._meta.db_table)
                 quoted_source_col = connection.ops.quote_name(source_col)
                 quoted_target_col = connection.ops.quote_name(target_col)
+                name = _production_foreign_key_name(cursor, source_model, source_col, target_model)
+                constraint = f"CONSTRAINT {connection.ops.quote_name(name)} " if name else ""
                 cursor.execute(
-                    f"ALTER TABLE {quoted_schema}.{source_table} ADD FOREIGN KEY ({quoted_source_col}) "
+                    f"ALTER TABLE {quoted_schema}.{source_table} ADD {constraint}FOREIGN KEY ({quoted_source_col}) "
                     f"REFERENCES {quoted_schema}.{target_table}({quoted_target_col}) DEFERRABLE INITIALLY DEFERRED"
                 )
 
@@ -161,22 +180,36 @@ def cutover_staged_tables(
     candidate: ImportCandidate,
     models_list: Sequence[type[models.Model]],
     *,
+    identity: Callable[[Mapping[type[models.Model], str]], dict],
     shared_models_scope: Mapping[type[models.Model], str] | None = None,
     shared_models_county: Mapping[type[models.Model], str] | None = None,
-) -> None:
-    """Atomically cut over staged tables to the public schema and reset sequences."""
+) -> dict:
+    """Atomically publish staged tables, inside the caller's transaction (ADR-0025).
+
+    A county-owned table is exchanged whole; a shared table scoped by county, or one
+    that something outside the exchanged set depends on, has its rows replaced. A
+    candidate whose staged definitions differ from production's is refused.
+
+    Returns ``identity`` of the dataset this publication makes live, read before the
+    exchange takes its locks: it is called with the staged schema of each exchanged
+    table, whose relation becomes the published one unchanged.
+    """
+    if not connection.in_atomic_block:
+        raise RuntimeError("Publication cuts over only inside the caller's transaction")
     schema_name = candidate.storage_schema
     validate_schema_name(schema_name, county=candidate.county)
     scopes = shared_models_scope or {}
     counties = shared_models_county or {}
 
     with connection.cursor() as cursor:
-        for model in reversed(models_list):
+        exchanged = _verified_exchange(cursor, schema_name, models_list, frozenset(counties))
+        replaced = [model for model in models_list if model not in exchanged]
+        for model in reversed(replaced):
             scope = scopes.get(model, "")
             cursor.execute(
                 f"DELETE FROM public.{connection.ops.quote_name(model._meta.db_table)}{scope}"
             )
-        for model in models_list:
+        for model in replaced:
             table = connection.ops.quote_name(model._meta.db_table)
             if model in counties:
                 # County-private candidate sequences must not collide with
@@ -194,18 +227,262 @@ def cutover_staged_tables(
             cursor.execute(
                 f'INSERT INTO public.{table} OVERRIDING SYSTEM VALUE SELECT * FROM "{schema_name}".{table}'
             )
-            cursor.execute(
-                "SELECT pg_get_serial_sequence(%s, 'id')", [f"public.{model._meta.db_table}"]
+            _advance_sequence(cursor, "public", model)
+        published = identity({model: schema_name for model in exchanged})
+        if exchanged:
+            _exchange(
+                cursor,
+                schema_name,
+                [model for model in models_list if model in exchanged],
+                lambda: _verified_exchange(cursor, schema_name, models_list, frozenset(counties)),
             )
-            sequence = cursor.fetchone()[0]
-            cursor.execute(f"SELECT last_value FROM {sequence}")
-            last_value = cursor.fetchone()[0]
-            cursor.execute(f"SELECT COALESCE(MAX(id), 1) FROM public.{table}")
-            maximum = cursor.fetchone()[0]
-            cursor.execute(
-                "SELECT setval(%s::regclass, %s, true)",
-                [sequence, max(last_value, maximum)],
+    return published
+
+
+def _verified_exchange(cursor, schema_name, models_list, county_scoped) -> frozenset:
+    """The tables to exchange, once every staged definition matches production's."""
+    with _qualified_catalog(cursor):
+        mismatched = [
+            model._meta.db_table
+            for model in models_list
+            if _definition(cursor, schema_name, model) != _definition(cursor, "public", model)
+        ]
+        if mismatched:
+            raise CandidateDefinitionMismatch(
+                "Staged tables no longer match production, so prepare a new candidate: "
+                + ", ".join(mismatched)
             )
+        return _exchangeable(cursor, models_list, county_scoped)
+
+
+def _advance_sequence(cursor, schema: str, model: type[models.Model]) -> None:
+    """Move ``schema``'s id sequence for ``model`` past every id in that table and past
+    production's last value, so no published id is handed out again."""
+    cursor.execute("SELECT pg_get_serial_sequence(%s, 'id')", [f"public.{model._meta.db_table}"])
+    production = cursor.fetchone()[0]
+    cursor.execute("SELECT pg_get_serial_sequence(%s, 'id')", [f"{schema}.{model._meta.db_table}"])
+    sequence = cursor.fetchone()[0]
+    cursor.execute(f"SELECT last_value FROM {production}")
+    last_value = cursor.fetchone()[0]
+    cursor.execute(f"SELECT COALESCE(MAX(id), 1) FROM {_relation(schema, model)}")
+    maximum = cursor.fetchone()[0]
+    cursor.execute("SELECT setval(%s::regclass, %s, true)", [sequence, max(last_value, maximum)])
+
+
+def _exchange(
+    cursor,
+    schema_name: str,
+    exchanged: Sequence[type[models.Model]],
+    reverify: Callable[[], frozenset],
+) -> None:
+    """Exchange each production table with its staged table; the replaced ones stay in
+    the candidate schema, which publication drops."""
+    quoted_schema = connection.ops.quote_name(schema_name)
+    retiring = connection.ops.quote_name(f"{schema_name}_retiring")
+    tables = [connection.ops.quote_name(model._meta.db_table) for model in exchanged]
+    for table in tables:
+        cursor.execute(f"ANALYZE {quoted_schema}.{table}")
+    lock_for_exchange(cursor, [f"public.{table}" for table in tables])
+    # A migration may have committed while the locks were awaited.
+    if reverify() != frozenset(exchanged):
+        raise CandidateDefinitionMismatch(
+            "Tables that depend on the published tables changed, so prepare a new candidate"
+        )
+    for model in exchanged:
+        _advance_sequence(cursor, schema_name, model)
+    # Production and staged objects share names, so production steps aside first.
+    cursor.execute(f"CREATE SCHEMA {retiring}")
+    for table in tables:
+        cursor.execute(f"ALTER TABLE public.{table} SET SCHEMA {retiring}")
+    for table in tables:
+        cursor.execute(f"ALTER TABLE {quoted_schema}.{table} SET SCHEMA public")
+    for table in tables:
+        cursor.execute(f"ALTER TABLE {retiring}.{table} SET SCHEMA {quoted_schema}")
+    cursor.execute(f"DROP SCHEMA {retiring}")
+
+
+@contextmanager
+def _qualified_catalog(cursor) -> Iterator[None]:
+    """Make catalog functions schema-qualify every name, production's included."""
+    cursor.execute("SHOW search_path")
+    previous = cursor.fetchone()[0]
+    cursor.execute("SET search_path TO pg_catalog")
+    try:
+        yield
+    finally:
+        cursor.execute("SELECT set_config('search_path', %s, false)", [previous])
+
+
+def _relation(schema: str, model: type[models.Model]) -> str:
+    return f'"{schema}"."{model._meta.db_table}"'
+
+
+def _schema_neutral(text: str, schema: str) -> str:
+    """A catalog definition with its own table's schema removed; other qualifiers stay."""
+    for qualifier in (" ON ", "REFERENCES ", "nextval('"):
+        text = text.replace(f"{qualifier}{schema}.", qualifier)
+    return text
+
+
+_INDEXES = (
+    "SELECT c.relname, pg_get_indexdef(i.indexrelid) FROM pg_index i "
+    "JOIN pg_class c ON c.oid = i.indexrelid WHERE i.indrelid = %s::regclass ORDER BY 1"
+)
+
+
+def _definition(cursor, schema: str, model: type[models.Model]) -> dict[str, list[tuple]]:
+    """Everything about a table that publication must carry over unchanged."""
+    relation = _relation(schema, model)
+    queries = {
+        "table": (
+            "SELECT relowner::regrole::text, reloptions::text, relpersistence, relrowsecurity, "
+            "ARRAY(SELECT format('%%s %%s %%s', a.grantee::regrole, a.privilege_type, "
+            "a.is_grantable) FROM aclexplode(COALESCE(relacl, acldefault('r', relowner))) a "
+            "ORDER BY 1) "
+            "FROM pg_class WHERE oid = %s::regclass"
+        ),
+        "columns": (
+            "SELECT a.attname, format_type(a.atttypid, a.atttypmod), a.attnotnull, "
+            "a.attidentity, pg_get_expr(d.adbin, d.adrelid) FROM pg_attribute a "
+            "LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum "
+            "WHERE a.attrelid = %s::regclass AND a.attnum > 0 AND NOT a.attisdropped "
+            "ORDER BY a.attnum"
+        ),
+        "indexes": _INDEXES,
+        "constraints": (
+            "SELECT conname, contype, pg_get_constraintdef(oid) FROM pg_constraint "
+            "WHERE conrelid = %s::regclass ORDER BY 1"
+        ),
+        "triggers": (
+            "SELECT tgname, pg_get_triggerdef(oid) FROM pg_trigger "
+            "WHERE tgrelid = %s::regclass AND NOT tgisinternal ORDER BY 1"
+        ),
+        "sequences": (
+            "SELECT s.relname, format_type(q.seqtypid, NULL), q.seqstart, q.seqincrement, "
+            "q.seqmin, q.seqmax, q.seqcache, q.seqcycle FROM pg_depend d "
+            "JOIN pg_class s ON s.oid = d.objid JOIN pg_sequence q ON q.seqrelid = s.oid "
+            "WHERE d.refobjid = %s::regclass ORDER BY 1"
+        ),
+        "policies": (
+            "SELECT polname, polcmd, polpermissive, polroles::text, "
+            "pg_get_expr(polqual, polrelid), pg_get_expr(polwithcheck, polrelid) "
+            "FROM pg_policy WHERE polrelid = %s::regclass ORDER BY 1"
+        ),
+    }
+    definition = {}
+    for part, query in queries.items():
+        cursor.execute(query, [relation])
+        definition[part] = [
+            tuple(
+                _schema_neutral(value, schema) if isinstance(value, str) else value for value in row
+            )
+            for row in cursor.fetchall()
+        ]
+    return definition
+
+
+def _exchangeable(
+    cursor, models_list: Sequence[type[models.Model]], county_scoped: frozenset
+) -> frozenset[type[models.Model]]:
+    """The declared tables publication may exchange whole.
+
+    A table shared by counties keeps row replacement, as does any table joined by a
+    foreign key to a table outside the exchanged set, or that a view, function or
+    replication publication depends on: those references follow the table itself, not
+    its name, and would be dropped with the replaced table.
+    """
+    oids = {}
+    for model in models_list:
+        cursor.execute("SELECT %s::regclass::oid", [_relation("public", model)])
+        oids[cursor.fetchone()[0]] = model
+    cursor.execute(
+        "SELECT conrelid::oid, confrelid::oid FROM pg_constraint WHERE contype = 'f' "
+        "AND (conrelid = ANY(%s) OR confrelid = ANY(%s))",
+        [list(oids), list(oids)],
+    )
+    foreign_keys = cursor.fetchall()
+    cursor.execute(
+        "SELECT DISTINCT d.refobjid::oid FROM pg_depend d "
+        "LEFT JOIN pg_rewrite r ON d.classid = 'pg_rewrite'::regclass AND r.oid = d.objid "
+        "WHERE d.refobjid = ANY(%s) AND (r.ev_class <> d.refobjid OR d.classid IN "
+        "('pg_proc'::regclass, 'pg_publication_rel'::regclass))",
+        [list(oids)],
+    )
+    depended_on = {oid for (oid,) in cursor.fetchall()}
+    exchanged = {oid for oid, model in oids.items() if model not in county_scoped} - depended_on
+    while split_by_a_key := {
+        oid
+        for source, target in foreign_keys
+        if (source in exchanged) != (target in exchanged)
+        for oid in (source, target)
+        if oid in exchanged
+    }:
+        exchanged -= split_by_a_key
+    return frozenset(oids[oid] for oid in exchanged)
+
+
+def _unnamed_index(definition: str) -> str:
+    return re.sub(r"^(CREATE (?:UNIQUE )?INDEX )\S+ ON ", r"\1ON ", definition)
+
+
+def _adopt_production_index_names(
+    cursor, schema: str, model, temporary_names: Iterator[int]
+) -> None:
+    """Rename a staged table's indexes, and the constraints they back, to production's
+    names, pairing each with the production index of the same definition."""
+    with _qualified_catalog(cursor):
+        indexes = {}
+        for source in ("public", schema):
+            cursor.execute(_INDEXES, [_relation(source, model)])
+            indexes[source] = [
+                (name, _unnamed_index(_schema_neutral(definition, source)))
+                for name, definition in cursor.fetchall()
+            ]
+    unclaimed = list(indexes["public"])
+    pairs = []
+    for staged, definition in indexes[schema]:
+        match = next((name for name, wanted in unclaimed if wanted == definition), None)
+        if match is not None:
+            unclaimed.remove((match, definition))
+            pairs.append((staged, match, f"candidate_index_{next(temporary_names)}"))
+    # Every staged index first takes a unique temporary name, so no rename collides.
+    quoted_schema = connection.ops.quote_name(schema)
+    for staged, _, temporary in pairs:
+        cursor.execute(
+            f"ALTER INDEX {quoted_schema}.{connection.ops.quote_name(staged)} RENAME TO {temporary}"
+        )
+    for _, production, temporary in pairs:
+        cursor.execute(
+            f"ALTER INDEX {quoted_schema}.{temporary} RENAME TO {connection.ops.quote_name(production)}"
+        )
+
+
+def _copy_production_grants(cursor, schema: str, model) -> None:
+    """Grant on a staged table what production grants, which LIKE does not copy."""
+    cursor.execute(
+        "SELECT a.privilege_type, CASE WHEN a.grantee = 0 THEN 'PUBLIC' "
+        "ELSE quote_ident(pg_get_userbyid(a.grantee)) END, a.is_grantable "
+        "FROM pg_class c, aclexplode(c.relacl) a "
+        "WHERE c.oid = %s::regclass AND a.grantee <> c.relowner",
+        [_relation("public", model)],
+    )
+    for privilege, grantee, grantable in cursor.fetchall():
+        cursor.execute(
+            f"GRANT {privilege} ON {_relation(schema, model)} TO {grantee}"
+            + (" WITH GRANT OPTION" if grantable else "")
+        )
+
+
+def _production_foreign_key_name(cursor, source_model, source_col: str, target_model) -> str | None:
+    cursor.execute(
+        "SELECT c.conname FROM pg_constraint c JOIN pg_attribute a "
+        "ON a.attrelid = c.conrelid AND a.attnum = ANY(c.conkey) "
+        "WHERE c.contype = 'f' AND c.conrelid = %s::regclass AND c.confrelid = %s::regclass "
+        "AND array_length(c.conkey, 1) = 1 AND a.attname = %s",
+        [_relation("public", source_model), _relation("public", target_model), source_col],
+    )
+    row = cursor.fetchone()
+    return row[0] if row else None
 
 
 def drop_candidate_schema(candidate: ImportCandidate) -> None:

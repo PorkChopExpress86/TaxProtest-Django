@@ -4,6 +4,7 @@ import csv
 import io
 import tempfile
 import threading
+import time
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
@@ -336,7 +337,11 @@ class BrazosPublicationTests(TransactionTestCase):
                 thread.start()
                 try:
                     self.assertTrue(selected.wait(20))
+                    # Publication waits for the in-flight response, which finishes on the old data.
+                    threading.Timer(1, resume.set).start()
+                    started = time.monotonic()
                     importer.run(replace(self.request(), candidate_id=result.candidate_id))
+                    self.assertGreaterEqual(time.monotonic() - started, 1)
                 finally:
                     resume.set()
                     thread.join(20)
