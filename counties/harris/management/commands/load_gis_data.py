@@ -16,7 +16,7 @@ from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG, HcadSour
 
 def find_preferred_shapefile(extract_dir: str) -> str | None:
     """Compatibility adapter for the shared GIS-layer selection rule."""
-    selected = select_preferred_gis_shapefile([Path(extract_dir)])
+    selected = select_preferred_gis_shapefile(Path(extract_dir))
     return str(selected) if selected is not None else None
 
 
@@ -83,10 +83,7 @@ class Command(BaseCommand):
             self.stdout.write("Skipping download and extraction, using existing files...")
 
         extract_dir = extract_manager.get_extract_path(source)
-        legacy_extract_dir = config.download_dir / DEFAULT_HCAD_SOURCE_CATALOG.extract_dirname(
-            source.source_id
-        )
-        shapefile = select_preferred_gis_shapefile([extract_dir, legacy_extract_dir])
+        shapefile = select_preferred_gis_shapefile(extract_dir)
 
         if shapefile is None:
             operation.warnings.append("No GIS shapefile is available")
