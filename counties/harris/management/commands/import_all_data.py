@@ -10,7 +10,6 @@ from django.core.management.base import BaseCommand, CommandError
 
 from counties.common.import_disposition import ImportDispositionKind, disposition_for
 from counties.harris.etl_pipeline import (
-    ExtractedSourceRetention,
     HarrisAcquisitionMode,
     HarrisApply,
     HarrisExtractionMode,
@@ -61,10 +60,17 @@ class Command(BaseCommand):
         parser.add_argument(
             "--keep-extracted",
             action="store_true",
-            help="Keep uncompressed extracted data files on disk after loading (default: false, cleans up)",
+            help="Accepted for compatibility; has no effect (a successful apply keeps its sources).",
         )
 
     def handle(self, *args, **options):
+        if options["keep_extracted"]:
+            self.stderr.write(
+                self.style.WARNING(
+                    "--keep-extracted has no effect: a successful apply always keeps its "
+                    "extracted sources, and source retention decides when they are removed."
+                )
+            )
         include_property = not options["skip_property"]
         include_building = not options["skip_building"]
         include_gis = not options["skip_gis"]
@@ -95,11 +101,6 @@ class Command(BaseCommand):
             ),
             load=HarrisApply(
                 validate_completeness=not options["skip_contract_validation"],
-                extracted_source_retention=(
-                    ExtractedSourceRetention.RETAIN
-                    if options["keep_extracted"]
-                    else ExtractedSourceRetention.REMOVE_AFTER_SUCCESS
-                ),
             ),
             failure_policy=HarrisFailurePolicy.STRICT,
         )

@@ -1,8 +1,8 @@
 """County-owned import of one Brazos detailed property snapshot.
 
 The module owns source-year checks, CAD preflight, the candidate load and its
-evidence, and cleanup; the shared Candidate lifecycle stages, qualifies and
-publishes the candidate. CAD and GIS source stages remain their own adapters.
+evidence; the shared Candidate lifecycle stages, qualifies, publishes and retains
+the candidate's sources. CAD and GIS source stages remain their own adapters.
 """
 
 from __future__ import annotations
@@ -91,8 +91,6 @@ class PropertyImportStage(Protocol):
     def inspect(self, preparation: StagePreparation, operation: ImportOperation) -> StageResult: ...
 
     def persist(self, preparation: StagePreparation) -> StageResult: ...
-
-    def cleanup(self, preparation: StagePreparation) -> None: ...
 
 
 AnnualRefreshStage = PropertyImportStage
@@ -242,9 +240,6 @@ class _CandidateSource:
     def persist(self, preparation):
         return self.stage.persist(preparation)
 
-    def cleanup(self, preparation):
-        return None
-
 
 def brazos_candidate_load(
     cad: AnnualRefreshStage, gis: AnnualRefreshStage | None, request: PropertyImportRequest
@@ -259,14 +254,7 @@ def brazos_candidate_load(
         importer = BrazosPropertyImport(
             _CandidateSource(cad, operation), _CandidateSource(gis, operation) if gis else None
         )
-        result = importer._run_unstaged(
-            replace(
-                request,
-                prepare_only=False,
-                options=replace(request.options, keep_extracted=True),
-            ),
-            operation,
-        )
+        result = importer._run_unstaged(replace(request, prepare_only=False), operation)
         operation.evidence["validation"]["valid"] = True
         operation.requested_year = result.tax_year
         return Loaded(
@@ -436,7 +424,7 @@ class BrazosPropertyImport:
         from counties.brazos.source_validation import inspect_cad, inspect_gis
 
         # Source preparation actually acquires/extracts the selected bytes. Only
-        # persistence and cleanup are suppressed by a property preview.
+        # persistence is suppressed by a property preview.
         options = replace(request.options, dry_run=False)
         operation.evidence["validation"] = {
             "valid": False,
@@ -489,17 +477,8 @@ class BrazosPropertyImport:
         gis_preparation = self._prepare(
             gis, replace(options, tax_year=target_year, source_year=target_year)
         )
-        self._validate_cad(target_year, cad_preparation, inspect_source=not options.dry_run)
+        self._validate_cad(target_year, cad_preparation)
         self._validate_gis(target_year, gis_preparation)
-        if options.dry_run:
-            return PropertyImportResult(
-                tax_year=target_year,
-                outcome=PropertyImportOutcome.COMPLETED,
-                cad=None,
-                gis=None,
-                snapshot_id=None,
-                dry_run=True,
-            )
 
         with fenced_write():
             cad_result = self._cad.persist(cad_preparation)
@@ -517,22 +496,12 @@ class BrazosPropertyImport:
             gis=gis_result,
             snapshot_id=snapshot.id,
             dry_run=False,
-            cleanup_warnings=self._cleanup(options, cad_preparation, gis_preparation),
         )
 
     def _run_cad_recovery(self, options: RefreshOptions) -> PropertyImportResult:
         preparation = self._prepare(self._cad, options)
         target_year = options.tax_year or preparation.target_year
-        self._validate_cad(target_year, preparation, inspect_source=not options.dry_run)
-        if options.dry_run:
-            return PropertyImportResult(
-                tax_year=target_year,
-                outcome=PropertyImportOutcome.PARTIAL,
-                cad=None,
-                gis=None,
-                snapshot_id=None,
-                dry_run=True,
-            )
+        self._validate_cad(target_year, preparation)
 
         with fenced_write():
             cad_result = self._cad.persist(preparation)
@@ -549,7 +518,6 @@ class BrazosPropertyImport:
             gis=None,
             snapshot_id=snapshot.id,
             dry_run=False,
-            cleanup_warnings=self._cleanup(options, preparation),
         )
 
     def _run_gis_recovery(self, options: RefreshOptions) -> PropertyImportResult:
@@ -568,15 +536,6 @@ class BrazosPropertyImport:
             gis, replace(options, tax_year=target_year, source_year=target_year)
         )
         self._validate_gis(target_year, preparation)
-        if options.dry_run:
-            return PropertyImportResult(
-                tax_year=target_year,
-                outcome=PropertyImportOutcome.COMPLETED,
-                cad=None,
-                gis=None,
-                snapshot_id=None,
-                dry_run=True,
-            )
 
         with fenced_write():
             gis_result = gis.persist(preparation)
@@ -593,7 +552,6 @@ class BrazosPropertyImport:
             gis=gis_result,
             snapshot_id=snapshot.id,
             dry_run=False,
-            cleanup_warnings=self._cleanup(options, preparation),
         )
 
     @staticmethod
@@ -608,12 +566,10 @@ class BrazosPropertyImport:
                 f"{label} source year {preparation.source_year} does not match requested year {target_year}."
             )
 
-    def _validate_cad(
-        self, target_year: int, preparation: StagePreparation, *, inspect_source: bool
-    ) -> None:
+    def _validate_cad(self, target_year: int, preparation: StagePreparation) -> None:
         self._validate_source_year(target_year, preparation, "CAD")
         validate_preflight = getattr(self._cad, "validate_preflight", None)
-        if inspect_source and validate_preflight is not None:
+        if validate_preflight is not None:
             validate_preflight(preparation)
 
     def _validate_gis(self, target_year: int, preparation: StagePreparation) -> None:
@@ -641,21 +597,6 @@ class BrazosPropertyImport:
             gis_source_year=gis_source_year,
             is_active=True,
         )
-
-    def _cleanup(self, options: RefreshOptions, *preparations: StagePreparation) -> tuple[str, ...]:
-        if options.keep_extracted:
-            return ()
-        warnings: list[str] = []
-        stages = {self._cad.name: self._cad}
-        if self._gis is not None:
-            stages[self._gis.name] = self._gis
-        for preparation in preparations:
-            try:
-                with fenced_write():
-                    stages[preparation.name].cleanup(preparation)
-            except Exception as exc:  # cleanup is post-commit and cannot revoke publication
-                warnings.append(f"{preparation.name} cleanup failed: {exc}")
-        return tuple(warnings)
 
     def _required_gis(self) -> AnnualRefreshStage:
         if self._gis is None:

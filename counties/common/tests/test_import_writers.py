@@ -32,7 +32,6 @@ from counties.common.import_writers import (
 from counties.common.models import CountyWriter, ImportOperation
 from counties.common.tests.fake_county import FAKE_COUNTY, registered_fake_county
 from counties.harris.etl_pipeline import (
-    ExtractedSourceRetention,
     HarrisAcquisitionMode,
     HarrisApply,
     HarrisExtractionMode,
@@ -202,7 +201,6 @@ class ImportWriterTests(TransactionTestCase):
                 load=HarrisApply(
                     refresh_readiness=False,
                     validate_completeness=False,
-                    extracted_source_retention=ExtractedSourceRetention.RETAIN,
                 ),
             )
 

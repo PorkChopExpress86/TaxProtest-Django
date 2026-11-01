@@ -44,10 +44,17 @@ class Command(BaseCommand):
         parser.add_argument(
             "--keep-extracted",
             action="store_true",
-            help="Keep uncompressed extracted data files on disk after loading (default: false, cleans up)",
+            help="Accepted for compatibility; has no effect (a successful apply keeps its sources).",
         )
 
     def handle(self, *args, **options):
+        if options["keep_extracted"]:
+            self.stderr.write(
+                self.style.WARNING(
+                    "--keep-extracted has no effect: a successful apply always keeps its "
+                    "extracted sources, and source retention decides when they are removed."
+                )
+            )
         result = build_default_property_import(self).run(
             PropertyImportRequest(
                 mode=PropertyImportMode.GIS_RECOVERY,
@@ -57,7 +64,6 @@ class Command(BaseCommand):
                     skip_download=options["skip_download"],
                     skip_extract=options["skip_extract"],
                     dry_run=options["dry_run"],
-                    keep_extracted=options["keep_extracted"],
                 ),
             )
         )

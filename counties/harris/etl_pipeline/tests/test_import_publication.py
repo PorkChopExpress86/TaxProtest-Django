@@ -121,6 +121,20 @@ class HarrisPublicationTests(TransactionTestCase):
                 ImportAuditEntry.objects.filter(kind="publication", result="published").count(), 1
             )
 
+    def test_successful_apply_keeps_its_extracted_sources(self):
+        self.baseline()
+        with tempfile.TemporaryDirectory() as root, self.settings(**_runtime_settings(root)):
+            result = run_harris_import(harris_request(root))
+            self.assertEqual(result.status, HarrisImportStatus.COMPLETED)
+            self.assertTrue(result.wrote_data)
+            self.assertTrue(ImportCandidate.objects.get(pk=result.candidate_id).sources)
+            for source_id, name in (
+                (HcadSourceId.REAL_ACCOUNT_OWNER, "real_acct.txt"),
+                (HcadSourceId.REAL_BUILDING_LAND, "building_res.txt"),
+                (HcadSourceId.GIS_PARCELS, "parcels.shp"),
+            ):
+                self.assertTrue((extracted(root, source_id) / name).exists(), name)
+
     def test_automatic_publication_holds_the_writer_reservation(self):
         self.baseline()
         with tempfile.TemporaryDirectory() as root, self.settings(**_runtime_settings(root)):

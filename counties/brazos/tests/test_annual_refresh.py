@@ -5,6 +5,7 @@ from __future__ import annotations
 import tempfile
 from dataclasses import replace
 from decimal import Decimal
+from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 from zipfile import ZipFile
@@ -417,5 +418,33 @@ class AnnualRefreshCommandTests(TestCase):
             self.assertEqual(restored.owner_name, "Prior snapshot")
             self.assertEqual(restored.situs_address, "100 Existing Street")
             self.assertEqual(restored.assessed_value, Decimal("100000"))
+            self.assertTrue(cad_extract.exists())
+            self.assertTrue(gis_extract.exists())
+
+    def test_keep_extracted_is_accepted_warns_and_a_successful_refresh_keeps_its_sources(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            download_dir, cad_extract, gis_extract = self._stage_sources(root)
+            stderr = StringIO()
+
+            with self.settings(
+                BCAD_DOWNLOAD_DIR=str(download_dir),
+                BCAD_EXTRACT_DIR=str(root / "extracted"),
+            ):
+                call_command(
+                    "refresh_brazos_annual",
+                    "--skip-download",
+                    "--skip-extract",
+                    "--year",
+                    "2025",
+                    "--keep-extracted",
+                    stderr=stderr,
+                )
+                candidate = ImportCandidate.objects.get(county="brazos")
+                self.assertEqual(candidate.state, "awaiting_review")
+                self._review_and_apply(candidate)
+
+            self.assertIn("--keep-extracted has no effect", stderr.getvalue())
+            self.assertTrue(PropertyAccount.objects.filter(tax_year=2025).exists())
             self.assertTrue(cad_extract.exists())
             self.assertTrue(gis_extract.exists())

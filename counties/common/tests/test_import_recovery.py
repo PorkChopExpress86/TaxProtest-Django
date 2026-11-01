@@ -17,7 +17,6 @@ from django.urls import reverse
 from counties.common.import_writers import FencedWriter, WriterConflict
 from counties.common.models import CountyWriter, ImportOperation
 from counties.harris.etl_pipeline import (
-    ExtractedSourceRetention,
     HarrisAcquisitionMode,
     HarrisApply,
     HarrisExtractionMode,
@@ -250,7 +249,6 @@ class ImportRecoveryTests(TransactionTestCase):
                         load=HarrisApply(
                             refresh_readiness=False,
                             validate_completeness=False,
-                            extracted_source_retention=ExtractedSourceRetention.RETAIN,
                         ),
                     )
                 )

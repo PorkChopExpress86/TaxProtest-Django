@@ -227,7 +227,6 @@ def _run_authoritative_import(
     Returns the serialized result and the run's Import disposition.
     """
     from .etl_pipeline import (
-        ExtractedSourceRetention,
         HarrisAcquisitionMode,
         HarrisApply,
         HarrisExtractionMode,
@@ -272,7 +271,6 @@ def _run_authoritative_import(
             else HarrisApply(
                 refresh_readiness=refresh_readiness,
                 validate_completeness=validate_contract,
-                extracted_source_retention=ExtractedSourceRetention.REMOVE_AFTER_SUCCESS,
             )
         ),
         failure_policy=(HarrisFailurePolicy.STRICT if strict else HarrisFailurePolicy.BEST_EFFORT),

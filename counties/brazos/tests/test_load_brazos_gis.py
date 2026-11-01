@@ -18,6 +18,7 @@ from __future__ import annotations
 import tempfile
 import warnings
 from decimal import Decimal
+from io import StringIO
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 from zipfile import ZipFile
@@ -403,6 +404,26 @@ class OfflineRerunTests(TestCase):
         row = PropertyAccount.objects.get(prop_id="000000010013", tax_year=2025)
         self.assertEqual(row.situs_address, "5000 SILVER HILL RD")
         self.assertIsNotNone(row.latitude)
+
+    def test_keep_extracted_is_accepted_warns_and_a_successful_apply_keeps_the_shapefile(self):
+        self._activate_partial_snapshot(2025)
+        PropertyAccount.objects.create(prop_id="000000010013", tax_year=2025)
+        self._stage_archive(2025)
+        self._stage_extracted_shapefile(2025)
+        stderr = StringIO()
+
+        with self._settings():
+            call_command(
+                "load_brazos_gis",
+                "--skip-download",
+                "--skip-extract",
+                "--keep-extracted",
+                stderr=stderr,
+            )
+            self._apply_offline_import()
+
+        self.assertIn("--keep-extracted has no effect", stderr.getvalue())
+        self.assertTrue((self.extract_root / "gis" / "2025" / "parcels.shp").exists())
 
     def test_resolves_year_from_the_downloaded_archive_name(self):
         self._activate_partial_snapshot(2025)

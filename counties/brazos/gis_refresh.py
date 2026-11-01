@@ -484,18 +484,3 @@ class GisRefreshStage:
         if payload.extract_dir.exists():
             shutil.rmtree(payload.extract_dir, ignore_errors=True)
             self.stdout.write(self.style.SUCCESS("Cleaned up GIS extracted files."))
-
-    def run(self, options: RefreshOptions) -> StageResult:
-        """Run this source stage outside the annual-refresh coordinator."""
-        preparation = self.prepare(options)
-        if options.dry_run:
-            self.stdout.write(
-                f"[dry-run] GIS source staged for tax_year={preparation.target_year}; "
-                "no database rows were changed."
-            )
-            return StageResult(name=self.name, metrics={})
-
-        result = self.persist(preparation)
-        if not options.keep_extracted and not options.skip_extract:
-            self.cleanup(preparation)
-        return result

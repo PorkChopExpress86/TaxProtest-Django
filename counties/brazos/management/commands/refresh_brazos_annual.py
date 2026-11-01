@@ -43,10 +43,17 @@ class Command(BaseCommand):
         parser.add_argument(
             "--keep-extracted",
             action="store_true",
-            help="Retain both extracted source directories after a successful refresh.",
+            help="Accepted for compatibility; has no effect (a successful apply keeps its sources).",
         )
 
     def handle(self, *args, **options):
+        if options["keep_extracted"]:
+            self.stderr.write(
+                self.style.WARNING(
+                    "--keep-extracted has no effect: a successful apply always keeps its "
+                    "extracted sources, and source retention decides when they are removed."
+                )
+            )
         result = build_default_refresh(self).run(
             RefreshOptions(
                 tax_year=options.get("year"),
@@ -54,7 +61,6 @@ class Command(BaseCommand):
                 skip_download=options["skip_download"],
                 skip_extract=options["skip_extract"],
                 dry_run=options["dry_run"],
-                keep_extracted=options["keep_extracted"],
             )
         )
         disposition = disposition_for(result.operation_id, subject="Brazos annual import")

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import tempfile
 from decimal import Decimal
+from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -13,7 +14,6 @@ from django.test import TestCase
 
 from counties.common.models import ImportOperation
 from counties.harris.etl_pipeline import (
-    ExtractedSourceRetention,
     HarrisAcquisitionMode,
     HarrisApply,
     HarrisExtractionMode,
@@ -488,10 +488,33 @@ class ImportAllDataCommandTests(TestCase):
         request = mocked_execute.call_args.args[0]
         self.assertIsInstance(request.load, HarrisApply)
         self.assertFalse(request.load.validate_completeness)
-        self.assertIs(
-            request.load.extracted_source_retention,
-            ExtractedSourceRetention.REMOVE_AFTER_SUCCESS,
+
+    @patch("counties.harris.management.commands.import_all_data.run_harris_import")
+    def test_import_all_data_keep_extracted_is_accepted_and_warns_it_has_no_effect(
+        self, mocked_execute
+    ) -> None:
+        mocked_execute.return_value = SimpleNamespace(
+            success=True,
+            status=SimpleNamespace(value="completed"),
+            duration=0.1,
+            stages={},
+            errors=[],
+            operation_id=self.finished_operation("published"),
         )
+        stderr = StringIO()
+
+        call_command(
+            "import_all_data",
+            skip_download=True,
+            skip_property=True,
+            keep_extracted=True,
+            stderr=stderr,
+        )
+
+        mocked_execute.assert_called_once()
+        request = mocked_execute.call_args.args[0]
+        self.assertIsInstance(request.load, HarrisApply)
+        self.assertIn("--keep-extracted has no effect", stderr.getvalue())
 
 
 class ETLLoaderOptimizationTests(TestCase):
