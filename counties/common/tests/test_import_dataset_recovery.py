@@ -2,6 +2,7 @@
 
 import tempfile
 import threading
+import time
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
@@ -140,10 +141,14 @@ class ImportRecoveryTests(TransactionTestCase):
             try:
                 reader.start()
                 self.assertTrue(entered.wait(5))
+                # Publication waits for the in-flight response, which finishes on the old data.
+                threading.Timer(1, resume.set).start()
+                started = time.monotonic()
                 applied = self.client.post(
                     reverse("admin:data_importcandidate_apply", args=[candidate.pk]),
                     {"reason": "Apply qualified recovery"},
                 )
+                self.assertGreaterEqual(time.monotonic() - started, 1)
             finally:
                 resume.set()
                 reader.join(10)

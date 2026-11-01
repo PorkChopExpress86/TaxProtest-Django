@@ -208,13 +208,14 @@ class CandidateStagingIntegrationTests(TransactionTestCase):
         )
         self.assertFalse(PropertyAccount.objects.filter(prop_id="000000010002").exists())
 
-        # Now cutover
-        cutover_staged_tables(
-            candidate,
-            models,
-            shared_models_scope=shared_scope,
-            shared_models_county=shared_county,
-        )
+        # Now cutover, inside the publication transaction
+        with transaction.atomic():
+            cutover_staged_tables(
+                candidate,
+                models,
+                shared_models_scope=shared_scope,
+                shared_models_county=shared_county,
+            )
 
         # In public schema, data now reflects the candidate
         self.assertEqual(

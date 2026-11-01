@@ -110,8 +110,9 @@ class PublicationContract:
             finally:
                 connection.close()
 
+        # Shared reads wait only for the exchange itself, which starts with its table lock.
         def during_cutover(execute, sql, params, many, context):
-            if sql.startswith("INSERT INTO public.") and not observed:
+            if sql.startswith(("DELETE FROM public.", "LOCK TABLE")) and not observed:
                 thread = threading.Thread(target=observe)
                 thread.start()
                 thread.join(20)
