@@ -92,8 +92,6 @@ class PropertyImportStage(Protocol):
 
     def persist(self, preparation: StagePreparation) -> StageResult: ...
 
-    def cleanup(self, preparation: StagePreparation) -> None: ...
-
 
 AnnualRefreshStage = PropertyImportStage
 
@@ -241,9 +239,6 @@ class _CandidateSource:
 
     def persist(self, preparation):
         return self.stage.persist(preparation)
-
-    def cleanup(self, preparation):
-        return None
 
 
 def brazos_candidate_load(
@@ -429,7 +424,7 @@ class BrazosPropertyImport:
         from counties.brazos.source_validation import inspect_cad, inspect_gis
 
         # Source preparation actually acquires/extracts the selected bytes. Only
-        # persistence and cleanup are suppressed by a property preview.
+        # persistence is suppressed by a property preview.
         options = replace(request.options, dry_run=False)
         operation.evidence["validation"] = {
             "valid": False,
