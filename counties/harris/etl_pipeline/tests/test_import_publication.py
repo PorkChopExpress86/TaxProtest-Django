@@ -311,6 +311,29 @@ class HarrisPublicationTests(TransactionTestCase):
             self.assertEqual(report.context["subject"].tax_year, 2025)
             self.assertNotEqual(report.context["tax_impact"].completeness, "complete")
 
+    def test_a_failure_after_publication_is_a_warning_on_the_result(self):
+        self.baseline()
+        with tempfile.TemporaryDirectory() as root, self.settings(**_runtime_settings(root)):
+            prepared = run_harris_import(harris_request(root, prepare=True))
+            apply = replace(harris_request(root), candidate_id=prepared.candidate_id)
+            failure = OSError("Reporting failed after publication")
+            with patch(
+                "counties.harris.etl_pipeline.orchestrator.was_already_applied",
+                side_effect=failure,
+            ):
+                applied = run_harris_import(apply)
+            self.assertEqual(applied.status, HarrisImportStatus.COMPLETED)
+            self.assertTrue(applied.wrote_data)
+            self.assertEqual(applied.candidate_id, prepared.candidate_id)
+            self.assertEqual(applied.warnings, ("Reporting failed after publication",))
+            self.assertEqual(
+                ImportCandidate.objects.get(pk=prepared.candidate_id).state, "published"
+            )
+            operation = ImportOperation.objects.get(pk=applied.operation_id)
+            self.assertEqual(operation.status, "published")
+            self.assertEqual(operation.warnings, ["Reporting failed after publication"])
+            self.assertEqual(PropertyRecord.objects.get().address, "")
+
     def test_preview_and_prepare_cannot_apply_a_candidate(self):
         self.baseline()
         with tempfile.TemporaryDirectory() as root, self.settings(**_runtime_settings(root)):

@@ -27,8 +27,14 @@ from counties.brazos.models import (
     SnapshotOutcome,
 )
 from counties.brazos.readiness import BrazosActiveSnapshotReadiness, BrazosSnapshotFacts
-from counties.common.candidate_lifecycle import CandidateLoad, Loaded, prepare, publish
-from counties.common.import_audit import audited_operation
+from counties.common.candidate_lifecycle import (
+    CandidateLoad,
+    Loaded,
+    candidate_run,
+    prepare,
+    publish,
+    was_already_applied,
+)
 from counties.common.import_coverage import OutcomePopulation
 from counties.common.import_states import CandidateState, OperationStatus, operation_status_for
 from counties.common.import_writers import fenced_write
@@ -304,7 +310,7 @@ class BrazosPropertyImport:
     def run(self, request: PropertyImportRequest, *, reviewer=None) -> PropertyImportResult:
         active = BrazosPropertySnapshot.objects.filter(is_active=True).first()
         result: PropertyImportResult | None = None
-        with audited_operation(
+        with candidate_run(
             "brazos",
             "preview" if request.options.dry_run else request.mode.value,
             actor=request.actor,
@@ -313,7 +319,8 @@ class BrazosPropertyImport:
             publication_before=(
                 {"snapshot_id": active.pk, "tax_year": active.tax_year} if active else None
             ),
-        ) as operation:
+        ) as run:
+            operation = run.operation
             if request.candidate_id is not None:
                 candidate = ImportCandidate.objects.get(pk=request.candidate_id, county="brazos")
                 if candidate.request != {
@@ -324,7 +331,7 @@ class BrazosPropertyImport:
                 operation.requested_year = candidate.request["tax_year"]
                 publish(operation, candidate.pk, user=reviewer, reason=request.application_reason)
                 active = BrazosPropertySnapshot.objects.get(is_active=True)
-                already = "already_applied" in operation.evidence
+                already = was_already_applied(operation)
                 status = OperationStatus.ALREADY_APPLIED if already else OperationStatus.PUBLISHED
                 completed = PropertyImportResult(
                     tax_year=active.tax_year,
@@ -394,6 +401,7 @@ class BrazosPropertyImport:
         if result is None:
             # Publication committed; the operation recorded the later failure as a warning.
             observed = operation.publication_after
+            outcome = run.outcome
             return PropertyImportResult(
                 tax_year=observed["tax_year"],
                 outcome=PropertyImportOutcome(observed["outcome"]),
@@ -402,8 +410,8 @@ class BrazosPropertyImport:
                 snapshot_id=observed["snapshot_id"],
                 dry_run=False,
                 operation_id=operation.pk,
-                candidate_id=UUID(operation.evidence["candidate_id"]),
-                cleanup_warnings=(operation.evidence["post_publication_failure"],),
+                candidate_id=outcome.candidate_id,
+                cleanup_warnings=outcome.warnings,
             )
         return result
 

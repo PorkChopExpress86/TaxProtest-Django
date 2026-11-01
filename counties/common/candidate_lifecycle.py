@@ -7,10 +7,11 @@ reached only through the county candidate port registered for the county (ADR-00
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from django.core.exceptions import PermissionDenied
 from django.db import DatabaseError, connection, transaction
@@ -76,6 +77,91 @@ class CandidateLoad:
 class Prepared:
     candidate: ImportCandidate
     result: Any  # Loaded.result
+
+
+# Persisted evidence (ADR-0024): an operation that found its candidate already published
+# stores that candidate's id under this key. Counties read it through ``was_already_applied``.
+ALREADY_APPLIED_KEY = "already_applied"
+
+
+@dataclass(frozen=True)
+class Outcome:
+    """How one candidate ended inside its Import operation, once the operation has ended.
+
+    ``warnings`` holds the failure after a committed publication, which the operation
+    recorded and did not raise. ``state`` is the candidate's persisted state.
+    """
+
+    candidate_id: UUID | None
+    state: CandidateState | None
+    already_applied: bool
+    warnings: tuple[str, ...]
+
+
+class CandidateRun:
+    """An Import operation that prepares or applies one candidate, and its outcome."""
+
+    def __init__(self, operation: ImportOperation) -> None:
+        self.operation = operation
+        self._outcome: Outcome | None = None
+
+    @property
+    def outcome(self) -> Outcome:
+        """The outcome of the ended operation; raises while it runs or ends unpublished."""
+        if self._outcome is None:
+            raise RuntimeError("The Import operation has not ended with a candidate outcome")
+        return self._outcome
+
+
+@contextmanager
+def candidate_run(
+    county: str,
+    intent: str,
+    *,
+    actor: str = "",
+    origin: str = "command",
+    requested_year: int | None = None,
+    publication_before: dict | None = None,
+) -> Iterator[CandidateRun]:
+    """Run one Import operation that prepares or applies a candidate, typed at its end.
+
+    A failure after a committed publication is suppressed by ``audited_operation`` and
+    surfaces as ``Outcome.warnings``; any other failure is raised and leaves no outcome.
+    """
+    with audited_operation(
+        county,
+        intent,
+        actor=actor,
+        origin=origin,
+        requested_year=requested_year,
+        publication_before=publication_before,
+    ) as operation:
+        run = CandidateRun(operation)
+        yield run
+    run._outcome = _outcome(operation)
+
+
+def was_already_applied(operation: ImportOperation) -> bool:
+    """Whether ``operation`` found its candidate already published and wrote nothing."""
+    return ALREADY_APPLIED_KEY in operation.evidence
+
+
+def _outcome(operation: ImportOperation) -> Outcome:
+    named = operation.evidence.get("candidate_id") or operation.evidence.get(ALREADY_APPLIED_KEY)
+    candidate_id = UUID(str(named)) if named else None
+    state = None
+    if candidate_id is not None:
+        stored = (
+            ImportCandidate.objects.filter(pk=candidate_id).values_list("state", flat=True).first()
+        )
+        state = CandidateState(stored) if stored else None
+    failure = operation.post_publication_failure
+    return Outcome(
+        candidate_id=candidate_id,
+        state=state,
+        already_applied=was_already_applied(operation),
+        warnings=(failure,) if failure is not None else (),
+    )
 
 
 def _county_rows(tables: CandidateTables, county: str) -> dict:
@@ -216,7 +302,7 @@ def publish(
                 operation.publication_before = operation.publication_after = published_identity(
                     county
                 )
-                operation.evidence["already_applied"] = str(candidate.pk)
+                operation.evidence[ALREADY_APPLIED_KEY] = str(candidate.pk)
                 operation.status = OperationStatus.ALREADY_APPLIED
                 return candidate
             if measured is not None and candidate.operation_id != operation.pk:
