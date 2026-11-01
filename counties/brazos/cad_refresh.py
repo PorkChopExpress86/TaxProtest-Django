@@ -883,8 +883,8 @@ class CadRefreshStage:
         """Reject incomplete or untrusted PACS input before any model write.
 
         The property-import module calls this after source-year validation and
-        before its transaction. A direct stage run keeps the same guard so a
-        recovery adapter cannot quietly accept an incomplete certified export.
+        before its transaction, so a recovery adapter cannot quietly accept an
+        incomplete certified export.
         """
         payload = preparation.payload
         if not isinstance(payload, _CadStagePayload):
@@ -948,16 +948,3 @@ class CadRefreshStage:
         if payload.extract_dir.exists():
             shutil.rmtree(payload.extract_dir, ignore_errors=True)
             self.stdout.write(self.style.SUCCESS("Cleaned up CAD extracted files."))
-
-    def run(self, options: RefreshOptions) -> StageResult:
-        """Run this source stage outside the annual-refresh coordinator."""
-        preparation = self.prepare(options)
-        if options.dry_run:
-            self.stdout.write("[dry-run] CAD source staged; no database rows were changed.")
-            return StageResult(name=self.name, metrics={})
-
-        self.validate_preflight(preparation)
-        result = self.persist(preparation)
-        if not options.keep_extracted and not options.skip_extract:
-            self.cleanup(preparation)
-        return result

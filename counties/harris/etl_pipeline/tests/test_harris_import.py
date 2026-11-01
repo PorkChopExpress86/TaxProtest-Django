@@ -12,7 +12,6 @@ from django.test import TestCase, override_settings
 from counties.common.candidate_staging import switch_search_path
 from counties.common.models import ImportCandidate
 from counties.harris.etl_pipeline import (
-    ExtractedSourceRetention,
     HarrisAcquisitionMode,
     HarrisApply,
     HarrisExtractionMode,
@@ -178,7 +177,6 @@ class HarrisImportBoundaryTests(TestCase):
                 extraction=HarrisExtractionMode.REUSE_EXTRACTED,
                 load=HarrisApply(
                     validate_completeness=False,
-                    extracted_source_retention=ExtractedSourceRetention.RETAIN,
                 ),
             )
 
@@ -211,7 +209,6 @@ class HarrisImportBoundaryTests(TestCase):
                     load=HarrisApply(
                         refresh_readiness=False,
                         validate_completeness=False,
-                        extracted_source_retention=ExtractedSourceRetention.RETAIN,
                     ),
                 )
             )
@@ -239,7 +236,6 @@ class HarrisImportBoundaryTests(TestCase):
                     load=HarrisApply(
                         refresh_readiness=False,
                         validate_completeness=False,
-                        extracted_source_retention=ExtractedSourceRetention.RETAIN,
                     ),
                 )
             )
@@ -279,7 +275,6 @@ class HarrisImportBoundaryTests(TestCase):
                 load=HarrisApply(
                     refresh_readiness=False,
                     validate_completeness=False,
-                    extracted_source_retention=ExtractedSourceRetention.RETAIN,
                 ),
             )
 
@@ -322,7 +317,6 @@ class HarrisImportBoundaryTests(TestCase):
                     load=HarrisApply(
                         refresh_readiness=False,
                         validate_completeness=False,
-                        extracted_source_retention=ExtractedSourceRetention.RETAIN,
                     ),
                 )
             )
@@ -342,7 +336,6 @@ class HarrisImportBoundaryTests(TestCase):
                     load=HarrisApply(
                         refresh_readiness=False,
                         validate_completeness=False,
-                        extracted_source_retention=ExtractedSourceRetention.RETAIN,
                     ),
                     failure_policy=HarrisFailurePolicy.BEST_EFFORT,
                 )

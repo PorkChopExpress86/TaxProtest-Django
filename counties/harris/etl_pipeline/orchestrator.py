@@ -188,11 +188,6 @@ class HarrisFailurePolicy(StrEnum):
     BEST_EFFORT = "best_effort"
 
 
-class ExtractedSourceRetention(StrEnum):
-    REMOVE_AFTER_SUCCESS = "remove_after_success"
-    RETAIN = "retain"
-
-
 @dataclass(frozen=True, slots=True)
 class HarrisPreview:
     """Translate selected sources without changing persisted Harris data."""
@@ -204,19 +199,12 @@ class HarrisApply:
 
     refresh_readiness: bool = True
     validate_completeness: bool = True
-    extracted_source_retention: ExtractedSourceRetention = (
-        ExtractedSourceRetention.REMOVE_AFTER_SUCCESS
-    )
 
     def __post_init__(self) -> None:
         if not isinstance(self.refresh_readiness, bool):
             raise InvalidHarrisImportRequest("refresh_readiness must be a boolean")
         if not isinstance(self.validate_completeness, bool):
             raise InvalidHarrisImportRequest("validate_completeness must be a boolean")
-        if not isinstance(self.extracted_source_retention, ExtractedSourceRetention):
-            raise InvalidHarrisImportRequest(
-                "extracted_source_retention must be an ExtractedSourceRetention"
-            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -440,22 +428,6 @@ class _HarrisImportExecution:
             status = HarrisImportStatus.PARTIAL
         else:
             status = HarrisImportStatus.FAILED
-
-        if (
-            status is HarrisImportStatus.COMPLETED
-            and wrote_data
-            and isinstance(self.request.load, HarrisApply)
-            and self.request.load.extracted_source_retention
-            is ExtractedSourceRetention.REMOVE_AFTER_SUCCESS
-        ):
-            self.logger.info("Cleaning up selected extracted files after completed import")
-            try:
-                with fenced_write():
-                    self.extract_manager.cleanup(sources=sources)
-            except OSError as exc:
-                self.warnings.append(
-                    f"Import committed, but extracted-source cleanup failed: {exc}"
-                )
 
         return self._finish(started_at, status, wrote_data=wrote_data)
 
@@ -885,7 +857,6 @@ def harris_candidate_load(
             load=HarrisPrepare(
                 refresh_readiness=request.load.refresh_readiness,
                 validate_completeness=request.load.validate_completeness,
-                extracted_source_retention=ExtractedSourceRetention.RETAIN,
             ),
         ),
         _selected_sources(request),
@@ -1006,7 +977,6 @@ def _resolve_data_year(request: HarrisImportRequest) -> int:
 
 
 __all__ = [
-    "ExtractedSourceRetention",
     "HarrisAcquisitionMode",
     "HarrisApply",
     "HarrisPrepare",

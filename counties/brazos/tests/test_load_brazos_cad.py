@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import tempfile
 from decimal import Decimal
+from io import StringIO
 from pathlib import Path
 
 from django.core.management import call_command
@@ -60,6 +61,32 @@ class CadCommandAdapterTests(TestCase):
         staging = ImportOperation.objects.get(county="brazos", intent="cad_source_staging")
         self.assertEqual(staging.status, "completed")
         self.assertEqual(staging.requested_year, 2025)
+
+    def test_keep_extracted_is_accepted_and_warns_without_removing_the_staged_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            extract_dir = root / "extracted" / "2025"
+            extract_dir.mkdir(parents=True)
+            (extract_dir / "APPRAISAL_INFO.TXT").write_text("retained", encoding="utf-8")
+            stderr = StringIO()
+
+            with self.settings(
+                BCAD_DOWNLOAD_DIR=str(root / "downloads"),
+                BCAD_EXTRACT_DIR=str(root / "extracted"),
+            ):
+                call_command(
+                    "load_brazos_cad",
+                    "--skip-ingest",
+                    "--skip-download",
+                    "--skip-extract",
+                    "--keep-extracted",
+                    "--year",
+                    "2025",
+                    stderr=stderr,
+                )
+
+            self.assertIn("--keep-extracted has no effect", stderr.getvalue())
+            self.assertTrue((extract_dir / "APPRAISAL_INFO.TXT").exists())
 
 
 def _line(length: int, fields: dict[tuple[int, int], str]) -> str:

@@ -29,7 +29,6 @@ from .extract import ExtractManager
 from .import_plan import HarrisImportPlan
 from .logging import ETLLogger
 from .orchestrator import (
-    ExtractedSourceRetention,
     HarrisAcquisitionMode,
     HarrisApply,
     HarrisExtractionMode,
@@ -61,7 +60,6 @@ __all__ = [
     "HarrisImportPlan",
     "HarrisSourcePipeline",
     "resolve_schema_name",
-    "ExtractedSourceRetention",
     "HarrisAcquisitionMode",
     "HarrisApply",
     "HarrisPrepare",
