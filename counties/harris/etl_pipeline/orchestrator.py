@@ -20,6 +20,7 @@ from django.db import DatabaseError
 from counties.common.candidate_lifecycle import (
     Applied,
     CandidateLoad,
+    Ending,
     Loaded,
     apply_candidate,
     candidate_operation,
@@ -751,7 +752,6 @@ def run_harris_import(
         raise InvalidHarrisImportRequest("request must be a HarrisImportRequest")
     data_year = _resolve_data_year(request)
     sources = _selected_sources(request)
-    result: HarrisImportResult | None = None
     applied: Applied | None = None
     with candidate_operation(
         "harris",
@@ -759,6 +759,7 @@ def run_harris_import(
         actor=request.actor,
         origin=request.origin,
         requested_year=data_year,
+        shape=_published_after_failure,
     ) as handle:
         operation = handle.import_operation
         if request.candidate_id is not None:
@@ -831,19 +832,21 @@ def run_harris_import(
         }
         operation.warnings.extend(result.warnings)
         operation.errors = list(result.errors)
-    if result is None:
-        # Publication committed; the operation recorded the later failure as a warning.
-        ending = handle.ending
-        return HarrisImportResult(
-            status=HarrisImportStatus.COMPLETED,
-            started_at=datetime.now(),
-            completed_at=datetime.now(),
-            wrote_data=True,
-            operation_id=operation.pk,
-            candidate_id=ending.candidate_id,
-            warnings=ending.warnings,
-        )
-    return result
+        handle.result = result
+    return handle.result
+
+
+def _published_after_failure(ending: Ending, operation: ImportOperation) -> HarrisImportResult:
+    """The result when a committed publication's later failure was suppressed."""
+    return HarrisImportResult(
+        status=HarrisImportStatus.COMPLETED,
+        started_at=datetime.now(),
+        completed_at=datetime.now(),
+        wrote_data=True,
+        operation_id=operation.pk,
+        candidate_id=ending.candidate_id,
+        warnings=ending.warnings,
+    )
 
 
 def harris_candidate_load(

@@ -26,8 +26,8 @@ class ImportOperation(models.Model):
     errors = models.JSONField(default=list)
 
     # In memory only, never persisted (ADR-0024): the candidate this operation prepared or
-    # applied, and the failure a committed publication suppressed.
-    held_candidate: "ImportCandidate | None" = None
+    # applied, published or not, and the failure a committed publication suppressed.
+    touched_candidate: "ImportCandidate | None" = None
     post_publication_failure: str | None = None
 
     class Meta:
