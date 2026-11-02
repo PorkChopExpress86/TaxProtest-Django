@@ -230,6 +230,14 @@ def _published_after_failure(ending: Ending, operation: ImportOperation) -> Prop
     )
 
 
+@dataclass(frozen=True)
+class _PreparedStage:
+    """A source adapter with the preparation it must persist inside the publication fence."""
+
+    stage: AnnualRefreshStage
+    preparation: StagePreparation
+
+
 class BrazosPropertyImport:
     """Prepare and publish a completed or Partial Brazos property snapshot."""
 
@@ -403,22 +411,13 @@ class BrazosPropertyImport:
         self._validate_cad(target_year, cad_preparation)
         self._validate_gis(target_year, gis_preparation)
 
-        with fenced_write():
-            cad_result = self._cad.persist(cad_preparation)
-            gis_result = gis.persist(gis_preparation)
-            snapshot = self._publish_snapshot(
-                tax_year=target_year,
-                outcome=PropertyImportOutcome.COMPLETED,
-                cad_source_year=cad_preparation.source_year,
-                gis_source_year=gis_preparation.source_year,
-            )
-        return PropertyImportResult(
+        return self._publish(
             tax_year=target_year,
             outcome=PropertyImportOutcome.COMPLETED,
-            cad=cad_result,
-            gis=gis_result,
-            snapshot_id=snapshot.id,
-            dry_run=False,
+            cad=_PreparedStage(self._cad, cad_preparation),
+            gis=_PreparedStage(gis, gis_preparation),
+            cad_source_year=cad_preparation.source_year,
+            gis_source_year=gis_preparation.source_year,
         )
 
     def _run_cad_recovery(self, options: RefreshOptions) -> PropertyImportResult:
@@ -426,21 +425,13 @@ class BrazosPropertyImport:
         target_year = options.tax_year or preparation.target_year
         self._validate_cad(target_year, preparation)
 
-        with fenced_write():
-            cad_result = self._cad.persist(preparation)
-            snapshot = self._publish_snapshot(
-                tax_year=target_year,
-                outcome=PropertyImportOutcome.PARTIAL,
-                cad_source_year=preparation.source_year,
-                gis_source_year=None,
-            )
-        return PropertyImportResult(
+        # Explicit partial publication (ADR-0015): the GIS source is not part of it.
+        return self._publish(
             tax_year=target_year,
             outcome=PropertyImportOutcome.PARTIAL,
-            cad=cad_result,
-            gis=None,
-            snapshot_id=snapshot.id,
-            dry_run=False,
+            cad=_PreparedStage(self._cad, preparation),
+            cad_source_year=preparation.source_year,
+            gis_source_year=None,
         )
 
     def _run_gis_recovery(self, options: RefreshOptions) -> PropertyImportResult:
@@ -460,18 +451,43 @@ class BrazosPropertyImport:
         )
         self._validate_gis(target_year, preparation)
 
-        with fenced_write():
-            gis_result = gis.persist(preparation)
-            snapshot = self._publish_snapshot(
-                tax_year=target_year,
-                outcome=PropertyImportOutcome.COMPLETED,
-                cad_source_year=active.cad_source_year,
-                gis_source_year=preparation.source_year,
-            )
-        return PropertyImportResult(
+        # The published CAD rows and their year carry over from the active Partial snapshot.
+        return self._publish(
             tax_year=target_year,
             outcome=PropertyImportOutcome.COMPLETED,
-            cad=None,
+            gis=_PreparedStage(gis, preparation),
+            cad_source_year=active.cad_source_year,
+            gis_source_year=preparation.source_year,
+        )
+
+    def _publish(
+        self,
+        *,
+        tax_year: int,
+        outcome: PropertyImportOutcome,
+        cad_source_year: int,
+        gis_source_year: int | None,
+        cad: _PreparedStage | None = None,
+        gis: _PreparedStage | None = None,
+    ) -> PropertyImportResult:
+        """Persist the prepared stages and publish one snapshot, under one write fence.
+
+        Each flow decides what to validate and which sources to persist; this tail is
+        the only path that replaces the active snapshot.
+        """
+        with fenced_write():
+            cad_result = cad.stage.persist(cad.preparation) if cad else None
+            gis_result = gis.stage.persist(gis.preparation) if gis else None
+            snapshot = self._publish_snapshot(
+                tax_year=tax_year,
+                outcome=outcome,
+                cad_source_year=cad_source_year,
+                gis_source_year=gis_source_year,
+            )
+        return PropertyImportResult(
+            tax_year=tax_year,
+            outcome=outcome,
+            cad=cad_result,
             gis=gis_result,
             snapshot_id=snapshot.id,
             dry_run=False,
