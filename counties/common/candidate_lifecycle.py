@@ -7,10 +7,11 @@ reached only through the county candidate port registered for the county (ADR-00
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from django.core.exceptions import PermissionDenied
 from django.db import DatabaseError, connection, transaction
@@ -78,6 +79,126 @@ class Prepared:
     result: Any  # Loaded.result
 
 
+# Persisted evidence (ADR-0024): an operation that found its candidate already published
+# stores that candidate's id under this key. Counties read it through ``was_already_applied``.
+ALREADY_APPLIED_KEY = "already_applied"
+
+
+@dataclass(frozen=True)
+class Applied:
+    """The typed result of applying a candidate inside its Import operation (ADR-0018).
+
+    The lifecycle owns the mapping from "already applied" to what the operation wrote and
+    the status it ends with; county boundaries only map this to their result shapes.
+    """
+
+    already_applied: bool
+
+    @property
+    def wrote_data(self) -> bool:
+        return not self.already_applied
+
+    @property
+    def operation_status(self) -> OperationStatus:
+        return (
+            OperationStatus.ALREADY_APPLIED if self.already_applied else OperationStatus.PUBLISHED
+        )
+
+
+@dataclass(frozen=True)
+class Ending:
+    """How a candidate's Import operation ended, read once the operation is over.
+
+    ``candidate_id`` comes from the candidate object the lifecycle held, so reading it
+    queries nothing. ``warnings`` holds the failure after a committed publication:
+    recorded on the operation and not raised.
+    """
+
+    candidate_id: UUID | None
+    warnings: tuple[str, ...]
+
+
+Shape = Callable[[Ending, ImportOperation], Any]
+
+
+class CandidateOperation:
+    """An Import operation that prepares or applies one candidate, and its result.
+
+    The body sets ``result`` as its last step. When a failure after a committed
+    publication was suppressed, the body never reaches that step, and the county's
+    ``shape`` builds the result from the ending instead. The only warnings an ending
+    carries come from such a suppressed failure, so they mark it.
+    """
+
+    def __init__(self, import_operation: ImportOperation) -> None:
+        self.import_operation = import_operation
+        self.result: Any = None
+        self._ending: Ending | None = None
+
+    @property
+    def ending(self) -> Ending:
+        """How the operation ended; raises while it runs or when it failed with an error."""
+        if self._ending is None:
+            raise RuntimeError("The Import operation has not ended normally")
+        return self._ending
+
+
+@contextmanager
+def candidate_operation(
+    county: str,
+    intent: str,
+    *,
+    actor: str = "",
+    origin: str = "command",
+    requested_year: int | None = None,
+    publication_before: dict | None = None,
+    shape: Shape | None = None,
+) -> Iterator[CandidateOperation]:
+    """Run one Import operation that may prepare or apply a candidate, typed at its end.
+
+    A failure after a committed publication is suppressed by ``audited_operation`` and
+    recorded as an ending warning, so ``shape`` builds the result from the ending. Any
+    other failure is raised and leaves no ending.
+    """
+    with audited_operation(
+        county,
+        intent,
+        actor=actor,
+        origin=origin,
+        requested_year=requested_year,
+        publication_before=publication_before,
+    ) as import_operation:
+        handle = CandidateOperation(import_operation)
+        yield handle
+    handle._ending = _ending(import_operation)
+    suppressed = bool(handle._ending.warnings)
+    if handle.result is None and suppressed and shape is not None:
+        handle.result = shape(handle._ending, import_operation)
+
+
+def apply_candidate(
+    operation: ImportOperation, candidate_id, *, user=None, reason: str = ""
+) -> Applied:
+    """Publish a candidate inside ``operation`` and return its typed result."""
+    publish(operation, candidate_id, user=user, reason=reason)
+    return Applied(already_applied=was_already_applied(operation))
+
+
+def was_already_applied(operation: ImportOperation) -> bool:
+    """Whether ``operation`` found its candidate already published and wrote nothing."""
+    return ALREADY_APPLIED_KEY in operation.evidence
+
+
+def _ending(operation: ImportOperation) -> Ending:
+    # Pure attribute reads only: this runs after a publication may have committed.
+    candidate = operation.touched_candidate
+    failure = operation.post_publication_failure
+    return Ending(
+        candidate_id=candidate.pk if candidate is not None else None,
+        warnings=(failure,) if failure is not None else (),
+    )
+
+
 def _county_rows(tables: CandidateTables, county: str) -> dict:
     return {model: f" WHERE county = '{county}'" for model in tables.county_scoped}
 
@@ -117,6 +238,7 @@ def prepare(
         request=dict(load.identity),
         evidence={"publication": "Published data unchanged"},
     )
+    operation.touched_candidate = candidate
     operation.evidence["candidate_id"] = str(candidate.pk)
     try:
         previous = port.outcomes(None)
@@ -212,11 +334,12 @@ def publish(
             candidate = ImportCandidate.objects.select_for_update().get(
                 pk=candidate_id, county=county
             )
+            operation.touched_candidate = candidate
             if candidate.state in (CandidateState.PUBLISHED, CandidateState.SUPERSEDED):
                 operation.publication_before = operation.publication_after = published_identity(
                     county
                 )
-                operation.evidence["already_applied"] = str(candidate.pk)
+                operation.evidence[ALREADY_APPLIED_KEY] = str(candidate.pk)
                 operation.status = OperationStatus.ALREADY_APPLIED
                 return candidate
             if measured is not None and candidate.operation_id != operation.pk:

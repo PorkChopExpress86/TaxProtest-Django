@@ -18,7 +18,7 @@ from django.db import close_old_connections, connection
 from django.test import Client, TransactionTestCase
 from django.urls import reverse
 
-from counties.common.candidate_lifecycle import prepare
+from counties.common.candidate_lifecycle import apply_candidate, prepare
 from counties.common.import_audit import audited_operation
 from counties.common.import_writers import WriterConflict, county_writer
 from counties.common.models import ImportAuditEntry, ImportCandidate, ImportOperation
@@ -310,6 +310,34 @@ class HarrisPublicationTests(TransactionTestCase):
             report = self.client.get(reverse("protest_analysis", args=["P0"]))
             self.assertEqual(report.context["subject"].tax_year, 2025)
             self.assertNotEqual(report.context["tax_impact"].completeness, "complete")
+
+    def test_a_failure_after_publication_is_a_warning_on_the_result(self):
+        self.baseline()
+        with tempfile.TemporaryDirectory() as root, self.settings(**_runtime_settings(root)):
+            prepared = run_harris_import(harris_request(root, prepare=True))
+            apply = replace(harris_request(root), candidate_id=prepared.candidate_id)
+            real_apply = apply_candidate
+
+            def publish_then_fail(*args, **kwargs):
+                real_apply(*args, **kwargs)
+                raise OSError("Reporting failed after publication")
+
+            with patch(
+                "counties.harris.etl_pipeline.orchestrator.apply_candidate",
+                side_effect=publish_then_fail,
+            ):
+                applied = run_harris_import(apply)
+            self.assertEqual(applied.status, HarrisImportStatus.COMPLETED)
+            self.assertTrue(applied.wrote_data)
+            self.assertEqual(applied.candidate_id, prepared.candidate_id)
+            self.assertEqual(applied.warnings, ("Reporting failed after publication",))
+            self.assertEqual(
+                ImportCandidate.objects.get(pk=prepared.candidate_id).state, "published"
+            )
+            operation = ImportOperation.objects.get(pk=applied.operation_id)
+            self.assertEqual(operation.status, "published")
+            self.assertEqual(operation.warnings, ["Reporting failed after publication"])
+            self.assertEqual(PropertyRecord.objects.get().address, "")
 
     def test_preview_and_prepare_cannot_apply_a_candidate(self):
         self.baseline()

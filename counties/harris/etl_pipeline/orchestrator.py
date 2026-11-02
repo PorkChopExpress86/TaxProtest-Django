@@ -17,8 +17,15 @@ from django.core.management import call_command
 from django.core.management.base import CommandError as DjangoCommandError
 from django.db import DatabaseError
 
-from counties.common.candidate_lifecycle import CandidateLoad, Loaded, prepare, publish
-from counties.common.import_audit import audited_operation
+from counties.common.candidate_lifecycle import (
+    Applied,
+    CandidateLoad,
+    Ending,
+    Loaded,
+    apply_candidate,
+    candidate_operation,
+    prepare,
+)
 from counties.common.import_recovery import ReplayRejected, copy_exact_source
 from counties.common.import_states import CandidateState, OperationStatus
 from counties.common.import_writers import fenced_write, working_source_root
@@ -745,14 +752,16 @@ def run_harris_import(
         raise InvalidHarrisImportRequest("request must be a HarrisImportRequest")
     data_year = _resolve_data_year(request)
     sources = _selected_sources(request)
-    result: HarrisImportResult | None = None
-    with audited_operation(
+    applied: Applied | None = None
+    with candidate_operation(
         "harris",
         "preview" if isinstance(request.load, HarrisPreview) else request.plan.legacy_scope,
         actor=request.actor,
         origin=request.origin,
         requested_year=data_year,
-    ) as operation:
+        shape=_published_after_failure,
+    ) as handle:
+        operation = handle.import_operation
         if request.candidate_id is not None:
             candidate = ImportCandidate.objects.get(pk=request.candidate_id, county="harris")
             if {key: candidate.request[key] for key in ("plan", "data_year")} != {
@@ -762,13 +771,15 @@ def run_harris_import(
                 raise InvalidHarrisImportRequest(
                     "Candidate request identity differs from application"
                 )
-            publish(operation, candidate.pk, user=reviewer, reason=request.application_reason)
+            applied = apply_candidate(
+                operation, candidate.pk, user=reviewer, reason=request.application_reason
+            )
             completed = HarrisImportResult(
                 status=HarrisImportStatus.COMPLETED,
                 started_at=datetime.now(),
                 completed_at=datetime.now(),
-                wrote_data="already_applied" not in operation.evidence,
-                already_applied="already_applied" in operation.evidence,
+                wrote_data=applied.wrote_data,
+                already_applied=applied.already_applied,
                 candidate_id=candidate.pk,
             )
         elif isinstance(request.load, HarrisApply):
@@ -803,15 +814,14 @@ def run_harris_import(
                 request, sources, data_year, reporter=reporter, operation=operation
             ).run()
         result = replace(completed, operation_id=operation.pk)
-        operation.status = (
-            OperationStatus.ALREADY_APPLIED
-            if result.already_applied
-            else (
+        if applied is not None:
+            operation.status = applied.operation_status
+        else:
+            operation.status = (
                 OperationStatus.PUBLISHED
                 if result.wrote_data
                 else OPERATION_STATUS_FOR_HARRIS_STATUS[result.status]
             )
-        )
         operation.evidence = {
             **operation.evidence,
             "result": result.to_dict(),
@@ -822,18 +832,21 @@ def run_harris_import(
         }
         operation.warnings.extend(result.warnings)
         operation.errors = list(result.errors)
-    if result is None:
-        # Publication committed; the operation recorded the later failure as a warning.
-        return HarrisImportResult(
-            status=HarrisImportStatus.COMPLETED,
-            started_at=datetime.now(),
-            completed_at=datetime.now(),
-            wrote_data=True,
-            operation_id=operation.pk,
-            candidate_id=UUID(operation.evidence["candidate_id"]),
-            warnings=(operation.evidence["post_publication_failure"],),
-        )
-    return result
+        handle.result = result
+    return handle.result
+
+
+def _published_after_failure(ending: Ending, operation: ImportOperation) -> HarrisImportResult:
+    """The result when a committed publication's later failure was suppressed."""
+    return HarrisImportResult(
+        status=HarrisImportStatus.COMPLETED,
+        started_at=datetime.now(),
+        completed_at=datetime.now(),
+        wrote_data=True,
+        operation_id=operation.pk,
+        candidate_id=ending.candidate_id,
+        warnings=ending.warnings,
+    )
 
 
 def harris_candidate_load(

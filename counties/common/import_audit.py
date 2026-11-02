@@ -61,6 +61,8 @@ def audited_operation(
         publication_before=publication_before,
     )
     warnings: list[str] = []
+    # In memory only: the failure that a committed publication suppressed, if any.
+    operation.post_publication_failure = None
     # Its ending is saved before this lock goes, so no writer mistakes it for dead.
     with operation_alive(operation):
         try:
@@ -89,6 +91,8 @@ def audited_operation(
                 )
                 operation.warnings.append(str(exc))
                 operation.evidence["post_publication_failure"] = str(exc)
+                operation.post_publication_failure = str(exc)
+                # Suppressed: the operation ends as published, with this failure as a warning.
                 return
             if operation.status == OperationStatus.COMPLETED_WITH_WARNINGS:
                 operation.warnings.append(str(exc))

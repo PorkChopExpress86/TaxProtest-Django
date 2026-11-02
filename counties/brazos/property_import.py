@@ -27,8 +27,14 @@ from counties.brazos.models import (
     SnapshotOutcome,
 )
 from counties.brazos.readiness import BrazosActiveSnapshotReadiness, BrazosSnapshotFacts
-from counties.common.candidate_lifecycle import CandidateLoad, Loaded, prepare, publish
-from counties.common.import_audit import audited_operation
+from counties.common.candidate_lifecycle import (
+    CandidateLoad,
+    Ending,
+    Loaded,
+    apply_candidate,
+    candidate_operation,
+    prepare,
+)
 from counties.common.import_coverage import OutcomePopulation
 from counties.common.import_states import CandidateState, OperationStatus, operation_status_for
 from counties.common.import_writers import fenced_write
@@ -294,6 +300,22 @@ def brazos_candidate_load(
     )
 
 
+def _published_after_failure(ending: Ending, operation: ImportOperation) -> PropertyImportResult:
+    """The result when a committed publication's later failure was suppressed."""
+    observed = operation.publication_after
+    return PropertyImportResult(
+        tax_year=observed["tax_year"],
+        outcome=PropertyImportOutcome(observed["outcome"]),
+        cad=None,
+        gis=None,
+        snapshot_id=observed["snapshot_id"],
+        dry_run=False,
+        operation_id=operation.pk,
+        candidate_id=ending.candidate_id,
+        cleanup_warnings=ending.warnings,
+    )
+
+
 class BrazosPropertyImport:
     """Prepare and publish a completed or Partial Brazos property snapshot."""
 
@@ -303,8 +325,7 @@ class BrazosPropertyImport:
 
     def run(self, request: PropertyImportRequest, *, reviewer=None) -> PropertyImportResult:
         active = BrazosPropertySnapshot.objects.filter(is_active=True).first()
-        result: PropertyImportResult | None = None
-        with audited_operation(
+        with candidate_operation(
             "brazos",
             "preview" if request.options.dry_run else request.mode.value,
             actor=request.actor,
@@ -313,7 +334,9 @@ class BrazosPropertyImport:
             publication_before=(
                 {"snapshot_id": active.pk, "tax_year": active.tax_year} if active else None
             ),
-        ) as operation:
+            shape=_published_after_failure,
+        ) as handle:
+            operation = handle.import_operation
             if request.candidate_id is not None:
                 candidate = ImportCandidate.objects.get(pk=request.candidate_id, county="brazos")
                 if candidate.request != {
@@ -322,10 +345,11 @@ class BrazosPropertyImport:
                 }:
                     raise ValueError("Candidate request identity differs from application")
                 operation.requested_year = candidate.request["tax_year"]
-                publish(operation, candidate.pk, user=reviewer, reason=request.application_reason)
+                applied = apply_candidate(
+                    operation, candidate.pk, user=reviewer, reason=request.application_reason
+                )
                 active = BrazosPropertySnapshot.objects.get(is_active=True)
-                already = "already_applied" in operation.evidence
-                status = OperationStatus.ALREADY_APPLIED if already else OperationStatus.PUBLISHED
+                status = applied.operation_status
                 completed = PropertyImportResult(
                     tax_year=active.tax_year,
                     outcome=PropertyImportOutcome(active.outcome),
@@ -343,7 +367,7 @@ class BrazosPropertyImport:
                     dry_run=False,
                     candidate_id=candidate.pk,
                     workflow_state=status,
-                    already_applied=already,
+                    already_applied=applied.already_applied,
                 )
             elif request.options.dry_run:
                 completed = self._preview(request, operation)
@@ -391,21 +415,8 @@ class BrazosPropertyImport:
                 ),
             }
             operation.warnings.extend(result.cleanup_warnings)
-        if result is None:
-            # Publication committed; the operation recorded the later failure as a warning.
-            observed = operation.publication_after
-            return PropertyImportResult(
-                tax_year=observed["tax_year"],
-                outcome=PropertyImportOutcome(observed["outcome"]),
-                cad=None,
-                gis=None,
-                snapshot_id=observed["snapshot_id"],
-                dry_run=False,
-                operation_id=operation.pk,
-                candidate_id=UUID(operation.evidence["candidate_id"]),
-                cleanup_warnings=(operation.evidence["post_publication_failure"],),
-            )
-        return result
+            handle.result = result
+        return handle.result
 
     def _run_unstaged(
         self, request: PropertyImportRequest, operation: ImportOperation

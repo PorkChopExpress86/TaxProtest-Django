@@ -19,8 +19,6 @@ IMPORT_MODULES = (
 
 # The one allow-list of literals spelling a status: (module, literal) -> occurrences.
 ALLOWED: dict[tuple[str, str], int] = {
-    # Not statuses: a persisted evidence key (ADR-0024).
-    ("property_import.py", "already_applied"): 1,
     # The workflow state of a preview result; never stored as an operation status.
     ("property_import.py", "validated"): 1,
     # Not statuses: a stored snapshot outcome.
