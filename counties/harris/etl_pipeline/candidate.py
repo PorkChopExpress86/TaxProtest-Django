@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import partial
 from pathlib import Path
 
 from django.conf import settings
@@ -9,18 +10,22 @@ from django.conf import settings
 from counties.common.candidate_lifecycle import CandidateLoad
 from counties.common.candidate_ports import CandidateTables
 from counties.common.import_coverage import OutcomePopulation
+from counties.common.import_recovery import ReplayRejected, copy_exact_source
 from counties.common.import_states import CandidateState
 from counties.common.models import ImportCandidate, ImportOperation
 from counties.harris.models import BuildingDetail, ExtraFeature, PropertyRecord
 from counties.harris.readiness import outcome_populations, published_year
-from counties.harris.source_catalog import HarrisImportStage
+from counties.harris.source_catalog import HarrisImportStage, HcadSourceId
 
+from .config import DataSource, ETLConfig
+from .extract import ExtractManager
 from .import_plan import HarrisImportPlan
 from .orchestrator import (
     HarrisAcquisitionMode,
     HarrisExtractionMode,
     HarrisImportRequest,
     HarrisPrepare,
+    HarrisReplay,
     harris_candidate_load,
 )
 
@@ -76,8 +81,58 @@ class HarrisCandidatePort:
                 ),
             ),
             operation,
-            replayed=source,
+            replay=HarrisReplay(
+                property_source_year=source.evidence.get("property_source_year"),
+                seed=partial(seed_sources, source),
+            ),
         )
+
+
+def seed_sources(
+    replayed: ImportCandidate,
+    config: ETLConfig,
+    sources: list[DataSource],
+    operation: ImportOperation,
+) -> None:
+    """Copy the replayed candidate's retained full inputs exactly into the working roots."""
+    retained = replayed.sources
+    owners = {
+        item.get("source_operation_id") or str(replayed.operation_id)
+        for item in retained
+        if item.get("source_id") == HcadSourceId.REAL_ACCOUNT_OWNER.value
+    }
+    for owner in ImportCandidate.objects.filter(county="harris", operation_id__in=owners):
+        options = owner.request.get("property_file", {})
+        if options.get("append") or options.get("limit") is not None:
+            raise ReplayRejected(
+                "Automatic recovery is unavailable for append or limited publications; "
+                "a reviewed county import of complete source inputs is required"
+            )
+    manager = ExtractManager(config)
+    for source in sources:
+        selected = [item for item in retained if item.get("source_id") == source.source_id.value]
+        if not selected:
+            raise ReplayRejected(f"Retained full Harris inputs are unavailable for {source.name}")
+        copied = set()
+        root = manager.get_extract_path(source)
+        for item in selected:
+            original = Path(item["path"])
+            if original.suffix.lower() == ".zip":
+                destination = manager.get_archive_path(source)
+            else:
+                parent = next(
+                    (parent for parent in original.parents if parent.name == root.name), None
+                )
+                relative = original.relative_to(parent) if parent else Path(original.name)
+                destination = root / relative
+            if destination not in copied:
+                copy_exact_source(item, destination)
+                copied.add(destination)
+                if original.suffix.lower() == ".zip":
+                    operation.evidence.setdefault("acquired_sources", {})[source.filename] = {
+                        "source_url": item.get("source_url"),
+                        "source_year": item.get("source_year"),
+                    }
 
 
 __all__ = [
