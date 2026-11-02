@@ -17,7 +17,7 @@ from counties.brazos.models import (
     SnapshotOutcome,
 )
 from counties.brazos.models import CoordinateEnrichmentOutcome as ModelCoordinateEnrichmentOutcome
-from counties.brazos.property_import import RefreshOptions, StagePreparation
+from counties.brazos.stage_contract import RefreshOptions, StagePreparation
 from counties.brazos.stage_reporting import SilentStageReporter, StageReporter
 from counties.common.import_audit import audited_operation, record_sources
 from counties.common.import_states import OperationStatus

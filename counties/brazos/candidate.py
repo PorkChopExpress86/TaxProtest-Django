@@ -6,17 +6,21 @@ from pathlib import Path
 
 from django.conf import settings
 
-from counties.brazos.cad_refresh import ALL_FILENAMES, CadRefreshStage, _CadStagePayload
-from counties.brazos.gis_refresh import GisRefreshStage, GisSourcePayload
+from counties.brazos.cad_refresh import ALL_FILENAMES, CadRefreshStage
+from counties.brazos.gis_refresh import GisRefreshStage
 from counties.brazos.models import BrazosPropertySnapshot
 from counties.brazos.property_import import (
     MODELS,
+    brazos_candidate_load,
+    outcome_populations,
+)
+from counties.brazos.stage_contract import (
+    CadStagePayload,
+    GisSourcePayload,
     PropertyImportMode,
     PropertyImportRequest,
     RefreshOptions,
     StagePreparation,
-    brazos_candidate_load,
-    outcome_populations,
 )
 from counties.common.candidate_lifecycle import CandidateLoad
 from counties.common.candidate_ports import CandidateTables
@@ -109,7 +113,7 @@ class RetainedCadStage(CadRefreshStage):
             "cad",
             year,
             options.tax_year or year,
-            _CadStagePayload(files, root, archive, self.sources[0].get("source_url") or ""),
+            CadStagePayload(files, root, archive, self.sources[0].get("source_url") or ""),
             (),
         )
 

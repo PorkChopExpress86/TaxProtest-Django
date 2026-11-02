@@ -7,15 +7,12 @@ the candidate's sources. CAD and GIS source stages remain their own adapters.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from enum import StrEnum
-from pathlib import Path
-from typing import Protocol
-from uuid import UUID
 
 from django.core.management.base import CommandError
 
+from counties.brazos.cad_refresh import CadRefreshStage, inspect_cad
+from counties.brazos.gis_refresh import GisRefreshStage, inspect_gis
 from counties.brazos.models import (
     BrazosPropertySnapshot,
     PropertyAccount,
@@ -24,9 +21,19 @@ from counties.brazos.models import (
     PropertyImprovement,
     PropertyImprovementDetail,
     PropertyLand,
-    SnapshotOutcome,
 )
 from counties.brazos.readiness import BrazosActiveSnapshotReadiness, BrazosSnapshotFacts
+from counties.brazos.stage_contract import (
+    AnnualRefreshStage,
+    PropertyImportMode,
+    PropertyImportOutcome,
+    PropertyImportRequest,
+    PropertyImportResult,
+    PropertyImportStage,
+    RefreshOptions,
+    StagePreparation,
+    StageResult,
+)
 from counties.common.candidate_lifecycle import (
     CandidateLoad,
     Ending,
@@ -43,38 +50,6 @@ from counties.common.tax_models import PropertyJurisdictionExemption
 
 
 @dataclass(frozen=True)
-class RefreshOptions:
-    """The narrow operator interface for a complete annual refresh or property import."""
-
-    tax_year: int | None = None
-    source_year: int | None = None
-    force: bool = False
-    skip_download: bool = False
-    skip_extract: bool = False
-    dry_run: bool = False
-    keep_extracted: bool = False
-
-
-@dataclass(frozen=True)
-class StagePreparation:
-    """A source stage prepared for persistence but not yet published."""
-
-    name: str
-    source_year: int
-    target_year: int
-    payload: object
-    cleanup_paths: tuple[Path, ...]
-
-
-@dataclass(frozen=True)
-class StageResult:
-    """The observable outcome of one persisted refresh stage."""
-
-    name: str
-    metrics: Mapping[str, int]
-
-
-@dataclass(frozen=True)
 class AnnualRefreshResult:
     """The stage-aware outcome of a completed or dry-run annual refresh."""
 
@@ -85,67 +60,6 @@ class AnnualRefreshResult:
     workflow_state: str = CandidateState.PUBLISHED
     candidate_id: str | None = None
     operation_id: str | None = None
-
-
-class PropertyImportStage(Protocol):
-    """A source-specific adapter used by the Brazos property import."""
-
-    name: str
-
-    def prepare(self, options: RefreshOptions) -> StagePreparation: ...
-
-    def inspect(self, preparation: StagePreparation, operation: ImportOperation) -> StageResult: ...
-
-    def persist(self, preparation: StagePreparation) -> StageResult: ...
-
-
-AnnualRefreshStage = PropertyImportStage
-
-
-class PropertyImportMode(StrEnum):
-    """The command-adapter request kind accepted by the property import."""
-
-    ANNUAL = "annual"
-    CAD_RECOVERY = "cad_recovery"
-    GIS_RECOVERY = "gis_recovery"
-
-
-PropertyImportOutcome = SnapshotOutcome
-
-
-@dataclass(frozen=True)
-class PropertyImportRequest:
-    """Immutable operator request crossing the property-import seam."""
-
-    mode: PropertyImportMode
-    options: RefreshOptions
-    actor: str = ""
-    origin: str = "operator"
-    prepare_only: bool = False
-    candidate_id: UUID | None = None
-    application_reason: str = ""
-
-    def __post_init__(self):
-        if self.candidate_id is not None and (self.options.dry_run or self.prepare_only):
-            raise ValueError("Candidate application requires explicit publication intent")
-
-
-@dataclass(frozen=True)
-class PropertyImportResult:
-    """Immutable result of a successfully staged property import."""
-
-    tax_year: int
-    outcome: PropertyImportOutcome
-    cad: StageResult | None
-    gis: StageResult | None
-    snapshot_id: int | None
-    dry_run: bool
-    cleanup_warnings: tuple[str, ...] = ()
-    operation_id: UUID | None = None
-    candidate_id: UUID | None = None
-    prepared: bool = False
-    workflow_state: str = CandidateState.PUBLISHED
-    already_applied: bool = False
 
 
 PROPERTY_MODELS = (
@@ -432,8 +346,6 @@ class BrazosPropertyImport:
     def _preview(
         self, request: PropertyImportRequest, operation: ImportOperation
     ) -> PropertyImportResult:
-        from counties.brazos.source_validation import inspect_cad, inspect_gis
-
         # Source preparation actually acquires/extracts the selected bytes. Only
         # persistence is suppressed by a property preview.
         options = replace(request.options, dry_run=False)
@@ -618,9 +530,6 @@ class BrazosPropertyImport:
 def build_default_property_import(reporter: object) -> BrazosPropertyImport:
     """Build the county-owned property import from its two source adapters."""
 
-    from counties.brazos.cad_refresh import CadRefreshStage
-    from counties.brazos.gis_refresh import GisRefreshStage
-
     return BrazosPropertyImport(CadRefreshStage(reporter), GisRefreshStage(reporter))
 
 
@@ -647,9 +556,6 @@ class BrazosAnnualRefresh:
 
 
 def build_default_refresh(reporter: object) -> BrazosAnnualRefresh:
-    from counties.brazos.cad_refresh import CadRefreshStage
-    from counties.brazos.gis_refresh import GisRefreshStage
-
     return BrazosAnnualRefresh(CadRefreshStage(reporter), GisRefreshStage(reporter))
 
 

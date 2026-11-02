@@ -54,7 +54,7 @@ import logging
 import math
 import re
 import shutil
-from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -66,7 +66,13 @@ from django.core.management.base import CommandError
 from counties.brazos.gis_coordinates import interpret_gis_coordinates, normalize_prop_id
 from counties.brazos.models import PropertyAccount
 from counties.brazos.portal import USER_AGENT, download_archive, extract_zip
-from counties.brazos.property_import import RefreshOptions, StagePreparation, StageResult
+from counties.brazos.source_validation import retain_sources
+from counties.brazos.stage_contract import (
+    GisSourcePayload,
+    RefreshOptions,
+    StagePreparation,
+    StageResult,
+)
 from counties.brazos.stage_reporting import SilentStageReporter, StageReporter
 from counties.common.import_writers import working_source_root
 from counties.common.models import ImportOperation
@@ -131,14 +137,6 @@ def _clean_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
-
-
-@dataclass(frozen=True)
-class GisSourcePayload:
-    shapefile_path: Path | None
-    extract_dir: Path
-    archive: Path | None = None
-    source_url: str = ""
 
 
 class GisRefreshStage:
@@ -449,8 +447,6 @@ class GisRefreshStage:
 
     def inspect(self, preparation: StagePreparation, operation: ImportOperation) -> StageResult:
         """Inspect and record evidence for prepared GIS inputs without persisting."""
-        from counties.brazos.source_validation import inspect_gis
-
         return inspect_gis(operation, preparation)
 
     def persist(self, preparation: StagePreparation) -> StageResult:
@@ -484,3 +480,46 @@ class GisRefreshStage:
         if payload.extract_dir.exists():
             shutil.rmtree(payload.extract_dir, ignore_errors=True)
             self.stdout.write(self.style.SUCCESS("Cleaned up GIS extracted files."))
+
+
+def inspect_gis(operation: ImportOperation, preparation: StagePreparation) -> StageResult:
+    """Retain the selected parcel layer and record its inspection without persisting."""
+    import geopandas as gpd
+
+    payload = preparation.payload
+    if not isinstance(payload, GisSourcePayload) or payload.shapefile_path is None:
+        raise CommandError("A validated GIS preview requires a prepared parcel shapefile.")
+    paths = sorted(payload.shapefile_path.parent.glob(payload.shapefile_path.stem + ".*"))
+    retain_sources(operation, preparation, paths)
+    try:
+        frame = gpd.read_file(payload.shapefile_path)
+        evidence = interpret_gis_coordinates(frame)
+    except Exception as exc:
+        raise CommandError(f"Unusable requested GIS: {exc}") from exc
+    if not evidence.usable_coordinate_records:
+        raise CommandError("Unusable requested GIS: no usable parcel coordinates.")
+    if evidence.duplicate_source_ids:
+        raise CommandError("Conflicting or repeated canonical GIS property keys.")
+    for latitude, longitude in evidence.coordinates.values():
+        if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+            raise CommandError("Unusable requested GIS: coordinates outside geographic bounds.")
+    for raw in frame["PROP_ID"]:
+        try:
+            numeric = Decimal(str(raw))
+            if (
+                not numeric.is_finite()
+                or numeric <= 0
+                or numeric >= 10**12
+                or numeric != numeric.to_integral_value()
+            ):
+                raise InvalidOperation
+        except InvalidOperation as exc:
+            raise CommandError("Invalid canonical GIS property key.") from exc
+    return StageResult(
+        name="gis",
+        metrics={
+            "source_records": evidence.source_records,
+            "usable_coordinate_records": evidence.usable_coordinate_records,
+            "invalid_coordinate_records": evidence.invalid_coordinate_records,
+        },
+    )
