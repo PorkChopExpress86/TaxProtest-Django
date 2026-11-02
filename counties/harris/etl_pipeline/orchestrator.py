@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import Enum, StrEnum
@@ -26,7 +26,6 @@ from counties.common.candidate_lifecycle import (
     candidate_operation,
     prepare,
 )
-from counties.common.import_recovery import ReplayRejected, copy_exact_source
 from counties.common.import_states import CandidateState, OperationStatus
 from counties.common.import_writers import fenced_write, working_source_root
 from counties.common.models import ImportCandidate, ImportOperation
@@ -36,7 +35,6 @@ from counties.harris.source_catalog import (
     DEFAULT_HCAD_SOURCE_CATALOG,
     REAL_ACCT_MEMBER_PATH,
     HarrisImportStage,
-    HcadSourceId,
 )
 
 from .config import DataSource, DataSourceType, ETLConfig
@@ -230,6 +228,18 @@ class HarrisPropertyFile:
     batch_size: int = 5000
 
 
+@dataclass(frozen=True)
+class HarrisReplay:
+    """A replayed candidate's retained inputs, copied into the working roots before any phase.
+
+    ``seed`` copies the retained full inputs for the selected sources exactly; the candidate
+    module supplies it. ``property_source_year`` is the year the replayed property rows came from.
+    """
+
+    property_source_year: int | None
+    seed: Callable[[ETLConfig, list[DataSource], ImportOperation], None]
+
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class HarrisImportRequest:
     """One complete, validated request to import catalog-selected HCAD data."""
@@ -311,22 +321,21 @@ class _HarrisImportExecution:
         logger: ETLLogger | None = None,
         reporter: HarrisImportReporter | None = None,
         operation: ImportOperation | None = None,
-        replayed: ImportCandidate | None = None,
+        replay: HarrisReplay | None = None,
     ):
         self.request = request
         self.operation = operation
         self.sources = sources
         self.data_year = data_year
         self.config = config or ETLConfig.from_env()
+        # A replay starts from fresh working roots and then receives its retained inputs.
         self.config.download_dir = working_source_root(
-            self.config.download_dir, reuse=replayed is None
+            self.config.download_dir, reuse=replay is None
         )
-        self.config.extract_dir = working_source_root(
-            self.config.extract_dir, reuse=replayed is None
-        )
-        if replayed is not None:
+        self.config.extract_dir = working_source_root(self.config.extract_dir, reuse=replay is None)
+        if replay is not None:
             assert operation is not None
-            seed_sources(self.config, sources, replayed, operation)
+            replay.seed(self.config, sources, operation)
         if request.property_file is not None:
             destination = self.config.extract_dir / REAL_ACCT_MEMBER_PATH
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -854,11 +863,11 @@ def harris_candidate_load(
     operation: ImportOperation,
     *,
     reporter: HarrisImportReporter | None = None,
-    replayed: ImportCandidate | None = None,
+    replay: HarrisReplay | None = None,
 ) -> CandidateLoad:
     """Set up the request's Harris sources, returning the load that stages their rows.
 
-    Setup (working source roots, a property file, or ``replayed``'s retained sources)
+    Setup (working source roots, a property file, or a replay's retained sources)
     runs now, inside ``operation`` and before any candidate exists, so rejected
     sources never stage a candidate.
     """
@@ -876,10 +885,10 @@ def harris_candidate_load(
         data_year,
         reporter=reporter,
         operation=operation,
-        replayed=replayed,
+        replay=replay,
     )
-    if replayed is not None:
-        source_year = replayed.evidence.get("property_source_year")
+    if replay is not None:
+        source_year = replay.property_source_year
     elif HarrisImportStage.PROPERTY not in request.plan.stages:
         source_year = published_year()
     else:
@@ -927,48 +936,6 @@ def harris_candidate_load(
     )
 
 
-def seed_sources(config, sources, replayed: ImportCandidate, operation: ImportOperation):
-    """Copy the replayed candidate's retained full inputs exactly into the working roots."""
-    retained = replayed.sources
-    owners = {
-        item.get("source_operation_id") or str(replayed.operation_id)
-        for item in retained
-        if item.get("source_id") == HcadSourceId.REAL_ACCOUNT_OWNER.value
-    }
-    for owner in ImportCandidate.objects.filter(county="harris", operation_id__in=owners):
-        options = owner.request.get("property_file", {})
-        if options.get("append") or options.get("limit") is not None:
-            raise ReplayRejected(
-                "Automatic recovery is unavailable for append or limited publications; "
-                "a reviewed county import of complete source inputs is required"
-            )
-    manager = ExtractManager(config)
-    for source in sources:
-        selected = [item for item in retained if item.get("source_id") == source.source_id.value]
-        if not selected:
-            raise ReplayRejected(f"Retained full Harris inputs are unavailable for {source.name}")
-        copied = set()
-        root = manager.get_extract_path(source)
-        for item in selected:
-            original = Path(item["path"])
-            if original.suffix.lower() == ".zip":
-                destination = manager.get_archive_path(source)
-            else:
-                parent = next(
-                    (parent for parent in original.parents if parent.name == root.name), None
-                )
-                relative = original.relative_to(parent) if parent else Path(original.name)
-                destination = root / relative
-            if destination not in copied:
-                copy_exact_source(item, destination)
-                copied.add(destination)
-                if original.suffix.lower() == ".zip":
-                    operation.evidence.setdefault("acquired_sources", {})[source.filename] = {
-                        "source_url": item.get("source_url"),
-                        "source_year": item.get("source_year"),
-                    }
-
-
 def _selected_sources(request: HarrisImportRequest) -> list[DataSource]:
     sources = request.plan.select_sources(DEFAULT_HCAD_SOURCE_CATALOG.required_sources())
     if not sources:
@@ -1004,6 +971,7 @@ __all__ = [
     "HarrisImportStatus",
     "HarrisLoadIntent",
     "HarrisPreview",
+    "HarrisReplay",
     "InvalidHarrisImportRequest",
     "harris_candidate_load",
     "run_harris_import",

@@ -15,6 +15,9 @@ This supersedes the portions of ADR-0002 and ADR-0007 that permit earlier datase
 commits to change shared reads after a failed replacement. It does not prescribe
 the staging mechanism or change the individual persistence-call contract.
 
-Implementation is pending: the current Harris orchestrator writes datasets before
-refreshing readiness and validating completeness, and Property replacement
-invalidates dependent Building and Extra Feature rows.
+Implemented: every Harris replacement is loaded into a candidate's staged tables,
+where readiness is refreshed and completeness validated before anything is published.
+Publication exchanges the staged Property, Building and Extra Feature tables in together
+(ADR-0018, ADR-0025), so the previous dataset serves shared reads until then.
+`HarrisFailedReplacementTests` in `counties/harris/etl_pipeline/tests/test_import_candidate.py`
+verifies this for an interrupted building stage and for a blocked replacement.
