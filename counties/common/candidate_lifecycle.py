@@ -126,7 +126,8 @@ class CandidateOperation:
 
     The body sets ``result`` as its last step. When a failure after a committed
     publication was suppressed, the body never reaches that step, and the county's
-    ``shape`` builds the result from the ending instead.
+    ``shape`` builds the result from the ending instead. The only warnings an ending
+    carries come from such a suppressed failure, so they mark it.
     """
 
     def __init__(self, import_operation: ImportOperation) -> None:
@@ -155,9 +156,9 @@ def candidate_operation(
 ) -> Iterator[CandidateOperation]:
     """Run one Import operation that may prepare or apply a candidate, typed at its end.
 
-    A failure after a committed publication is suppressed by ``audited_operation``, so the
-    result is built by ``shape`` from the ending. Any other failure is raised and leaves
-    no ending.
+    A failure after a committed publication is suppressed by ``audited_operation`` and
+    recorded as an ending warning, so ``shape`` builds the result from the ending. Any
+    other failure is raised and leaves no ending.
     """
     with audited_operation(
         county,
@@ -170,7 +171,8 @@ def candidate_operation(
         handle = CandidateOperation(import_operation)
         yield handle
     handle._ending = _ending(import_operation)
-    if handle.result is None and shape is not None:
+    suppressed = bool(handle._ending.warnings)
+    if handle.result is None and suppressed and shape is not None:
         handle.result = shape(handle._ending, import_operation)
 
 

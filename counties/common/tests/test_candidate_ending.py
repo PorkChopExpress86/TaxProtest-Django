@@ -85,6 +85,15 @@ class CandidateEndingTests(TransactionTestCase):
 
         self.assertEqual(handle.result, "completed")
 
+    def test_a_body_with_no_result_and_no_failure_is_not_shaped(self):
+        def shape(ending, operation):
+            raise AssertionError("shape runs only after a suppressed failure")
+
+        with candidate_operation(FAKE_COUNTY, "preview", actor="operator", shape=shape) as handle:
+            pass
+
+        self.assertIsNone(handle.result)
+
     def test_an_operation_without_a_candidate_has_no_candidate(self):
         with candidate_operation(FAKE_COUNTY, "preview", actor="operator") as handle:
             pass
