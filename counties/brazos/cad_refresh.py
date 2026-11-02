@@ -60,6 +60,7 @@ from counties.brazos.models import (
     PropertyImprovementDetail,
     PropertyLand,
 )
+from counties.brazos.parsers import pacs
 from counties.brazos.parsers.pacs import (
     iter_pacs_lines,
     parse_entity_info_line,
@@ -76,7 +77,13 @@ from counties.brazos.portal import (
     extract_zip,
     resolve_timestamped_file,
 )
-from counties.brazos.property_import import RefreshOptions, StagePreparation, StageResult
+from counties.brazos.source_validation import retain_sources
+from counties.brazos.stage_contract import (
+    CadStagePayload,
+    RefreshOptions,
+    StagePreparation,
+    StageResult,
+)
 from counties.brazos.stage_reporting import SilentStageReporter, StageReporter
 from counties.common.import_writers import working_source_root
 from counties.common.models import ImportOperation
@@ -227,14 +234,6 @@ PACS_PREFLIGHT_SPECS: tuple[_PacsPreflightSpec, ...] = (
         ("prop_id", "tax_unit_code"),
     ),
 )
-
-
-@dataclass(frozen=True)
-class _CadStagePayload:
-    text_files: dict[str, Path]
-    extract_dir: Path
-    archive: Path | None = None
-    source_url: str = ""
 
 
 class CadRefreshStage:
@@ -873,7 +872,7 @@ class CadRefreshStage:
             name=self.name,
             source_year=source_year,
             target_year=target_year,
-            payload=_CadStagePayload(
+            payload=CadStagePayload(
                 text_files=text_files, extract_dir=extract_dir, archive=archive, source_url=url
             ),
             cleanup_paths=(extract_dir,),
@@ -887,7 +886,7 @@ class CadRefreshStage:
         incomplete certified export.
         """
         payload = preparation.payload
-        if not isinstance(payload, _CadStagePayload):
+        if not isinstance(payload, CadStagePayload):
             raise TypeError("CAD stage received a preparation from another adapter")
 
         missing = sorted(set(ALL_FILENAMES) - set(payload.text_files))
@@ -920,14 +919,12 @@ class CadRefreshStage:
 
     def inspect(self, preparation: StagePreparation, operation: ImportOperation) -> StageResult:
         """Inspect and record evidence for prepared CAD inputs without persisting."""
-        from counties.brazos.source_validation import inspect_cad
-
         return inspect_cad(operation, preparation)
 
     def persist(self, preparation: StagePreparation) -> StageResult:
         """Replace the target year's certified rows inside the caller's transaction."""
         payload = preparation.payload
-        if not isinstance(payload, _CadStagePayload):
+        if not isinstance(payload, CadStagePayload):
             raise TypeError("CAD stage received a preparation from another adapter")
 
         results = self._ingest_all(
@@ -943,8 +940,62 @@ class CadRefreshStage:
     def cleanup(self, preparation: StagePreparation) -> None:
         """Remove CAD extraction output after a completed refresh."""
         payload = preparation.payload
-        if not isinstance(payload, _CadStagePayload):
+        if not isinstance(payload, CadStagePayload):
             raise TypeError("CAD stage received a preparation from another adapter")
         if payload.extract_dir.exists():
             shutil.rmtree(payload.extract_dir, ignore_errors=True)
             self.stdout.write(self.style.SUCCESS("Cleaned up CAD extracted files."))
+
+
+_CAD_LAYOUTS = {
+    "APPRAISAL_INFO.TXT": (pacs.INFO_LAYOUT, ("prop_id",)),
+    "APPRAISAL_LAND_DETAIL.TXT": (pacs.LAND_DETAIL_LAYOUT, ("prop_id", "land_seq")),
+    "APPRAISAL_IMPROVEMENT_INFO.TXT": (pacs.IMPROVEMENT_INFO_LAYOUT, ("prop_id", "imp_id")),
+    "APPRAISAL_IMPROVEMENT_DETAIL.TXT": (
+        pacs.IMPROVEMENT_DETAIL_LAYOUT,
+        ("prop_id", "imp_id", "detail_seq"),
+    ),
+    "APPRAISAL_IMPROVEMENT_DETAIL_ATTR.TXT": (
+        pacs.IMPROVEMENT_DETAIL_ATTR_LAYOUT,
+        ("prop_id", "imp_id", "detail_seq", "attribute_type", "attribute_value"),
+    ),
+    "APPRAISAL_ENTITY_INFO.TXT": (pacs.ENTITY_INFO_LAYOUT, ("prop_id", "tax_unit_code")),
+}
+
+
+def inspect_cad(operation: ImportOperation, preparation: StagePreparation) -> StageResult:
+    """Retain the selected CAD inputs and record their inspection without persisting."""
+    payload = preparation.payload
+    if not isinstance(payload, CadStagePayload):
+        raise CommandError("A validated CAD preview requires inspectable PACS files.")
+    retain_sources(operation, preparation, list(payload.text_files.values()))
+    CadRefreshStage().validate_preflight(preparation)
+    counts = {}
+    duplicates = {}
+    for filename, (layout, keys) in _CAD_LAYOUTS.items():
+        seen = {}
+        count = duplicate = 0
+        for number, line in enumerate(CadRefreshStage._iter_lines(payload.text_files[filename]), 1):
+            fields = pacs.parse_fixed_width(line, layout)
+            prop_id = fields["prop_id"]
+            if not prop_id.isdigit() or len(prop_id) != 12:
+                raise CommandError(f"Invalid canonical property key in {filename}, row {number}.")
+            malformed = pacs.malformed_numeric_fields(line, layout)
+            if malformed:
+                raise CommandError(f"Malformed numeric {malformed[0]} in {filename}, row {number}.")
+            key = tuple(fields[name] for name in keys)
+            fingerprint = pacs.row_fingerprint(fields)
+            if key in seen:
+                if seen[key] != fingerprint:
+                    raise CommandError(f"Conflicting canonical key in {filename}, row {number}.")
+                duplicate += 1
+            else:
+                seen[key] = fingerprint
+            count += 1
+        counts[filename] = count
+        duplicates[filename] = duplicate
+    operation.evidence["cad_inspection"] = {
+        "records_by_file": counts,
+        "duplicates_by_file": duplicates,
+    }
+    return StageResult(name="cad", metrics=counts)
