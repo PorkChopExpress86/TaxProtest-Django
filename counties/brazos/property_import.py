@@ -476,8 +476,8 @@ class BrazosPropertyImport:
         the only path that replaces the active snapshot.
         """
         with fenced_write():
-            cad_result = cad.stage.persist(cad.preparation) if cad else None
-            gis_result = gis.stage.persist(gis.preparation) if gis else None
+            cad_result = cad.stage.persist(cad.preparation) if cad is not None else None
+            gis_result = gis.stage.persist(gis.preparation) if gis is not None else None
             snapshot = self._publish_snapshot(
                 tax_year=tax_year,
                 outcome=outcome,
