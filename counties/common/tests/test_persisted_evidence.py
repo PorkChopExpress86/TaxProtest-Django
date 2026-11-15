@@ -15,6 +15,7 @@ import tempfile
 from pathlib import Path
 from uuid import UUID
 
+from django.core.management.base import CommandError
 from django.db import connection
 from django.test import SimpleTestCase, TransactionTestCase
 
@@ -235,6 +236,57 @@ class BrazosAnnualCoverageEvidenceTests(TransactionTestCase):
             {("path", "sha256", "source_url", "source_year", "stage", "target_year")},
         )
         self.assertEqual({source["stage"] for source in candidate.sources}, {"cad", "gis"})
+
+
+class BrazosFailedPreflightEvidenceTests(TransactionTestCase):
+    """A failed import stores evidence too: its warnings in order, failure and sources."""
+
+    maxDiff = None
+
+    def tearDown(self):
+        with connection.cursor() as cursor:
+            for candidate in ImportCandidate.objects.all():
+                cursor.execute(f'DROP SCHEMA IF EXISTS "{candidate.storage_schema}" CASCADE')
+        super().tearDown()
+
+    def test_missing_pacs_files_store_the_pinned_failure(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            identities = [str(number + 10013).zfill(12) for number in range(4)]
+            write_pacs(root, identities, equity=True)
+            write_gis(root, identities)
+            for name in ("APPRAISAL_ENTITY_INFO.TXT", "APPRAISAL_IMPROVEMENT_DETAIL_ATTR.TXT"):
+                (root / "extracted" / "2026" / name).unlink()
+            with (
+                self.settings(
+                    BCAD_DOWNLOAD_DIR=str(root / "downloads"),
+                    BCAD_EXTRACT_DIR=str(root / "extracted"),
+                ),
+                self.assertRaisesRegex(CommandError, "missing required PACS"),
+            ):
+                BrazosPropertyImport(CadRefreshStage(), GisRefreshStage()).run(
+                    PropertyImportRequest(
+                        mode=PropertyImportMode.ANNUAL,
+                        options=RefreshOptions(
+                            tax_year=2026, skip_download=True, skip_extract=True
+                        ),
+                        prepare_only=True,
+                    )
+                )
+        operation = ImportOperation.objects.get(county="brazos")
+        pinned = (PINNED / "brazos_failed_preflight.json").read_text().strip()
+        for placeholder, value in {"{root}": str(root), "{operation}": str(operation.pk)}.items():
+            pinned = pinned.replace(placeholder, value)
+        # Warnings and sources keep the order the CAD stage resolved its files in.
+        self.assertEqual(
+            {
+                "errors": operation.errors,
+                "sources": operation.evidence["sources"],
+                "status": operation.status,
+                "warnings": operation.warnings,
+            },
+            json.loads(pinned),
+        )
 
 
 OPERATION_LOCK_FAMILY = 1414549328

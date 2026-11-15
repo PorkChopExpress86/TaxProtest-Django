@@ -15,6 +15,15 @@ Exit codes, strict-mode failures, Celery result keys and persisted evidence are 
 (ADR-0002, ADR-0024). A refactor that reroutes how a result is classified keeps a test that
 goes red if a strict run that ends incomplete stops failing, or if an exit code changes.
 
+Order is part of a contract. When a refactor changes the order a collection is built or walked
+in, check every stored list, warning and message that follows it, including failure paths
+(ADR-0024).
+
+## Review scope
+
+Where the spec freezes a file or limits its edits to forced ones, style and naming findings in
+that file are reported, not applied.
+
 ## Domain vocabulary
 
 Use the terms defined in `CONTEXT.md` for new and edited symbols, docstrings, comments and

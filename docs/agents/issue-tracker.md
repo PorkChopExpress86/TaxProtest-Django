@@ -5,7 +5,7 @@ Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all o
 ## Conventions
 
 - **Create an issue**: `gh issue create --title "..." --body "..."`. Use a heredoc for multi-line bodies.
-- **Read an issue**: `gh issue view <number> --comments`, filtering comments by `jq` and also fetching labels.
+- **Read an issue**: `gh issue view <number> --json number,title,body,labels,comments --jq '{number, title, body, labels: [.labels[].name], comments: [.comments[].body]}'`. Plain `--comments` prints only the comments, so on an issue with none it prints nothing at all.
 - **List issues**: `gh issue list --state open --json number,title,body,labels,comments --jq '[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]'` with appropriate `--label` and `--state` filters.
 - **Comment on an issue**: `gh issue comment <number> --body "..."`
 - **Apply / remove labels**: `gh issue edit <number> --add-label "..."` / `--remove-label "..."`
@@ -13,13 +13,26 @@ Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all o
 
 Infer the repo from `git remote -v` — `gh` does this automatically when run inside a clone.
 
+## Starting work on an issue
+
+Before building, look for work already started on it:
+
+```bash
+gh pr list --state open --search "<n> in:body"
+git branch -a --list "*<n>*"
+```
+
+If either finds a branch or pull request, ask the user before starting. When you start, assign
+the issue (`gh issue edit <n> --add-assignee @me`) and comment the branch name on it, so the
+next agent finds the work from the issue.
+
 ## Pull requests as a triage surface
 
 **PRs as a request surface: no.** _(Set to `yes` if this repo treats external PRs as feature requests; `/triage` reads this flag.)_
 
 When set to `yes`, PRs run through the same labels and states as issues, using the `gh pr` equivalents:
 
-- **Read a PR**: `gh pr view <number> --comments` and `gh pr diff <number>` for the diff.
+- **Read a PR**: `gh pr view <number> --json number,title,body,labels,comments` and `gh pr diff <number>` for the diff.
 - **List external PRs for triage**: `gh pr list --state open --json number,title,body,labels,author,authorAssociation,comments` then keep only `authorAssociation` of `CONTRIBUTOR`, `FIRST_TIME_CONTRIBUTOR`, or `NONE` (drop `OWNER`/`MEMBER`/`COLLABORATOR`).
 - **Comment / label / close**: `gh pr comment`, `gh pr edit --add-label`/`--remove-label`, `gh pr close`.
 
@@ -27,11 +40,28 @@ GitHub shares one number space across issues and PRs, so a bare `#42` may be eit
 
 ## When a skill says "publish to the issue tracker"
 
-Create a GitHub issue.
+Create a GitHub issue. A ticket an agent will implement is read cold, so it carries:
+
+- **Where**: the files and symbols it touches (file and symbol, never line numbers).
+- **Checked premises**: every claim about today's code, read from the code before publishing:
+  which message fires, which callers reach a branch, how a helper handles errors. A ticket that
+  keeps a branch names a caller that reaches it. (#179 assumed a validation message that does not
+  exist, and kept a warning only its unit test reaches.)
+- **An observation point per criterion**: the real interface each acceptance criterion is read
+  through. (#176 asked for per-dataset load counts at an entry point whose result reports totals.)
+- **A characterization net that can go red**: the fixture's required cases, or the breakages its
+  tests must catch, and a run on the base commit before it merges.
+- **Scoped "unchanged" rules**: which tests must pass unchanged (the entry-point contract tests).
+  Unit tests of the module being reshaped take mechanical signature edits; otherwise the code
+  keeps dead parameters to fit them.
+- **Plural and failure cases**: for anything read once or shared, what happens with several
+  matching files and on a read failure.
+- **Doc edits as target meaning**: the sentence's intended meaning after the edit, so a
+  surrounding clause cannot be left contradicting it.
 
 ## When a skill says "fetch the relevant ticket"
 
-Run `gh issue view <number> --comments`.
+Run the **Read an issue** command above.
 
 ## Wayfinding operations
 

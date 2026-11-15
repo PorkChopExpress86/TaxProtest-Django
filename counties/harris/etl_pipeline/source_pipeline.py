@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from itertools import islice
-from pathlib import Path
 from typing import Any
 
 from django.db import DatabaseError
@@ -13,8 +12,6 @@ from django.db import DatabaseError
 from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG, HcadSourceId
 
 from .config import DataSource
-from .extract import ExtractManager
-from .fixtures_aggregator import FixturesAggregator
 from .logging import ETLLogger
 from .persistence import (
     PersistenceDataset,
@@ -23,24 +20,8 @@ from .persistence import (
     UnsafeReplacementError,
     persistence_for_connection,
 )
-from .row_reader import RowResult, iter_building_rows, iter_extra_feature_rows, iter_property_rows
-
-
-def resolve_schema_name(filename_stem: str) -> str | None:
-    """Map a source filename stem to a transform schema name."""
-    filename = filename_stem.lower()
-
-    # Skip code description files (lookup tables, not actual data)
-    if filename.startswith("desc_"):
-        return None
-
-    if filename == "real_acct":
-        return "real_acct"
-    if filename == "building_res":
-        return "building_res"
-    if filename == "extra_features" or filename.startswith("extra_features_detail"):
-        return "extra_features"
-    return None
+from .row_reader import RowResult
+from .source_reading import HcadDataset, HcadSourceReading, TranslatedFile
 
 
 @dataclass(frozen=True)
@@ -63,18 +44,21 @@ class TabularSourceResult:
 
 
 class HarrisSourcePipeline:
-    """Encapsulates tabular data transformation, account mapping, and persistence loading."""
+    """Persists the translated rows of the import's HCAD source reading, source by source.
+
+    ``reading`` is the HCAD source reading the import built once and validated; room counts
+    come from it. The load supplies the residential account map, read from the staged table
+    after the property persist.
+    """
 
     def __init__(
         self,
         *,
-        extract_manager: ExtractManager,
-        fixtures_aggregator: FixturesAggregator,
+        reading: HcadSourceReading,
         property_file: Any = None,
         logger: ETLLogger | Any = None,
     ) -> None:
-        self.extract_manager = extract_manager
-        self.fixtures_aggregator = fixtures_aggregator
+        self.reading = reading
         self.property_file = property_file
         self.logger = logger
         self._account_to_property: dict[str, int] | None = None
@@ -99,93 +83,56 @@ class HarrisSourcePipeline:
                 )
         return self._account_to_property
 
-    def preload_fixtures(self, sources: list[DataSource]) -> None:
-        """Pre-load fixtures.txt to extract bedroom/bathroom counts."""
+    def preload_fixtures(self) -> None:
+        """Make sure the reading's room counts are read before any building is translated.
+
+        Source validation has normally read them already; the reading reads them only once.
+        """
         if self.logger:
             self.logger.info("Pre-loading fixtures for bedroom/bathroom data...")
 
-        for source in sources:
-            if DEFAULT_HCAD_SOURCE_CATALOG.is_source(source, HcadSourceId.REAL_BUILDING_LAND):
-                # fixtures.txt is a declared member of the building-land source.
-                fixtures_path = self.extract_manager.get_extract_path(source) / "fixtures.txt"
+        building_sources = [
+            source
+            for source in self.reading.sources
+            if DEFAULT_HCAD_SOURCE_CATALOG.is_source(source.source, HcadSourceId.REAL_BUILDING_LAND)
+        ]
+        if not building_sources:
+            if self.logger:
+                self.logger.warning("Real Building Land source not found in sources list")
+            return
 
-                if fixtures_path.exists():
-                    try:
-                        self.fixtures_aggregator.load_fixtures_file(fixtures_path)
-                        stats = self.fixtures_aggregator.get_stats()
-                        if self.logger:
-                            self.logger.info(
-                                f"Fixtures loaded: {stats['total_buildings']:,} buildings, "
-                                f"{stats['with_bedrooms']:,} with bedrooms, "
-                                f"{stats['with_bathrooms']:,} with bathrooms"
-                            )
-                        return
-                    except (OSError, UnicodeError, ValueError, KeyError) as e:
-                        if self.logger:
-                            self.logger.error(f"Error loading fixtures: {e}")
-                        return
-                else:
-                    if self.logger:
-                        self.logger.warning(f"Fixtures file not found: {fixtures_path}")
-                    return
+        if not any(source.files(HcadDataset.ROOM_COUNTS) for source in building_sources):
+            if self.logger:
+                extract_dirs = ", ".join(str(source.extract_dir) for source in building_sources)
+                self.logger.warning(f"Fixtures file not found under {extract_dirs}")
+            return
 
-        if self.logger:
-            self.logger.warning("Real Building Land source not found in sources list")
-
-    def iter_translated_rows(
-        self,
-        schema_name: str,
-        file_path: Path,
-        *,
-        feature_ordinals: dict[tuple[str, str, int], int] | None = None,
-    ) -> Iterator[RowResult]:
-        """Return the shared translation stream for one supported source file."""
-        if schema_name == "real_acct":
-            return iter_property_rows(file_path)
-
-        account_map = self.get_account_to_property_map()
-        if schema_name == "building_res":
-            return iter_building_rows(
-                file_path,
-                account_map,
-                self.fixtures_aggregator,
-            )
-        if schema_name == "extra_features":
-            return iter_extra_feature_rows(file_path, account_map, ordinals=feature_ordinals)
-        raise ValueError(f"Unsupported translated schema: {schema_name}")
+        for source in building_sources:
+            stats = source.room_counts().get_stats()
+            if self.logger:
+                self.logger.info(
+                    f"Fixtures loaded: {stats['total_buildings']:,} buildings, "
+                    f"{stats['with_bedrooms']:,} with bedrooms, "
+                    f"{stats['with_bathrooms']:,} with bathrooms"
+                )
 
     def process_data_file(
         self,
-        file_path: Path,
+        translated: TranslatedFile,
         *,
-        skip_load: bool = False,
         truncate: bool = True,
     ) -> SourceFileCounts:
-        """Process a single tabular data file."""
-        filename = file_path.stem.lower()
-        schema_name = resolve_schema_name(filename)
-
-        if not schema_name:
-            if self.logger:
-                self.logger.debug(f"No schema for {file_path.name}, skipping")
-            return SourceFileCounts()
+        """Process a single Property or Building data file."""
+        file_path, dataset = translated.path, translated.dataset
 
         if self.logger:
-            self.logger.info(f"Processing {file_path.name} with schema {schema_name}")
+            self.logger.info(f"Processing {file_path.name} with schema {dataset.value}")
 
-        if skip_load:
-            loaded = invalid = skipped = failed = 0
-            for row in self.iter_translated_rows(schema_name, file_path):
-                if row.skip:
-                    skipped += 1
-                elif row.invalid:
-                    invalid += 1
-                else:
-                    loaded += 1
-            return SourceFileCounts(loaded=loaded, invalid=invalid, skipped=skipped, failed=failed)
-
-        rows = self.iter_translated_rows(schema_name, file_path)
-        property_file = self.property_file if schema_name == "real_acct" else None
+        # The staged table holds no property row to map until the property persist.
+        rows = translated.rows(
+            None if dataset is HcadDataset.PROPERTY else self.get_account_to_property_map()
+        )
+        property_file = self.property_file if dataset is HcadDataset.PROPERTY else None
         if property_file:
             if property_file.limit is not None:
                 if property_file.limit < 1:
@@ -193,14 +140,14 @@ class HarrisSourcePipeline:
                 rows = islice(rows, property_file.limit)
             truncate = not property_file.append
 
-        if schema_name in {"real_acct", "building_res"}:
+        if dataset in {HcadDataset.PROPERTY, HcadDataset.BUILDING}:
             persisted = persistence_for_connection(
                 orm_batch_size=property_file.batch_size if property_file else 5000
             ).persist(
                 PersistenceRequest(
                     dataset=(
                         PersistenceDataset.PROPERTY
-                        if schema_name == "real_acct"
+                        if dataset is HcadDataset.PROPERTY
                         else PersistenceDataset.BUILDING
                     ),
                     rows=rows,
@@ -211,7 +158,7 @@ class HarrisSourcePipeline:
                     ),
                 )
             )
-            if schema_name == "real_acct":
+            if dataset is HcadDataset.PROPERTY:
                 self.invalidate_account_map()
             return SourceFileCounts(
                 loaded=persisted.loaded,
@@ -222,37 +169,17 @@ class HarrisSourcePipeline:
 
         return SourceFileCounts()
 
-    def process_extra_feature_files(
-        self,
-        file_paths: list[Path],
-        *,
-        skip_load: bool = False,
-    ) -> SourceFileCounts:
+    def process_extra_feature_files(self, files: Sequence[TranslatedFile]) -> SourceFileCounts:
         """Persist every selected Extra Feature source as one logical dataset."""
 
         def translated_rows() -> Iterator[RowResult]:
-            ordinals: dict[tuple[str, str, int], int] = {}
-            for file_path in file_paths:
-                yield from self.iter_translated_rows(
-                    "extra_features", file_path, feature_ordinals=ordinals
-                )
-
-        rows = translated_rows()
-        if skip_load:
-            loaded = invalid = skipped = failed = 0
-            for row in rows:
-                if row.skip:
-                    skipped += 1
-                elif row.invalid:
-                    invalid += 1
-                else:
-                    loaded += 1
-            return SourceFileCounts(loaded=loaded, invalid=invalid, skipped=skipped, failed=failed)
+            for translated in files:
+                yield from translated.rows(self.get_account_to_property_map())
 
         persisted = persistence_for_connection().persist(
             PersistenceRequest(
                 dataset=PersistenceDataset.EXTRA_FEATURE,
-                rows=rows,
+                rows=translated_rows(),
                 write_mode=PersistenceWriteMode.REPLACE,
             )
         )
@@ -263,66 +190,42 @@ class HarrisSourcePipeline:
             failed=0,
         )
 
-    def _record_source_failure(
-        self,
-        source: DataSource,
-        msg: str,
-        *,
-        strict: bool,
-    ) -> TabularSourceResult:
-        """Handle missing source paths or required files based on source criticality."""
-        if source.required:
-            if self.logger:
-                self.logger.error(msg)
-            return TabularSourceResult(errors=(msg,), failed=1 if strict else 0)
-        if self.logger:
-            self.logger.warning(msg)
-        return TabularSourceResult(warnings=(msg,))
-
     def process_tabular_source(
         self,
         source: DataSource,
         *,
-        skip_load: bool = False,
         strict: bool = True,
     ) -> TabularSourceResult:
-        """Process one tabular DataSource (extract path lookup, validation, and file loading)."""
-        extract_path = self.extract_manager.get_extract_path(source)
-        if not extract_path.exists():
-            msg = f"Extract path not found for {source.name}: {extract_path}"
-            return self._record_source_failure(source, msg, strict=strict)
+        """Persist one tabular source's translated rows.
 
-        data_files = sorted(extract_path.rglob("*.txt"))
-        missing = DEFAULT_HCAD_SOURCE_CATALOG.missing_required_members(source.source_id, data_files)
-        if missing:
-            msg = f"Required files missing for {source.name}: {', '.join(missing)}"
-            return self._record_source_failure(source, msg, strict=strict)
+        Source validation has already failed the import for a required source whose
+        extract directory or required members are missing; an optional source with no
+        extract directory is only a warning.
+        """
+        reading = self.reading.source_reading(source)
+        if not source.required:
+            extract_path = reading.extract_dir
+            if not extract_path.exists():
+                msg = f"Extract path not found for {source.name}: {extract_path}"
+                if self.logger:
+                    self.logger.warning(msg)
+                return TabularSourceResult(warnings=(msg,))
 
-        if DEFAULT_HCAD_SOURCE_CATALOG.is_source(source, HcadSourceId.REAL_BUILDING_LAND):
-            has_extra_feature_details = any(
-                path.stem.lower().startswith("extra_features_detail") for path in data_files
-            )
-            if has_extra_feature_details:
-                data_files = [path for path in data_files if path.stem.lower() != "extra_features"]
-
-        schema_loaded: dict[str, bool] = {}
-        extra_feature_files: list[Path] = []
+        schema_loaded: dict[HcadDataset, bool] = {}
+        extra_feature_files = reading.translated_files(HcadDataset.EXTRA_FEATURE)
         total_loaded = total_invalid = total_skipped = total_failed = 0
         source_errors: list[str] = []
         source_did_work = False
 
-        for file_path in data_files:
-            schema_name = resolve_schema_name(file_path.stem)
-            if schema_name is None:
-                continue
-            if schema_name == "extra_features":
-                extra_feature_files.append(file_path)
-                continue
-            truncate = not schema_loaded.get(schema_name, False)
+        # Property and Building files are persisted one by one, in path order.
+        data_files = reading.translated_members(HcadDataset.PROPERTY, HcadDataset.BUILDING)
+        for translated in data_files:
+            dataset = translated.dataset
+            truncate = not schema_loaded.get(dataset, False)
             try:
-                counts = self.process_data_file(file_path, skip_load=skip_load, truncate=truncate)
+                counts = self.process_data_file(translated, truncate=truncate)
             except (DatabaseError, OSError, UnsafeReplacementError, ValueError) as exc:
-                message = f"Failed processing {file_path.name}: {exc}"
+                message = f"Failed processing {translated.path.name}: {exc}"
                 source_errors.append(message)
                 total_failed += 1
                 if self.logger:
@@ -330,7 +233,7 @@ class HarrisSourcePipeline:
                 if strict:
                     break
                 continue
-            schema_loaded[schema_name] = True
+            schema_loaded[dataset] = True
             source_did_work = True
             total_loaded += counts.loaded
             total_invalid += counts.invalid
@@ -339,10 +242,7 @@ class HarrisSourcePipeline:
 
         if not (strict and source_errors) and extra_feature_files:
             try:
-                counts = self.process_extra_feature_files(
-                    extra_feature_files,
-                    skip_load=skip_load,
-                )
+                counts = self.process_extra_feature_files(extra_feature_files)
             except (DatabaseError, OSError, UnsafeReplacementError, ValueError) as exc:
                 message = f"Failed processing Extra Feature dataset: {exc}"
                 source_errors.append(message)

@@ -32,7 +32,7 @@ ALLOWED: dict[tuple[str, str], int] = {
     ("etl_pipeline/orchestrator.py", "awaiting_review"): 1,
     ("etl_pipeline/orchestrator.py", "blocked"): 1,
     # One definition member; the rest are per-source load metric keys, not statuses.
-    ("etl_pipeline/orchestrator.py", "failed"): 7,
+    ("etl_pipeline/orchestrator.py", "failed"): 6,
 }
 
 

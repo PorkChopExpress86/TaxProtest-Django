@@ -39,6 +39,12 @@ any root a caller holds. A source with no catalog id is rejected.
 _Avoid_: per-caller archive manifest, hard-coded source alias, per-caller
 directory name
 
+**HCAD source reading**:
+The one interpretation of an extracted HCAD tabular source for an import: which
+declared catalog members feed which dataset, and the Translated rows each yields.
+Source validation and the staged load both consume the same reading.
+_Avoid_: source walker, file discovery, schema resolver
+
 ## Brazos annual refresh
 
 **Annual refresh**:
@@ -185,6 +191,12 @@ A certified CAD source with the complete expected PACS file set, matching
 source year, and verified layout and key integrity. Only this source may
 publish a detailed Brazos property snapshot.
 _Avoid_: parseable archive, partial CAD archive, best-effort load
+
+**PACS file description**:
+The single statement of one certified PACS file: its name, fixed-width layout,
+required fields and identity key. Preflight, inspection and persistence all
+read it, and the descriptions together are the complete expected PACS file set.
+_Avoid_: ingest spec, preflight spec, layout table
 
 **Partial property import**:
 A preflight-qualified Brazos CAD snapshot published without year-matched

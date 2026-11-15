@@ -65,6 +65,11 @@ Python. Use `scripts/dc` so worktrees and parallel runs isolate their test datab
 
 - Focused tests: `scripts/dc pytest path/to/test_module.py -q` (nearest suites live under
   `counties/common/tests/`, `counties/<slug>/tests/`, and `taxprotest/tests/`)
+- Guard tests read source text, so a deletion, move, or rename can break one far from the edited
+  module: after such a change also run each county's `tests/test_import_state_vocabulary.py`,
+  `counties/common/tests/test_shared_code_boundaries.py`,
+  `counties/common/tests/test_similarity_boundary.py`, and
+  `taxprotest/tests/test_no_orphan_functions.py`. They need no database and finish in seconds.
 - Quality gates: run `scripts/dc fmt`, then `scripts/dc check` (runs `ruff check .`,
   `black --check .`, `mypy taxprotest counties`, and `python manage.py makemigrations --check --dry-run`
   in one container; `make check` covers single-checkout hosts)
