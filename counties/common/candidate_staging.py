@@ -501,6 +501,7 @@ def drop_candidate_schema_unfenced(candidate: ImportCandidate) -> None:
     Who may call this is enforced by ``SCHEMA_DROPS`` and
     ``CandidateTransitionOwnerTests`` in ``counties/common/tests/test_shared_code_boundaries.py``.
     """
+    validate_schema_name(candidate.storage_schema, county=candidate.county)
     with connection.cursor() as cursor:
         cursor.execute(
             f"DROP SCHEMA IF EXISTS {connection.ops.quote_name(candidate.storage_schema)} CASCADE"
