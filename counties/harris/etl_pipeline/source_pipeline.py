@@ -200,40 +200,27 @@ class HarrisSourcePipeline:
             failed=0,
         )
 
-    def _record_source_failure(
-        self,
-        source: DataSource,
-        msg: str,
-        *,
-        strict: bool,
-    ) -> TabularSourceResult:
-        """Handle missing source paths or required files based on source criticality."""
-        if source.required:
-            if self.logger:
-                self.logger.error(msg)
-            return TabularSourceResult(errors=(msg,), failed=1 if strict else 0)
-        if self.logger:
-            self.logger.warning(msg)
-        return TabularSourceResult(warnings=(msg,))
-
     def process_tabular_source(
         self,
         source: DataSource,
         *,
         strict: bool = True,
     ) -> TabularSourceResult:
-        """Process one tabular DataSource (extract path lookup, validation, and file loading)."""
-        extract_path = self.extract_manager.get_extract_path(source)
-        if not extract_path.exists():
-            msg = f"Extract path not found for {source.name}: {extract_path}"
-            return self._record_source_failure(source, msg, strict=strict)
+        """Persist one tabular source's translated rows.
+
+        Source validation has already failed the import for a required source whose
+        extract directory or required members are missing; an optional source with no
+        extract directory is only a warning.
+        """
+        if not source.required:
+            extract_path = self.extract_manager.get_extract_path(source)
+            if not extract_path.exists():
+                msg = f"Extract path not found for {source.name}: {extract_path}"
+                if self.logger:
+                    self.logger.warning(msg)
+                return TabularSourceResult(warnings=(msg,))
 
         reading = self._reading().source_reading(source)
-        missing = reading.missing_required_members
-        if missing:
-            msg = f"Required files missing for {source.name}: {', '.join(missing)}"
-            return self._record_source_failure(source, msg, strict=strict)
-
         schema_loaded: dict[HcadDataset, bool] = {}
         extra_feature_files = reading.translated_files(HcadDataset.EXTRA_FEATURE)
         total_loaded = total_invalid = total_skipped = total_failed = 0
