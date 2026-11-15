@@ -498,8 +498,8 @@ def drop_candidate_schema(candidate: ImportCandidate) -> None:
 def drop_candidate_schema_unfenced(candidate: ImportCandidate) -> None:
     """Drop a candidate's staged schema without the county writer's fence.
 
-    Only ``drop_candidate_schema``, which validates the name first, and the benchmark
-    harness, which discards the throwaway candidate it prepared, call this.
+    Who may call this is enforced by ``SCHEMA_DROPS`` and
+    ``CandidateTransitionOwnerTests`` in ``counties/common/tests/test_shared_code_boundaries.py``.
     """
     with connection.cursor() as cursor:
         cursor.execute(

@@ -4,7 +4,9 @@ Each transition sets the new state, the timestamp that belongs to it, and, when 
 state retires the candidate, drops its staged schema. Each joins the transaction its
 caller already holds, so a rollback undoes all of them together; the caller keeps that
 transaction and whatever commits with it: the Import operation's ending, its own audit
-entry, the table exchange. Which transitions are allowed stays with the callers' guards.
+entry, the table exchange. The exception is the best-effort ``block_unsaved_preparation``:
+it runs after the caller's transaction failed, as its own autocommitted update and drop.
+Which transitions are allowed stays with the callers' guards.
 
 This module sits underneath the Candidate lifecycle, review, source retention and the
 Import operation wrapper and imports none of them. It reaches no county code (ADR-0018).
@@ -39,7 +41,7 @@ def end_preparation(
         drop_candidate_schema(candidate)
 
 
-def end_preparation_unsaved(candidate: ImportCandidate, error: str) -> None:
+def block_unsaved_preparation(candidate: ImportCandidate, error: str) -> None:
     """Best effort after preparation's ending could not be saved: block with ``error`` only.
 
     Its evidence may be what could not be saved, so only the error is kept. A database

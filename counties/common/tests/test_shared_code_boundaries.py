@@ -284,24 +284,38 @@ def candidate_state_writes(source: str) -> list[int]:
     return sorted(set(lines))
 
 
+def local_names(tree: ast.AST, name: str) -> set[str]:
+    """``name`` and every alias a ``from ... import name as alias`` gives it, wherever it is."""
+    return {name} | {
+        alias.asname
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+        if alias.name == name and alias.asname
+    }
+
+
 def calls_by_function(source: str, name: str) -> list[tuple[str, int]]:
-    """(innermost enclosing function, line) of every call of ``name``, plain or dotted."""
+    """(innermost enclosing function, line) of every call of ``name``.
+
+    A plain call matches ``name`` or a name it was imported as; a dotted call matches
+    ``name`` as the attribute.
+    """
+    tree = ast.parse(source)
+    plain = local_names(tree, name)
     found: list[tuple[str, int]] = []
 
     def visit(node: ast.AST, function: str) -> None:
         for child in ast.iter_child_nodes(node):
             if isinstance(child, ast.Call):
                 callee = child.func
-                called = (
-                    callee.id
-                    if isinstance(callee, ast.Name)
-                    else callee.attr if isinstance(callee, ast.Attribute) else None
-                )
-                if called == name:
+                if (isinstance(callee, ast.Name) and callee.id in plain) or (
+                    isinstance(callee, ast.Attribute) and callee.attr == name
+                ):
                     found.append((function, child.lineno))
             visit(child, child.name if isinstance(child, FUNCTION_NODES) else function)
 
-    visit(ast.parse(source), "<module>")
+    visit(tree, "<module>")
     return sorted(found, key=lambda item: item[1])
 
 
@@ -517,6 +531,22 @@ class BoundaryScannerTests(SimpleTestCase):
         self.assertEqual(
             calls_by_function(source, "drop_candidate_schema"),
             [("<module>", 1), ("sweep", 3), ("nested", 5)],
+        )
+
+    def test_calls_through_an_imported_alias_are_found(self):
+        source = (
+            "def sweep(candidate, cursor):\n"
+            "    from counties.common.candidate_staging import drop_candidate_schema as drop\n"
+            "    drop(candidate)\n"
+            "    cursor.drop(candidate)\n"
+            "def relative(candidate):\n"
+            "    from .candidate_staging import drop_candidate_schema as retire\n"
+            "    retire(candidate)\n"
+        )
+
+        self.assertEqual(
+            calls_by_function(source, "drop_candidate_schema"),
+            [("sweep", 3), ("relative", 7)],
         )
 
 
