@@ -282,6 +282,9 @@ def prepare(
             with transaction.atomic():
                 operation.save()
                 candidate.save()
+                if candidate.state == CandidateState.BLOCKED:
+                    # Dropped with the blocked state, so a rollback undoes both.
+                    drop_candidate_schema(candidate)
         except Exception as exc:
             # Never leave the candidate preparing behind an operation that records an
             # ending. Its evidence may be what could not be saved, so only the error is.
@@ -295,8 +298,6 @@ def prepare(
             except DatabaseError:
                 pass  # the next writer's reconciliation blocks it and drops its schema
             raise
-        if candidate.state == CandidateState.BLOCKED:
-            drop_candidate_schema(candidate)
     if automatic_publication and candidate.state == CandidateState.PREPARED:
         # Under this writer nothing has written the published or staged tables since
         # they were measured, so publication takes these measurements instead of
