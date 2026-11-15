@@ -1,0 +1,44 @@
+{
+  "errors": [
+    "CAD preflight missing required PACS files: APPRAISAL_ENTITY_INFO.TXT, APPRAISAL_IMPROVEMENT_DETAIL_ATTR.TXT"
+  ],
+  "sources": [
+    {
+      "path": "{root}/extracted/.imports/{operation}/2026/APPRAISAL_INFO.TXT",
+      "sha256": "b9470fbb8966166bbda233afcdfe1dfa9cb736eb1e201785054fc8388d02c54f",
+      "source_url": null,
+      "source_year": 2026,
+      "stage": "cad",
+      "target_year": 2026
+    },
+    {
+      "path": "{root}/extracted/.imports/{operation}/2026/APPRAISAL_LAND_DETAIL.TXT",
+      "sha256": "3957fe53cd7c14d735d70bba9a9a5fefc1f8068476d49f0b90fbf67bf8e05c3c",
+      "source_url": null,
+      "source_year": 2026,
+      "stage": "cad",
+      "target_year": 2026
+    },
+    {
+      "path": "{root}/extracted/.imports/{operation}/2026/APPRAISAL_IMPROVEMENT_INFO.TXT",
+      "sha256": "d5f2ab4ab44d60178eef3dd124f23085b3ba03ee1eb36ecbb843ce82d8a642a8",
+      "source_url": null,
+      "source_year": 2026,
+      "stage": "cad",
+      "target_year": 2026
+    },
+    {
+      "path": "{root}/extracted/.imports/{operation}/2026/APPRAISAL_IMPROVEMENT_DETAIL.TXT",
+      "sha256": "6b8a41226ffe6c7b6a11c0160195e75b7b0ad2cb968226d90456846768bad6ed",
+      "source_url": null,
+      "source_year": 2026,
+      "stage": "cad",
+      "target_year": 2026
+    }
+  ],
+  "status": "failed",
+  "warnings": [
+    "Missing expected file: APPRAISAL_ENTITY_INFO.TXT",
+    "Missing expected file: APPRAISAL_IMPROVEMENT_DETAIL_ATTR.TXT"
+  ]
+}
