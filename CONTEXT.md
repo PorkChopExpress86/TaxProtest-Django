@@ -186,6 +186,12 @@ source year, and verified layout and key integrity. Only this source may
 publish a detailed Brazos property snapshot.
 _Avoid_: parseable archive, partial CAD archive, best-effort load
 
+**PACS file description**:
+The single statement of one certified PACS file: its name, fixed-width layout,
+required fields and identity key. Preflight, inspection and persistence all
+read it, and the descriptions together are the complete expected PACS file set.
+_Avoid_: ingest spec, preflight spec, layout table
+
 **Partial property import**:
 A preflight-qualified Brazos CAD snapshot published without year-matched
 certified GIS, with its missing capabilities explicit. It becomes the active

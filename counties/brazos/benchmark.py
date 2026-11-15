@@ -5,11 +5,11 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from counties.brazos.cad_refresh import (
-    ENTITY_INFO_FILENAME,
-    IMPROVEMENT_DETAIL_ATTR_FILENAME,
-    IMPROVEMENT_DETAIL_FILENAME,
-    CadRefreshStage,
+from counties.brazos.cad_refresh import CadRefreshStage
+from counties.brazos.parsers.pacs import (
+    ENTITY_INFO_DESCRIPTION,
+    IMPROVEMENT_DETAIL_ATTR_DESCRIPTION,
+    IMPROVEMENT_DETAIL_DESCRIPTION,
 )
 from counties.brazos.property_import import (
     BrazosPropertyImport,
@@ -38,13 +38,13 @@ def write_complete_pacs_export(root: Path, year: int) -> None:
         "APPRAISAL_IMPROVEMENT_INFO.TXT": _line(
             49, {(0, 12): prop_id, (12, 16): str(year), (16, 28): "000000000001"}
         ),
-        IMPROVEMENT_DETAIL_FILENAME: _line(
+        IMPROVEMENT_DETAIL_DESCRIPTION.filename: _line(
             622, {(0, 12): prop_id, (12, 16): str(year), (16, 28): "000000000001"}
         ),
-        IMPROVEMENT_DETAIL_ATTR_FILENAME: _line(
+        IMPROVEMENT_DETAIL_ATTR_DESCRIPTION.filename: _line(
             87, {(0, 12): prop_id, (12, 16): str(year), (16, 28): "000000000001"}
         ),
-        ENTITY_INFO_FILENAME: _line(
+        ENTITY_INFO_DESCRIPTION.filename: _line(
             418,
             {
                 (0, 12): prop_id,
