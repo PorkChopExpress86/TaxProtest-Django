@@ -14,20 +14,14 @@ from counties.common.import_source_digests import is_source_file
 from counties.common.import_writers import reused_source
 from counties.common.models import ImportOperation
 from counties.harris.models import PropertyRecord
-from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG, DataSource, DataSourceType
+from counties.harris.source_catalog import DataSource, DataSourceType
 
 from .config import ETLConfig
 from .extract import ExtractManager
 from .fixtures_aggregator import FixturesAggregator
 from .gis_loader import inspect_gis_parcels, select_preferred_gis_shapefile
-from .row_reader import (
-    BUILDING_RES_SOURCES,
-    EXTRA_FEATURES_SOURCES,
-    REAL_ACCT_SOURCES,
-    iter_building_rows,
-    iter_extra_feature_rows,
-    iter_property_rows,
-)
+from .row_reader import BUILDING_RES_SOURCES, EXTRA_FEATURES_SOURCES, REAL_ACCT_SOURCES
+from .source_reading import HcadDataset, HcadSourceReading
 
 
 @dataclass
@@ -265,11 +259,16 @@ def _inspect_layout(path: Path, schema: str, year: int, result: HarrisSourceVali
 
 
 def validate_harris_sources(
-    config: ETLConfig, sources: list[DataSource], year: int, operation: ImportOperation
+    config: ETLConfig,
+    sources: list[DataSource],
+    year: int,
+    operation: ImportOperation,
+    *,
+    reading: HcadSourceReading,
 ) -> HarrisSourceValidation:
+    """Validate the import's sources; ``reading`` is the import's HCAD source reading."""
     result = HarrisSourceValidation()
     manager = ExtractManager(config)
-    selected: dict[str, list[Path]] = {schema: [] for schema in _LAYOUTS}
     gis_paths = []
     unconfirmed_years: set[Path] = set()
     for source in sources:
@@ -325,17 +324,12 @@ def validate_harris_sources(
                     unconfirmed_years.add(layer)
                 _check_archive_inputs(archive, paths, operation, result, relative_to=layer.parent)
             continue
-        files = sorted(root.rglob("*.txt"))
-        missing = DEFAULT_HCAD_SOURCE_CATALOG.missing_required_members(source.source_id, files)
+        source_reading = reading.source_reading(source)
+        missing = source_reading.missing_required_members
         if missing:
             result.errors.append(f"{source.name}: required files missing: {', '.join(missing)}")
-        detailed = any(path.stem.lower().startswith("extra_features_detail") for path in files)
-        for path in files:
-            stem = path.stem.lower()
-            schema = "extra_features" if stem.startswith("extra_features") else stem
-            if schema not in selected or (detailed and stem == "extra_features"):
-                continue
-            selected[schema].append(path)
+        for member in source_reading.members:
+            path, schema = member.path, member.dataset.value
             record_sources(
                 operation,
                 [path],
@@ -348,30 +342,19 @@ def validate_harris_sources(
     if result.errors:
         operation.evidence["validation"] = result.evidence()
         return result
-    fixtures = FixturesAggregator()
-    for path in selected["fixtures"]:
-        fixtures.load_fixtures_file(path)
-    if not selected["real_acct"]:
+    reading.read_room_counts()
+    if not reading.files(HcadDataset.PROPERTY):
         result.account_map = dict(
             PropertyRecord.objects.filter(is_residential=True).values_list("account_number", "pk")
         )
-    seen: dict[str, dict[tuple, bytes]] = {schema: {} for schema in selected}
-    feature_ordinals: dict[tuple[str, str, int], int] = {}
-    for schema in ("real_acct", "building_res", "extra_features"):
+    seen: dict[str, dict[tuple, bytes]] = {}
+    for dataset in (HcadDataset.PROPERTY, HcadDataset.BUILDING, HcadDataset.EXTRA_FEATURE):
+        schema = dataset.value
+        seen[schema] = {}
         counts = {"loaded": 0, "invalid": 0, "skipped": 0}
-        for path in selected[schema]:
-            rows = (
-                iter_property_rows(path)
-                if schema == "real_acct"
-                else (
-                    iter_building_rows(path, result.account_map, fixtures)
-                    if schema == "building_res"
-                    else iter_extra_feature_rows(
-                        path, result.account_map, ordinals=feature_ordinals
-                    )
-                )
-            )
-            for row in rows:
+        for translated in reading.translated_files(dataset):
+            path = translated.path
+            for row in translated.rows(result.account_map):
                 if row.skip:
                     counts["skipped"] += 1
                 elif row.invalid:

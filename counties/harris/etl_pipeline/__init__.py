@@ -47,7 +47,7 @@ from .orchestrator import (
     InvalidHarrisImportRequest,
     run_harris_import,
 )
-from .source_pipeline import HarrisSourcePipeline, resolve_schema_name
+from .source_pipeline import HarrisSourcePipeline
 from .transform import DataTransformer
 
 __all__ = [
@@ -59,7 +59,6 @@ __all__ = [
     "ETLLogger",
     "HarrisImportPlan",
     "HarrisSourcePipeline",
-    "resolve_schema_name",
     "HarrisAcquisitionMode",
     "HarrisApply",
     "HarrisPrepare",
