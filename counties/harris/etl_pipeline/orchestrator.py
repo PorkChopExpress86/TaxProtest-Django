@@ -43,7 +43,7 @@ from .extract import ExtractManager
 from .fixtures_aggregator import FixturesAggregator
 from .import_plan import HarrisImportPlan
 from .logging import ETLLogger
-from .source_pipeline import HarrisSourcePipeline, resolve_schema_name
+from .source_pipeline import HarrisSourcePipeline
 
 
 class HarrisImportPhase(Enum):
@@ -395,7 +395,6 @@ class _HarrisImportExecution:
             validation = validate_harris_sources(
                 self.config, sources, self.data_year, self.operation
             )
-            self._account_to_property = validation.account_map
             source_result = _StageResult(
                 stage=HarrisImportPhase.SOURCE_VALIDATION,
                 success=not validation.errors,
@@ -606,7 +605,6 @@ class _HarrisImportExecution:
     def _execute_transform_load(
         self,
         sources: list[DataSource],
-        skip_load: bool = False,
         strict: bool = True,
     ) -> _StageResult:
         """Execute transform and load stages.
@@ -637,7 +635,7 @@ class _HarrisImportExecution:
 
             for source in sources:
                 if source.source_type == DataSourceType.GIS_DATA:
-                    gis_result = self._process_gis_source(source, preview=skip_load)
+                    gis_result = self._process_gis_source(source)
                     gis_loaded += gis_result.get("loaded", 0)
                     total_invalid += gis_result.get("invalid", 0)
                     total_skipped += gis_result.get("skipped", 0)
@@ -650,11 +648,7 @@ class _HarrisImportExecution:
                         sources_succeeded += 1
                     continue
 
-                source_result = pipeline.process_tabular_source(
-                    source,
-                    skip_load=skip_load,
-                    strict=strict,
-                )
+                source_result = pipeline.process_tabular_source(source, strict=strict)
                 self.warnings.extend(source_result.warnings)
                 if source_result.errors:
                     source_errors.extend(source_result.errors)
@@ -680,7 +674,7 @@ class _HarrisImportExecution:
                 "records_failed": total_failed,
                 "gis_coordinates_updated": gis_loaded,
                 "_sources_succeeded": sources_succeeded,
-                "_wrote_data": not skip_load and sources_succeeded > 0,
+                "_wrote_data": sources_succeeded > 0,
             }
 
             if source_errors:
@@ -693,14 +687,7 @@ class _HarrisImportExecution:
         stage_result.completed_at = datetime.now()
         return stage_result
 
-    _resolve_schema_name = staticmethod(resolve_schema_name)
-
-    def _process_gis_source(
-        self,
-        source: DataSource,
-        *,
-        preview: bool = False,
-    ) -> dict[str, Any]:
+    def _process_gis_source(self, source: DataSource) -> dict[str, Any]:
         """Process GIS data source.
 
         Finds shapefiles in the extracted GIS data and loads coordinates
@@ -726,17 +713,7 @@ class _HarrisImportExecution:
         self.logger.info(f"Loading GIS data from: {shapefile_path}")
 
         try:
-            from .gis_loader import load_gis_parcels, translate_gis_parcels
-
-            if preview:
-                translated = translate_gis_parcels(str(shapefile_path))
-                self.logger.info(f"Preview translated {len(translated)} GIS parcel coordinates")
-                return {
-                    "loaded": len(translated),
-                    "invalid": 0,
-                    "skipped": 0,
-                    "failed": 0,
-                }
+            from .gis_loader import load_gis_parcels
 
             count = load_gis_parcels(str(shapefile_path), refresh_readiness=False)
             self.logger.info(f"Updated {count} properties with GIS coordinates")

@@ -158,7 +158,6 @@ class HarrisSourcePipeline:
         self,
         file_path: Path,
         *,
-        skip_load: bool = False,
         truncate: bool = True,
     ) -> SourceFileCounts:
         """Process a single tabular data file."""
@@ -172,17 +171,6 @@ class HarrisSourcePipeline:
 
         if self.logger:
             self.logger.info(f"Processing {file_path.name} with schema {schema_name}")
-
-        if skip_load:
-            loaded = invalid = skipped = failed = 0
-            for row in self.iter_translated_rows(schema_name, file_path):
-                if row.skip:
-                    skipped += 1
-                elif row.invalid:
-                    invalid += 1
-                else:
-                    loaded += 1
-            return SourceFileCounts(loaded=loaded, invalid=invalid, skipped=skipped, failed=failed)
 
         rows = self.iter_translated_rows(schema_name, file_path)
         property_file = self.property_file if schema_name == "real_acct" else None
@@ -222,12 +210,7 @@ class HarrisSourcePipeline:
 
         return SourceFileCounts()
 
-    def process_extra_feature_files(
-        self,
-        file_paths: list[Path],
-        *,
-        skip_load: bool = False,
-    ) -> SourceFileCounts:
+    def process_extra_feature_files(self, file_paths: list[Path]) -> SourceFileCounts:
         """Persist every selected Extra Feature source as one logical dataset."""
 
         def translated_rows() -> Iterator[RowResult]:
@@ -237,22 +220,10 @@ class HarrisSourcePipeline:
                     "extra_features", file_path, feature_ordinals=ordinals
                 )
 
-        rows = translated_rows()
-        if skip_load:
-            loaded = invalid = skipped = failed = 0
-            for row in rows:
-                if row.skip:
-                    skipped += 1
-                elif row.invalid:
-                    invalid += 1
-                else:
-                    loaded += 1
-            return SourceFileCounts(loaded=loaded, invalid=invalid, skipped=skipped, failed=failed)
-
         persisted = persistence_for_connection().persist(
             PersistenceRequest(
                 dataset=PersistenceDataset.EXTRA_FEATURE,
-                rows=rows,
+                rows=translated_rows(),
                 write_mode=PersistenceWriteMode.REPLACE,
             )
         )
@@ -283,7 +254,6 @@ class HarrisSourcePipeline:
         self,
         source: DataSource,
         *,
-        skip_load: bool = False,
         strict: bool = True,
     ) -> TabularSourceResult:
         """Process one tabular DataSource (extract path lookup, validation, and file loading)."""
@@ -320,7 +290,7 @@ class HarrisSourcePipeline:
                 continue
             truncate = not schema_loaded.get(schema_name, False)
             try:
-                counts = self.process_data_file(file_path, skip_load=skip_load, truncate=truncate)
+                counts = self.process_data_file(file_path, truncate=truncate)
             except (DatabaseError, OSError, UnsafeReplacementError, ValueError) as exc:
                 message = f"Failed processing {file_path.name}: {exc}"
                 source_errors.append(message)
@@ -339,10 +309,7 @@ class HarrisSourcePipeline:
 
         if not (strict and source_errors) and extra_feature_files:
             try:
-                counts = self.process_extra_feature_files(
-                    extra_feature_files,
-                    skip_load=skip_load,
-                )
+                counts = self.process_extra_feature_files(extra_feature_files)
             except (DatabaseError, OSError, UnsafeReplacementError, ValueError) as exc:
                 message = f"Failed processing Extra Feature dataset: {exc}"
                 source_errors.append(message)
