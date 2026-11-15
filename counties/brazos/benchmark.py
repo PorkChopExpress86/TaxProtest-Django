@@ -5,11 +5,14 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from counties.brazos.cad_refresh import (
-    ENTITY_INFO_FILENAME,
-    IMPROVEMENT_DETAIL_ATTR_FILENAME,
-    IMPROVEMENT_DETAIL_FILENAME,
-    CadRefreshStage,
+from counties.brazos.cad_refresh import CadRefreshStage
+from counties.brazos.parsers.pacs import (
+    ENTITY_INFO_DESCRIPTION,
+    IMPROVEMENT_DETAIL_ATTR_DESCRIPTION,
+    IMPROVEMENT_DETAIL_DESCRIPTION,
+    IMPROVEMENT_INFO_DESCRIPTION,
+    INFO_DESCRIPTION,
+    LAND_DETAIL_DESCRIPTION,
 )
 from counties.brazos.property_import import (
     BrazosPropertyImport,
@@ -33,18 +36,18 @@ def write_complete_pacs_export(root: Path, year: int) -> None:
     extract_dir = root / "extracted" / str(year)
     extract_dir.mkdir(parents=True)
     files = {
-        "APPRAISAL_INFO.TXT": _line(987, {(0, 12): prop_id, (17, 22): f"0{year}"}),
-        "APPRAISAL_LAND_DETAIL.TXT": _line(184, {(0, 12): prop_id, (12, 16): str(year)}),
-        "APPRAISAL_IMPROVEMENT_INFO.TXT": _line(
+        INFO_DESCRIPTION.filename: _line(987, {(0, 12): prop_id, (17, 22): f"0{year}"}),
+        LAND_DETAIL_DESCRIPTION.filename: _line(184, {(0, 12): prop_id, (12, 16): str(year)}),
+        IMPROVEMENT_INFO_DESCRIPTION.filename: _line(
             49, {(0, 12): prop_id, (12, 16): str(year), (16, 28): "000000000001"}
         ),
-        IMPROVEMENT_DETAIL_FILENAME: _line(
+        IMPROVEMENT_DETAIL_DESCRIPTION.filename: _line(
             622, {(0, 12): prop_id, (12, 16): str(year), (16, 28): "000000000001"}
         ),
-        IMPROVEMENT_DETAIL_ATTR_FILENAME: _line(
+        IMPROVEMENT_DETAIL_ATTR_DESCRIPTION.filename: _line(
             87, {(0, 12): prop_id, (12, 16): str(year), (16, 28): "000000000001"}
         ),
-        ENTITY_INFO_FILENAME: _line(
+        ENTITY_INFO_DESCRIPTION.filename: _line(
             418,
             {
                 (0, 12): prop_id,
@@ -65,7 +68,7 @@ def write_synthetic_pacs(root: Path, count: int = 5000, year: int = 2026) -> Non
     for source in extract_dir.glob("*.TXT"):
         original = source.read_text().rstrip("\n")
         suffix = original[12:]
-        if source.name == "APPRAISAL_INFO.TXT":
+        if source.name == INFO_DESCRIPTION.filename:
             prefix_to_owner = original[12:608]
             owner = "Candidate owner"
             after_owner = original[623:]

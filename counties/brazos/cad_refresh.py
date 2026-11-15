@@ -42,10 +42,9 @@ import logging
 import re
 import shutil
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
-from typing import TypeVar
+from typing import Any, ClassVar, TypeVar, cast
 
 import requests
 from bs4 import BeautifulSoup
@@ -62,13 +61,16 @@ from counties.brazos.models import (
 )
 from counties.brazos.parsers import pacs
 from counties.brazos.parsers.pacs import (
+    ENTITY_INFO_DESCRIPTION,
+    IMPROVEMENT_DETAIL_ATTR_DESCRIPTION,
+    IMPROVEMENT_DETAIL_DESCRIPTION,
+    IMPROVEMENT_INFO_DESCRIPTION,
+    INFO_DESCRIPTION,
+    LAND_DETAIL_DESCRIPTION,
+    PACS_FILE_DESCRIPTIONS,
+    EntityInfoRow,
+    PacsFileDescription,
     iter_pacs_lines,
-    parse_entity_info_line,
-    parse_improvement_detail_attr_line,
-    parse_improvement_detail_line,
-    parse_improvement_info_line,
-    parse_info_line,
-    parse_land_detail_line,
     row_fingerprint,
 )
 from counties.brazos.portal import (
@@ -98,10 +100,6 @@ BCAD_PORTAL_URL = "https://brazoscad.org/certified-data-downloads/"
 
 YEAR_RE = re.compile(r"(19|20)\d{2}")
 ZIP_RE = re.compile(r"\.zip$", re.IGNORECASE)
-
-IMPROVEMENT_DETAIL_FILENAME = "APPRAISAL_IMPROVEMENT_DETAIL.TXT"
-ENTITY_INFO_FILENAME = "APPRAISAL_ENTITY_INFO.TXT"
-IMPROVEMENT_DETAIL_ATTR_FILENAME = "APPRAISAL_IMPROVEMENT_DETAIL_ATTR.TXT"
 
 # Only these three exemption-amount fields are ingested -- see the
 # ENTITY_INFO_LAYOUT docstring in parsers/pacs.py for why dv_amt and the
@@ -172,67 +170,24 @@ def _attr_int_or_none(raw: str) -> int | None:
         return None
 
 
-@dataclass(frozen=True)
-class IngestSpec:
-    """Mapping from a real BCAD .TXT filename to a Django model + its fixed-width parser."""
-
-    filename: str
-    model: type
-    parse_fn: Callable[[str], dict]
-
-
-# Ordering matters: APPRAISAL_IMPROVEMENT_INFO.TXT must load before
-# APPRAISAL_IMPROVEMENT_DETAIL.TXT (handled separately below, not in this
-# tuple) because the year_built rollup updates PropertyImprovement rows that
-# must already exist.
-INGEST_SPECS: tuple[IngestSpec, ...] = (
-    IngestSpec("APPRAISAL_INFO.TXT", PropertyAccount, parse_info_line),
-    IngestSpec("APPRAISAL_LAND_DETAIL.TXT", PropertyLand, parse_land_detail_line),
-    IngestSpec("APPRAISAL_IMPROVEMENT_INFO.TXT", PropertyImprovement, parse_improvement_info_line),
-)
-
-ALL_FILENAMES: tuple[str, ...] = tuple(spec.filename for spec in INGEST_SPECS) + (
-    IMPROVEMENT_DETAIL_FILENAME,
-    ENTITY_INFO_FILENAME,
-    IMPROVEMENT_DETAIL_ATTR_FILENAME,
-)
+def _require_matching_tax_year(filename: str, record_year: int | None, tax_year: int) -> None:
+    """Reject a source row whose in-record tax year does not match ``tax_year``."""
+    if record_year is not None and record_year != tax_year:
+        raise CommandError(
+            f"{filename}: record tax_year {record_year} does not match requested {tax_year}."
+        )
 
 
-@dataclass(frozen=True)
-class _PacsPreflightSpec:
-    """The minimum verified shape required for each certified PACS file."""
-
-    filename: str
-    parse_fn: Callable[[str], Mapping[str, object]]
-    minimum_length: int
-    required_keys: tuple[str, ...]
-
-
-# The export can contain a different total record width between years, so the
-# preflight checks the final column each loader actually reads rather than
-# enforcing a frozen whole-line width. Every file still needs one complete,
-# year-matched, keyed record before an import may replace active data.
-PACS_PREFLIGHT_SPECS: tuple[_PacsPreflightSpec, ...] = (
-    _PacsPreflightSpec("APPRAISAL_INFO.TXT", parse_info_line, 987, ("prop_id",)),
-    _PacsPreflightSpec("APPRAISAL_LAND_DETAIL.TXT", parse_land_detail_line, 184, ("prop_id",)),
-    _PacsPreflightSpec(
-        "APPRAISAL_IMPROVEMENT_INFO.TXT", parse_improvement_info_line, 49, ("prop_id", "imp_id")
-    ),
-    _PacsPreflightSpec(
-        IMPROVEMENT_DETAIL_FILENAME, parse_improvement_detail_line, 622, ("prop_id", "imp_id")
-    ),
-    _PacsPreflightSpec(
-        IMPROVEMENT_DETAIL_ATTR_FILENAME,
-        parse_improvement_detail_attr_line,
-        87,
-        ("prop_id", "imp_id"),
-    ),
-    _PacsPreflightSpec(
-        ENTITY_INFO_FILENAME,
-        parse_entity_info_line,
-        418,
-        ("prop_id", "tax_unit_code"),
-    ),
+# Explicit load order differs from PACS_FILE_DESCRIPTIONS because rollups
+# require APPRAISAL_IMPROVEMENT_INFO.TXT before APPRAISAL_IMPROVEMENT_DETAIL.TXT
+# and APPRAISAL_INFO.TXT before APPRAISAL_ENTITY_INFO.TXT.
+CAD_LOAD_ORDER: tuple[PacsFileDescription, ...] = (
+    INFO_DESCRIPTION,
+    LAND_DETAIL_DESCRIPTION,
+    IMPROVEMENT_INFO_DESCRIPTION,
+    IMPROVEMENT_DETAIL_DESCRIPTION,
+    ENTITY_INFO_DESCRIPTION,
+    IMPROVEMENT_DETAIL_ATTR_DESCRIPTION,
 )
 
 
@@ -240,6 +195,12 @@ class CadRefreshStage:
     """Prepare, persist, and clean up the certified CAD source for one year."""
 
     name = "cad"
+
+    _PLAIN_LOAD_MODELS: ClassVar[dict[PacsFileDescription, type]] = {
+        INFO_DESCRIPTION: PropertyAccount,
+        LAND_DETAIL_DESCRIPTION: PropertyLand,
+        IMPROVEMENT_INFO_DESCRIPTION: PropertyImprovement,
+    }
 
     def __init__(self, reporter: StageReporter | None = None):
         self._reporter = reporter or SilentStageReporter()
@@ -327,10 +288,11 @@ class CadRefreshStage:
         (see ``resolve_timestamped_file`` for the timestamp-prefix/newest-
         match rationale)."""
         out: dict[str, Path] = {}
-        for filename in ALL_FILENAMES:
-            resolved = resolve_timestamped_file(extract_dir, filename)
+        # Load order: recorded sources, warnings and replay messages follow it (ADR-0024).
+        for description in CAD_LOAD_ORDER:
+            resolved = resolve_timestamped_file(extract_dir, description.filename)
             if resolved is not None:
-                out[filename] = resolved
+                out[description.filename] = resolved
         return out
 
     # ------------------------------------------------------------------ ingest
@@ -366,49 +328,35 @@ class CadRefreshStage:
         if duplicates:
             logger.warning("%s: dropped %d exact duplicate source rows", text_file.name, duplicates)
 
-    def _load_file(self, spec: IngestSpec, text_file: Path, tax_year: int, *, dry_run: bool) -> int:
-        if not text_file.exists():
-            raise CommandError(f"Text file missing: {text_file}")
+    def _iter_year_matched_records(
+        self, description: PacsFileDescription, text_file: Path, tax_year: int
+    ) -> Iterator[dict[str, Any]]:
+        """Yield unique parsed records after verifying any present record year matches ``tax_year``."""
+        for record in self._iter_unique_records(text_file, description.parse_fn):
+            _require_matching_tax_year(description.filename, record.get("tax_year"), tax_year)
+            yield dict(record)
 
-        if dry_run:
-            self.stdout.write(
-                f"[dry-run] {spec.filename}: would delete tax_year={tax_year} rows from "
-                f"{spec.model._meta.db_table} and bulk_create from {text_file}"
-            )
-            return 0
-
+    def _load_file(self, description: PacsFileDescription, text_file: Path, tax_year: int) -> int:
+        model = self._PLAIN_LOAD_MODELS[description]
         instances = []
-        mismatched = 0
-        for fields in self._iter_unique_records(text_file, spec.parse_fn):
-            record_year = fields.pop("tax_year", None)
-            if record_year is not None and record_year != tax_year:
-                mismatched += 1
-                continue
+        for fields in self._iter_year_matched_records(description, text_file, tax_year):
             fields["tax_year"] = tax_year
             fields["source_file"] = text_file.name
-            instances.append(spec.model(**fields))
-
-        if mismatched:
-            logger.warning(
-                "%s: skipped %d rows whose in-record tax_year didn't match requested %d",
-                spec.filename,
-                mismatched,
-                tax_year,
-            )
+            instances.append(model(**fields))
 
         # Scoped to this tax_year (not a blind TRUNCATE) so re-running for one
         # year doesn't destroy other years' already-loaded data.
-        spec.model.objects.filter(tax_year=tax_year).delete()
-        spec.model.objects.bulk_create(instances, batch_size=5000)
+        model.objects.filter(tax_year=tax_year).delete()
+        model.objects.bulk_create(instances, batch_size=5000)
         logger.info(
             "Loaded %s rows into %s (tax_year=%s)",
             len(instances),
-            spec.model._meta.db_table,
+            model._meta.db_table,
             tax_year,
         )
         return len(instances)
 
-    def _load_improvement_detail(self, text_file: Path, tax_year: int, *, dry_run: bool) -> int:
+    def _load_improvement_detail(self, text_file: Path, tax_year: int) -> int:
         """Load PropertyImprovementDetail rows and roll up year_built onto
         PropertyImprovement (APPRAISAL_IMPROVEMENT_INFO.TXT carries no
         year_built of its own — only per-detail-row values exist, and one
@@ -416,27 +364,14 @@ class CadRefreshStage:
         year_built picked per (prop_id, imp_id) is the one from its highest-detail_value
         row (the dominant structural component, usually the main area).
         """
-        if not text_file.exists():
-            raise CommandError(f"Text file missing: {text_file}")
-
-        if dry_run:
-            self.stdout.write(
-                f"[dry-run] {IMPROVEMENT_DETAIL_FILENAME}: would delete tax_year={tax_year} rows "
-                f"from {PropertyImprovementDetail._meta.db_table}, bulk_create, and roll up year_built"
-            )
-            return 0
-
         instances = []
         # Keyed by (prop_id, imp_id): imp_id alone repeats across properties.
         rollup_best_value: dict[tuple[str, str], Decimal] = {}
         rollup_year_built: dict[tuple[str, str], int] = {}
-        mismatched = 0
 
-        for fields in self._iter_unique_records(text_file, parse_improvement_detail_line):
-            record_year = fields.pop("tax_year", None)
-            if record_year is not None and record_year != tax_year:
-                mismatched += 1
-                continue
+        for fields in self._iter_year_matched_records(
+            IMPROVEMENT_DETAIL_DESCRIPTION, text_file, tax_year
+        ):
             year_built = fields.pop("year_built", None)
             key = (fields["prop_id"], fields["imp_id"])
             detail_value = fields.get("detail_value") or Decimal("0")
@@ -448,14 +383,6 @@ class CadRefreshStage:
             fields["tax_year"] = tax_year
             fields["source_file"] = text_file.name
             instances.append(PropertyImprovementDetail(**fields))
-
-        if mismatched:
-            logger.warning(
-                "%s: skipped %d rows whose in-record tax_year didn't match requested %d",
-                IMPROVEMENT_DETAIL_FILENAME,
-                mismatched,
-                tax_year,
-            )
 
         PropertyImprovementDetail.objects.filter(tax_year=tax_year).delete()
         PropertyImprovementDetail.objects.bulk_create(instances, batch_size=5000)
@@ -483,7 +410,7 @@ class CadRefreshStage:
 
         return len(instances)
 
-    def _load_entity_info(self, text_file: Path, tax_year: int, *, dry_run: bool) -> int:
+    def _load_entity_info(self, text_file: Path, tax_year: int) -> int:
         """Load PropertyJurisdictionExemption rows (shared with Harris, see
         wayfinder ticket #9) from APPRAISAL_ENTITY_INFO.TXT, and roll up
         each property's assessed_value onto PropertyAccount.
@@ -510,26 +437,11 @@ class CadRefreshStage:
         the first non-null value encountered per prop_id is authoritative,
         not a "pick a winner" tiebreak like the year_built rollup below.
         """
-        if not text_file.exists():
-            raise CommandError(f"Text file missing: {text_file}")
-
-        if dry_run:
-            self.stdout.write(
-                f"[dry-run] {ENTITY_INFO_FILENAME}: would delete tax_year={tax_year} "
-                f"county=brazos rows from {PropertyJurisdictionExemption._meta.db_table}, "
-                f"bulk_create from {text_file}, and roll up assessed_value onto PropertyAccount"
-            )
-            return 0
-
         instances: list[PropertyJurisdictionExemption] = []
         assessed_value_by_prop: dict[str, Decimal] = {}
-        mismatched = 0
 
-        for fields in self._iter_unique_records(text_file, parse_entity_info_line):
-            record_year = fields["tax_year"]
-            if record_year is not None and record_year != tax_year:
-                mismatched += 1
-                continue
+        for record in self._iter_year_matched_records(ENTITY_INFO_DESCRIPTION, text_file, tax_year):
+            fields = cast(EntityInfoRow, record)
 
             prop_id = fields["prop_id"]
             tax_unit_code = fields["tax_unit_code"]
@@ -599,14 +511,6 @@ class CadRefreshStage:
                     )
                 )
 
-        if mismatched:
-            logger.warning(
-                "%s: skipped %d rows whose in-record tax_year didn't match requested %d",
-                ENTITY_INFO_FILENAME,
-                mismatched,
-                tax_year,
-            )
-
         # county="brazos" is load-bearing here: this table is shared with
         # Harris (wayfinder ticket #9) -- an unscoped delete would also wipe
         # Harris's rows for the same tax_year.
@@ -636,39 +540,22 @@ class CadRefreshStage:
 
         return len(instances)
 
-    def _load_improvement_detail_attr(
-        self, text_file: Path, tax_year: int, *, dry_run: bool
-    ) -> int:
+    def _load_improvement_detail_attr(self, text_file: Path, tax_year: int) -> int:
         """Load PropertyBuildingCharacteristic (wide, aggregated per
         improvement) and PropertyExtraFeature (long, one row per feature)
         from APPRAISAL_IMPROVEMENT_DETAIL_ATTR.TXT's attribute-type/value
         pairs. See WIDE_ATTRIBUTE_FIELDS for the type->field routing and
         _parse_bathrooms for "Plumbing"'s special-cased free-text parsing.
         """
-        if not text_file.exists():
-            raise CommandError(f"Text file missing: {text_file}")
-
-        if dry_run:
-            self.stdout.write(
-                f"[dry-run] {IMPROVEMENT_DETAIL_ATTR_FILENAME}: would delete tax_year={tax_year} "
-                f"rows from {PropertyBuildingCharacteristic._meta.db_table} and "
-                f"{PropertyExtraFeature._meta.db_table}, then bulk_create from {text_file}"
-            )
-            return 0
-
         # (prop_id, imp_id) -> partial field dict. First occurrence of a
         # given field wins (see PropertyBuildingCharacteristic docstring).
         wide_fields: dict[tuple[str, str], dict[str, object]] = {}
         extra_features: list[PropertyExtraFeature] = []
-        mismatched = 0
         unparseable_bathrooms = 0
 
-        for fields in self._iter_unique_records(text_file, parse_improvement_detail_attr_line):
-            record_year = fields.pop("tax_year", None)
-            if record_year is not None and record_year != tax_year:
-                mismatched += 1
-                continue
-
+        for fields in self._iter_year_matched_records(
+            IMPROVEMENT_DETAIL_ATTR_DESCRIPTION, text_file, tax_year
+        ):
             prop_id = fields["prop_id"]
             imp_id = fields["imp_id"]
             detail_seq = fields["detail_seq"]
@@ -710,17 +597,10 @@ class CadRefreshStage:
                 )
             )
 
-        if mismatched:
-            logger.warning(
-                "%s: skipped %d rows whose in-record tax_year didn't match requested %d",
-                IMPROVEMENT_DETAIL_ATTR_FILENAME,
-                mismatched,
-                tax_year,
-            )
         if unparseable_bathrooms:
             logger.warning(
                 "%s: %d 'Plumbing' values didn't match any known format and were left null",
-                IMPROVEMENT_DETAIL_ATTR_FILENAME,
+                IMPROVEMENT_DETAIL_ATTR_DESCRIPTION.filename,
                 unparseable_bathrooms,
             )
 
@@ -750,40 +630,19 @@ class CadRefreshStage:
         )
         return len(characteristics) + len(extra_features)
 
-    def _ingest_all(
-        self, text_files: dict[str, Path], tax_year: int, *, dry_run: bool
-    ) -> dict[str, int]:
+    def _ingest_all(self, text_files: dict[str, Path], tax_year: int) -> dict[str, int]:
+        special_loaders: dict[PacsFileDescription, Callable[[Path, int], int]] = {
+            IMPROVEMENT_DETAIL_DESCRIPTION: self._load_improvement_detail,
+            ENTITY_INFO_DESCRIPTION: self._load_entity_info,
+            IMPROVEMENT_DETAIL_ATTR_DESCRIPTION: self._load_improvement_detail_attr,
+        }
         results: dict[str, int] = {}
-        for spec in INGEST_SPECS:
-            path = text_files.get(spec.filename)
-            if path is None:
-                results[spec.filename] = 0
-                continue
-            results[spec.filename] = self._load_file(spec, path, tax_year, dry_run=dry_run)
-
-        detail_path = text_files.get(IMPROVEMENT_DETAIL_FILENAME)
-        if detail_path is None:
-            results[IMPROVEMENT_DETAIL_FILENAME] = 0
-        else:
-            results[IMPROVEMENT_DETAIL_FILENAME] = self._load_improvement_detail(
-                detail_path, tax_year, dry_run=dry_run
-            )
-
-        entity_info_path = text_files.get(ENTITY_INFO_FILENAME)
-        if entity_info_path is None:
-            results[ENTITY_INFO_FILENAME] = 0
-        else:
-            results[ENTITY_INFO_FILENAME] = self._load_entity_info(
-                entity_info_path, tax_year, dry_run=dry_run
-            )
-
-        attr_path = text_files.get(IMPROVEMENT_DETAIL_ATTR_FILENAME)
-        if attr_path is None:
-            results[IMPROVEMENT_DETAIL_ATTR_FILENAME] = 0
-        else:
-            results[IMPROVEMENT_DETAIL_ATTR_FILENAME] = self._load_improvement_detail_attr(
-                attr_path, tax_year, dry_run=dry_run
-            )
+        for description in CAD_LOAD_ORDER:
+            text_file = text_files[description.filename]
+            if description in self._PLAIN_LOAD_MODELS:
+                results[description.filename] = self._load_file(description, text_file, tax_year)
+            else:
+                results[description.filename] = special_loaders[description](text_file, tax_year)
         return results
 
     def _offline_source_year(download_dir: Path, extract_root: Path) -> int | None:
@@ -881,32 +740,33 @@ class CadRefreshStage:
     def validate_preflight(self, preparation: StagePreparation) -> None:
         """Reject incomplete or untrusted PACS input before any model write.
 
-        The property-import module calls this after source-year validation and
-        before its transaction, so a recovery adapter cannot quietly accept an
-        incomplete certified export.
+        Inspection runs preflight before counting or fingerprinting records, and
+        inspection runs when the candidate source prepares, before any database
+        write.
         """
         payload = preparation.payload
         if not isinstance(payload, CadStagePayload):
             raise TypeError("CAD stage received a preparation from another adapter")
 
-        missing = sorted(set(ALL_FILENAMES) - set(payload.text_files))
+        expected_filenames = {description.filename for description in PACS_FILE_DESCRIPTIONS}
+        missing = sorted(expected_filenames - set(payload.text_files))
         if missing:
             raise CommandError("CAD preflight missing required PACS files: " + ", ".join(missing))
 
-        for spec in PACS_PREFLIGHT_SPECS:
+        for description in PACS_FILE_DESCRIPTIONS:
             valid_records = 0
             invalid_records = 0
-            for line in self._iter_lines(payload.text_files[spec.filename]):
-                if len(line) < spec.minimum_length:
+            for line in self._iter_lines(payload.text_files[description.filename]):
+                if len(line) < description.minimum_length:
                     invalid_records += 1
                     continue
                 try:
-                    fields = spec.parse_fn(line)
+                    fields = description.parse_fn(line)
                 except (TypeError, ValueError):
                     invalid_records += 1
                     continue
                 if fields.get("tax_year") != preparation.target_year or any(
-                    not fields.get(key) for key in spec.required_keys
+                    not fields.get(key) for key in description.required_fields
                 ):
                     invalid_records += 1
                     continue
@@ -914,7 +774,7 @@ class CadRefreshStage:
 
             if invalid_records or not valid_records:
                 raise CommandError(
-                    f"CAD preflight failed PACS key/year integrity for {spec.filename}."
+                    f"CAD preflight failed PACS key/year integrity for {description.filename}."
                 )
 
     def inspect(self, preparation: StagePreparation, operation: ImportOperation) -> StageResult:
@@ -930,7 +790,6 @@ class CadRefreshStage:
         results = self._ingest_all(
             payload.text_files,
             preparation.target_year,
-            dry_run=False,
         )
         self.stdout.write(self.style.SUCCESS("CAD ingest complete:"))
         for filename, count in results.items():
@@ -947,43 +806,37 @@ class CadRefreshStage:
             self.stdout.write(self.style.SUCCESS("Cleaned up CAD extracted files."))
 
 
-_CAD_LAYOUTS = {
-    "APPRAISAL_INFO.TXT": (pacs.INFO_LAYOUT, ("prop_id",)),
-    "APPRAISAL_LAND_DETAIL.TXT": (pacs.LAND_DETAIL_LAYOUT, ("prop_id", "land_seq")),
-    "APPRAISAL_IMPROVEMENT_INFO.TXT": (pacs.IMPROVEMENT_INFO_LAYOUT, ("prop_id", "imp_id")),
-    "APPRAISAL_IMPROVEMENT_DETAIL.TXT": (
-        pacs.IMPROVEMENT_DETAIL_LAYOUT,
-        ("prop_id", "imp_id", "detail_seq"),
-    ),
-    "APPRAISAL_IMPROVEMENT_DETAIL_ATTR.TXT": (
-        pacs.IMPROVEMENT_DETAIL_ATTR_LAYOUT,
-        ("prop_id", "imp_id", "detail_seq", "attribute_type", "attribute_value"),
-    ),
-    "APPRAISAL_ENTITY_INFO.TXT": (pacs.ENTITY_INFO_LAYOUT, ("prop_id", "tax_unit_code")),
-}
-
-
 def inspect_cad(operation: ImportOperation, preparation: StagePreparation) -> StageResult:
     """Retain the selected CAD inputs and record their inspection without persisting."""
     payload = preparation.payload
     if not isinstance(payload, CadStagePayload):
         raise CommandError("A validated CAD preview requires inspectable PACS files.")
-    retain_sources(operation, preparation, list(payload.text_files.values()))
+    retain_sources(
+        operation,
+        preparation,
+        [
+            payload.text_files[description.filename]
+            # Load order: recorded sources, warnings and replay messages follow it (ADR-0024).
+            for description in CAD_LOAD_ORDER
+            if description.filename in payload.text_files
+        ],
+    )
     CadRefreshStage().validate_preflight(preparation)
     counts = {}
     duplicates = {}
-    for filename, (layout, keys) in _CAD_LAYOUTS.items():
+    for description in PACS_FILE_DESCRIPTIONS:
+        filename = description.filename
         seen = {}
         count = duplicate = 0
-        for number, line in enumerate(CadRefreshStage._iter_lines(payload.text_files[filename]), 1):
-            fields = pacs.parse_fixed_width(line, layout)
+        for number, line in enumerate(iter_pacs_lines(payload.text_files[filename]), 1):
+            fields = pacs.parse_fixed_width(line, description.layout)
             prop_id = fields["prop_id"]
             if not prop_id.isdigit() or len(prop_id) != 12:
                 raise CommandError(f"Invalid canonical property key in {filename}, row {number}.")
-            malformed = pacs.malformed_numeric_fields(line, layout)
+            malformed = pacs.malformed_numeric_fields(line, description.layout)
             if malformed:
                 raise CommandError(f"Malformed numeric {malformed[0]} in {filename}, row {number}.")
-            key = tuple(fields[name] for name in keys)
+            key = tuple(fields[name] for name in description.identity_key)
             fingerprint = pacs.row_fingerprint(fields)
             if key in seen:
                 if seen[key] != fingerprint:

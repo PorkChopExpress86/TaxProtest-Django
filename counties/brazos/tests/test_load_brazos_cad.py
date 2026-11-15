@@ -14,16 +14,10 @@ from io import StringIO
 from pathlib import Path
 
 from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.test import TestCase
 
-from counties.brazos.cad_refresh import (
-    ENTITY_INFO_FILENAME,
-    IMPROVEMENT_DETAIL_ATTR_FILENAME,
-    IMPROVEMENT_DETAIL_FILENAME,
-    INGEST_SPECS,
-    CadRefreshStage,
-    _parse_bathrooms,
-)
+from counties.brazos.cad_refresh import CadRefreshStage, _parse_bathrooms
 from counties.brazos.models import (
     PropertyAccount,
     PropertyBuildingCharacteristic,
@@ -31,6 +25,12 @@ from counties.brazos.models import (
     PropertyImprovement,
     PropertyImprovementDetail,
     PropertyLand,
+)
+from counties.brazos.parsers.pacs import (
+    ENTITY_INFO_DESCRIPTION,
+    IMPROVEMENT_DETAIL_ATTR_DESCRIPTION,
+    IMPROVEMENT_DETAIL_DESCRIPTION,
+    PACS_FILE_DESCRIPTIONS,
 )
 from counties.common.models import ImportOperation
 from counties.common.tax_models import PropertyJurisdictionExemption
@@ -183,18 +183,14 @@ class ResolveTextFilesTests(TestCase):
     def test_matches_timestamp_prefixed_filenames(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            for spec in INGEST_SPECS:
+            for spec in PACS_FILE_DESCRIPTIONS:
                 (root / f"2025-07-23_002022_{spec.filename}").write_text("x", encoding="utf-8")
-            (root / f"2025-07-23_002022_{IMPROVEMENT_DETAIL_FILENAME}").write_text(
-                "x", encoding="utf-8"
-            )
 
             resolved = CadRefreshStage._resolve_text_files(root)
 
-            for spec in INGEST_SPECS:
+            for spec in PACS_FILE_DESCRIPTIONS:
                 self.assertIn(spec.filename, resolved)
                 self.assertEqual(resolved[spec.filename].name, f"2025-07-23_002022_{spec.filename}")
-            self.assertIn(IMPROVEMENT_DETAIL_FILENAME, resolved)
 
     def test_picks_newest_when_duplicate_timestamped_copies_exist(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -210,7 +206,7 @@ class ResolveTextFilesTests(TestCase):
 
 class LoadFileTests(TestCase):
     def test_land_detail_loads_with_correct_decimal_scaling(self):
-        spec = next(s for s in INGEST_SPECS if s.filename == "APPRAISAL_LAND_DETAIL.TXT")
+        spec = next(s for s in PACS_FILE_DESCRIPTIONS if s.filename == "APPRAISAL_LAND_DETAIL.TXT")
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / spec.filename
             path.write_text(
@@ -221,7 +217,7 @@ class LoadFileTests(TestCase):
                 encoding="utf-8",
             )
 
-            count = CadRefreshStage()._load_file(spec, path, 2025, dry_run=False)
+            count = CadRefreshStage()._load_file(spec, path, 2025)
 
         self.assertEqual(count, 1)
         row = PropertyLand.objects.get(prop_id="000000010002", tax_year=2025)
@@ -229,7 +225,7 @@ class LoadFileTests(TestCase):
         self.assertEqual(row.acreage, Decimal("10.5024"))
 
     def test_reloading_same_tax_year_replaces_rather_than_duplicates(self):
-        spec = next(s for s in INGEST_SPECS if s.filename == "APPRAISAL_LAND_DETAIL.TXT")
+        spec = next(s for s in PACS_FILE_DESCRIPTIONS if s.filename == "APPRAISAL_LAND_DETAIL.TXT")
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / spec.filename
             path.write_text(
@@ -239,13 +235,13 @@ class LoadFileTests(TestCase):
                 + "\r\n",
                 encoding="utf-8",
             )
-            CadRefreshStage()._load_file(spec, path, 2025, dry_run=False)
-            CadRefreshStage()._load_file(spec, path, 2025, dry_run=False)
+            CadRefreshStage()._load_file(spec, path, 2025)
+            CadRefreshStage()._load_file(spec, path, 2025)
 
         self.assertEqual(PropertyLand.objects.filter(tax_year=2025).count(), 1)
 
     def test_loading_one_year_does_not_delete_another_years_rows(self):
-        spec = next(s for s in INGEST_SPECS if s.filename == "APPRAISAL_LAND_DETAIL.TXT")
+        spec = next(s for s in PACS_FILE_DESCRIPTIONS if s.filename == "APPRAISAL_LAND_DETAIL.TXT")
         PropertyLand.objects.create(prop_id="000000099999", tax_year=2024, land_seq=1)
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / spec.filename
@@ -256,13 +252,13 @@ class LoadFileTests(TestCase):
                 + "\r\n",
                 encoding="utf-8",
             )
-            CadRefreshStage()._load_file(spec, path, 2025, dry_run=False)
+            CadRefreshStage()._load_file(spec, path, 2025)
 
         self.assertTrue(PropertyLand.objects.filter(tax_year=2024).exists())
         self.assertTrue(PropertyLand.objects.filter(tax_year=2025).exists())
 
-    def test_row_with_mismatched_in_record_tax_year_is_skipped(self):
-        spec = next(s for s in INGEST_SPECS if s.filename == "APPRAISAL_LAND_DETAIL.TXT")
+    def test_row_with_mismatched_in_record_tax_year_raises(self):
+        spec = next(s for s in PACS_FILE_DESCRIPTIONS if s.filename == "APPRAISAL_LAND_DETAIL.TXT")
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / spec.filename
             # In-record tax_year is 2024, but we request 2025.
@@ -273,16 +269,16 @@ class LoadFileTests(TestCase):
                 + "\r\n",
                 encoding="utf-8",
             )
-            count = CadRefreshStage()._load_file(spec, path, 2025, dry_run=False)
+            with self.assertRaises(CommandError):
+                CadRefreshStage()._load_file(spec, path, 2025)
 
-        self.assertEqual(count, 0)
         self.assertFalse(PropertyLand.objects.filter(tax_year=2025).exists())
 
 
 class LoadImprovementDetailRollupTests(TestCase):
     def test_year_built_rolls_up_from_highest_value_detail_row(self):
         improvement_spec = next(
-            s for s in INGEST_SPECS if s.filename == "APPRAISAL_IMPROVEMENT_INFO.TXT"
+            s for s in PACS_FILE_DESCRIPTIONS if s.filename == "APPRAISAL_IMPROVEMENT_INFO.TXT"
         )
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -292,9 +288,9 @@ class LoadImprovementDetailRollupTests(TestCase):
                 _improvement_info_line("000000010002", "2025", "000000100000") + "\r\n",
                 encoding="utf-8",
             )
-            CadRefreshStage()._load_file(improvement_spec, info_path, 2025, dry_run=False)
+            CadRefreshStage()._load_file(improvement_spec, info_path, 2025)
 
-            detail_path = root / IMPROVEMENT_DETAIL_FILENAME
+            detail_path = root / IMPROVEMENT_DETAIL_DESCRIPTION.filename
             lines = [
                 # Smaller detail_value / older year_built.
                 _improvement_detail_line(
@@ -307,7 +303,7 @@ class LoadImprovementDetailRollupTests(TestCase):
             ]
             detail_path.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
 
-            count = CadRefreshStage()._load_improvement_detail(detail_path, 2025, dry_run=False)
+            count = CadRefreshStage()._load_improvement_detail(detail_path, 2025)
 
         self.assertEqual(count, 2)
         self.assertEqual(PropertyImprovementDetail.objects.filter(tax_year=2025).count(), 2)
@@ -316,7 +312,7 @@ class LoadImprovementDetailRollupTests(TestCase):
 
     def test_year_built_rollup_keeps_properties_sharing_an_imp_id_apart(self):
         improvement_spec = next(
-            s for s in INGEST_SPECS if s.filename == "APPRAISAL_IMPROVEMENT_INFO.TXT"
+            s for s in PACS_FILE_DESCRIPTIONS if s.filename == "APPRAISAL_IMPROVEMENT_INFO.TXT"
         )
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -328,9 +324,9 @@ class LoadImprovementDetailRollupTests(TestCase):
                 + "\r\n",
                 encoding="utf-8",
             )
-            CadRefreshStage()._load_file(improvement_spec, info_path, 2025, dry_run=False)
+            CadRefreshStage()._load_file(improvement_spec, info_path, 2025)
 
-            detail_path = root / IMPROVEMENT_DETAIL_FILENAME
+            detail_path = root / IMPROVEMENT_DETAIL_DESCRIPTION.filename
             lines = [
                 _improvement_detail_line(
                     "000000010002", "2025", "000000100000", "000000000001", "1980", "0005000.000000"
@@ -343,7 +339,7 @@ class LoadImprovementDetailRollupTests(TestCase):
             ]
             detail_path.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
 
-            CadRefreshStage()._load_improvement_detail(detail_path, 2025, dry_run=False)
+            CadRefreshStage()._load_improvement_detail(detail_path, 2025)
 
         years = dict(
             PropertyImprovement.objects.filter(imp_id="000000100000", tax_year=2025).values_list(
@@ -354,7 +350,7 @@ class LoadImprovementDetailRollupTests(TestCase):
 
     def test_zero_year_built_rows_excluded_from_rollup(self):
         improvement_spec = next(
-            s for s in INGEST_SPECS if s.filename == "APPRAISAL_IMPROVEMENT_INFO.TXT"
+            s for s in PACS_FILE_DESCRIPTIONS if s.filename == "APPRAISAL_IMPROVEMENT_INFO.TXT"
         )
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -363,9 +359,9 @@ class LoadImprovementDetailRollupTests(TestCase):
                 _improvement_info_line("000000010002", "2025", "000000100000") + "\r\n",
                 encoding="utf-8",
             )
-            CadRefreshStage()._load_file(improvement_spec, info_path, 2025, dry_run=False)
+            CadRefreshStage()._load_file(improvement_spec, info_path, 2025)
 
-            detail_path = root / IMPROVEMENT_DETAIL_FILENAME
+            detail_path = root / IMPROVEMENT_DETAIL_DESCRIPTION.filename
             detail_path.write_text(
                 _improvement_detail_line(
                     "000000010002", "2025", "000000100000", "000000000001", "0000", "0005000.000000"
@@ -373,8 +369,36 @@ class LoadImprovementDetailRollupTests(TestCase):
                 + "\r\n",
                 encoding="utf-8",
             )
-            CadRefreshStage()._load_improvement_detail(detail_path, 2025, dry_run=False)
+            CadRefreshStage()._load_improvement_detail(detail_path, 2025)
 
+        improvement = PropertyImprovement.objects.get(imp_id="000000100000", tax_year=2025)
+        self.assertIsNone(improvement.year_built)
+
+    def test_row_with_mismatched_in_record_tax_year_raises(self):
+        improvement_spec = next(
+            s for s in PACS_FILE_DESCRIPTIONS if s.filename == "APPRAISAL_IMPROVEMENT_INFO.TXT"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            info_path = root / improvement_spec.filename
+            info_path.write_text(
+                _improvement_info_line("000000010002", "2025", "000000100000") + "\r\n",
+                encoding="utf-8",
+            )
+            CadRefreshStage()._load_file(improvement_spec, info_path, 2025)
+
+            detail_path = root / IMPROVEMENT_DETAIL_DESCRIPTION.filename
+            detail_path.write_text(
+                _improvement_detail_line(
+                    "000000010002", "2024", "000000100000", "000000000001", "1998", "0005000.000000"
+                )
+                + "\r\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(CommandError):
+                CadRefreshStage()._load_improvement_detail(detail_path, 2025)
+
+        self.assertFalse(PropertyImprovementDetail.objects.filter(tax_year=2025).exists())
         improvement = PropertyImprovement.objects.get(imp_id="000000100000", tax_year=2025)
         self.assertIsNone(improvement.year_built)
 
@@ -382,7 +406,7 @@ class LoadImprovementDetailRollupTests(TestCase):
 class LoadEntityInfoTests(TestCase):
     def test_creates_base_row_plus_one_row_per_nonzero_exemption(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / ENTITY_INFO_FILENAME
+            path = Path(tmp) / ENTITY_INFO_DESCRIPTION.filename
             path.write_text(
                 _entity_info_line(
                     "000000010013",
@@ -396,7 +420,7 @@ class LoadEntityInfoTests(TestCase):
                 encoding="utf-8",
             )
 
-            count = CadRefreshStage()._load_entity_info(path, 2025, dry_run=False)
+            count = CadRefreshStage()._load_entity_info(path, 2025)
 
         self.assertEqual(count, 2)
         rows = PropertyJurisdictionExemption.objects.filter(
@@ -421,7 +445,7 @@ class LoadEntityInfoTests(TestCase):
         overwrite it (see test_load_brazos_gis.py's matching guard)."""
         PropertyAccount.objects.create(prop_id="000000010013", tax_year=2025)
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / ENTITY_INFO_FILENAME
+            path = Path(tmp) / ENTITY_INFO_DESCRIPTION.filename
             path.write_text(
                 _entity_info_line(
                     "000000010013",
@@ -435,7 +459,7 @@ class LoadEntityInfoTests(TestCase):
                 encoding="utf-8",
             )
 
-            CadRefreshStage()._load_entity_info(path, 2025, dry_run=False)
+            CadRefreshStage()._load_entity_info(path, 2025)
 
         account = PropertyAccount.objects.get(prop_id="000000010013", tax_year=2025)
         self.assertEqual(account.assessed_value, Decimal("242613"))
@@ -447,7 +471,7 @@ class LoadEntityInfoTests(TestCase):
         not a tiebreak among differing candidates."""
         PropertyAccount.objects.create(prop_id="000000010013", tax_year=2025)
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / ENTITY_INFO_FILENAME
+            path = Path(tmp) / ENTITY_INFO_DESCRIPTION.filename
             lines = [
                 _entity_info_line(
                     "000000010013", "02025", "G1", "000000000242613", "000000000167613"
@@ -458,14 +482,14 @@ class LoadEntityInfoTests(TestCase):
             ]
             path.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
 
-            CadRefreshStage()._load_entity_info(path, 2025, dry_run=False)
+            CadRefreshStage()._load_entity_info(path, 2025)
 
         account = PropertyAccount.objects.get(prop_id="000000010013", tax_year=2025)
         self.assertEqual(account.assessed_value, Decimal("242613"))
 
     def test_all_zero_amounts_create_only_the_base_row(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / ENTITY_INFO_FILENAME
+            path = Path(tmp) / ENTITY_INFO_DESCRIPTION.filename
             path.write_text(
                 _entity_info_line(
                     "000000010055", "02025", "S1", "000000000100000", "000000000100000"
@@ -474,7 +498,7 @@ class LoadEntityInfoTests(TestCase):
                 encoding="utf-8",
             )
 
-            count = CadRefreshStage()._load_entity_info(path, 2025, dry_run=False)
+            count = CadRefreshStage()._load_entity_info(path, 2025)
 
         self.assertEqual(count, 1)
         row = PropertyJurisdictionExemption.objects.get(
@@ -492,7 +516,7 @@ class LoadEntityInfoTests(TestCase):
             exemption_amount=Decimal("40000"),
         )
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / ENTITY_INFO_FILENAME
+            path = Path(tmp) / ENTITY_INFO_DESCRIPTION.filename
             path.write_text(
                 _entity_info_line(
                     "000000010055", "02025", "S1", "000000000100000", "000000000100000"
@@ -500,8 +524,8 @@ class LoadEntityInfoTests(TestCase):
                 + "\r\n",
                 encoding="utf-8",
             )
-            CadRefreshStage()._load_entity_info(path, 2025, dry_run=False)
-            CadRefreshStage()._load_entity_info(path, 2025, dry_run=False)
+            CadRefreshStage()._load_entity_info(path, 2025)
+            CadRefreshStage()._load_entity_info(path, 2025)
 
         self.assertTrue(
             PropertyJurisdictionExemption.objects.filter(
@@ -515,9 +539,9 @@ class LoadEntityInfoTests(TestCase):
             1,
         )
 
-    def test_row_with_mismatched_in_record_tax_year_is_skipped(self):
+    def test_row_with_mismatched_in_record_tax_year_raises(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / ENTITY_INFO_FILENAME
+            path = Path(tmp) / ENTITY_INFO_DESCRIPTION.filename
             path.write_text(
                 _entity_info_line(
                     "000000010055", "02024", "S1", "000000000100000", "000000000100000"
@@ -526,9 +550,9 @@ class LoadEntityInfoTests(TestCase):
                 encoding="utf-8",
             )
 
-            count = CadRefreshStage()._load_entity_info(path, 2025, dry_run=False)
+            with self.assertRaises(CommandError):
+                CadRefreshStage()._load_entity_info(path, 2025)
 
-        self.assertEqual(count, 0)
         self.assertFalse(
             PropertyJurisdictionExemption.objects.filter(tax_year=2025, county="brazos").exists()
         )
@@ -591,7 +615,7 @@ class ParseBathroomsTests(TestCase):
 class LoadImprovementDetailAttrTests(TestCase):
     def test_wide_attributes_aggregate_onto_one_row_per_improvement(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / IMPROVEMENT_DETAIL_ATTR_FILENAME
+            path = Path(tmp) / IMPROVEMENT_DETAIL_ATTR_DESCRIPTION.filename
             lines = [
                 _attr_line(
                     "000000010008", "2025", "000000100002", "000000100001", "Plumbing", "2/1"
@@ -610,7 +634,7 @@ class LoadImprovementDetailAttrTests(TestCase):
             ]
             path.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
 
-            count = CadRefreshStage()._load_improvement_detail_attr(path, 2025, dry_run=False)
+            count = CadRefreshStage()._load_improvement_detail_attr(path, 2025)
 
         self.assertEqual(count, 1)
         row = PropertyBuildingCharacteristic.objects.get(
@@ -623,7 +647,7 @@ class LoadImprovementDetailAttrTests(TestCase):
 
     def test_first_occurrence_wins_on_duplicate_attribute_type(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / IMPROVEMENT_DETAIL_ATTR_FILENAME
+            path = Path(tmp) / IMPROVEMENT_DETAIL_ATTR_DESCRIPTION.filename
             lines = [
                 _attr_line(
                     "000000010085", "2025", "000001165787", "000000100001", "Foundation", "CS"
@@ -634,7 +658,7 @@ class LoadImprovementDetailAttrTests(TestCase):
             ]
             path.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
 
-            CadRefreshStage()._load_improvement_detail_attr(path, 2025, dry_run=False)
+            CadRefreshStage()._load_improvement_detail_attr(path, 2025)
 
         row = PropertyBuildingCharacteristic.objects.get(
             prop_id="000000010085", imp_id="000001165787", tax_year=2025
@@ -643,7 +667,7 @@ class LoadImprovementDetailAttrTests(TestCase):
 
     def test_unrecognized_attribute_types_become_extra_feature_rows(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / IMPROVEMENT_DETAIL_ATTR_FILENAME
+            path = Path(tmp) / IMPROVEMENT_DETAIL_ATTR_DESCRIPTION.filename
             lines = [
                 _attr_line(
                     "000000010008", "2025", "000000100002", "000000100001", "Fireplace", "G"
@@ -666,7 +690,7 @@ class LoadImprovementDetailAttrTests(TestCase):
             ]
             path.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
 
-            CadRefreshStage()._load_improvement_detail_attr(path, 2025, dry_run=False)
+            CadRefreshStage()._load_improvement_detail_attr(path, 2025)
 
         self.assertEqual(
             PropertyExtraFeature.objects.filter(
@@ -684,7 +708,7 @@ class LoadImprovementDetailAttrTests(TestCase):
 
     def test_unparseable_plumbing_leaves_bathrooms_null_not_dropped_row(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / IMPROVEMENT_DETAIL_ATTR_FILENAME
+            path = Path(tmp) / IMPROVEMENT_DETAIL_ATTR_DESCRIPTION.filename
             lines = [
                 _attr_line(
                     "000000010008", "2025", "000000100002", "000000100001", "Plumbing", "1 3/4"
@@ -700,7 +724,7 @@ class LoadImprovementDetailAttrTests(TestCase):
             ]
             path.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
 
-            CadRefreshStage()._load_improvement_detail_attr(path, 2025, dry_run=False)
+            CadRefreshStage()._load_improvement_detail_attr(path, 2025)
 
         row = PropertyBuildingCharacteristic.objects.get(
             prop_id="000000010008", imp_id="000000100002", tax_year=2025
@@ -710,29 +734,43 @@ class LoadImprovementDetailAttrTests(TestCase):
 
     def test_reload_replaces_rather_than_duplicates(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / IMPROVEMENT_DETAIL_ATTR_FILENAME
+            path = Path(tmp) / IMPROVEMENT_DETAIL_ATTR_DESCRIPTION.filename
             path.write_text(
                 _attr_line("000000010008", "2025", "000000100002", "000000100001", "Fireplace", "G")
                 + "\r\n",
                 encoding="utf-8",
             )
-            CadRefreshStage()._load_improvement_detail_attr(path, 2025, dry_run=False)
-            CadRefreshStage()._load_improvement_detail_attr(path, 2025, dry_run=False)
+            CadRefreshStage()._load_improvement_detail_attr(path, 2025)
+            CadRefreshStage()._load_improvement_detail_attr(path, 2025)
 
         self.assertEqual(PropertyExtraFeature.objects.filter(tax_year=2025).count(), 1)
+
+    def test_row_with_mismatched_in_record_tax_year_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / IMPROVEMENT_DETAIL_ATTR_DESCRIPTION.filename
+            path.write_text(
+                _attr_line("000000010008", "2024", "000000100002", "000000100001", "Fireplace", "G")
+                + "\r\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(CommandError):
+                CadRefreshStage()._load_improvement_detail_attr(path, 2025)
+
+        self.assertFalse(PropertyBuildingCharacteristic.objects.filter(tax_year=2025).exists())
+        self.assertFalse(PropertyExtraFeature.objects.filter(tax_year=2025).exists())
 
 
 class ExactDuplicateSourceRowTests(TestCase):
     """The real 2026 export repeats 370 ATTR rows byte for byte; persist keeps one."""
 
     def test_exact_duplicate_in_a_unique_constrained_file_loads_once(self):
-        spec = next(s for s in INGEST_SPECS if s.filename == "APPRAISAL_LAND_DETAIL.TXT")
+        spec = next(s for s in PACS_FILE_DESCRIPTIONS if s.filename == "APPRAISAL_LAND_DETAIL.TXT")
         line = _land_detail_line("000000010002", "2025", "000000100000", "00000002833677", "105024")
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / spec.filename
             path.write_text(f"{line}\r\n{line}\r\n", encoding="utf-8")
 
-            count = CadRefreshStage()._load_file(spec, path, 2025, dry_run=False)
+            count = CadRefreshStage()._load_file(spec, path, 2025)
 
         self.assertEqual(count, 1)
         self.assertEqual(PropertyLand.objects.filter(tax_year=2025).count(), 1)
@@ -740,9 +778,9 @@ class ExactDuplicateSourceRowTests(TestCase):
     def test_exact_duplicate_extra_feature_is_not_doubled(self):
         line = _attr_line("000000010008", "2025", "000000100002", "000000100001", "Fireplace", "G")
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / IMPROVEMENT_DETAIL_ATTR_FILENAME
+            path = Path(tmp) / IMPROVEMENT_DETAIL_ATTR_DESCRIPTION.filename
             path.write_text(f"{line}\r\n{line}\r\n", encoding="utf-8")
 
-            CadRefreshStage()._load_improvement_detail_attr(path, 2025, dry_run=False)
+            CadRefreshStage()._load_improvement_detail_attr(path, 2025)
 
         self.assertEqual(PropertyExtraFeature.objects.filter(tax_year=2025).count(), 1)

@@ -276,7 +276,7 @@ def parse_improvement_detail_attr_line(line: str) -> dict[str, Any]:
 # 17 chars/line. This file is a bare entity_id -> entity_code lookup table,
 # NOT an entity master — entity_name/entity_type/adopted_rate/effective_date
 # (what brazos_cad.models.PropertyEntity actually wants) are not present here
-# at all. Kept for completeness/testing but NOT wired into INGEST_SPECS.
+# at all. Kept for completeness/testing but NOT wired into PACS_FILE_DESCRIPTIONS.
 ENTITY_LAYOUT: tuple[FieldSpec, ...] = (
     FieldSpec("entity_id", 0, 12, _text),
     FieldSpec("entity_code", 12, 17, _text),
@@ -395,3 +395,76 @@ def parse_info_line(line: str) -> dict[str, Any]:
     zip4 = data.pop("mailing_zip4", "") or ""
     data["mailing_zip"] = f"{zip5}-{zip4}" if zip5 and zip4 else zip5
     return data
+
+
+@dataclass(frozen=True)
+class PacsFileDescription:
+    """Single statement of one certified PACS file."""
+
+    filename: str
+    layout: tuple[FieldSpec, ...]
+    required_fields: tuple[str, ...]
+    identity_key: tuple[str, ...]
+    parse_fn: Callable[[str], Mapping[str, Any]]
+
+    @property
+    def minimum_length(self) -> int:
+        """Minimum line length required to cover the layout's last field.
+
+        Relies on each layout listing its furthest-ending field last.
+        """
+        return self.layout[-1].end
+
+
+INFO_DESCRIPTION = PacsFileDescription(
+    filename="APPRAISAL_INFO.TXT",
+    layout=INFO_LAYOUT,
+    required_fields=("prop_id",),
+    identity_key=("prop_id",),
+    parse_fn=parse_info_line,
+)
+LAND_DETAIL_DESCRIPTION = PacsFileDescription(
+    filename="APPRAISAL_LAND_DETAIL.TXT",
+    layout=LAND_DETAIL_LAYOUT,
+    required_fields=("prop_id",),
+    identity_key=("prop_id", "land_seq"),
+    parse_fn=parse_land_detail_line,
+)
+IMPROVEMENT_INFO_DESCRIPTION = PacsFileDescription(
+    filename="APPRAISAL_IMPROVEMENT_INFO.TXT",
+    layout=IMPROVEMENT_INFO_LAYOUT,
+    required_fields=("prop_id", "imp_id"),
+    identity_key=("prop_id", "imp_id"),
+    parse_fn=parse_improvement_info_line,
+)
+IMPROVEMENT_DETAIL_DESCRIPTION = PacsFileDescription(
+    filename="APPRAISAL_IMPROVEMENT_DETAIL.TXT",
+    layout=IMPROVEMENT_DETAIL_LAYOUT,
+    required_fields=("prop_id", "imp_id"),
+    identity_key=("prop_id", "imp_id", "detail_seq"),
+    parse_fn=parse_improvement_detail_line,
+)
+IMPROVEMENT_DETAIL_ATTR_DESCRIPTION = PacsFileDescription(
+    filename="APPRAISAL_IMPROVEMENT_DETAIL_ATTR.TXT",
+    layout=IMPROVEMENT_DETAIL_ATTR_LAYOUT,
+    required_fields=("prop_id", "imp_id"),
+    identity_key=("prop_id", "imp_id", "detail_seq", "attribute_type", "attribute_value"),
+    parse_fn=parse_improvement_detail_attr_line,
+)
+ENTITY_INFO_DESCRIPTION = PacsFileDescription(
+    filename="APPRAISAL_ENTITY_INFO.TXT",
+    layout=ENTITY_INFO_LAYOUT,
+    required_fields=("prop_id", "tax_unit_code"),
+    identity_key=("prop_id", "tax_unit_code"),
+    parse_fn=parse_entity_info_line,
+)
+
+# Declared in the preflight and inspection pass order.
+PACS_FILE_DESCRIPTIONS: tuple[PacsFileDescription, ...] = (
+    INFO_DESCRIPTION,
+    LAND_DETAIL_DESCRIPTION,
+    IMPROVEMENT_INFO_DESCRIPTION,
+    IMPROVEMENT_DETAIL_DESCRIPTION,
+    IMPROVEMENT_DETAIL_ATTR_DESCRIPTION,
+    ENTITY_INFO_DESCRIPTION,
+)
