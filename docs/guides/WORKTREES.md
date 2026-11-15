@@ -9,8 +9,8 @@ Run every dev-container command through the checkout's own wrapper:
 
 ```bash
 scripts/dc pytest counties/brazos/tests -q
-scripts/dc ruff check .
-scripts/dc python manage.py makemigrations --check --dry-run
+scripts/dc fmt     # ruff check --fix . && black .
+scripts/dc check   # ruff, black --check, mypy, makemigrations --check in one container
 ```
 
 `docker-compose.yml` fixes its container names, so a second checkout cannot start its own
@@ -38,9 +38,9 @@ On Windows the full suite takes 13–20 minutes in Docker, because the checkout 
 bind mount, and longer when several agents share the machine. On CI's Linux runner it
 takes about 4 minutes. CI runs on every branch push, so:
 
-- **Implementer:** run the focused tests, then `ruff`, `black --check`, `mypy` and
-  `makemigrations --check`. Push the ticket branch and read its CI run for the
-  directory-wide and full-suite results, then cite the run id in the report, separately from
+- **Implementer:** run the focused tests, then `scripts/dc fmt` and `scripts/dc check` (`ruff`,
+  `black --check`, `mypy`, and `makemigrations --check`). Push the ticket branch and read its CI run
+  for the directory-wide and full-suite results, then cite the run id in the report, separately from
   the local results. Run a directory locally for failures CI cannot reproduce, such as a
   Windows-only bug.
 - **Integration branch:** the merger runs the full suite once per batch of merges, or

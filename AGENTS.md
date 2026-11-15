@@ -57,66 +57,29 @@ Check `git status` first and preserve unrelated work, runtime data, databases, a
 - `AssessmentHistory.cap_account` is county-specific source data, not a portable boolean. Use
   `counties/common/cap_status.py`; do not infer a cap type for counties without a typed source flag.
 
-## Implementation workflow
+## Running tests and quality gates
 
-1. Inspect the applicable guidance, code, tests, and current Git diff.
-2. For a bug, reproduce it with the narrowest meaningful test or check.
-3. Make the smallest complete change at the owning module or adapter seam.
-4. Run the focused test first, then broader checks proportional to the affected contract.
-5. Fix failures and rerun the failed checks. Report any genuine blocker or unverified risk.
+Run all Django, pytest, lint, type, migration, and Celery commands inside Docker rather than host
+Python. Use `scripts/dc` so worktrees and parallel runs isolate their test databases (see
+`docs/guides/WORKTREES.md` and `Makefile`):
 
-Use Docker Compose for Django, tests, linting, formatting, types, migrations, and Celery. Do not use
-the host Python environment for project execution.
-
-```bash
-# Focused or full tests
-docker compose run --rm taxprotest-dev pytest path/to/test_module.py -q
-docker compose run --rm taxprotest-dev pytest -q
-
-# Quality gates (or `make check` on systems with make)
-make check  # runs ruff, black, mypy, and makemigrations checks
-
-# Or run individual quality gates via Docker Compose
-docker compose run --rm taxprotest-dev ruff check .
-docker compose run --rm taxprotest-dev black --check .
-docker compose run --rm taxprotest-dev mypy taxprotest counties
-docker compose run --rm taxprotest-dev python manage.py makemigrations --check --dry-run
-```
-
-For several checkouts testing at once (git worktrees, parallel agents), run commands through
-`scripts/dc` instead; see `docs/guides/WORKTREES.md`.
-
-Use the nearest tests: `counties/common/tests/` for cross-county contracts,
-`counties/<slug>/tests/` for county behavior, and `taxprotest/tests/` for site-wide behavior.
-Run `git diff --check` for every change. Do not claim browser, service, or full-suite validation that
-was not actually run.
+- Focused tests: `scripts/dc pytest path/to/test_module.py -q` (nearest suites live under
+  `counties/common/tests/`, `counties/<slug>/tests/`, and `taxprotest/tests/`)
+- Quality gates: run `scripts/dc fmt`, then `scripts/dc check` (runs `ruff check .`,
+  `black --check .`, `mypy taxprotest counties`, and `python manage.py makemigrations --check --dry-run`
+  in one container; `make check` covers single-checkout hosts)
+- Full suite: push the branch and inspect the CI run (`ci.yml`) rather than blocking on local
+  full-suite Docker runs; run `git diff --check` before finishing.
 
 ## Presentation and delivery
 
 - Shared templates live under `templates/counties/`, extend `templates/base.html`, and use Tailwind
   utilities. Preserve the identical county route set enforced by
   `counties/common/tests/test_shared_pages.py`.
-- Use environment variables and the existing runtime-path helpers for configuration. Never hardcode
-  credentials or production data.
+- Use environment variables and `taxprotest/runtime_paths.py`; never hardcode credentials or
+  production data.
 - Merging to `main` deploys to production (`.github/workflows/deploy.yml`). Time a merge as a
   release; an evidence-changing merge follows the ADR-0024 release rule.
-- Finish by reporting the files changed, checks run with observed results, and anything still
-  unverified.
-
-## Agent skills
-
-### Issue tracker
-
-Issues and specs live in this repository's GitHub Issues. Follow `docs/agents/issue-tracker.md`.
-
-### Triage labels
-
-Use the default triage labels mapped in `docs/agents/triage-labels.md` when triaging issues.
-
-### Domain docs
-
-Single-context layout: root `CONTEXT.md` and `docs/adr/`. Follow `docs/agents/domain.md`
-when exploring domain terminology or architectural decisions.
 
 <!-- vault-memory:start -->
 ## Shared Project Memory

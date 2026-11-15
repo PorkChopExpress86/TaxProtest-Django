@@ -14,3 +14,8 @@ reads everything. A query-count test for that case belongs beside the change.
 Exit codes, strict-mode failures, Celery result keys and persisted evidence are contracts
 (ADR-0002, ADR-0024). A refactor that reroutes how a result is classified keeps a test that
 goes red if a strict run that ends incomplete stops failing, or if an exit code changes.
+
+## Domain vocabulary
+
+Use the terms defined in `CONTEXT.md` for new and edited symbols, docstrings, comments and
+user-facing or failure messages, and avoid terms listed under its `_Avoid_` lines.

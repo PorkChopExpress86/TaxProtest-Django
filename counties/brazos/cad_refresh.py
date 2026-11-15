@@ -814,7 +814,11 @@ class CadRefreshStage:
         return cls._offline_source_year(download_dir, extract_root)
 
     def prepare(self, options: RefreshOptions) -> StagePreparation:
-        """Stage the certified source without changing database rows."""
+        """Stage the certified source without changing database rows.
+
+        Requires an active ``county_writer(operation)`` reservation because it resolves working
+        directories via ``working_source_root``.
+        """
         download_dir = working_source_root(Path(settings.BCAD_DOWNLOAD_DIR))
         extract_root = working_source_root(Path(settings.BCAD_EXTRACT_DIR))
 
