@@ -288,7 +288,8 @@ class CadRefreshStage:
         (see ``resolve_timestamped_file`` for the timestamp-prefix/newest-
         match rationale)."""
         out: dict[str, Path] = {}
-        for description in PACS_FILE_DESCRIPTIONS:
+        # Load order: recorded sources, warnings and replay messages follow it (ADR-0024).
+        for description in CAD_LOAD_ORDER:
             resolved = resolve_timestamped_file(extract_dir, description.filename)
             if resolved is not None:
                 out[description.filename] = resolved
@@ -815,6 +816,7 @@ def inspect_cad(operation: ImportOperation, preparation: StagePreparation) -> St
         preparation,
         [
             payload.text_files[description.filename]
+            # Load order: recorded sources, warnings and replay messages follow it (ADR-0024).
             for description in CAD_LOAD_ORDER
             if description.filename in payload.text_files
         ],

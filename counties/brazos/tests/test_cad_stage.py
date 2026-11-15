@@ -13,6 +13,7 @@ from django.db import transaction
 from django.test import TestCase
 
 from counties.brazos.cad_refresh import CadRefreshStage
+from counties.brazos.candidate import RetainedCadStage
 from counties.brazos.models import (
     PropertyAccount,
     PropertyBuildingCharacteristic,
@@ -22,6 +23,7 @@ from counties.brazos.models import (
     PropertyLand,
 )
 from counties.brazos.stage_contract import RefreshOptions
+from counties.common.import_recovery import ReplayRejected
 from counties.common.import_writers import county_writer
 from counties.common.models import ImportOperation
 from counties.common.tax_models import PropertyJurisdictionExemption
@@ -432,3 +434,66 @@ class CadStageTests(TestCase):
 
                 self.assertIn(filename, str(exc_info.exception))
                 self.assertFalse(PropertyAccount.objects.exists())
+
+
+class CadFileOrderTests(TestCase):
+    """Missing-file warnings and replay messages follow the CAD load order (ADR-0024)."""
+
+    PRESENT = (
+        "APPRAISAL_INFO.TXT",
+        "APPRAISAL_LAND_DETAIL.TXT",
+        "APPRAISAL_IMPROVEMENT_INFO.TXT",
+        "APPRAISAL_IMPROVEMENT_DETAIL.TXT",
+    )
+
+    def _write_present_files(self, directory: Path) -> list[Path]:
+        directory.mkdir(parents=True, exist_ok=True)
+        paths = []
+        for filename in self.PRESENT:
+            path = directory / filename
+            path.write_text(f"{filename}\r\n", encoding="latin-1")
+            paths.append(path)
+        return paths
+
+    def test_missing_file_warnings_name_entity_info_before_detail_attr(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            extract_dir = Path(tmp)
+            self._write_present_files(extract_dir)
+
+            with self.assertLogs("brazos_cad", "WARNING") as logs:
+                CadRefreshStage._resolve_text_files(extract_dir)
+
+        self.assertEqual(
+            logs.output,
+            [
+                "WARNING:brazos_cad:Missing expected file: APPRAISAL_ENTITY_INFO.TXT",
+                "WARNING:brazos_cad:Missing expected file: APPRAISAL_IMPROVEMENT_DETAIL_ATTR.TXT",
+            ],
+        )
+
+    def test_replay_without_entity_info_or_detail_attr_names_entity_info(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sources = [
+                {
+                    "path": str(path),
+                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                    "stage": "cad",
+                    "source_year": YEAR,
+                }
+                for path in self._write_present_files(root / "retained")
+            ]
+            operation = ImportOperation.objects.create(county="brazos", intent="cad_replay_test")
+
+            with (
+                county_writer(operation),
+                self.settings(BCAD_EXTRACT_DIR=str(root / "extracted")),
+                self.assertRaises(ReplayRejected) as rejected,
+            ):
+                RetainedCadStage(sources).prepare(
+                    RefreshOptions(tax_year=YEAR, skip_download=True, skip_extract=True)
+                )
+
+        self.assertEqual(
+            str(rejected.exception), "Retained CAD input unavailable: APPRAISAL_ENTITY_INFO.TXT"
+        )

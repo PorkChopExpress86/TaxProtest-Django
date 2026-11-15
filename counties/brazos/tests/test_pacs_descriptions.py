@@ -6,6 +6,7 @@ from dataclasses import fields
 
 from django.test import SimpleTestCase
 
+from counties.brazos.cad_refresh import CAD_LOAD_ORDER
 from counties.brazos.parsers.pacs import (
     ENTITY_INFO_LAYOUT,
     IMPROVEMENT_DETAIL_ATTR_LAYOUT,
@@ -112,5 +113,21 @@ class PacsFileDescriptionTests(SimpleTestCase):
                     parse_improvement_detail_attr_line,
                 ),
                 ("APPRAISAL_ENTITY_INFO.TXT", ENTITY_INFO_LAYOUT, parse_entity_info_line),
+            ],
+        )
+
+    def test_cad_load_order_is_a_permutation_of_descriptions_in_load_order(self):
+        self.assertEqual(len(CAD_LOAD_ORDER), len(PACS_FILE_DESCRIPTIONS))
+        self.assertEqual(len(set(CAD_LOAD_ORDER)), len(CAD_LOAD_ORDER))
+        self.assertEqual(set(CAD_LOAD_ORDER), set(PACS_FILE_DESCRIPTIONS))
+        self.assertEqual(
+            [description.filename for description in CAD_LOAD_ORDER],
+            [
+                "APPRAISAL_INFO.TXT",
+                "APPRAISAL_LAND_DETAIL.TXT",
+                "APPRAISAL_IMPROVEMENT_INFO.TXT",
+                "APPRAISAL_IMPROVEMENT_DETAIL.TXT",
+                "APPRAISAL_ENTITY_INFO.TXT",
+                "APPRAISAL_IMPROVEMENT_DETAIL_ATTR.TXT",
             ],
         )

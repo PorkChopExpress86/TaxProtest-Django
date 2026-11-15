@@ -6,10 +6,9 @@ from pathlib import Path
 
 from django.conf import settings
 
-from counties.brazos.cad_refresh import CadRefreshStage
+from counties.brazos.cad_refresh import CAD_LOAD_ORDER, CadRefreshStage
 from counties.brazos.gis_refresh import GisRefreshStage
 from counties.brazos.models import BrazosPropertySnapshot
-from counties.brazos.parsers.pacs import PACS_FILE_DESCRIPTIONS
 from counties.brazos.property_import import (
     MODELS,
     brazos_candidate_load,
@@ -95,7 +94,8 @@ class RetainedCadStage(CadRefreshStage):
         year = self.sources[0]["source_year"]
         root = working_source_root(Path(settings.BCAD_EXTRACT_DIR), reuse=False) / str(year)
         files = {}
-        for description in PACS_FILE_DESCRIPTIONS:
+        # Load order: recorded sources, warnings and replay messages follow it (ADR-0024).
+        for description in CAD_LOAD_ORDER:
             filename = description.filename
             item = next(
                 (
