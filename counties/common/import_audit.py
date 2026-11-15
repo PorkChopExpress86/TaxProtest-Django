@@ -152,7 +152,6 @@ def _reconcile_dead_operations(operation: ImportOperation) -> None:
     """
     unfinished = _dead_operations(operation.county).exclude(pk=operation.pk)
     for pk in unfinished.values_list("pk", flat=True):
-        candidate = None
         with fenced_write():
             dead = unfinished.select_for_update(of=("self",)).filter(pk=pk).first()
             if dead is None or operation_is_alive(dead.pk):
@@ -173,8 +172,9 @@ def _reconcile_dead_operations(operation: ImportOperation) -> None:
                 evidence=evidence,
                 result=OperationStatus.FAILED,
             )
-        if candidate is not None:
-            drop_candidate_schema(candidate)
+            # Its worker's session is gone, so no lock of it holds the staged tables.
+            if candidate is not None:
+                drop_candidate_schema(candidate)
     abandoned = _abandoned_candidates(operation.county).exclude(operation=operation)
     for pk in abandoned.values_list("pk", flat=True):
         with fenced_write():
@@ -194,4 +194,4 @@ def _reconcile_dead_operations(operation: ImportOperation) -> None:
                 result=CandidateState.BLOCKED,
             )
             _block(candidate)
-        drop_candidate_schema(candidate)
+            drop_candidate_schema(candidate)
