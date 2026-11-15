@@ -183,14 +183,19 @@ class ResolveTextFilesTests(TestCase):
     def test_matches_timestamp_prefixed_filenames(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            for spec in PACS_FILE_DESCRIPTIONS:
-                (root / f"2025-07-23_002022_{spec.filename}").write_text("x", encoding="utf-8")
+            for description in PACS_FILE_DESCRIPTIONS:
+                (root / f"2025-07-23_002022_{description.filename}").write_text(
+                    "x", encoding="utf-8"
+                )
 
             resolved = CadRefreshStage._resolve_text_files(root)
 
-            for spec in PACS_FILE_DESCRIPTIONS:
-                self.assertIn(spec.filename, resolved)
-                self.assertEqual(resolved[spec.filename].name, f"2025-07-23_002022_{spec.filename}")
+            for description in PACS_FILE_DESCRIPTIONS:
+                self.assertIn(description.filename, resolved)
+                self.assertEqual(
+                    resolved[description.filename].name,
+                    f"2025-07-23_002022_{description.filename}",
+                )
 
     def test_picks_newest_when_duplicate_timestamped_copies_exist(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -206,9 +211,11 @@ class ResolveTextFilesTests(TestCase):
 
 class LoadFileTests(TestCase):
     def test_land_detail_loads_with_correct_decimal_scaling(self):
-        spec = next(s for s in PACS_FILE_DESCRIPTIONS if s.filename == "APPRAISAL_LAND_DETAIL.TXT")
+        description = next(
+            d for d in PACS_FILE_DESCRIPTIONS if d.filename == "APPRAISAL_LAND_DETAIL.TXT"
+        )
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / spec.filename
+            path = Path(tmp) / description.filename
             path.write_text(
                 _land_detail_line(
                     "000000010002", "2025", "000000100000", "00000002833677", "105024"
@@ -217,7 +224,7 @@ class LoadFileTests(TestCase):
                 encoding="utf-8",
             )
 
-            count = CadRefreshStage()._load_file(spec, path, 2025)
+            count = CadRefreshStage()._load_file(description, path, 2025)
 
         self.assertEqual(count, 1)
         row = PropertyLand.objects.get(prop_id="000000010002", tax_year=2025)
@@ -225,9 +232,11 @@ class LoadFileTests(TestCase):
         self.assertEqual(row.acreage, Decimal("10.5024"))
 
     def test_reloading_same_tax_year_replaces_rather_than_duplicates(self):
-        spec = next(s for s in PACS_FILE_DESCRIPTIONS if s.filename == "APPRAISAL_LAND_DETAIL.TXT")
+        description = next(
+            d for d in PACS_FILE_DESCRIPTIONS if d.filename == "APPRAISAL_LAND_DETAIL.TXT"
+        )
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / spec.filename
+            path = Path(tmp) / description.filename
             path.write_text(
                 _land_detail_line(
                     "000000010002", "2025", "000000100000", "00000002833677", "105024"
@@ -235,16 +244,18 @@ class LoadFileTests(TestCase):
                 + "\r\n",
                 encoding="utf-8",
             )
-            CadRefreshStage()._load_file(spec, path, 2025)
-            CadRefreshStage()._load_file(spec, path, 2025)
+            CadRefreshStage()._load_file(description, path, 2025)
+            CadRefreshStage()._load_file(description, path, 2025)
 
         self.assertEqual(PropertyLand.objects.filter(tax_year=2025).count(), 1)
 
     def test_loading_one_year_does_not_delete_another_years_rows(self):
-        spec = next(s for s in PACS_FILE_DESCRIPTIONS if s.filename == "APPRAISAL_LAND_DETAIL.TXT")
+        description = next(
+            d for d in PACS_FILE_DESCRIPTIONS if d.filename == "APPRAISAL_LAND_DETAIL.TXT"
+        )
         PropertyLand.objects.create(prop_id="000000099999", tax_year=2024, land_seq=1)
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / spec.filename
+            path = Path(tmp) / description.filename
             path.write_text(
                 _land_detail_line(
                     "000000010002", "2025", "000000100000", "00000002833677", "105024"
@@ -252,15 +263,17 @@ class LoadFileTests(TestCase):
                 + "\r\n",
                 encoding="utf-8",
             )
-            CadRefreshStage()._load_file(spec, path, 2025)
+            CadRefreshStage()._load_file(description, path, 2025)
 
         self.assertTrue(PropertyLand.objects.filter(tax_year=2024).exists())
         self.assertTrue(PropertyLand.objects.filter(tax_year=2025).exists())
 
     def test_row_with_mismatched_in_record_tax_year_raises(self):
-        spec = next(s for s in PACS_FILE_DESCRIPTIONS if s.filename == "APPRAISAL_LAND_DETAIL.TXT")
+        description = next(
+            d for d in PACS_FILE_DESCRIPTIONS if d.filename == "APPRAISAL_LAND_DETAIL.TXT"
+        )
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / spec.filename
+            path = Path(tmp) / description.filename
             # In-record tax_year is 2024, but we request 2025.
             path.write_text(
                 _land_detail_line(
@@ -270,25 +283,25 @@ class LoadFileTests(TestCase):
                 encoding="utf-8",
             )
             with self.assertRaises(CommandError):
-                CadRefreshStage()._load_file(spec, path, 2025)
+                CadRefreshStage()._load_file(description, path, 2025)
 
         self.assertFalse(PropertyLand.objects.filter(tax_year=2025).exists())
 
 
 class LoadImprovementDetailRollupTests(TestCase):
     def test_year_built_rolls_up_from_highest_value_detail_row(self):
-        improvement_spec = next(
-            s for s in PACS_FILE_DESCRIPTIONS if s.filename == "APPRAISAL_IMPROVEMENT_INFO.TXT"
+        improvement_description = next(
+            d for d in PACS_FILE_DESCRIPTIONS if d.filename == "APPRAISAL_IMPROVEMENT_INFO.TXT"
         )
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
 
-            info_path = root / improvement_spec.filename
+            info_path = root / improvement_description.filename
             info_path.write_text(
                 _improvement_info_line("000000010002", "2025", "000000100000") + "\r\n",
                 encoding="utf-8",
             )
-            CadRefreshStage()._load_file(improvement_spec, info_path, 2025)
+            CadRefreshStage()._load_file(improvement_description, info_path, 2025)
 
             detail_path = root / IMPROVEMENT_DETAIL_DESCRIPTION.filename
             lines = [
@@ -311,12 +324,12 @@ class LoadImprovementDetailRollupTests(TestCase):
         self.assertEqual(improvement.year_built, 1998)
 
     def test_year_built_rollup_keeps_properties_sharing_an_imp_id_apart(self):
-        improvement_spec = next(
-            s for s in PACS_FILE_DESCRIPTIONS if s.filename == "APPRAISAL_IMPROVEMENT_INFO.TXT"
+        improvement_description = next(
+            d for d in PACS_FILE_DESCRIPTIONS if d.filename == "APPRAISAL_IMPROVEMENT_INFO.TXT"
         )
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            info_path = root / improvement_spec.filename
+            info_path = root / improvement_description.filename
             info_path.write_text(
                 _improvement_info_line("000000010002", "2025", "000000100000")
                 + "\r\n"
@@ -324,7 +337,7 @@ class LoadImprovementDetailRollupTests(TestCase):
                 + "\r\n",
                 encoding="utf-8",
             )
-            CadRefreshStage()._load_file(improvement_spec, info_path, 2025)
+            CadRefreshStage()._load_file(improvement_description, info_path, 2025)
 
             detail_path = root / IMPROVEMENT_DETAIL_DESCRIPTION.filename
             lines = [
@@ -349,17 +362,17 @@ class LoadImprovementDetailRollupTests(TestCase):
         self.assertEqual(years, {"000000010002": 1980, "000000010003": 2010})
 
     def test_zero_year_built_rows_excluded_from_rollup(self):
-        improvement_spec = next(
-            s for s in PACS_FILE_DESCRIPTIONS if s.filename == "APPRAISAL_IMPROVEMENT_INFO.TXT"
+        improvement_description = next(
+            d for d in PACS_FILE_DESCRIPTIONS if d.filename == "APPRAISAL_IMPROVEMENT_INFO.TXT"
         )
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            info_path = root / improvement_spec.filename
+            info_path = root / improvement_description.filename
             info_path.write_text(
                 _improvement_info_line("000000010002", "2025", "000000100000") + "\r\n",
                 encoding="utf-8",
             )
-            CadRefreshStage()._load_file(improvement_spec, info_path, 2025)
+            CadRefreshStage()._load_file(improvement_description, info_path, 2025)
 
             detail_path = root / IMPROVEMENT_DETAIL_DESCRIPTION.filename
             detail_path.write_text(
@@ -375,17 +388,17 @@ class LoadImprovementDetailRollupTests(TestCase):
         self.assertIsNone(improvement.year_built)
 
     def test_row_with_mismatched_in_record_tax_year_raises(self):
-        improvement_spec = next(
-            s for s in PACS_FILE_DESCRIPTIONS if s.filename == "APPRAISAL_IMPROVEMENT_INFO.TXT"
+        improvement_description = next(
+            d for d in PACS_FILE_DESCRIPTIONS if d.filename == "APPRAISAL_IMPROVEMENT_INFO.TXT"
         )
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            info_path = root / improvement_spec.filename
+            info_path = root / improvement_description.filename
             info_path.write_text(
                 _improvement_info_line("000000010002", "2025", "000000100000") + "\r\n",
                 encoding="utf-8",
             )
-            CadRefreshStage()._load_file(improvement_spec, info_path, 2025)
+            CadRefreshStage()._load_file(improvement_description, info_path, 2025)
 
             detail_path = root / IMPROVEMENT_DETAIL_DESCRIPTION.filename
             detail_path.write_text(
@@ -764,13 +777,15 @@ class ExactDuplicateSourceRowTests(TestCase):
     """The real 2026 export repeats 370 ATTR rows byte for byte; persist keeps one."""
 
     def test_exact_duplicate_in_a_unique_constrained_file_loads_once(self):
-        spec = next(s for s in PACS_FILE_DESCRIPTIONS if s.filename == "APPRAISAL_LAND_DETAIL.TXT")
+        description = next(
+            d for d in PACS_FILE_DESCRIPTIONS if d.filename == "APPRAISAL_LAND_DETAIL.TXT"
+        )
         line = _land_detail_line("000000010002", "2025", "000000100000", "00000002833677", "105024")
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / spec.filename
+            path = Path(tmp) / description.filename
             path.write_text(f"{line}\r\n{line}\r\n", encoding="utf-8")
 
-            count = CadRefreshStage()._load_file(spec, path, 2025)
+            count = CadRefreshStage()._load_file(description, path, 2025)
 
         self.assertEqual(count, 1)
         self.assertEqual(PropertyLand.objects.filter(tax_year=2025).count(), 1)
