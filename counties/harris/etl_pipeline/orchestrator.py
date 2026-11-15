@@ -40,10 +40,10 @@ from counties.harris.source_catalog import (
 from .config import DataSource, DataSourceType, ETLConfig
 from .download import DownloadManager
 from .extract import ExtractManager
-from .fixtures_aggregator import FixturesAggregator
 from .import_plan import HarrisImportPlan
 from .logging import ETLLogger
 from .source_pipeline import HarrisSourcePipeline
+from .source_reading import HcadSourceReading, read_hcad_sources
 
 
 class HarrisImportPhase(Enum):
@@ -354,7 +354,6 @@ class _HarrisImportExecution:
             data_year=data_year,
         )
         self.extract_manager = ExtractManager(self.config, self.logger)
-        self.fixtures_aggregator = FixturesAggregator()
 
         self.reporter = reporter
         self.stages: dict[HarrisImportPhase, HarrisImportStageResult] = {}
@@ -388,12 +387,17 @@ class _HarrisImportExecution:
             if not self._record_stage(extract_result, strict=strict):
                 return self._finish(started_at, HarrisImportStatus.FAILED, wrote_data=False)
 
+        # One reading of the extracted sources, shared by source validation and the load.
+        reading = read_hcad_sources(
+            (source, self.extract_manager.get_extract_path(source)) for source in sources
+        )
+
         if preview or isinstance(self.request.load, HarrisPrepare):
             from .source_validation import validate_harris_sources
 
             assert self.operation is not None
             validation = validate_harris_sources(
-                self.config, sources, self.data_year, self.operation
+                self.config, sources, self.data_year, self.operation, reading=reading
             )
             source_result = _StageResult(
                 stage=HarrisImportPhase.SOURCE_VALIDATION,
@@ -414,7 +418,7 @@ class _HarrisImportExecution:
             )
         else:
             with fenced_write():
-                load_result = self._execute_transform_load(sources, strict=strict)
+                load_result = self._execute_transform_load(sources, reading, strict=strict)
         wrote_data = bool(load_result.metrics.get("_wrote_data", False))
         useful_work = bool(load_result.metrics.get("_sources_succeeded", 0))
         if not self._record_stage(load_result, strict=strict):
@@ -605,6 +609,7 @@ class _HarrisImportExecution:
     def _execute_transform_load(
         self,
         sources: list[DataSource],
+        reading: HcadSourceReading,
         strict: bool = True,
     ) -> _StageResult:
         """Execute transform and load stages.
@@ -627,11 +632,11 @@ class _HarrisImportExecution:
 
             pipeline = HarrisSourcePipeline(
                 extract_manager=self.extract_manager,
-                fixtures_aggregator=self.fixtures_aggregator,
+                reading=reading,
                 property_file=self.request.property_file,
                 logger=self.logger,
             )
-            pipeline.preload_fixtures(sources)
+            pipeline.preload_fixtures()
 
             for source in sources:
                 if source.source_type == DataSourceType.GIS_DATA:
