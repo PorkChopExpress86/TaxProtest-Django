@@ -190,7 +190,7 @@ _SCHEMA_DATASETS = {
 
 class ValidatedEqualsLoadedTests(TestCase):
     # Keep the candidate's schema to read what the load staged.
-    @patch("counties.common.candidate_lifecycle.drop_candidate_schema")
+    @patch("counties.common.candidate_transitions.drop_candidate_schema")
     def test_validated_files_and_counts_are_what_the_staged_load_loaded(self, _drop):
         persisted = []
         persist = HarrisPersistence.persist
@@ -297,11 +297,11 @@ class StoredValidationEvidenceTests(TestCase):
             result = run_harris_import(_request(load))
             return _pinned_text(ImportOperation.objects.get(pk=result.operation_id), root)
 
-    @patch("counties.common.candidate_lifecycle.drop_candidate_schema")
+    @patch("counties.common.candidate_transitions.drop_candidate_schema")
     def test_a_catalog_shaped_extract_stores_the_pinned_bytes(self, _drop):
         self.assertEqual(self.evidence(_catalog_extract(), _prepare()), PINNED_VALID)
 
-    @patch("counties.common.candidate_lifecycle.drop_candidate_schema")
+    @patch("counties.common.candidate_transitions.drop_candidate_schema")
     def test_a_missing_member_and_a_layout_defect_store_the_pinned_bytes(self, _drop):
         members = _catalog_extract(
             fixtures=None,
@@ -309,7 +309,7 @@ class StoredValidationEvidenceTests(TestCase):
         )
         self.assertEqual(self.evidence(members, _prepare()), PINNED_LAYOUT_FAILURE)
 
-    @patch("counties.common.candidate_lifecycle.drop_candidate_schema")
+    @patch("counties.common.candidate_transitions.drop_candidate_schema")
     def test_a_conflicting_identity_stores_the_pinned_bytes(self, _drop):
         members = _catalog_extract(
             real_acct=REAL_ACCT + "R002\t2026\t2 OAK ST\t77001\tA1\t310000\n",

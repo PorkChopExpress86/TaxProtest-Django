@@ -144,6 +144,19 @@ prepared, awaiting review, blocked, approved, rejected, published, or
 superseded. It is a separate vocabulary from an Import operation's status.
 _Avoid_: candidate status, workflow state, import status
 
+**Candidate transition**:
+A move of a candidate from one Candidate state to another. Only the Candidate
+lifecycle makes one, and it sets the state, the timestamp that belongs to it,
+and for a retired state the drop of the staged schema, together in one
+transaction.
+_Avoid_: status update, state change, manual toggle
+
+**Retired candidate**:
+A blocked, rejected, published or superseded candidate. It can no longer be
+approved or published, so it has no staged schema. A blocked one can still be
+rejected, which is how an operator releases its retained sources.
+_Avoid_: dead candidate, closed candidate, archived candidate
+
 **Held candidate**:
 A prepared, awaiting-review, or blocked candidate that an Import operation left
 unpublished for an operator; published data is unchanged. A county's first
