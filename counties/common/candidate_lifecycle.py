@@ -23,8 +23,8 @@ from counties.common.candidate_ports import (
 )
 from counties.common.candidate_staging import cutover_staged_tables, staged_candidate_schema
 from counties.common.candidate_transitions import (
+    block_unsaved_preparation,
     end_preparation,
-    end_preparation_unsaved,
     publish_candidate,
 )
 from counties.common.county_registry import registration_for
@@ -284,7 +284,7 @@ def prepare(
         except Exception as exc:
             # Never leave the candidate preparing behind an operation that records an
             # ending.
-            end_preparation_unsaved(candidate, f"Candidate was not saved: {exc}")
+            block_unsaved_preparation(candidate, f"Candidate was not saved: {exc}")
             raise
     if automatic_publication and candidate.state == CandidateState.PREPARED:
         # Under this writer nothing has written the published or staged tables since
