@@ -44,7 +44,7 @@ import shutil
 from collections.abc import Callable, Iterator, Mapping
 from decimal import Decimal
 from pathlib import Path
-from typing import ClassVar, TypeVar
+from typing import Any, ClassVar, TypeVar, cast
 
 import requests
 from bs4 import BeautifulSoup
@@ -68,11 +68,9 @@ from counties.brazos.parsers.pacs import (
     INFO_DESCRIPTION,
     LAND_DETAIL_DESCRIPTION,
     PACS_FILE_DESCRIPTIONS,
+    EntityInfoRow,
     PacsFileDescription,
     iter_pacs_lines,
-    parse_entity_info_line,
-    parse_improvement_detail_attr_line,
-    parse_improvement_detail_line,
     row_fingerprint,
 )
 from counties.brazos.portal import (
@@ -180,6 +178,19 @@ def _require_matching_tax_year(filename: str, record_year: int | None, tax_year:
         )
 
 
+# Explicit load order differs from PACS_FILE_DESCRIPTIONS because rollups
+# require APPRAISAL_IMPROVEMENT_INFO.TXT before APPRAISAL_IMPROVEMENT_DETAIL.TXT
+# and APPRAISAL_INFO.TXT before APPRAISAL_ENTITY_INFO.TXT.
+CAD_LOAD_ORDER: tuple[PacsFileDescription, ...] = (
+    INFO_DESCRIPTION,
+    LAND_DETAIL_DESCRIPTION,
+    IMPROVEMENT_INFO_DESCRIPTION,
+    IMPROVEMENT_DETAIL_DESCRIPTION,
+    ENTITY_INFO_DESCRIPTION,
+    IMPROVEMENT_DETAIL_ATTR_DESCRIPTION,
+)
+
+
 class CadRefreshStage:
     """Prepare, persist, and clean up the certified CAD source for one year."""
 
@@ -190,18 +201,6 @@ class CadRefreshStage:
         LAND_DETAIL_DESCRIPTION: PropertyLand,
         IMPROVEMENT_INFO_DESCRIPTION: PropertyImprovement,
     }
-
-    # Explicit load order differs from PACS_FILE_DESCRIPTIONS because rollups
-    # require APPRAISAL_IMPROVEMENT_INFO.TXT before APPRAISAL_IMPROVEMENT_DETAIL.TXT
-    # and APPRAISAL_INFO.TXT before APPRAISAL_ENTITY_INFO.TXT.
-    _LOAD_ORDER: ClassVar[tuple[PacsFileDescription, ...]] = (
-        INFO_DESCRIPTION,
-        LAND_DETAIL_DESCRIPTION,
-        IMPROVEMENT_INFO_DESCRIPTION,
-        IMPROVEMENT_DETAIL_DESCRIPTION,
-        ENTITY_INFO_DESCRIPTION,
-        IMPROVEMENT_DETAIL_ATTR_DESCRIPTION,
-    )
 
     def __init__(self, reporter: StageReporter | None = None):
         self._reporter = reporter or SilentStageReporter()
@@ -328,13 +327,18 @@ class CadRefreshStage:
         if duplicates:
             logger.warning("%s: dropped %d exact duplicate source rows", text_file.name, duplicates)
 
+    def _iter_year_matched_records(
+        self, description: PacsFileDescription, text_file: Path, tax_year: int
+    ) -> Iterator[dict[str, Any]]:
+        """Yield unique parsed records after verifying any present record year matches ``tax_year``."""
+        for record in self._iter_unique_records(text_file, description.parse_fn):
+            _require_matching_tax_year(description.filename, record.get("tax_year"), tax_year)
+            yield dict(record)
+
     def _load_file(self, description: PacsFileDescription, text_file: Path, tax_year: int) -> int:
         model = self._PLAIN_LOAD_MODELS[description]
         instances = []
-        for record in self._iter_unique_records(text_file, description.parse_fn):
-            fields = dict(record)
-            record_year = fields.pop("tax_year", None)
-            _require_matching_tax_year(description.filename, record_year, tax_year)
+        for fields in self._iter_year_matched_records(description, text_file, tax_year):
             fields["tax_year"] = tax_year
             fields["source_file"] = text_file.name
             instances.append(model(**fields))
@@ -364,11 +368,9 @@ class CadRefreshStage:
         rollup_best_value: dict[tuple[str, str], Decimal] = {}
         rollup_year_built: dict[tuple[str, str], int] = {}
 
-        for fields in self._iter_unique_records(text_file, parse_improvement_detail_line):
-            record_year = fields.pop("tax_year", None)
-            _require_matching_tax_year(
-                IMPROVEMENT_DETAIL_DESCRIPTION.filename, record_year, tax_year
-            )
+        for fields in self._iter_year_matched_records(
+            IMPROVEMENT_DETAIL_DESCRIPTION, text_file, tax_year
+        ):
             year_built = fields.pop("year_built", None)
             key = (fields["prop_id"], fields["imp_id"])
             detail_value = fields.get("detail_value") or Decimal("0")
@@ -437,9 +439,8 @@ class CadRefreshStage:
         instances: list[PropertyJurisdictionExemption] = []
         assessed_value_by_prop: dict[str, Decimal] = {}
 
-        for fields in self._iter_unique_records(text_file, parse_entity_info_line):
-            record_year = fields["tax_year"]
-            _require_matching_tax_year(ENTITY_INFO_DESCRIPTION.filename, record_year, tax_year)
+        for record in self._iter_year_matched_records(ENTITY_INFO_DESCRIPTION, text_file, tax_year):
+            fields = cast(EntityInfoRow, record)
 
             prop_id = fields["prop_id"]
             tax_unit_code = fields["tax_unit_code"]
@@ -551,12 +552,9 @@ class CadRefreshStage:
         extra_features: list[PropertyExtraFeature] = []
         unparseable_bathrooms = 0
 
-        for fields in self._iter_unique_records(text_file, parse_improvement_detail_attr_line):
-            record_year = fields.pop("tax_year", None)
-            _require_matching_tax_year(
-                IMPROVEMENT_DETAIL_ATTR_DESCRIPTION.filename, record_year, tax_year
-            )
-
+        for fields in self._iter_year_matched_records(
+            IMPROVEMENT_DETAIL_ATTR_DESCRIPTION, text_file, tax_year
+        ):
             prop_id = fields["prop_id"]
             imp_id = fields["imp_id"]
             detail_seq = fields["detail_seq"]
@@ -638,7 +636,7 @@ class CadRefreshStage:
             IMPROVEMENT_DETAIL_ATTR_DESCRIPTION: self._load_improvement_detail_attr,
         }
         results: dict[str, int] = {}
-        for description in self._LOAD_ORDER:
+        for description in CAD_LOAD_ORDER:
             text_file = text_files[description.filename]
             if description in self._PLAIN_LOAD_MODELS:
                 results[description.filename] = self._load_file(description, text_file, tax_year)
@@ -817,7 +815,7 @@ def inspect_cad(operation: ImportOperation, preparation: StagePreparation) -> St
         preparation,
         [
             payload.text_files[description.filename]
-            for description in CadRefreshStage._LOAD_ORDER
+            for description in CAD_LOAD_ORDER
             if description.filename in payload.text_files
         ],
     )
@@ -828,7 +826,7 @@ def inspect_cad(operation: ImportOperation, preparation: StagePreparation) -> St
         filename = description.filename
         seen = {}
         count = duplicate = 0
-        for number, line in enumerate(CadRefreshStage._iter_lines(payload.text_files[filename]), 1):
+        for number, line in enumerate(iter_pacs_lines(payload.text_files[filename]), 1):
             fields = pacs.parse_fixed_width(line, description.layout)
             prop_id = fields["prop_id"]
             if not prop_id.isdigit() or len(prop_id) != 12:
