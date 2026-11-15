@@ -9,6 +9,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from django.core.management.base import CommandError
+from django.db import transaction
 from django.test import TestCase
 
 from counties.brazos.cad_refresh import CadRefreshStage
@@ -394,4 +395,40 @@ class CadStageTests(TestCase):
 
                 self.assertEqual(str(exc_info.exception), expected_message)
                 self.assertNotIn("cad_inspection", operation.evidence)
+                self.assertFalse(PropertyAccount.objects.exists())
+
+    def test_persist_rejects_wrong_year_row_without_preflight(self):
+        wrong_year_lines = {
+            "APPRAISAL_INFO.TXT": _info_line(year=YEAR - 1),
+            "APPRAISAL_LAND_DETAIL.TXT": _land_detail_line(year=YEAR - 1),
+            "APPRAISAL_IMPROVEMENT_INFO.TXT": _improvement_info_line(year=YEAR - 1),
+            "APPRAISAL_IMPROVEMENT_DETAIL.TXT": _improvement_detail_line(
+                "000000000001", "MAIN AREA", "1998", "0000200000.00", year=YEAR - 1
+            ),
+            "APPRAISAL_ENTITY_INFO.TXT": _entity_info_line(year=YEAR - 1),
+            "APPRAISAL_IMPROVEMENT_DETAIL_ATTR.TXT": _improvement_detail_attr_line(
+                "Fireplace", "BRICK", year=YEAR - 1
+            ),
+        }
+        stage = CadRefreshStage()
+
+        for filename, wrong_line in wrong_year_lines.items():
+            with self.subTest(filename=filename), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                paths = _write_qualifying_six_file_source(root)
+                paths[filename].write_text(wrong_line + "\r\n", encoding="latin-1")
+
+                operation = self._operation()
+                with (
+                    county_writer(operation),
+                    self.settings(
+                        BCAD_DOWNLOAD_DIR=str(root / "downloads"),
+                        BCAD_EXTRACT_DIR=str(root / "extracted"),
+                    ),
+                ):
+                    preparation = stage.prepare(self._options())
+                    with self.assertRaises(CommandError) as exc_info, transaction.atomic():
+                        stage.persist(preparation)
+
+                self.assertIn(filename, str(exc_info.exception))
                 self.assertFalse(PropertyAccount.objects.exists())

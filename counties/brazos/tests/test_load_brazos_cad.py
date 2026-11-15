@@ -14,6 +14,7 @@ from io import StringIO
 from pathlib import Path
 
 from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.test import TestCase
 
 from counties.brazos.cad_refresh import CadRefreshStage, _parse_bathrooms
@@ -256,7 +257,7 @@ class LoadFileTests(TestCase):
         self.assertTrue(PropertyLand.objects.filter(tax_year=2024).exists())
         self.assertTrue(PropertyLand.objects.filter(tax_year=2025).exists())
 
-    def test_row_with_mismatched_in_record_tax_year_is_skipped(self):
+    def test_row_with_mismatched_in_record_tax_year_raises(self):
         spec = next(s for s in PACS_FILE_DESCRIPTIONS if s.filename == "APPRAISAL_LAND_DETAIL.TXT")
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / spec.filename
@@ -268,9 +269,9 @@ class LoadFileTests(TestCase):
                 + "\r\n",
                 encoding="utf-8",
             )
-            count = CadRefreshStage()._load_file(spec, path, 2025)
+            with self.assertRaises(CommandError):
+                CadRefreshStage()._load_file(spec, path, 2025)
 
-        self.assertEqual(count, 0)
         self.assertFalse(PropertyLand.objects.filter(tax_year=2025).exists())
 
 
@@ -370,6 +371,34 @@ class LoadImprovementDetailRollupTests(TestCase):
             )
             CadRefreshStage()._load_improvement_detail(detail_path, 2025)
 
+        improvement = PropertyImprovement.objects.get(imp_id="000000100000", tax_year=2025)
+        self.assertIsNone(improvement.year_built)
+
+    def test_row_with_mismatched_in_record_tax_year_raises(self):
+        improvement_spec = next(
+            s for s in PACS_FILE_DESCRIPTIONS if s.filename == "APPRAISAL_IMPROVEMENT_INFO.TXT"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            info_path = root / improvement_spec.filename
+            info_path.write_text(
+                _improvement_info_line("000000010002", "2025", "000000100000") + "\r\n",
+                encoding="utf-8",
+            )
+            CadRefreshStage()._load_file(improvement_spec, info_path, 2025)
+
+            detail_path = root / IMPROVEMENT_DETAIL_DESCRIPTION.filename
+            detail_path.write_text(
+                _improvement_detail_line(
+                    "000000010002", "2024", "000000100000", "000000000001", "1998", "0005000.000000"
+                )
+                + "\r\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(CommandError):
+                CadRefreshStage()._load_improvement_detail(detail_path, 2025)
+
+        self.assertFalse(PropertyImprovementDetail.objects.filter(tax_year=2025).exists())
         improvement = PropertyImprovement.objects.get(imp_id="000000100000", tax_year=2025)
         self.assertIsNone(improvement.year_built)
 
@@ -510,7 +539,7 @@ class LoadEntityInfoTests(TestCase):
             1,
         )
 
-    def test_row_with_mismatched_in_record_tax_year_is_skipped(self):
+    def test_row_with_mismatched_in_record_tax_year_raises(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / ENTITY_INFO_DESCRIPTION.filename
             path.write_text(
@@ -521,9 +550,9 @@ class LoadEntityInfoTests(TestCase):
                 encoding="utf-8",
             )
 
-            count = CadRefreshStage()._load_entity_info(path, 2025)
+            with self.assertRaises(CommandError):
+                CadRefreshStage()._load_entity_info(path, 2025)
 
-        self.assertEqual(count, 0)
         self.assertFalse(
             PropertyJurisdictionExemption.objects.filter(tax_year=2025, county="brazos").exists()
         )
@@ -715,6 +744,20 @@ class LoadImprovementDetailAttrTests(TestCase):
             CadRefreshStage()._load_improvement_detail_attr(path, 2025)
 
         self.assertEqual(PropertyExtraFeature.objects.filter(tax_year=2025).count(), 1)
+
+    def test_row_with_mismatched_in_record_tax_year_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / IMPROVEMENT_DETAIL_ATTR_DESCRIPTION.filename
+            path.write_text(
+                _attr_line("000000010008", "2024", "000000100002", "000000100001", "Fireplace", "G")
+                + "\r\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(CommandError):
+                CadRefreshStage()._load_improvement_detail_attr(path, 2025)
+
+        self.assertFalse(PropertyBuildingCharacteristic.objects.filter(tax_year=2025).exists())
+        self.assertFalse(PropertyExtraFeature.objects.filter(tax_year=2025).exists())
 
 
 class ExactDuplicateSourceRowTests(TestCase):
