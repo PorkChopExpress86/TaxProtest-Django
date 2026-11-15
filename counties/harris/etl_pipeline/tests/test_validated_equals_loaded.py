@@ -62,6 +62,8 @@ BUILDING_RES = (
     # No such account in the property file.
     "X999\t1\t1001\t1200\t3\t2\t0\n"
     "R002\t1\t\t1001\t1500\t2\t1\t0\n"
+    # Every field empty: the layout inspection passes over it and translation skips it.
+    "\t\t\t\t\t\t\n"
 )
 FIXTURES = (
     "acct\tbld_num\ttype\ttype_dscr\tunits\n"
@@ -275,7 +277,7 @@ class ValidatedEqualsLoadedTests(TestCase):
             validation["translated"],
             {
                 "real_acct": {"loaded": 2, "invalid": 1, "skipped": 2},
-                "building_res": {"loaded": 2, "invalid": 3, "skipped": 1},
+                "building_res": {"loaded": 2, "invalid": 3, "skipped": 2},
                 "extra_features": {"loaded": 6, "invalid": 6, "skipped": 0},
             },
         )
@@ -285,7 +287,8 @@ class ValidatedEqualsLoadedTests(TestCase):
 class StoredValidationEvidenceTests(TestCase):
     """The stored validation evidence and recorded sources, pinned byte for byte (ADR-0024).
 
-    Held candidates bind these bytes. Never regenerate a literal to make a failure pass.
+    A held candidate binds the valid extract's bytes; the failing extracts pin validation's
+    error text and order. Never regenerate a literal to make a failure pass.
     """
 
     def evidence(self, members, load) -> str:
@@ -355,7 +358,7 @@ PINNED_VALID = """{
   {
    "path": "{root}/downloads/.imports/{operation}/Real_building_land.zip",
    "requested_year": 2026,
-   "sha256": "91146b839514399e30644cc247d301aa970c05265837e60ab54b2e31af63ca87",
+   "sha256": "afdbb77faa2031631daa59f5b4b7c979d7258c2ff74d5e84ac3dfc179a476b74",
    "source_id": "real-building-land",
    "source_url": null,
    "source_year": null
@@ -363,7 +366,7 @@ PINNED_VALID = """{
   {
    "path": "{root}/extracted/.imports/{operation}/Real_building_land/building_res.txt",
    "requested_year": 2026,
-   "sha256": "ade7139bd4b42d1bbbffe8c62c538c809b78c64347accf3d943010ab4f18c3e4",
+   "sha256": "4c2a335ea5a98db87f07de316865ec3d0de582dff13f9438375ad64870395c26",
    "source_id": "real-building-land",
    "source_year": null
   },
@@ -435,7 +438,7 @@ PINNED_VALID = """{
    "building_res": {
     "invalid": 3,
     "loaded": 2,
-    "skipped": 1
+    "skipped": 2
    },
    "extra_features": {
     "invalid": 6,
@@ -471,7 +474,7 @@ PINNED_LAYOUT_FAILURE = """{
   {
    "path": "{root}/downloads/.imports/{operation}/Real_building_land.zip",
    "requested_year": 2026,
-   "sha256": "7509bb94d86e2b5f5fba27f01632bfbab0a3354add03b8d4a21b9dfa1b97e685",
+   "sha256": "4f793fcf0e19a41453638bd65b6ae323f7c26984b3d2e289905e2d6121ae5ad2",
    "source_id": "real-building-land",
    "source_url": null,
    "source_year": null
@@ -479,7 +482,7 @@ PINNED_LAYOUT_FAILURE = """{
   {
    "path": "{root}/extracted/.imports/{operation}/Real_building_land/building_res.txt",
    "requested_year": 2026,
-   "sha256": "ade7139bd4b42d1bbbffe8c62c538c809b78c64347accf3d943010ab4f18c3e4",
+   "sha256": "4c2a335ea5a98db87f07de316865ec3d0de582dff13f9438375ad64870395c26",
    "source_id": "real-building-land",
    "source_year": null
   },
@@ -560,7 +563,7 @@ PINNED_CONFLICT = """{
   {
    "path": "{root}/downloads/.imports/{operation}/Real_building_land.zip",
    "requested_year": 2026,
-   "sha256": "91146b839514399e30644cc247d301aa970c05265837e60ab54b2e31af63ca87",
+   "sha256": "afdbb77faa2031631daa59f5b4b7c979d7258c2ff74d5e84ac3dfc179a476b74",
    "source_id": "real-building-land",
    "source_url": null,
    "source_year": null
@@ -568,7 +571,7 @@ PINNED_CONFLICT = """{
   {
    "path": "{root}/extracted/.imports/{operation}/Real_building_land/building_res.txt",
    "requested_year": 2026,
-   "sha256": "ade7139bd4b42d1bbbffe8c62c538c809b78c64347accf3d943010ab4f18c3e4",
+   "sha256": "4c2a335ea5a98db87f07de316865ec3d0de582dff13f9438375ad64870395c26",
    "source_id": "real-building-land",
    "source_year": null
   },
@@ -642,7 +645,7 @@ PINNED_CONFLICT = """{
    "building_res": {
     "invalid": 3,
     "loaded": 2,
-    "skipped": 1
+    "skipped": 2
    },
    "extra_features": {
     "invalid": 6,
