@@ -172,6 +172,14 @@ def _attr_int_or_none(raw: str) -> int | None:
         return None
 
 
+def _require_matching_tax_year(filename: str, record_year: int | None, tax_year: int) -> None:
+    """Reject a source row whose in-record tax year does not match ``tax_year``."""
+    if record_year is not None and record_year != tax_year:
+        raise CommandError(
+            f"{filename}: record tax_year {record_year} does not match requested {tax_year}."
+        )
+
+
 class CadRefreshStage:
     """Prepare, persist, and clean up the certified CAD source for one year."""
 
@@ -323,24 +331,13 @@ class CadRefreshStage:
     def _load_file(self, description: PacsFileDescription, text_file: Path, tax_year: int) -> int:
         model = self._PLAIN_LOAD_MODELS[description]
         instances = []
-        mismatched = 0
         for record in self._iter_unique_records(text_file, description.parse_fn):
             fields = dict(record)
             record_year = fields.pop("tax_year", None)
-            if record_year is not None and record_year != tax_year:
-                mismatched += 1
-                continue
+            _require_matching_tax_year(description.filename, record_year, tax_year)
             fields["tax_year"] = tax_year
             fields["source_file"] = text_file.name
             instances.append(model(**fields))
-
-        if mismatched:
-            logger.warning(
-                "%s: skipped %d rows whose in-record tax_year didn't match requested %d",
-                description.filename,
-                mismatched,
-                tax_year,
-            )
 
         # Scoped to this tax_year (not a blind TRUNCATE) so re-running for one
         # year doesn't destroy other years' already-loaded data.
@@ -366,13 +363,12 @@ class CadRefreshStage:
         # Keyed by (prop_id, imp_id): imp_id alone repeats across properties.
         rollup_best_value: dict[tuple[str, str], Decimal] = {}
         rollup_year_built: dict[tuple[str, str], int] = {}
-        mismatched = 0
 
         for fields in self._iter_unique_records(text_file, parse_improvement_detail_line):
             record_year = fields.pop("tax_year", None)
-            if record_year is not None and record_year != tax_year:
-                mismatched += 1
-                continue
+            _require_matching_tax_year(
+                IMPROVEMENT_DETAIL_DESCRIPTION.filename, record_year, tax_year
+            )
             year_built = fields.pop("year_built", None)
             key = (fields["prop_id"], fields["imp_id"])
             detail_value = fields.get("detail_value") or Decimal("0")
@@ -384,14 +380,6 @@ class CadRefreshStage:
             fields["tax_year"] = tax_year
             fields["source_file"] = text_file.name
             instances.append(PropertyImprovementDetail(**fields))
-
-        if mismatched:
-            logger.warning(
-                "%s: skipped %d rows whose in-record tax_year didn't match requested %d",
-                IMPROVEMENT_DETAIL_DESCRIPTION.filename,
-                mismatched,
-                tax_year,
-            )
 
         PropertyImprovementDetail.objects.filter(tax_year=tax_year).delete()
         PropertyImprovementDetail.objects.bulk_create(instances, batch_size=5000)
@@ -448,13 +436,10 @@ class CadRefreshStage:
         """
         instances: list[PropertyJurisdictionExemption] = []
         assessed_value_by_prop: dict[str, Decimal] = {}
-        mismatched = 0
 
         for fields in self._iter_unique_records(text_file, parse_entity_info_line):
             record_year = fields["tax_year"]
-            if record_year is not None and record_year != tax_year:
-                mismatched += 1
-                continue
+            _require_matching_tax_year(ENTITY_INFO_DESCRIPTION.filename, record_year, tax_year)
 
             prop_id = fields["prop_id"]
             tax_unit_code = fields["tax_unit_code"]
@@ -524,14 +509,6 @@ class CadRefreshStage:
                     )
                 )
 
-        if mismatched:
-            logger.warning(
-                "%s: skipped %d rows whose in-record tax_year didn't match requested %d",
-                ENTITY_INFO_DESCRIPTION.filename,
-                mismatched,
-                tax_year,
-            )
-
         # county="brazos" is load-bearing here: this table is shared with
         # Harris (wayfinder ticket #9) -- an unscoped delete would also wipe
         # Harris's rows for the same tax_year.
@@ -572,14 +549,13 @@ class CadRefreshStage:
         # given field wins (see PropertyBuildingCharacteristic docstring).
         wide_fields: dict[tuple[str, str], dict[str, object]] = {}
         extra_features: list[PropertyExtraFeature] = []
-        mismatched = 0
         unparseable_bathrooms = 0
 
         for fields in self._iter_unique_records(text_file, parse_improvement_detail_attr_line):
             record_year = fields.pop("tax_year", None)
-            if record_year is not None and record_year != tax_year:
-                mismatched += 1
-                continue
+            _require_matching_tax_year(
+                IMPROVEMENT_DETAIL_ATTR_DESCRIPTION.filename, record_year, tax_year
+            )
 
             prop_id = fields["prop_id"]
             imp_id = fields["imp_id"]
@@ -622,13 +598,6 @@ class CadRefreshStage:
                 )
             )
 
-        if mismatched:
-            logger.warning(
-                "%s: skipped %d rows whose in-record tax_year didn't match requested %d",
-                IMPROVEMENT_DETAIL_ATTR_DESCRIPTION.filename,
-                mismatched,
-                tax_year,
-            )
         if unparseable_bathrooms:
             logger.warning(
                 "%s: %d 'Plumbing' values didn't match any known format and were left null",
