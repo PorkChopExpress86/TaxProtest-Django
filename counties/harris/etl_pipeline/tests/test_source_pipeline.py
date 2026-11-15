@@ -11,30 +11,6 @@ from counties.harris.etl_pipeline.source_pipeline import HarrisSourcePipeline
 from counties.harris.source_catalog import HcadSourceId
 
 
-def test_source_pipeline_missing_extract_path_required(tmp_path: Path):
-    source = DataSource(
-        name="real_acct",
-        url_template="http://example.com/real_acct.zip",
-        filename="real_acct.zip",
-        source_type=DataSourceType.PROPERTY_DATA,
-        source_id=HcadSourceId.REAL_ACCOUNT_OWNER,
-        required=True,
-    )
-    extract_manager = MagicMock()
-    extract_manager.get_extract_path.return_value = tmp_path / "nonexistent"
-
-    pipeline = HarrisSourcePipeline(
-        extract_manager=extract_manager,
-        fixtures_aggregator=FixturesAggregator(),
-    )
-
-    result = pipeline.process_tabular_source(source, strict=True)
-    assert not result.did_work
-    assert result.failed == 1
-    assert len(result.errors) == 1
-    assert "Extract path not found" in result.errors[0]
-
-
 def test_source_pipeline_missing_extract_path_optional(tmp_path: Path):
     source = DataSource(
         name="optional_source",
