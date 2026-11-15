@@ -210,6 +210,8 @@ class BlockedCandidateAtomicity:
             now["evidence"],
             {"error": "Candidate was not saved: Failed after dropping the staged schema"},
         )
+        # The rolled-back save took the candidate's sources with it, as any failed save does.
+        self.assertEqual(ImportCandidate.objects.get(pk=candidate.pk).sources, [])
 
     def test_a_drop_that_keeps_failing_leaves_the_fallback_blocked_with_its_schema(self):
         # Not atomic: the best-effort fallback after a failed save stays as it is (#192), and
