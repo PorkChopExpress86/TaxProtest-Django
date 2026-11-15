@@ -221,7 +221,7 @@ class LoadFileTests(TestCase):
                 encoding="utf-8",
             )
 
-            count = CadRefreshStage()._load_file(spec, path, 2025, dry_run=False)
+            count = CadRefreshStage()._load_file(spec, path, 2025)
 
         self.assertEqual(count, 1)
         row = PropertyLand.objects.get(prop_id="000000010002", tax_year=2025)
@@ -239,8 +239,8 @@ class LoadFileTests(TestCase):
                 + "\r\n",
                 encoding="utf-8",
             )
-            CadRefreshStage()._load_file(spec, path, 2025, dry_run=False)
-            CadRefreshStage()._load_file(spec, path, 2025, dry_run=False)
+            CadRefreshStage()._load_file(spec, path, 2025)
+            CadRefreshStage()._load_file(spec, path, 2025)
 
         self.assertEqual(PropertyLand.objects.filter(tax_year=2025).count(), 1)
 
@@ -256,7 +256,7 @@ class LoadFileTests(TestCase):
                 + "\r\n",
                 encoding="utf-8",
             )
-            CadRefreshStage()._load_file(spec, path, 2025, dry_run=False)
+            CadRefreshStage()._load_file(spec, path, 2025)
 
         self.assertTrue(PropertyLand.objects.filter(tax_year=2024).exists())
         self.assertTrue(PropertyLand.objects.filter(tax_year=2025).exists())
@@ -273,7 +273,7 @@ class LoadFileTests(TestCase):
                 + "\r\n",
                 encoding="utf-8",
             )
-            count = CadRefreshStage()._load_file(spec, path, 2025, dry_run=False)
+            count = CadRefreshStage()._load_file(spec, path, 2025)
 
         self.assertEqual(count, 0)
         self.assertFalse(PropertyLand.objects.filter(tax_year=2025).exists())
@@ -292,7 +292,7 @@ class LoadImprovementDetailRollupTests(TestCase):
                 _improvement_info_line("000000010002", "2025", "000000100000") + "\r\n",
                 encoding="utf-8",
             )
-            CadRefreshStage()._load_file(improvement_spec, info_path, 2025, dry_run=False)
+            CadRefreshStage()._load_file(improvement_spec, info_path, 2025)
 
             detail_path = root / IMPROVEMENT_DETAIL_FILENAME
             lines = [
@@ -307,7 +307,7 @@ class LoadImprovementDetailRollupTests(TestCase):
             ]
             detail_path.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
 
-            count = CadRefreshStage()._load_improvement_detail(detail_path, 2025, dry_run=False)
+            count = CadRefreshStage()._load_improvement_detail(detail_path, 2025)
 
         self.assertEqual(count, 2)
         self.assertEqual(PropertyImprovementDetail.objects.filter(tax_year=2025).count(), 2)
@@ -328,7 +328,7 @@ class LoadImprovementDetailRollupTests(TestCase):
                 + "\r\n",
                 encoding="utf-8",
             )
-            CadRefreshStage()._load_file(improvement_spec, info_path, 2025, dry_run=False)
+            CadRefreshStage()._load_file(improvement_spec, info_path, 2025)
 
             detail_path = root / IMPROVEMENT_DETAIL_FILENAME
             lines = [
@@ -343,7 +343,7 @@ class LoadImprovementDetailRollupTests(TestCase):
             ]
             detail_path.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
 
-            CadRefreshStage()._load_improvement_detail(detail_path, 2025, dry_run=False)
+            CadRefreshStage()._load_improvement_detail(detail_path, 2025)
 
         years = dict(
             PropertyImprovement.objects.filter(imp_id="000000100000", tax_year=2025).values_list(
@@ -363,7 +363,7 @@ class LoadImprovementDetailRollupTests(TestCase):
                 _improvement_info_line("000000010002", "2025", "000000100000") + "\r\n",
                 encoding="utf-8",
             )
-            CadRefreshStage()._load_file(improvement_spec, info_path, 2025, dry_run=False)
+            CadRefreshStage()._load_file(improvement_spec, info_path, 2025)
 
             detail_path = root / IMPROVEMENT_DETAIL_FILENAME
             detail_path.write_text(
@@ -373,7 +373,7 @@ class LoadImprovementDetailRollupTests(TestCase):
                 + "\r\n",
                 encoding="utf-8",
             )
-            CadRefreshStage()._load_improvement_detail(detail_path, 2025, dry_run=False)
+            CadRefreshStage()._load_improvement_detail(detail_path, 2025)
 
         improvement = PropertyImprovement.objects.get(imp_id="000000100000", tax_year=2025)
         self.assertIsNone(improvement.year_built)
@@ -396,7 +396,7 @@ class LoadEntityInfoTests(TestCase):
                 encoding="utf-8",
             )
 
-            count = CadRefreshStage()._load_entity_info(path, 2025, dry_run=False)
+            count = CadRefreshStage()._load_entity_info(path, 2025)
 
         self.assertEqual(count, 2)
         rows = PropertyJurisdictionExemption.objects.filter(
@@ -435,7 +435,7 @@ class LoadEntityInfoTests(TestCase):
                 encoding="utf-8",
             )
 
-            CadRefreshStage()._load_entity_info(path, 2025, dry_run=False)
+            CadRefreshStage()._load_entity_info(path, 2025)
 
         account = PropertyAccount.objects.get(prop_id="000000010013", tax_year=2025)
         self.assertEqual(account.assessed_value, Decimal("242613"))
@@ -458,7 +458,7 @@ class LoadEntityInfoTests(TestCase):
             ]
             path.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
 
-            CadRefreshStage()._load_entity_info(path, 2025, dry_run=False)
+            CadRefreshStage()._load_entity_info(path, 2025)
 
         account = PropertyAccount.objects.get(prop_id="000000010013", tax_year=2025)
         self.assertEqual(account.assessed_value, Decimal("242613"))
@@ -474,7 +474,7 @@ class LoadEntityInfoTests(TestCase):
                 encoding="utf-8",
             )
 
-            count = CadRefreshStage()._load_entity_info(path, 2025, dry_run=False)
+            count = CadRefreshStage()._load_entity_info(path, 2025)
 
         self.assertEqual(count, 1)
         row = PropertyJurisdictionExemption.objects.get(
@@ -500,8 +500,8 @@ class LoadEntityInfoTests(TestCase):
                 + "\r\n",
                 encoding="utf-8",
             )
-            CadRefreshStage()._load_entity_info(path, 2025, dry_run=False)
-            CadRefreshStage()._load_entity_info(path, 2025, dry_run=False)
+            CadRefreshStage()._load_entity_info(path, 2025)
+            CadRefreshStage()._load_entity_info(path, 2025)
 
         self.assertTrue(
             PropertyJurisdictionExemption.objects.filter(
@@ -526,7 +526,7 @@ class LoadEntityInfoTests(TestCase):
                 encoding="utf-8",
             )
 
-            count = CadRefreshStage()._load_entity_info(path, 2025, dry_run=False)
+            count = CadRefreshStage()._load_entity_info(path, 2025)
 
         self.assertEqual(count, 0)
         self.assertFalse(
@@ -610,7 +610,7 @@ class LoadImprovementDetailAttrTests(TestCase):
             ]
             path.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
 
-            count = CadRefreshStage()._load_improvement_detail_attr(path, 2025, dry_run=False)
+            count = CadRefreshStage()._load_improvement_detail_attr(path, 2025)
 
         self.assertEqual(count, 1)
         row = PropertyBuildingCharacteristic.objects.get(
@@ -634,7 +634,7 @@ class LoadImprovementDetailAttrTests(TestCase):
             ]
             path.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
 
-            CadRefreshStage()._load_improvement_detail_attr(path, 2025, dry_run=False)
+            CadRefreshStage()._load_improvement_detail_attr(path, 2025)
 
         row = PropertyBuildingCharacteristic.objects.get(
             prop_id="000000010085", imp_id="000001165787", tax_year=2025
@@ -666,7 +666,7 @@ class LoadImprovementDetailAttrTests(TestCase):
             ]
             path.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
 
-            CadRefreshStage()._load_improvement_detail_attr(path, 2025, dry_run=False)
+            CadRefreshStage()._load_improvement_detail_attr(path, 2025)
 
         self.assertEqual(
             PropertyExtraFeature.objects.filter(
@@ -700,7 +700,7 @@ class LoadImprovementDetailAttrTests(TestCase):
             ]
             path.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
 
-            CadRefreshStage()._load_improvement_detail_attr(path, 2025, dry_run=False)
+            CadRefreshStage()._load_improvement_detail_attr(path, 2025)
 
         row = PropertyBuildingCharacteristic.objects.get(
             prop_id="000000010008", imp_id="000000100002", tax_year=2025
@@ -716,8 +716,8 @@ class LoadImprovementDetailAttrTests(TestCase):
                 + "\r\n",
                 encoding="utf-8",
             )
-            CadRefreshStage()._load_improvement_detail_attr(path, 2025, dry_run=False)
-            CadRefreshStage()._load_improvement_detail_attr(path, 2025, dry_run=False)
+            CadRefreshStage()._load_improvement_detail_attr(path, 2025)
+            CadRefreshStage()._load_improvement_detail_attr(path, 2025)
 
         self.assertEqual(PropertyExtraFeature.objects.filter(tax_year=2025).count(), 1)
 
@@ -732,7 +732,7 @@ class ExactDuplicateSourceRowTests(TestCase):
             path = Path(tmp) / spec.filename
             path.write_text(f"{line}\r\n{line}\r\n", encoding="utf-8")
 
-            count = CadRefreshStage()._load_file(spec, path, 2025, dry_run=False)
+            count = CadRefreshStage()._load_file(spec, path, 2025)
 
         self.assertEqual(count, 1)
         self.assertEqual(PropertyLand.objects.filter(tax_year=2025).count(), 1)
@@ -743,6 +743,6 @@ class ExactDuplicateSourceRowTests(TestCase):
             path = Path(tmp) / IMPROVEMENT_DETAIL_ATTR_FILENAME
             path.write_text(f"{line}\r\n{line}\r\n", encoding="utf-8")
 
-            CadRefreshStage()._load_improvement_detail_attr(path, 2025, dry_run=False)
+            CadRefreshStage()._load_improvement_detail_attr(path, 2025)
 
         self.assertEqual(PropertyExtraFeature.objects.filter(tax_year=2025).count(), 1)

@@ -52,7 +52,7 @@ class PacsEncodingTests(TestCase):
 
     def test_cad_reader_keeps_later_offsets_after_a_non_ascii_byte(self):
         with tempfile.TemporaryDirectory() as tmp:
-            CadRefreshStage()._load_entity_info(self._write(tmp), 2025, dry_run=False)
+            CadRefreshStage()._load_entity_info(self._write(tmp), 2025)
 
         base = PropertyJurisdictionExemption.objects.get(
             account_number="000000010013", tax_year=2025, county="brazos", exemption_code=""
