@@ -817,9 +817,9 @@ class CadRefreshStage:
     def validate_preflight(self, preparation: StagePreparation) -> None:
         """Reject incomplete or untrusted PACS input before any model write.
 
-        The property-import module calls this after source-year validation and
-        before its transaction, so a recovery adapter cannot quietly accept an
-        incomplete certified export.
+        Inspection runs preflight before counting or fingerprinting records, and
+        inspection runs when the candidate source prepares, before any database
+        write.
         """
         payload = preparation.payload
         if not isinstance(payload, CadStagePayload):
