@@ -14,17 +14,18 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from django.core.exceptions import PermissionDenied
-from django.db import DatabaseError, connection, transaction
+from django.db import connection, transaction
 
 from counties.common.candidate_ports import (
     CandidateTables,
     dataset_identity,
     published_identity,
 )
-from counties.common.candidate_staging import (
-    cutover_staged_tables,
-    drop_candidate_schema,
-    staged_candidate_schema,
+from counties.common.candidate_staging import cutover_staged_tables, staged_candidate_schema
+from counties.common.candidate_transitions import (
+    end_preparation,
+    end_preparation_unsaved,
+    publish_candidate,
 )
 from counties.common.county_registry import registration_for
 from counties.common.import_audit import audited_operation
@@ -35,11 +36,7 @@ from counties.common.import_recovery import (
     requested_replay,
     verify_replay,
 )
-from counties.common.import_retention import (
-    baseline_sources,
-    record_publication,
-    retain_baseline_sources,
-)
+from counties.common.import_retention import baseline_sources, retain_baseline_sources
 from counties.common.import_review import Measurement, authorize_publication
 from counties.common.import_states import CandidateState, OperationStatus, operation_status_for
 from counties.common.import_writers import fenced_write
@@ -240,6 +237,8 @@ def prepare(
     )
     operation.touched_candidate = candidate
     operation.evidence["candidate_id"] = str(candidate.pk)
+    state = CandidateState.PREPARING  # until preparation decides how it ends
+    error = None
     try:
         previous = port.outcomes(None)
         with staged_candidate_schema(
@@ -261,19 +260,19 @@ def prepare(
         content = dataset_identity(county, candidate.storage_schema)
         candidate.evidence["content_identity"] = content
         if coverage is None or coverage["hard_failures"]:
-            candidate.state = CandidateState.BLOCKED
+            state = CandidateState.BLOCKED
         elif coverage["requires_review"]:
-            candidate.state = CandidateState.AWAITING_REVIEW
+            state = CandidateState.AWAITING_REVIEW
         else:
-            candidate.state = CandidateState.PREPARED
+            state = CandidateState.PREPARED
         if loaded.complete:
-            operation.status = operation_status_for(candidate.state)
+            operation.status = operation_status_for(state)
         else:
             operation.status = OperationStatus.FAILED
             operation.errors.extend(loaded.errors)
     except Exception as exc:
-        candidate.state = CandidateState.BLOCKED
-        candidate.evidence["error"] = str(exc)
+        state = CandidateState.BLOCKED
+        error = str(exc)
         raise
     finally:
         retain_baseline_sources(operation, inherited)
@@ -281,22 +280,11 @@ def prepare(
         try:
             with transaction.atomic():
                 operation.save()
-                candidate.save()
-                if candidate.state == CandidateState.BLOCKED:
-                    # Dropped with the blocked state, so a rollback undoes both.
-                    drop_candidate_schema(candidate)
+                end_preparation(candidate, state, error=error)
         except Exception as exc:
             # Never leave the candidate preparing behind an operation that records an
-            # ending. Its evidence may be what could not be saved, so only the error is.
-            candidate.state = CandidateState.BLOCKED
-            candidate.evidence = {"error": f"Candidate was not saved: {exc}"}
-            try:
-                ImportCandidate.objects.filter(pk=candidate.pk).update(
-                    state=candidate.state, evidence=candidate.evidence
-                )
-                drop_candidate_schema(candidate)
-            except DatabaseError:
-                pass  # the next writer's reconciliation blocks it and drops its schema
+            # ending.
+            end_preparation_unsaved(candidate, f"Candidate was not saved: {exc}")
             raise
     if automatic_publication and candidate.state == CandidateState.PREPARED:
         # Under this writer nothing has written the published or staged tables since
@@ -355,7 +343,7 @@ def publish(
                 shared_models_scope=_county_rows(tables, county),
                 shared_models_county={model: county for model in tables.county_scoped},
             )
-            record_publication(candidate, operation)
+            publish_candidate(candidate, operation)
             operation.publication_after = {
                 **published_identity(county, content),
                 "candidate_id": str(candidate.pk),

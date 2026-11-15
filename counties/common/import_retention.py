@@ -20,35 +20,6 @@ from counties.common.import_writers import fenced_write
 from counties.common.models import ImportAuditEntry, ImportCandidate, ImportOperation
 
 
-def record_publication(candidate, operation):
-    """Called inside the county's observed publication transaction."""
-    now = timezone.now()
-    for previous in (
-        ImportCandidate.objects.select_for_update()
-        .filter(county=candidate.county, state=CandidateState.PUBLISHED)
-        .exclude(pk=candidate.pk)
-    ):
-        previous.state = CandidateState.SUPERSEDED
-        previous.superseded_at = now
-        previous.save(update_fields=["state", "superseded_at"])
-        drop_candidate_schema(previous)
-        ImportAuditEntry.objects.create(
-            operation=previous.operation,
-            kind="supersession",
-            actor=operation.actor,
-            reason="A newer qualified dataset was published",
-            evidence={
-                "replacement_candidate_id": str(candidate.pk),
-                "operation_id": str(operation.pk),
-            },
-            result="superseded",
-        )
-    candidate.state = CandidateState.PUBLISHED
-    candidate.published_at = now
-    candidate.save(update_fields=["state", "published_at"])
-    drop_candidate_schema(candidate)  # cut over, so published data no longer needs it
-
-
 def source_availability(sources):
     """Display existence without silently asserting a digest verification."""
     return [

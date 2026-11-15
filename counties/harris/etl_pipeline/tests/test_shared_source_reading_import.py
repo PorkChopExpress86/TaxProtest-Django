@@ -35,7 +35,7 @@ from counties.harris.source_catalog import HcadSourceId
 
 class RoomCountsReadOnceTests(TestCase):
     # Keep the candidate's schema to read what the load staged.
-    @patch("counties.common.candidate_lifecycle.drop_candidate_schema")
+    @patch("counties.common.candidate_transitions.drop_candidate_schema")
     def test_a_prepared_import_reads_the_fixtures_member_once_for_validation_and_load(self, _drop):
         with tempfile.TemporaryDirectory() as root, override_settings(**_runtime_settings(root)):
             _write_property_source(root, account="F100")

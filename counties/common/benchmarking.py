@@ -16,8 +16,8 @@ from typing import Any, TypeVar
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
-from django.db import connection
 
+from counties.common.candidate_staging import drop_candidate_schema_unfenced
 from counties.common.models import ImportCandidate
 
 R = TypeVar("R")
@@ -57,8 +57,7 @@ def _discard_candidate(candidate_id) -> None:
     candidate = ImportCandidate.objects.filter(pk=candidate_id).first()
     if candidate is None:
         return
-    with connection.cursor() as cursor:
-        cursor.execute(f'DROP SCHEMA IF EXISTS "{candidate.storage_schema}" CASCADE')
+    drop_candidate_schema_unfenced(candidate)
     candidate.delete()
 
 
