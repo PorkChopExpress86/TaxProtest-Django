@@ -29,8 +29,12 @@ stack. `scripts/dc` gets around that:
 Create a worktree from the main checkout:
 
 ```bash
-git worktree add ../TaxProtest-Django-wt/<name> -b <name> <base-branch>
+git worktree add --no-track ../TaxProtest-Django-wt/<name> -b <name> <base-branch>
 ```
+
+`--no-track` matters when `<base-branch>` is a remote ref such as `origin/main`: without it the
+new branch tracks `main`, and a bare `git push` aims at it. Push a new branch with
+`git push -u origin <name>`.
 
 ## Which tests to run
 
@@ -44,7 +48,13 @@ takes about 4 minutes. CI runs on every branch push, so:
   the local results. Run a directory locally for failures CI cannot reproduce, such as a
   Windows-only bug.
 - **Integration branch:** the merger runs the full suite once per batch of merges, or
-  pushes the branch and reads the CI result.
+  pushes the branch and reads the CI result. It merges each ticket with
+  `git merge --no-ff -m "Merge #<ticket>: ..."`: the implementer has already merged the
+  integration tip in, so a plain merge fast-forwards and the ticket loses its own reviewable
+  merge commit.
+- **Characterization tests:** a ticket that pins today's behaviour also runs its new tests on
+  the base commit (a `--detach` worktree there, with the new test files copied in) before it
+  merges, so the pins describe the code they claim to describe.
 
 Follow a branch's latest CI run by id (`gh run watch` with no id needs a terminal):
 

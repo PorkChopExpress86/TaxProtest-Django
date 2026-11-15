@@ -88,6 +88,11 @@ For several checkouts testing at once (git worktrees, parallel agents), run comm
 
 Use the nearest tests: `counties/common/tests/` for cross-county contracts,
 `counties/<slug>/tests/` for county behavior, and `taxprotest/tests/` for site-wide behavior.
+Guard tests read source text, so a deletion, move, or rename can break one far from the edited
+module: after such a change also run each county's `tests/test_import_state_vocabulary.py`,
+`counties/common/tests/test_shared_code_boundaries.py`,
+`counties/common/tests/test_similarity_boundary.py`, and
+`taxprotest/tests/test_no_orphan_functions.py`. They need no database and finish in seconds.
 Run `git diff --check` for every change. Do not claim browser, service, or full-suite validation that
 was not actually run.
 
