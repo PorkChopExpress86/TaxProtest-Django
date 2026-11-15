@@ -1,13 +1,12 @@
 """Unit tests for the deep Harris source pipeline."""
 
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
 from counties.harris.etl_pipeline.config import DataSource, DataSourceType
-from counties.harris.etl_pipeline.fixtures_aggregator import FixturesAggregator
 from counties.harris.etl_pipeline.source_pipeline import HarrisSourcePipeline
+from counties.harris.etl_pipeline.source_reading import read_hcad_sources
 from counties.harris.source_catalog import HcadSourceId
 
 
@@ -20,12 +19,8 @@ def test_source_pipeline_missing_extract_path_optional(tmp_path: Path):
         source_id=HcadSourceId.PP_FILES,
         required=False,
     )
-    extract_manager = MagicMock()
-    extract_manager.get_extract_path.return_value = tmp_path / "nonexistent"
-
     pipeline = HarrisSourcePipeline(
-        extract_manager=extract_manager,
-        fixtures_aggregator=FixturesAggregator(),
+        reading=read_hcad_sources([(source, tmp_path / "nonexistent")]),
     )
 
     result = pipeline.process_tabular_source(source, strict=True)
@@ -37,11 +32,7 @@ def test_source_pipeline_missing_extract_path_optional(tmp_path: Path):
 
 @pytest.mark.django_db
 def test_source_pipeline_account_map_caching():
-    extract_manager = MagicMock()
-    pipeline = HarrisSourcePipeline(
-        extract_manager=extract_manager,
-        fixtures_aggregator=FixturesAggregator(),
-    )
+    pipeline = HarrisSourcePipeline(reading=read_hcad_sources([]))
 
     # First access populates cache
     mapping1 = pipeline.get_account_to_property_map()
