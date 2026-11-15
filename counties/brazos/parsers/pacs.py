@@ -409,7 +409,10 @@ class PacsFileDescription:
 
     @property
     def minimum_length(self) -> int:
-        """Minimum line length required to cover the layout's last field."""
+        """Minimum line length required to cover the layout's last field.
+
+        Relies on each layout listing its furthest-ending field last.
+        """
         return self.layout[-1].end
 
 
