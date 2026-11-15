@@ -8,22 +8,8 @@ import pytest
 from counties.harris.etl_pipeline.config import DataSource, DataSourceType, ETLConfig
 from counties.harris.etl_pipeline.extract import ExtractManager
 from counties.harris.etl_pipeline.fixtures_aggregator import FixturesAggregator
-from counties.harris.etl_pipeline.source_pipeline import (
-    HarrisSourcePipeline,
-    resolve_schema_name,
-)
+from counties.harris.etl_pipeline.source_pipeline import HarrisSourcePipeline
 from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG, HcadSourceId
-
-
-def test_resolve_schema_name():
-    assert resolve_schema_name("real_acct") == "real_acct"
-    assert resolve_schema_name("REAL_ACCT") == "real_acct"
-    assert resolve_schema_name("building_res") == "building_res"
-    assert resolve_schema_name("extra_features") == "extra_features"
-    assert resolve_schema_name("extra_features_detail") == "extra_features"
-    assert resolve_schema_name("extra_features_detail_2025") == "extra_features"
-    assert resolve_schema_name("desc_building") is None
-    assert resolve_schema_name("unknown_table") is None
 
 
 def test_source_pipeline_missing_extract_path_required(tmp_path: Path):

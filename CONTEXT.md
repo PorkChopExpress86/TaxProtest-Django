@@ -39,6 +39,12 @@ any root a caller holds. A source with no catalog id is rejected.
 _Avoid_: per-caller archive manifest, hard-coded source alias, per-caller
 directory name
 
+**HCAD source reading**:
+The one interpretation of an extracted HCAD tabular source for an import: which
+declared catalog members feed which dataset, and the Translated rows each yields.
+Source validation and the staged load both consume the same reading.
+_Avoid_: source walker, file discovery, schema resolver
+
 ## Brazos annual refresh
 
 **Annual refresh**:

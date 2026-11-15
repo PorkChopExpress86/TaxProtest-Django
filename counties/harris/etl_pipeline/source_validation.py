@@ -14,7 +14,7 @@ from counties.common.import_source_digests import is_source_file
 from counties.common.import_writers import reused_source
 from counties.common.models import ImportOperation
 from counties.harris.models import PropertyRecord
-from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG, DataSource, DataSourceType
+from counties.harris.source_catalog import DataSource, DataSourceType
 
 from .config import ETLConfig
 from .extract import ExtractManager
@@ -28,6 +28,7 @@ from .row_reader import (
     iter_extra_feature_rows,
     iter_property_rows,
 )
+from .source_reading import read_hcad_source
 
 
 @dataclass
@@ -325,16 +326,12 @@ def validate_harris_sources(
                     unconfirmed_years.add(layer)
                 _check_archive_inputs(archive, paths, operation, result, relative_to=layer.parent)
             continue
-        files = sorted(root.rglob("*.txt"))
-        missing = DEFAULT_HCAD_SOURCE_CATALOG.missing_required_members(source.source_id, files)
+        reading = read_hcad_source(source, root)
+        missing = reading.missing_required_members
         if missing:
             result.errors.append(f"{source.name}: required files missing: {', '.join(missing)}")
-        detailed = any(path.stem.lower().startswith("extra_features_detail") for path in files)
-        for path in files:
-            stem = path.stem.lower()
-            schema = "extra_features" if stem.startswith("extra_features") else stem
-            if schema not in selected or (detailed and stem == "extra_features"):
-                continue
+        for member in reading.members:
+            path, schema = member.path, member.dataset.value
             selected[schema].append(path)
             record_sources(
                 operation,
