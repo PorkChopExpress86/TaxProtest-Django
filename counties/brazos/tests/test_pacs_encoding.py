@@ -15,9 +15,9 @@ from pathlib import Path
 
 from django.test import TestCase
 
-from counties.brazos.cad_refresh import ENTITY_INFO_FILENAME, CadRefreshStage
+from counties.brazos.cad_refresh import CadRefreshStage
 from counties.brazos.management.commands.import_brazos_assessment_history import Command
-from counties.brazos.parsers.pacs import PACS_ENCODING
+from counties.brazos.parsers.pacs import ENTITY_INFO_DESCRIPTION, PACS_ENCODING
 from counties.common.tax_models import PropertyJurisdictionExemption
 
 
@@ -43,7 +43,7 @@ def _entity_info_bytes_with_a_two_byte_character() -> bytes:
 
 class PacsEncodingTests(TestCase):
     def _write(self, tmp: str) -> Path:
-        path = Path(tmp) / ENTITY_INFO_FILENAME
+        path = Path(tmp) / ENTITY_INFO_DESCRIPTION.filename
         path.write_bytes(_entity_info_bytes_with_a_two_byte_character())
         return path
 

@@ -11,12 +11,10 @@ from django.test import TestCase
 from django.urls import reverse
 
 from counties.brazos.benchmark import write_complete_pacs_export as _stage_complete_pacs_export
-from counties.brazos.cad_refresh import (
-    IMPROVEMENT_DETAIL_ATTR_FILENAME,
-    CadRefreshStage,
-)
+from counties.brazos.cad_refresh import CadRefreshStage
 from counties.brazos.gis_refresh import GisRefreshStage
 from counties.brazos.models import BrazosPropertySnapshot, PropertyAccount
+from counties.brazos.parsers.pacs import IMPROVEMENT_DETAIL_ATTR_DESCRIPTION
 from counties.brazos.property_import import (
     BrazosPropertyImport,
     PropertyImportMode,
@@ -125,7 +123,7 @@ class PropertyImportPublicationTests(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             _stage_complete_pacs_export(root, 2026)
-            (root / "extracted" / "2026" / IMPROVEMENT_DETAIL_ATTR_FILENAME).write_text(
+            (root / "extracted" / "2026" / IMPROVEMENT_DETAIL_ATTR_DESCRIPTION.filename).write_text(
                 "", encoding="utf-8"
             )
 
@@ -134,7 +132,7 @@ class PropertyImportPublicationTests(TestCase):
                     BCAD_DOWNLOAD_DIR=str(root / "downloads"),
                     BCAD_EXTRACT_DIR=str(root / "extracted"),
                 ),
-                self.assertRaisesRegex(CommandError, IMPROVEMENT_DETAIL_ATTR_FILENAME),
+                self.assertRaisesRegex(CommandError, IMPROVEMENT_DETAIL_ATTR_DESCRIPTION.filename),
             ):
                 BrazosPropertyImport(cad=CadRefreshStage(), gis=None).run(
                     PropertyImportRequest(
