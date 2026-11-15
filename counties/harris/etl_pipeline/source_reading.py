@@ -1,16 +1,21 @@
-"""HCAD source reading: which extracted HCAD tabular files feed which dataset of an import.
+"""HCAD source reading: which extracted HCAD tabular files feed which dataset of an import,
+and the translated rows each dataset yields.
 
-Source validation and the staged load both ask this module, so the files validation approves
-are the files the load reads. A file is matched only through the HCAD source catalog's
-declared member patterns, anywhere under the extract directory of the source that declares
-it and in that source only. What a member means to an import (its dataset) is import
-knowledge and lives here, not in the catalog. GIS sources are not read here.
+One reading is built per import and shared by source validation and the staged load, so the
+files validation approves are the files the load reads, translated the same way with the same
+room counts. A file is matched only through the HCAD source catalog's declared member
+patterns, anywhere under the extract directory of the source that declares it and in that
+source only. What a member means to an import (its dataset) is import knowledge and lives
+here, not in the catalog. GIS sources are not read here.
+
+The residential account map that Building and Extra Feature rows resolve accounts through is
+an input: each consumer supplies its own.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from dataclasses import dataclass, field
 from enum import StrEnum
 from fnmatch import fnmatch
 from pathlib import Path
@@ -20,6 +25,15 @@ from counties.harris.source_catalog import (
     DataSource,
     DataSourceType,
     HcadSourceId,
+)
+
+from .fixtures_aggregator import FixturesAggregator
+from .row_reader import (
+    FixtureLookup,
+    RowResult,
+    iter_building_rows,
+    iter_extra_feature_rows,
+    iter_property_rows,
 )
 
 
@@ -51,6 +65,45 @@ class ReadMember:
     dataset: HcadDataset
 
 
+# Extra Feature ordinals: loadable rows seen per (account, code, number) in one pass.
+_Ordinals = dict[tuple[str, str, int], int]
+
+
+@dataclass(frozen=True)
+class TranslatedFile:
+    """One selected file of a dataset, and the translated rows it yields.
+
+    The files of one ``translated_files`` call share that pass's Extra Feature ordinals, so
+    a feature's ``source_ordinal`` continues across them: consume each file's rows before
+    the next file's.
+    """
+
+    path: Path
+    dataset: HcadDataset
+    _room_counts: Callable[[], FixtureLookup] = field(repr=False, compare=False)
+    _ordinals: _Ordinals = field(repr=False, compare=False)
+
+    def rows(self, account_map: Mapping[str, int] | None = None) -> Iterator[RowResult]:
+        """Translate the file; Building and Extra Feature rows resolve through ``account_map``.
+
+        Property rows need no account map; one given is not used.
+        """
+        if self.dataset is HcadDataset.PROPERTY:
+            return iter_property_rows(self.path)
+        if account_map is None:
+            raise ValueError(f"{self.dataset.value} rows need the residential account map")
+        if self.dataset is HcadDataset.BUILDING:
+            return iter_building_rows(self.path, account_map, self._room_counts())
+        return iter_extra_feature_rows(self.path, account_map, ordinals=self._ordinals)
+
+
+class _RoomCountsMemo:
+    """The one read of a source's room-count member, kept for every later pass."""
+
+    def __init__(self) -> None:
+        self.counts: FixturesAggregator | None = None
+
+
 @dataclass(frozen=True)
 class SourceReading:
     """The reading of one source's extract directory.
@@ -64,9 +117,30 @@ class SourceReading:
     extract_dir: Path
     members: tuple[ReadMember, ...]
     missing_required_members: tuple[str, ...]
+    _room_counts: _RoomCountsMemo = field(
+        default_factory=_RoomCountsMemo, init=False, repr=False, compare=False
+    )
 
     def files(self, dataset: HcadDataset) -> tuple[Path, ...]:
         return tuple(member.path for member in self.members if member.dataset is dataset)
+
+    def room_counts(self) -> FixturesAggregator:
+        """This source's room counts, read from its room-count member on the first call only.
+
+        A source with no room-count member has none. Of several room-count files, the
+        last in path order gives the counts, as the room-count reader replaces its counts
+        on every file.
+        """
+        if self._room_counts.counts is None:
+            counts = FixturesAggregator()
+            for path in self.files(HcadDataset.ROOM_COUNTS):
+                counts.load_fixtures_file(path)
+            self._room_counts.counts = counts
+        return self._room_counts.counts
+
+    def translated_files(self, dataset: HcadDataset) -> tuple[TranslatedFile, ...]:
+        """This source's files of ``dataset``, in path order, as one translation pass."""
+        return _translated_files(dataset, [(self, path) for path in self.files(dataset)])
 
 
 @dataclass(frozen=True)
@@ -77,6 +151,36 @@ class HcadSourceReading:
 
     def files(self, dataset: HcadDataset) -> tuple[Path, ...]:
         return tuple(path for source in self.sources for path in source.files(dataset))
+
+    def source_reading(self, source: DataSource) -> SourceReading:
+        """The reading of ``source``, one of the tabular sources this reading was built from."""
+        for reading in self.sources:
+            if reading.source == source:
+                return reading
+        raise LookupError(f"HCAD source reading holds no source {source.name}")
+
+    def read_room_counts(self) -> None:
+        """Read every source's room counts now, unless already read; later passes reuse them."""
+        for source in self.sources:
+            source.room_counts()
+
+    def translated_files(self, dataset: HcadDataset) -> tuple[TranslatedFile, ...]:
+        """Every source's files of ``dataset``, source by source, as one translation pass."""
+        return _translated_files(
+            dataset, [(source, path) for source in self.sources for path in source.files(dataset)]
+        )
+
+
+def _translated_files(
+    dataset: HcadDataset, files: list[tuple[SourceReading, Path]]
+) -> tuple[TranslatedFile, ...]:
+    if dataset is HcadDataset.ROOM_COUNTS:
+        raise ValueError("Room counts are not translated rows; use room_counts()")
+    ordinals: _Ordinals = {}
+    return tuple(
+        TranslatedFile(path, dataset, _room_counts=source.room_counts, _ordinals=ordinals)
+        for source, path in files
+    )
 
 
 def read_hcad_source(source: DataSource, extract_dir: Path) -> SourceReading:
@@ -149,6 +253,7 @@ __all__ = [
     "HcadSourceReading",
     "ReadMember",
     "SourceReading",
+    "TranslatedFile",
     "read_hcad_source",
     "read_hcad_sources",
 ]
