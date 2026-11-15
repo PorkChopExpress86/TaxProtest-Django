@@ -366,17 +366,7 @@ class CadRefreshStage:
         if duplicates:
             logger.warning("%s: dropped %d exact duplicate source rows", text_file.name, duplicates)
 
-    def _load_file(self, spec: IngestSpec, text_file: Path, tax_year: int, *, dry_run: bool) -> int:
-        if not text_file.exists():
-            raise CommandError(f"Text file missing: {text_file}")
-
-        if dry_run:
-            self.stdout.write(
-                f"[dry-run] {spec.filename}: would delete tax_year={tax_year} rows from "
-                f"{spec.model._meta.db_table} and bulk_create from {text_file}"
-            )
-            return 0
-
+    def _load_file(self, spec: IngestSpec, text_file: Path, tax_year: int) -> int:
         instances = []
         mismatched = 0
         for fields in self._iter_unique_records(text_file, spec.parse_fn):
@@ -408,7 +398,7 @@ class CadRefreshStage:
         )
         return len(instances)
 
-    def _load_improvement_detail(self, text_file: Path, tax_year: int, *, dry_run: bool) -> int:
+    def _load_improvement_detail(self, text_file: Path, tax_year: int) -> int:
         """Load PropertyImprovementDetail rows and roll up year_built onto
         PropertyImprovement (APPRAISAL_IMPROVEMENT_INFO.TXT carries no
         year_built of its own — only per-detail-row values exist, and one
@@ -416,16 +406,6 @@ class CadRefreshStage:
         year_built picked per (prop_id, imp_id) is the one from its highest-detail_value
         row (the dominant structural component, usually the main area).
         """
-        if not text_file.exists():
-            raise CommandError(f"Text file missing: {text_file}")
-
-        if dry_run:
-            self.stdout.write(
-                f"[dry-run] {IMPROVEMENT_DETAIL_FILENAME}: would delete tax_year={tax_year} rows "
-                f"from {PropertyImprovementDetail._meta.db_table}, bulk_create, and roll up year_built"
-            )
-            return 0
-
         instances = []
         # Keyed by (prop_id, imp_id): imp_id alone repeats across properties.
         rollup_best_value: dict[tuple[str, str], Decimal] = {}
@@ -483,7 +463,7 @@ class CadRefreshStage:
 
         return len(instances)
 
-    def _load_entity_info(self, text_file: Path, tax_year: int, *, dry_run: bool) -> int:
+    def _load_entity_info(self, text_file: Path, tax_year: int) -> int:
         """Load PropertyJurisdictionExemption rows (shared with Harris, see
         wayfinder ticket #9) from APPRAISAL_ENTITY_INFO.TXT, and roll up
         each property's assessed_value onto PropertyAccount.
@@ -510,17 +490,6 @@ class CadRefreshStage:
         the first non-null value encountered per prop_id is authoritative,
         not a "pick a winner" tiebreak like the year_built rollup below.
         """
-        if not text_file.exists():
-            raise CommandError(f"Text file missing: {text_file}")
-
-        if dry_run:
-            self.stdout.write(
-                f"[dry-run] {ENTITY_INFO_FILENAME}: would delete tax_year={tax_year} "
-                f"county=brazos rows from {PropertyJurisdictionExemption._meta.db_table}, "
-                f"bulk_create from {text_file}, and roll up assessed_value onto PropertyAccount"
-            )
-            return 0
-
         instances: list[PropertyJurisdictionExemption] = []
         assessed_value_by_prop: dict[str, Decimal] = {}
         mismatched = 0
@@ -636,26 +605,13 @@ class CadRefreshStage:
 
         return len(instances)
 
-    def _load_improvement_detail_attr(
-        self, text_file: Path, tax_year: int, *, dry_run: bool
-    ) -> int:
+    def _load_improvement_detail_attr(self, text_file: Path, tax_year: int) -> int:
         """Load PropertyBuildingCharacteristic (wide, aggregated per
         improvement) and PropertyExtraFeature (long, one row per feature)
         from APPRAISAL_IMPROVEMENT_DETAIL_ATTR.TXT's attribute-type/value
         pairs. See WIDE_ATTRIBUTE_FIELDS for the type->field routing and
         _parse_bathrooms for "Plumbing"'s special-cased free-text parsing.
         """
-        if not text_file.exists():
-            raise CommandError(f"Text file missing: {text_file}")
-
-        if dry_run:
-            self.stdout.write(
-                f"[dry-run] {IMPROVEMENT_DETAIL_ATTR_FILENAME}: would delete tax_year={tax_year} "
-                f"rows from {PropertyBuildingCharacteristic._meta.db_table} and "
-                f"{PropertyExtraFeature._meta.db_table}, then bulk_create from {text_file}"
-            )
-            return 0
-
         # (prop_id, imp_id) -> partial field dict. First occurrence of a
         # given field wins (see PropertyBuildingCharacteristic docstring).
         wide_fields: dict[tuple[str, str], dict[str, object]] = {}
@@ -750,40 +706,20 @@ class CadRefreshStage:
         )
         return len(characteristics) + len(extra_features)
 
-    def _ingest_all(
-        self, text_files: dict[str, Path], tax_year: int, *, dry_run: bool
-    ) -> dict[str, int]:
+    def _ingest_all(self, text_files: dict[str, Path], tax_year: int) -> dict[str, int]:
         results: dict[str, int] = {}
         for spec in INGEST_SPECS:
-            path = text_files.get(spec.filename)
-            if path is None:
-                results[spec.filename] = 0
-                continue
-            results[spec.filename] = self._load_file(spec, path, tax_year, dry_run=dry_run)
+            results[spec.filename] = self._load_file(spec, text_files[spec.filename], tax_year)
 
-        detail_path = text_files.get(IMPROVEMENT_DETAIL_FILENAME)
-        if detail_path is None:
-            results[IMPROVEMENT_DETAIL_FILENAME] = 0
-        else:
-            results[IMPROVEMENT_DETAIL_FILENAME] = self._load_improvement_detail(
-                detail_path, tax_year, dry_run=dry_run
-            )
-
-        entity_info_path = text_files.get(ENTITY_INFO_FILENAME)
-        if entity_info_path is None:
-            results[ENTITY_INFO_FILENAME] = 0
-        else:
-            results[ENTITY_INFO_FILENAME] = self._load_entity_info(
-                entity_info_path, tax_year, dry_run=dry_run
-            )
-
-        attr_path = text_files.get(IMPROVEMENT_DETAIL_ATTR_FILENAME)
-        if attr_path is None:
-            results[IMPROVEMENT_DETAIL_ATTR_FILENAME] = 0
-        else:
-            results[IMPROVEMENT_DETAIL_ATTR_FILENAME] = self._load_improvement_detail_attr(
-                attr_path, tax_year, dry_run=dry_run
-            )
+        results[IMPROVEMENT_DETAIL_FILENAME] = self._load_improvement_detail(
+            text_files[IMPROVEMENT_DETAIL_FILENAME], tax_year
+        )
+        results[ENTITY_INFO_FILENAME] = self._load_entity_info(
+            text_files[ENTITY_INFO_FILENAME], tax_year
+        )
+        results[IMPROVEMENT_DETAIL_ATTR_FILENAME] = self._load_improvement_detail_attr(
+            text_files[IMPROVEMENT_DETAIL_ATTR_FILENAME], tax_year
+        )
         return results
 
     def _offline_source_year(download_dir: Path, extract_root: Path) -> int | None:
@@ -930,7 +866,6 @@ class CadRefreshStage:
         results = self._ingest_all(
             payload.text_files,
             preparation.target_year,
-            dry_run=False,
         )
         self.stdout.write(self.style.SUCCESS("CAD ingest complete:"))
         for filename, count in results.items():
