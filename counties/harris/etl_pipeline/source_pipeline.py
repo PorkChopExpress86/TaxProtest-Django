@@ -24,23 +24,7 @@ from .persistence import (
     persistence_for_connection,
 )
 from .row_reader import RowResult, iter_building_rows, iter_extra_feature_rows, iter_property_rows
-
-
-def resolve_schema_name(filename_stem: str) -> str | None:
-    """Map a source filename stem to a transform schema name."""
-    filename = filename_stem.lower()
-
-    # Skip code description files (lookup tables, not actual data)
-    if filename.startswith("desc_"):
-        return None
-
-    if filename == "real_acct":
-        return "real_acct"
-    if filename == "building_res":
-        return "building_res"
-    if filename == "extra_features" or filename.startswith("extra_features_detail"):
-        return "extra_features"
-    return None
+from .source_reading import HcadDataset, read_hcad_source, read_hcad_sources
 
 
 @dataclass(frozen=True)
@@ -100,37 +84,44 @@ class HarrisSourcePipeline:
         return self._account_to_property
 
     def preload_fixtures(self, sources: list[DataSource]) -> None:
-        """Pre-load fixtures.txt to extract bedroom/bathroom counts."""
+        """Pre-load the room-count member to extract bedroom/bathroom counts."""
         if self.logger:
             self.logger.info("Pre-loading fixtures for bedroom/bathroom data...")
 
-        for source in sources:
-            if DEFAULT_HCAD_SOURCE_CATALOG.is_source(source, HcadSourceId.REAL_BUILDING_LAND):
-                # fixtures.txt is a declared member of the building-land source.
-                fixtures_path = self.extract_manager.get_extract_path(source) / "fixtures.txt"
+        building_sources = [
+            source
+            for source in sources
+            if DEFAULT_HCAD_SOURCE_CATALOG.is_source(source, HcadSourceId.REAL_BUILDING_LAND)
+        ]
+        if not building_sources:
+            if self.logger:
+                self.logger.warning("Real Building Land source not found in sources list")
+            return
 
-                if fixtures_path.exists():
-                    try:
-                        self.fixtures_aggregator.load_fixtures_file(fixtures_path)
-                        stats = self.fixtures_aggregator.get_stats()
-                        if self.logger:
-                            self.logger.info(
-                                f"Fixtures loaded: {stats['total_buildings']:,} buildings, "
-                                f"{stats['with_bedrooms']:,} with bedrooms, "
-                                f"{stats['with_bathrooms']:,} with bathrooms"
-                            )
-                        return
-                    except (OSError, UnicodeError, ValueError, KeyError) as e:
-                        if self.logger:
-                            self.logger.error(f"Error loading fixtures: {e}")
-                        return
-                else:
-                    if self.logger:
-                        self.logger.warning(f"Fixtures file not found: {fixtures_path}")
-                    return
+        reading = read_hcad_sources(
+            (source, self.extract_manager.get_extract_path(source)) for source in building_sources
+        )
+        fixtures_paths = reading.files(HcadDataset.ROOM_COUNTS)
+        if not fixtures_paths:
+            if self.logger:
+                extract_dirs = ", ".join(str(source.extract_dir) for source in reading.sources)
+                self.logger.warning(f"Fixtures file not found under {extract_dirs}")
+            return
 
+        try:
+            for fixtures_path in fixtures_paths:
+                self.fixtures_aggregator.load_fixtures_file(fixtures_path)
+        except (OSError, UnicodeError, ValueError, KeyError) as e:
+            if self.logger:
+                self.logger.error(f"Error loading fixtures: {e}")
+            return
+        stats = self.fixtures_aggregator.get_stats()
         if self.logger:
-            self.logger.warning("Real Building Land source not found in sources list")
+            self.logger.info(
+                f"Fixtures loaded: {stats['total_buildings']:,} buildings, "
+                f"{stats['with_bedrooms']:,} with bedrooms, "
+                f"{stats['with_bathrooms']:,} with bathrooms"
+            )
 
     def iter_translated_rows(
         self,
@@ -157,17 +148,12 @@ class HarrisSourcePipeline:
     def process_data_file(
         self,
         file_path: Path,
+        dataset: HcadDataset,
         *,
         truncate: bool = True,
     ) -> SourceFileCounts:
-        """Process a single tabular data file."""
-        filename = file_path.stem.lower()
-        schema_name = resolve_schema_name(filename)
-
-        if not schema_name:
-            if self.logger:
-                self.logger.debug(f"No schema for {file_path.name}, skipping")
-            return SourceFileCounts()
+        """Process a single Property or Building data file."""
+        schema_name = dataset.value
 
         if self.logger:
             self.logger.info(f"Processing {file_path.name} with schema {schema_name}")
@@ -262,35 +248,28 @@ class HarrisSourcePipeline:
             msg = f"Extract path not found for {source.name}: {extract_path}"
             return self._record_source_failure(source, msg, strict=strict)
 
-        data_files = sorted(extract_path.rglob("*.txt"))
-        missing = DEFAULT_HCAD_SOURCE_CATALOG.missing_required_members(source.source_id, data_files)
+        reading = read_hcad_source(source, extract_path)
+        missing = reading.missing_required_members
         if missing:
             msg = f"Required files missing for {source.name}: {', '.join(missing)}"
             return self._record_source_failure(source, msg, strict=strict)
 
-        if DEFAULT_HCAD_SOURCE_CATALOG.is_source(source, HcadSourceId.REAL_BUILDING_LAND):
-            has_extra_feature_details = any(
-                path.stem.lower().startswith("extra_features_detail") for path in data_files
-            )
-            if has_extra_feature_details:
-                data_files = [path for path in data_files if path.stem.lower() != "extra_features"]
-
-        schema_loaded: dict[str, bool] = {}
+        schema_loaded: dict[HcadDataset, bool] = {}
         extra_feature_files: list[Path] = []
         total_loaded = total_invalid = total_skipped = total_failed = 0
         source_errors: list[str] = []
         source_did_work = False
 
-        for file_path in data_files:
-            schema_name = resolve_schema_name(file_path.stem)
-            if schema_name is None:
+        for member in reading.members:
+            file_path, dataset = member.path, member.dataset
+            if dataset is HcadDataset.ROOM_COUNTS:
                 continue
-            if schema_name == "extra_features":
+            if dataset is HcadDataset.EXTRA_FEATURE:
                 extra_feature_files.append(file_path)
                 continue
-            truncate = not schema_loaded.get(schema_name, False)
+            truncate = not schema_loaded.get(dataset, False)
             try:
-                counts = self.process_data_file(file_path, truncate=truncate)
+                counts = self.process_data_file(file_path, dataset, truncate=truncate)
             except (DatabaseError, OSError, UnsafeReplacementError, ValueError) as exc:
                 message = f"Failed processing {file_path.name}: {exc}"
                 source_errors.append(message)
@@ -300,7 +279,7 @@ class HarrisSourcePipeline:
                 if strict:
                     break
                 continue
-            schema_loaded[schema_name] = True
+            schema_loaded[dataset] = True
             source_did_work = True
             total_loaded += counts.loaded
             total_invalid += counts.invalid
