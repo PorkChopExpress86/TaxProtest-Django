@@ -2,7 +2,12 @@
 # Run a dev-container command for this checkout, safely alongside other checkouts.
 #
 #   scripts/dc pytest counties/common/tests -q
+#   scripts/dc fmt
+#   scripts/dc check
 #   scripts/dc ruff check .
+#
+# ``fmt`` runs ruff --fix and black in one container; ``check`` runs ruff, black --check,
+# mypy, and makemigrations --check --dry-run in one container.
 #
 # Every checkout (the main one or a git worktree) shares the main checkout's
 # Compose project, so one postgres container serves them all. This checkout's
@@ -29,6 +34,19 @@ args=(-p "$project" -f "$root/docker-compose.yml" --project-directory "$root")
 [ -f "$env_file" ] && args+=(--env-file "$env_file")
 
 run_env=()
+case "${1:-}" in
+  check)
+    if [ "$#" -eq 1 ]; then
+      set -- sh -c 'status=0; ruff check . || status=1; black --check . || status=1; mypy taxprotest counties || status=1; python manage.py makemigrations --check --dry-run || status=1; exit "$status"'
+    fi
+    ;;
+  fmt)
+    if [ "$#" -eq 1 ]; then
+      set -- sh -ec 'ruff check --fix . && black .'
+    fi
+    ;;
+esac
+
 if [ "${1:-}" = "pytest" ] || { [ "${1:-}" = "python" ] && [ "${2:-}" = "-m" ] && [ "${3:-}" = "pytest" ]; }; then
   checkout="$(basename "$root" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_\n' '_')"
   database="taxprotest_${checkout}_$$"

@@ -112,7 +112,10 @@ def reused_source(operation: ImportOperation, working: Path) -> ReusedSource | N
 
 
 def working_source_root(root: Path, *, reuse: bool = True) -> Path:
-    """Isolate attempt-owned files, so a lost worker cannot overwrite another attempt."""
+    """Isolate attempt-owned files, so a lost worker cannot overwrite another attempt.
+
+    Requires an active ``county_writer(operation)`` reservation; raises ``FencedWriter`` otherwise.
+    """
     operation = _active_writer()
     working = _working_root(root, operation.pk)
     if not working.exists() and not reuse:
