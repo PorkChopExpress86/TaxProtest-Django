@@ -23,3 +23,8 @@ in, check every stored list, warning and message that follows it, including fail
 
 Where the spec freezes a file or limits its edits to forced ones, style and naming findings in
 that file are reported, not applied.
+
+## Domain vocabulary
+
+Use the terms defined in `CONTEXT.md` for new and edited symbols, docstrings, comments and
+user-facing or failure messages, and avoid terms listed under its `_Avoid_` lines.
