@@ -12,8 +12,6 @@ from django.db import DatabaseError
 from counties.harris.source_catalog import DEFAULT_HCAD_SOURCE_CATALOG, HcadSourceId
 
 from .config import DataSource
-from .extract import ExtractManager
-from .fixtures_aggregator import FixturesAggregator
 from .logging import ETLLogger
 from .persistence import (
     PersistenceDataset,
@@ -48,30 +46,22 @@ class TabularSourceResult:
 class HarrisSourcePipeline:
     """Persists the translated rows of the import's HCAD source reading, source by source.
 
-    ``reading`` is the HCAD source reading the import built once and validated; the load
-    supplies the residential account map, read from the staged table after the property
-    persist. ``fixtures_aggregator`` is not used: room counts come from ``reading``.
+    ``reading`` is the HCAD source reading the import built once and validated; room counts
+    come from it. The load supplies the residential account map, read from the staged table
+    after the property persist.
     """
 
     def __init__(
         self,
         *,
-        extract_manager: ExtractManager,
-        reading: HcadSourceReading | None = None,
-        fixtures_aggregator: FixturesAggregator | None = None,
+        reading: HcadSourceReading,
         property_file: Any = None,
         logger: ETLLogger | Any = None,
     ) -> None:
-        self.extract_manager = extract_manager
         self.reading = reading
         self.property_file = property_file
         self.logger = logger
         self._account_to_property: dict[str, int] | None = None
-
-    def _reading(self) -> HcadSourceReading:
-        if self.reading is None:
-            raise ValueError("The staged load needs the import's HCAD source reading")
-        return self.reading
 
     def invalidate_account_map(self) -> None:
         """Clear cached residential account mappings."""
@@ -103,7 +93,7 @@ class HarrisSourcePipeline:
 
         building_sources = [
             source
-            for source in self._reading().sources
+            for source in self.reading.sources
             if DEFAULT_HCAD_SOURCE_CATALOG.is_source(source.source, HcadSourceId.REAL_BUILDING_LAND)
         ]
         if not building_sources:
@@ -133,16 +123,16 @@ class HarrisSourcePipeline:
         truncate: bool = True,
     ) -> SourceFileCounts:
         """Process a single Property or Building data file."""
-        file_path, schema_name = translated.path, translated.dataset.value
+        file_path, dataset = translated.path, translated.dataset
 
         if self.logger:
-            self.logger.info(f"Processing {file_path.name} with schema {schema_name}")
+            self.logger.info(f"Processing {file_path.name} with schema {dataset.value}")
 
         # The staged table holds no property row to map until the property persist.
         rows = translated.rows(
-            None if schema_name == "real_acct" else self.get_account_to_property_map()
+            None if dataset is HcadDataset.PROPERTY else self.get_account_to_property_map()
         )
-        property_file = self.property_file if schema_name == "real_acct" else None
+        property_file = self.property_file if dataset is HcadDataset.PROPERTY else None
         if property_file:
             if property_file.limit is not None:
                 if property_file.limit < 1:
@@ -150,14 +140,14 @@ class HarrisSourcePipeline:
                 rows = islice(rows, property_file.limit)
             truncate = not property_file.append
 
-        if schema_name in {"real_acct", "building_res"}:
+        if dataset in {HcadDataset.PROPERTY, HcadDataset.BUILDING}:
             persisted = persistence_for_connection(
                 orm_batch_size=property_file.batch_size if property_file else 5000
             ).persist(
                 PersistenceRequest(
                     dataset=(
                         PersistenceDataset.PROPERTY
-                        if schema_name == "real_acct"
+                        if dataset is HcadDataset.PROPERTY
                         else PersistenceDataset.BUILDING
                     ),
                     rows=rows,
@@ -168,7 +158,7 @@ class HarrisSourcePipeline:
                     ),
                 )
             )
-            if schema_name == "real_acct":
+            if dataset is HcadDataset.PROPERTY:
                 self.invalidate_account_map()
             return SourceFileCounts(
                 loaded=persisted.loaded,
@@ -212,15 +202,15 @@ class HarrisSourcePipeline:
         extract directory or required members are missing; an optional source with no
         extract directory is only a warning.
         """
+        reading = self.reading.source_reading(source)
         if not source.required:
-            extract_path = self.extract_manager.get_extract_path(source)
+            extract_path = reading.extract_dir
             if not extract_path.exists():
                 msg = f"Extract path not found for {source.name}: {extract_path}"
                 if self.logger:
                     self.logger.warning(msg)
                 return TabularSourceResult(warnings=(msg,))
 
-        reading = self._reading().source_reading(source)
         schema_loaded: dict[HcadDataset, bool] = {}
         extra_feature_files = reading.translated_files(HcadDataset.EXTRA_FEATURE)
         total_loaded = total_invalid = total_skipped = total_failed = 0
@@ -228,13 +218,7 @@ class HarrisSourcePipeline:
         source_did_work = False
 
         # Property and Building files are persisted one by one, in path order.
-        data_files = sorted(
-            (
-                *reading.translated_files(HcadDataset.PROPERTY),
-                *reading.translated_files(HcadDataset.BUILDING),
-            ),
-            key=lambda translated: translated.path,
-        )
+        data_files = reading.translated_members(HcadDataset.PROPERTY, HcadDataset.BUILDING)
         for translated in data_files:
             dataset = translated.dataset
             truncate = not schema_loaded.get(dataset, False)

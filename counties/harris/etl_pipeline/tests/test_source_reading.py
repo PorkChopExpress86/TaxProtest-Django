@@ -7,6 +7,8 @@ directory and the HCAD source catalog's declared members.
 from pathlib import Path
 
 from counties.harris.etl_pipeline.source_reading import (
+    _DETAIL_PATTERN,
+    _MEMBER_DATASETS,
     HcadDataset,
     read_hcad_source,
     read_hcad_sources,
@@ -182,3 +184,15 @@ def test_an_optional_source_reports_no_missing_members(tmp_path: Path):
     reading = read_hcad_source(jur_exempt, tmp_path)
 
     assert reading.missing_required_members == ()
+
+
+def test_the_dataset_mapping_names_only_members_and_patterns_the_catalog_declares():
+    for (source_id, label), dataset in _MEMBER_DATASETS.items():
+        declared = {
+            member.label: member for member in DEFAULT_HCAD_SOURCE_CATALOG.members(source_id)
+        }
+        assert label in declared, f"HCAD source {source_id} declares no member {label}"
+        if dataset is HcadDataset.EXTRA_FEATURE:
+            assert (
+                _DETAIL_PATTERN in declared[label].patterns
+            ), f"HCAD member {label} declares no pattern {_DETAIL_PATTERN}"

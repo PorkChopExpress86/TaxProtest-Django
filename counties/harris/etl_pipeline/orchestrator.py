@@ -631,7 +631,6 @@ class _HarrisImportExecution:
             sources_succeeded = 0
 
             pipeline = HarrisSourcePipeline(
-                extract_manager=self.extract_manager,
                 reading=reading,
                 property_file=self.request.property_file,
                 logger=self.logger,
