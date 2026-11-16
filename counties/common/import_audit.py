@@ -7,7 +7,7 @@ from pathlib import Path
 from django.db.models import Q
 from django.utils import timezone
 
-from counties.common.candidate_staging import drop_candidate_schema
+from counties.common.candidate_transitions import block_unfinished
 from counties.common.county_registry import registration_for
 from counties.common.import_logging import import_warnings
 from counties.common.import_source_digests import digest_once, file_digest, is_source_file
@@ -137,13 +137,6 @@ def _abandoned_candidates(county: str):
     )
 
 
-def _block(candidate: ImportCandidate) -> None:
-    if candidate.state == CandidateState.PREPARING:
-        candidate.state = CandidateState.BLOCKED
-        candidate.evidence["error"] = DEAD_OPERATION_ERROR
-        candidate.save(update_fields=["state", "evidence"])
-
-
 def _reconcile_dead_operations(operation: ImportOperation) -> None:
     """Fail operations that held the county writer before ``operation`` and never finished.
 
@@ -152,7 +145,6 @@ def _reconcile_dead_operations(operation: ImportOperation) -> None:
     """
     unfinished = _dead_operations(operation.county).exclude(pk=operation.pk)
     for pk in unfinished.values_list("pk", flat=True):
-        candidate = None
         with fenced_write():
             dead = unfinished.select_for_update(of=("self",)).filter(pk=pk).first()
             if dead is None or operation_is_alive(dead.pk):
@@ -164,7 +156,8 @@ def _reconcile_dead_operations(operation: ImportOperation) -> None:
                 evidence.update(
                     candidate_id=str(candidate.pk), candidate_state_before=candidate.state
                 )
-                _block(candidate)
+                # Its worker's session is gone, so no lock of it holds the staged tables.
+                block_unfinished(candidate, DEAD_OPERATION_ERROR)
             ImportAuditEntry.objects.create(
                 operation=dead,
                 kind="operation_reconciliation",
@@ -173,8 +166,6 @@ def _reconcile_dead_operations(operation: ImportOperation) -> None:
                 evidence=evidence,
                 result=OperationStatus.FAILED,
             )
-        if candidate is not None:
-            drop_candidate_schema(candidate)
     abandoned = _abandoned_candidates(operation.county).exclude(operation=operation)
     for pk in abandoned.values_list("pk", flat=True):
         with fenced_write():
@@ -193,5 +184,4 @@ def _reconcile_dead_operations(operation: ImportOperation) -> None:
                 },
                 result=CandidateState.BLOCKED,
             )
-            _block(candidate)
-        drop_candidate_schema(candidate)
+            block_unfinished(candidate, DEAD_OPERATION_ERROR)

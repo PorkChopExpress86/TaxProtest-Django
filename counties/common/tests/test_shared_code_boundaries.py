@@ -10,6 +10,10 @@ reads county facts only through the County registration (ADR-0018, ADR-0022). Th
 module scans those files for county names and bare candidate-state or operation-status
 strings, against one exact allow-list, and scans all of ``counties/common`` outside its
 tests for county imports.
+
+It also keeps Candidate transitions in one place: only the Candidate transition owner
+writes Candidate state, and a candidate's staged schema is dropped only by that owner,
+source retention's sweep, and the benchmark harness (#190, #193).
 """
 
 from __future__ import annotations
@@ -61,7 +65,7 @@ ALLOWED: dict[tuple[str, str], int] = {
     # rejected review attempt, writer recovery and source cleanup, a separate vocabulary.
     ("candidate_lifecycle.py", "published"): 1,
     ("import_recovery.py", "published"): 1,
-    ("import_retention.py", "superseded"): 1,
+    ("candidate_transitions.py", "superseded"): 1,
     ("import_retention.py", "running"): 1,
     ("import_retention.py", "completed"): 1,
     ("import_retention.py", "completed_with_warnings"): 1,
@@ -219,8 +223,133 @@ def unsorted_recorded_listings(source: str) -> list[int]:
     return sorted(set(lines))
 
 
+# Query methods that write rows; ``state`` passed to one of them writes Candidate state.
+# The query's receiver is not followed, so one held in a variable is caught too.
+WRITE_METHODS = frozenset(
+    {"update", "create", "get_or_create", "update_or_create", "bulk_create", "bulk_update"}
+)
+
+
+def _names_state(node: ast.AST) -> bool:
+    """True when a dict key or listed field among the node's own values is ``"state"``."""
+    values: list[ast.AST | None] = []
+    if isinstance(node, ast.Dict):
+        values = list(node.keys)
+    elif isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        values = list(node.elts)
+    return any(isinstance(value, ast.Constant) and value.value == "state" for value in values)
+
+
+def _writes_state(call: ast.Call) -> bool:
+    return any(keyword.arg == "state" for keyword in call.keywords) or any(
+        _names_state(value) for value in (*call.args, *(kw.value for kw in call.keywords))
+    )
+
+
+def candidate_state_writes(source: str) -> list[int]:
+    """Lines that write Candidate state.
+
+    Found: an assignment to any ``.state`` attribute, ``setattr(..., "state", ...)``,
+    ``state`` given to ``ImportCandidate(...)`` or to any receiver's query write method
+    (as a keyword, a ``defaults`` key or a listed field), and a ``save`` whose
+    ``update_fields`` names ``state``. Reads, filters, and other models' fields such as
+    an Import operation's ``status`` are not writes.
+    """
+    lines: list[int] = []
+    for node in ast.walk(ast.parse(source)):
+        if (
+            isinstance(node, ast.Attribute)
+            and node.attr == "state"
+            and isinstance(node.ctx, ast.Store)
+        ):
+            lines.append(node.lineno)
+        elif isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Name) and func.id == "setattr":
+                if len(node.args) > 1 and isinstance(node.args[1], ast.Constant):
+                    if node.args[1].value == "state":
+                        lines.append(node.lineno)
+            elif isinstance(func, ast.Name) and func.id == "ImportCandidate":
+                if _writes_state(node):
+                    lines.append(node.lineno)
+            elif isinstance(func, ast.Attribute) and func.attr in WRITE_METHODS:
+                if _writes_state(node):
+                    lines.append(node.lineno)
+            elif isinstance(func, ast.Attribute) and func.attr == "save":
+                if any(
+                    keyword.arg == "update_fields" and _names_state(keyword.value)
+                    for keyword in node.keywords
+                ):
+                    lines.append(node.lineno)
+    return sorted(set(lines))
+
+
+def local_names(tree: ast.AST, name: str) -> set[str]:
+    """``name`` and every alias a ``from ... import name as alias`` gives it, wherever it is."""
+    return {name} | {
+        alias.asname
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+        if alias.name == name and alias.asname
+    }
+
+
+def calls_by_function(source: str, name: str) -> list[tuple[str, int]]:
+    """(innermost enclosing function, line) of every call of ``name``.
+
+    A plain call matches ``name`` or a name it was imported as; a dotted call matches
+    ``name`` as the attribute.
+    """
+    tree = ast.parse(source)
+    plain = local_names(tree, name)
+    found: list[tuple[str, int]] = []
+
+    def visit(node: ast.AST, function: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.Call):
+                callee = child.func
+                if (isinstance(callee, ast.Name) and callee.id in plain) or (
+                    isinstance(callee, ast.Attribute) and callee.attr == name
+                ):
+                    found.append((function, child.lineno))
+            visit(child, child.name if isinstance(child, FUNCTION_NODES) else function)
+
+    visit(tree, "<module>")
+    return sorted(found, key=lambda item: item[1])
+
+
 def _is_test_path(path: Path) -> bool:
     return "tests" in path.parts or path.name.startswith("test_")
+
+
+def _production_modules() -> Iterator[tuple[str, str]]:
+    """(path relative to the repository, source) of every production module."""
+    for package in PRODUCTION_PACKAGES:
+        for path in sorted((ROOT / package).rglob("*.py")):
+            relative = path.relative_to(ROOT)
+            if _is_test_path(relative) or "migrations" in relative.parts:
+                continue
+            yield relative.as_posix(), path.read_text(encoding="utf-8")
+
+
+# The Candidate transition owner: the only module that writes Candidate state.
+TRANSITION_OWNER = "counties/common/candidate_transitions.py"
+
+# Who may drop a candidate's staged schema, by function; None allows the whole module.
+# The fenced drop is the owner's, apart from source retention's sweep of schemas that
+# candidates retired by earlier releases left behind. Its unfenced primitive runs only
+# inside the fenced drop and in the benchmark harness, which holds no county writer.
+SCHEMA_DROPS: dict[str, dict[str, frozenset[str] | None]] = {
+    "drop_candidate_schema": {
+        TRANSITION_OWNER: None,
+        "counties/common/import_retention.py": frozenset({"cleanup_sources"}),
+    },
+    "drop_candidate_schema_unfenced": {
+        "counties/common/candidate_staging.py": frozenset({"drop_candidate_schema"}),
+        "counties/common/benchmarking.py": frozenset({"_discard_candidate"}),
+    },
+}
 
 
 def _is_test_module(module: str) -> bool:
@@ -353,6 +482,73 @@ class BoundaryScannerTests(SimpleTestCase):
 
         self.assertEqual(unsorted_recorded_listings(source), [3])
 
+    def test_candidate_state_writes_are_found_however_they_are_spelled(self):
+        source = (
+            "candidate.state = CandidateState.BLOCKED\n"
+            "previous.state: str = decision\n"
+            "setattr(candidate, 'state', decision)\n"
+            "ImportCandidate.objects.filter(pk=pk).update(state=decision, evidence={})\n"
+            "ImportCandidate.objects.create(county=county, state=CandidateState.PREPARED)\n"
+            "ImportCandidate.objects.update_or_create(pk=pk, defaults={'state': decision})\n"
+            "ImportCandidate.objects.bulk_update(candidates, ['state'])\n"
+            "ImportCandidate.objects.bulk_create([ImportCandidate(state=decision)])\n"
+            "candidate.save(update_fields=['state', 'rejected_at'])\n"
+            "abandoned.filter(pk=pk).update(state=CandidateState.BLOCKED)\n"
+        )
+
+        self.assertEqual(candidate_state_writes(source), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+
+    def test_reads_filters_and_other_state_are_not_candidate_state_writes(self):
+        source = (
+            "if candidate.state == CandidateState.BLOCKED:\n"
+            "    status = operation_status_for(candidate.state)\n"
+            "ImportCandidate.objects.filter(state=CandidateState.PUBLISHED).exists()\n"
+            "ImportCandidate.objects.select_for_update().filter(state=decision).first()\n"
+            "rows = ImportCandidate.objects.filter(state__in=retired).update(evidence={})\n"
+            "label = result.state\n"
+            "task.update_state(state='SUCCESS', meta={})\n"
+            "operation.status = OperationStatus.FAILED\n"
+            "operation.save(update_fields=['status', 'evidence'])\n"
+            "ImportOperation.objects.filter(pk=pk).update(status='failed')\n"
+            "state = 'removed'\n"
+            "candidate.save()\n"
+        )
+
+        self.assertEqual(candidate_state_writes(source), [])
+
+    def test_calls_are_found_with_their_innermost_enclosing_function(self):
+        source = (
+            "drop_candidate_schema(candidate)\n"
+            "def sweep():\n"
+            "    staging.drop_candidate_schema(candidate)\n"
+            "    def nested():\n"
+            "        drop_candidate_schema(candidate)\n"
+            "    return drop_candidate_schema_unfenced(candidate)\n"
+            "from counties.common.candidate_staging import drop_candidate_schema\n"
+            "callback = drop_candidate_schema\n"
+        )
+
+        self.assertEqual(
+            calls_by_function(source, "drop_candidate_schema"),
+            [("<module>", 1), ("sweep", 3), ("nested", 5)],
+        )
+
+    def test_calls_through_an_imported_alias_are_found(self):
+        source = (
+            "def sweep(candidate, cursor):\n"
+            "    from counties.common.candidate_staging import drop_candidate_schema as drop\n"
+            "    drop(candidate)\n"
+            "    cursor.drop(candidate)\n"
+            "def relative(candidate):\n"
+            "    from .candidate_staging import drop_candidate_schema as retire\n"
+            "    retire(candidate)\n"
+        )
+
+        self.assertEqual(
+            calls_by_function(source, "drop_candidate_schema"),
+            [("sweep", 3), ("relative", 7)],
+        )
+
 
 class SharedLifecycleBoundaryTests(SimpleTestCase):
     def test_shared_lifecycle_modules_name_no_county(self):
@@ -401,4 +597,31 @@ class RecordedSourceOrderTests(SimpleTestCase):
             if not _is_test_path(path.relative_to(ROOT))
             for line in unsorted_recorded_listings(path.read_text(encoding="utf-8"))
         ]
+        self.assertEqual(offenders, [])
+
+
+class CandidateTransitionOwnerTests(SimpleTestCase):
+    """Candidate state has one writer, and retiring a candidate drops its schema there."""
+
+    def test_only_the_transition_owner_writes_candidate_state(self):
+        writes = {path: candidate_state_writes(source) for path, source in _production_modules()}
+
+        self.assertTrue(writes[TRANSITION_OWNER])
+        offenders = [
+            f"{path}:{line}"
+            for path, lines in writes.items()
+            if path != TRANSITION_OWNER
+            for line in lines
+        ]
+        self.assertEqual(offenders, [])
+
+    def test_candidate_schemas_are_dropped_only_where_allowed(self):
+        offenders = [
+            f"{path}:{line} {function} calls {name}"
+            for path, source in _production_modules()
+            for name, allowed in SCHEMA_DROPS.items()
+            for function, line in calls_by_function(source, name)
+            if path not in allowed or (allowed[path] is not None and function not in allowed[path])
+        ]
+
         self.assertEqual(offenders, [])

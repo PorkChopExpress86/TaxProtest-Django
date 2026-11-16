@@ -42,8 +42,8 @@ class CandidateState(StrEnum):
     SUPERSEDED = "superseded"
 
 
-# A candidate in these states is never reviewed or published again, so nothing reads
-# its staged schema and the lifecycle drops it.
+# A Retired candidate can no longer be approved or published, so nothing reads its
+# staged schema and the lifecycle drops it. A blocked one can still be rejected.
 RETIRED_CANDIDATE_STATES = frozenset(
     {
         CandidateState.BLOCKED,

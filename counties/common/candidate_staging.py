@@ -488,10 +488,21 @@ def _production_foreign_key_name(cursor, source_model, source_col: str, target_m
 def drop_candidate_schema(candidate: ImportCandidate) -> None:
     """Drop a retired candidate's staged schema; dropping it again does nothing."""
     validate_schema_name(candidate.storage_schema, county=candidate.county)
-    with fenced_write(), connection.cursor() as cursor:
+    with fenced_write():
         # A transaction that wrote staged rows cannot drop their tables while its
         # deferred foreign-key checks are pending, so run those checks now.
         connection.check_constraints()
+        drop_candidate_schema_unfenced(candidate)
+
+
+def drop_candidate_schema_unfenced(candidate: ImportCandidate) -> None:
+    """Drop a candidate's staged schema without the county writer's fence.
+
+    Who may call this is enforced by ``SCHEMA_DROPS`` and
+    ``CandidateTransitionOwnerTests`` in ``counties/common/tests/test_shared_code_boundaries.py``.
+    """
+    validate_schema_name(candidate.storage_schema, county=candidate.county)
+    with connection.cursor() as cursor:
         cursor.execute(
             f"DROP SCHEMA IF EXISTS {connection.ops.quote_name(candidate.storage_schema)} CASCADE"
         )

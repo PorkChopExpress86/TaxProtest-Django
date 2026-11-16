@@ -31,7 +31,7 @@ class HarrisPipelineStressTests(TransactionTestCase):
         super().tearDown()
 
     # Keep the blocked candidate's schema to count what the load staged.
-    @patch("counties.common.candidate_lifecycle.drop_candidate_schema")
+    @patch("counties.common.candidate_transitions.drop_candidate_schema")
     def test_harris_candidate_staging_under_synthetic_stress(self, _drop):
         record_count = 5000
         request = HarrisImportRequest(

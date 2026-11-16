@@ -8,10 +8,10 @@ from pathlib import Path
 from typing import Any
 
 from django.core.exceptions import PermissionDenied
-from django.utils import timezone
 
 from counties.common.candidate_ports import dataset_identity, published_identity
-from counties.common.candidate_staging import drop_candidate_schema, switch_search_path
+from counties.common.candidate_staging import switch_search_path
+from counties.common.candidate_transitions import decide_review
 from counties.common.county_registry import registration_for
 from counties.common.import_audit import audited_operation
 from counties.common.import_coverage import OutcomePopulation, compare_coverage
@@ -223,12 +223,7 @@ def review_candidate(candidate, *, user, reason: str, decision: str, expected_bi
                     evidence=evidence,
                     result=decision,
                 )
-                candidate.state = decision
-                if decision == CandidateState.REJECTED:
-                    candidate.rejected_at = timezone.now()
-                candidate.save(update_fields=["state", "rejected_at"])
-                if decision == CandidateState.REJECTED:
-                    drop_candidate_schema(candidate)
+                decide_review(candidate, decision)
     except Exception as exc:
         ImportAuditEntry.objects.create(
             operation=candidate.operation,

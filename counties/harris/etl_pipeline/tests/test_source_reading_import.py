@@ -56,7 +56,7 @@ def _write_archive(root: str, source_id: HcadSourceId, members: dict[str, str]) 
 
 class NestedArchiveTests(TestCase):
     # Keep the candidate's schema to read what the load staged.
-    @patch("counties.common.candidate_lifecycle.drop_candidate_schema")
+    @patch("counties.common.candidate_transitions.drop_candidate_schema")
     def test_room_counts_load_from_a_fixtures_file_the_archive_nests(self, _drop):
         with tempfile.TemporaryDirectory() as root, override_settings(**_runtime_settings(root)):
             _write_archive(
@@ -101,7 +101,7 @@ class NestedArchiveTests(TestCase):
 
 
 class StrayExtraFeatureFileTests(TestCase):
-    @patch("counties.common.candidate_lifecycle.drop_candidate_schema")
+    @patch("counties.common.candidate_transitions.drop_candidate_schema")
     def test_a_stray_extra_features_file_is_neither_validated_recorded_nor_loaded(self, _drop):
         with tempfile.TemporaryDirectory() as root, override_settings(**_runtime_settings(root)):
             _write_property_source(root, account="S100")

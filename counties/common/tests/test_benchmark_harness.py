@@ -9,6 +9,9 @@ from django.test import TransactionTestCase
 from counties.common.benchmarking import measure, swapped_settings
 from counties.common.models import ImportCandidate, ImportOperation
 
+# A valid candidate schema name, as the harness's drop validates it.
+SCHEMA = "fake_county_candidate_0123456789abcdef0123456789abcdef"
+
 
 class _FakeResult:
     def __init__(self, candidate_id, label):
@@ -20,17 +23,16 @@ class BenchmarkHarnessTests(TransactionTestCase):
     def _candidate(self) -> ImportCandidate:
         operation = ImportOperation.objects.create(county="fake_county", intent="preview")
         candidate = ImportCandidate.objects.create(
-            operation=operation, county="fake_county", storage_schema="fake_county_candidate_1"
+            operation=operation, county="fake_county", storage_schema=SCHEMA
         )
         with connection.cursor() as cursor:
-            cursor.execute('CREATE SCHEMA "fake_county_candidate_1"')
+            cursor.execute(f'CREATE SCHEMA "{SCHEMA}"')
         return candidate
 
     def _schema_exists(self) -> bool:
         with connection.cursor() as cursor:
             cursor.execute(
-                "SELECT 1 FROM information_schema.schemata "
-                "WHERE schema_name = 'fake_county_candidate_1'"
+                "SELECT 1 FROM information_schema.schemata WHERE schema_name = %s", [SCHEMA]
             )
             return cursor.fetchone() is not None
 
@@ -49,6 +51,22 @@ class BenchmarkHarnessTests(TransactionTestCase):
         self.assertGreaterEqual(stats.peak_memory_mb, 0.0)
         self.assertFalse(ImportCandidate.objects.filter(pk=candidate.pk).exists())
         self.assertFalse(self._schema_exists())
+
+    def test_measure_refuses_to_drop_a_schema_that_is_not_a_candidates(self):
+        operation = ImportOperation.objects.create(county="fake_county", intent="preview")
+        candidate = ImportCandidate.objects.create(
+            operation=operation, county="fake_county", storage_schema="public"
+        )
+
+        with self.assertRaisesMessage(ValueError, "Invalid candidate storage identity: public"):
+            measure(
+                "fake_county",
+                rows=1,
+                run=lambda: _FakeResult(candidate.pk, "held"),
+                status=lambda result: result.label,
+            )
+
+        self.assertTrue(ImportCandidate.objects.filter(pk=candidate.pk).exists())
 
     def test_measure_tolerates_a_run_without_a_candidate(self):
         stats = measure(
