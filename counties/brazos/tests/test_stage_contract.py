@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import re
 from dataclasses import is_dataclass
 from pathlib import Path
 
@@ -19,6 +20,48 @@ PRODUCTION_MODULES = (
     "source_validation.py",
     "candidate.py",
 )
+PACS_DESCRIPTOR_GUARDED_MODULES = (*PRODUCTION_MODULES, "benchmark.py")
+_PACS_FILENAME_LITERAL_RE = re.compile(r"APPRAISAL_[A-Z0-9_]+\.TXT")
+
+
+def _docstring_constants(tree: ast.AST) -> set[int]:
+    return {
+        id(scope.body[0].value)
+        for scope in ast.walk(tree)
+        if isinstance(scope, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+        and scope.body
+        and isinstance(scope.body[0], ast.Expr)
+        and isinstance(scope.body[0].value, ast.Constant)
+        and isinstance(scope.body[0].value.value, str)
+    }
+
+
+def _pacs_filename_literals(tree: ast.AST) -> list[str]:
+    docstrings = _docstring_constants(tree)
+    return [
+        f"line {node.lineno}: {node.value!r}"
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and id(node) not in docstrings
+        and _PACS_FILENAME_LITERAL_RE.search(node.value)
+    ]
+
+
+def _direct_parse_line_references(tree: ast.AST) -> list[str]:
+    refs = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name.startswith("parse_") and alias.name.endswith("_line"):
+                    refs.append(f"line {node.lineno}: {alias.name}")
+        elif (
+            isinstance(node, ast.Attribute)
+            and node.attr.startswith("parse_")
+            and node.attr.endswith("_line")
+        ):
+            refs.append(f"line {node.lineno}: .{node.attr}")
+    return refs
 
 
 def _brazos_imports_inside_functions(tree: ast.AST) -> list[ast.stmt]:
@@ -106,3 +149,15 @@ class NoLazyOrPrivateBrazosImportsTests(SimpleTestCase):
             with self.subTest(module=module):
                 tree = ast.parse((BRAZOS / module).read_text(encoding="utf-8"))
                 self.assertEqual(_private_brazos_names(tree), [])
+
+
+class PacsDescriptionOwnershipTests(SimpleTestCase):
+    def test_stage_modules_and_benchmark_reference_no_appraisal_filename_literals(self):
+        for module in PACS_DESCRIPTOR_GUARDED_MODULES:
+            with self.subTest(module=module):
+                tree = ast.parse((BRAZOS / module).read_text(encoding="utf-8"))
+                self.assertEqual(_pacs_filename_literals(tree), [])
+
+    def test_cad_refresh_uses_pacs_descriptions_instead_of_parse_line_helpers(self):
+        tree = ast.parse((BRAZOS / "cad_refresh.py").read_text(encoding="utf-8"))
+        self.assertEqual(_direct_parse_line_references(tree), [])
